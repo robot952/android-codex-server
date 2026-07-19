@@ -1,0 +1,216 @@
+package top.asdb.codexremote.data
+
+import kotlinx.serialization.Serializable
+import java.util.UUID
+
+@Serializable
+enum class AuthMode { Password, PrivateKey }
+
+@Serializable
+data class ServerProfile(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "我的服务器",
+    val host: String = "",
+    val port: Int = 22,
+    val username: String = "",
+    val authMode: AuthMode = AuthMode.PrivateKey,
+    val password: String = "",
+    val privateKeyPem: String = "",
+    val privateKeyPassphrase: String = "",
+    val hostFingerprint: String = "",
+    val workspace: String = "",
+    val approvalMode: ApprovalMode = ApprovalMode.RequestApproval,
+    val remoteCommand: String = "~/.local/bin/codex-remote app-server --listen stdio://",
+)
+
+@Serializable
+data class StoredProfiles(
+    val profiles: List<ServerProfile> = emptyList(),
+    val selectedProfileId: String? = null,
+)
+
+enum class ConnectionPhase { Disconnected, Probing, Connecting, Connected, Failed }
+
+data class ConnectionState(
+    val phase: ConnectionPhase = ConnectionPhase.Disconnected,
+    val message: String = "未连接",
+    val cliVersion: String? = null,
+)
+
+data class CodexThread(
+    val id: String,
+    val title: String,
+    val preview: String,
+    val cwd: String,
+    val source: String,
+    val status: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val cliVersion: String,
+    /** The in-progress turn id when the server included turns in this payload. */
+    val activeTurnId: String? = null,
+)
+
+data class CodexModel(
+    val id: String,
+    val model: String,
+    val displayName: String,
+    val description: String,
+    val isDefault: Boolean,
+    val defaultEffort: String,
+    val efforts: List<String>,
+)
+
+enum class TimelineKind {
+    UserMessage,
+    AgentMessage,
+    Reasoning,
+    Plan,
+    Command,
+    FileChange,
+    Tool,
+    Review,
+    Notice,
+}
+
+data class FileChange(
+    val path: String,
+    val kind: String,
+    val diff: String,
+) {
+    val additions: Int get() = diff.lineSequence().count { it.startsWith("+") && !it.startsWith("+++") }
+    val deletions: Int get() = diff.lineSequence().count { it.startsWith("-") && !it.startsWith("---") }
+}
+
+data class TimelineEntry(
+    val id: String,
+    val kind: TimelineKind,
+    val title: String = "",
+    val text: String = "",
+    val status: String = "",
+    val command: String = "",
+    val cwd: String = "",
+    val output: String = "",
+    val changes: List<FileChange> = emptyList(),
+    val turnId: String = "",
+)
+
+enum class ApprovalKind { Command, FileChange, Permission, UserInput }
+
+data class InputOption(
+    val label: String,
+    val description: String = "",
+)
+
+data class InputQuestion(
+    val id: String,
+    val header: String,
+    val question: String,
+    val options: List<InputOption> = emptyList(),
+    val isSecret: Boolean = false,
+)
+
+data class ApprovalPrompt(
+    val requestId: String,
+    val requestIdIsString: Boolean,
+    val kind: ApprovalKind,
+    val threadId: String,
+    val turnId: String,
+    val itemId: String,
+    val title: String,
+    val detail: String,
+    val command: String = "",
+    val cwd: String = "",
+    val questions: List<InputQuestion> = emptyList(),
+)
+
+data class PendingAttachment(
+    val name: String,
+    val remotePath: String,
+    val mimeType: String,
+)
+
+enum class AppScreen { Servers, Threads, Work }
+
+enum class SandboxChoice(val wireValue: String, val policyType: String, val label: String) {
+    ReadOnly("read-only", "readOnly", "只读"),
+    WorkspaceWrite("workspace-write", "workspaceWrite", "工作区"),
+    FullAccess("danger-full-access", "dangerFullAccess", "完全访问"),
+}
+
+@Serializable
+enum class ApprovalMode(
+    val approvalPolicy: String,
+    val sandbox: SandboxChoice,
+    val label: String,
+    val menuLabel: String,
+    val description: String,
+) {
+    RequestApproval(
+        "untrusted",
+        SandboxChoice.WorkspaceWrite,
+        "请求批准",
+        "请求批准",
+        "编辑外部文件和使用互联网时始终询问",
+    ),
+    AutoApprove(
+        "on-request",
+        SandboxChoice.WorkspaceWrite,
+        "替我审批",
+        "替我审批",
+        "仅对检测到的风险操作请求批准",
+    ),
+    FullAccess(
+        "never",
+        SandboxChoice.FullAccess,
+        "完全访问",
+        "完全访问权限",
+        "可不受限制地访问互联网和服务器上的任何文件",
+    ),
+}
+
+data class RemoteDirectory(
+    val name: String,
+    val path: String,
+)
+
+data class RemoteDirectoryListing(
+    val currentPath: String,
+    val parentPath: String?,
+    val directories: List<RemoteDirectory>,
+)
+
+data class AppUiState(
+    val screen: AppScreen = AppScreen.Servers,
+    val profiles: List<ServerProfile> = emptyList(),
+    val selectedProfileId: String? = null,
+    val connection: ConnectionState = ConnectionState(),
+    val pendingFingerprint: String? = null,
+    val threads: List<CodexThread> = emptyList(),
+    val threadSearch: String = "",
+    val activeThread: CodexThread? = null,
+    val timeline: List<TimelineEntry> = emptyList(),
+    val activeTurnId: String? = null,
+    val running: Boolean = false,
+    val submitting: Boolean = false,
+    val loading: Boolean = false,
+    val models: List<CodexModel> = emptyList(),
+    val selectedModel: String? = null,
+    val selectedEffort: String? = null,
+    val approvalMode: ApprovalMode = ApprovalMode.RequestApproval,
+    val sandbox: SandboxChoice = SandboxChoice.WorkspaceWrite,
+    val workspacePickerVisible: Boolean = false,
+    val workspaceLoading: Boolean = false,
+    val workspaceCurrentPath: String = "",
+    val workspaceParentPath: String? = null,
+    val workspaceDirectories: List<RemoteDirectory> = emptyList(),
+    val workspaceError: String? = null,
+    val approval: ApprovalPrompt? = null,
+    /** Pending server requests are kept in arrival order; the first one is shown in the dialog. */
+    val approvalQueue: List<ApprovalPrompt> = emptyList(),
+    val attachments: List<PendingAttachment> = emptyList(),
+    val composerClearNonce: Int = 0,
+    val aggregateDiff: String = "",
+    val error: String? = null,
+    val diagnostic: String? = null,
+)

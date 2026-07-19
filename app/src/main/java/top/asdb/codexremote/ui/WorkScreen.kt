@@ -1,0 +1,1022 @@
+package top.asdb.codexremote.ui
+
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pending
+import androidx.compose.material.icons.filled.PanTool
+import androidx.compose.material.icons.filled.RateReview
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.ApprovalMode
+import top.asdb.codexremote.data.CodexModel
+import top.asdb.codexremote.data.FileChange
+import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.data.TimelineKind
+import top.asdb.codexremote.ui.components.MarkdownText
+import top.asdb.codexremote.ui.theme.CodexAmber
+import top.asdb.codexremote.ui.theme.CodexBorder
+import top.asdb.codexremote.ui.theme.CodexGreen
+import top.asdb.codexremote.ui.theme.CodexRed
+import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun WorkScreen(
+    state: AppUiState,
+    onBack: () -> Unit,
+    onSend: (String) -> Unit,
+    onStop: () -> Unit,
+    onReview: () -> Unit,
+    onRollback: () -> Unit,
+    onArchive: () -> Unit,
+    onRename: (String) -> Unit,
+    onUpload: (Context, Uri) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onSelectModel: (String, String?) -> Unit,
+    onSelectEffort: (String) -> Unit,
+    onSelectApprovalMode: (ApprovalMode) -> Unit,
+    onSelectWorkspace: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    var composer by remember(state.activeThread?.id) { mutableStateOf("") }
+    var submittedComposer by remember(state.activeThread?.id) { mutableStateOf<String?>(null) }
+    var selectedDiff by remember { mutableStateOf<FileChange?>(null) }
+    var showModels by remember { mutableStateOf(false) }
+    var showPermissions by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var renameRequested by remember { mutableStateOf(false) }
+    var rollbackRequested by remember { mutableStateOf(false) }
+    var archiveRequested by remember { mutableStateOf(false) }
+    var fullAccessRequested by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { onUpload(context, it) }
+    }
+    val lastEntry = state.timeline.lastOrNull()
+    val latestFileChangeId = state.timeline.lastOrNull { it.kind == TimelineKind.FileChange }?.id
+    var followOutput by remember(state.activeThread?.id) { mutableStateOf(true) }
+
+    // Track whether the reader is at the end before a streaming update arrives.
+    // New deltas should not pull a user away from an earlier part of the transcript.
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val atEnd = layout.totalItemsCount == 0 || lastVisible >= layout.totalItemsCount - 2
+            atEnd to listState.isScrollInProgress
+        }.distinctUntilChanged().collect { (atEnd, userScrolling) ->
+            when {
+                atEnd -> followOutput = true
+                userScrolling -> followOutput = false
+            }
+        }
+    }
+
+    LaunchedEffect(state.composerClearNonce) {
+        if (state.composerClearNonce > 0 && submittedComposer == composer) {
+            composer = ""
+        }
+    }
+
+    LaunchedEffect(
+        state.timeline.size,
+        lastEntry?.text?.length,
+        lastEntry?.output?.length,
+        lastEntry?.changes?.size,
+        state.aggregateDiff.length,
+    ) {
+        val trailingItemIndex = state.timeline.size +
+            (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
+            (if (state.running) 1 else 0)
+        if (followOutput && trailingItemIndex > 0) {
+            // Scroll to the fixed spacer after the timeline, aggregate diff, and running indicator.
+            listState.animateScrollToItem(trailingItemIndex)
+        }
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize().statusBarsPadding(),
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            state.activeThread?.title ?: "新任务",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            state.activeThread?.cwd.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "更多")
+                        }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("重命名") },
+                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                onClick = { showMenu = false; renameRequested = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("归档") },
+                                leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                                onClick = { showMenu = false; archiveRequested = true },
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+            )
+        },
+        bottomBar = {
+            WorkComposer(
+                state = state,
+                value = composer,
+                onValueChange = { composer = it },
+                onAttach = { filePicker.launch(arrayOf("image/*", "text/*", "application/pdf")) },
+                onRemoveAttachment = onRemoveAttachment,
+                onSend = {
+                    submittedComposer = composer
+                    onSend(composer)
+                },
+                onStop = onStop,
+                onShowModels = { showModels = true },
+                onShowPermissions = { showPermissions = true },
+                onSelectWorkspace = onSelectWorkspace,
+            )
+        },
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(state.timeline, key = { it.id }) { entry ->
+                    TimelineItem(
+                        entry = entry,
+                        onOpenDiff = { selectedDiff = it },
+                        onReview = onReview,
+                        canRollback = !state.running && entry.id == latestFileChangeId,
+                        onRollback = { rollbackRequested = true },
+                    )
+                }
+                if (state.aggregateDiff.isNotBlank()) {
+                    item(key = "aggregate-diff") {
+                        val aggregate = remember(state.aggregateDiff) {
+                            FileChange(path = "工作区差异", kind = "diff", diff = state.aggregateDiff)
+                        }
+                        AggregateDiffBlock(
+                            change = aggregate,
+                            onOpen = { selectedDiff = aggregate },
+                        )
+                    }
+                }
+                if (state.running) {
+                    item(key = "running-indicator") {
+                        Row(
+                            modifier = Modifier.semantics {
+                                contentDescription = "Codex 正在处理"
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(9.dp))
+                            Text("正在处理", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                item { Spacer(Modifier.height(6.dp)) }
+            }
+            if (state.timeline.isEmpty() && !state.loading) {
+                Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Terminal, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(38.dp))
+                    Spacer(Modifier.height(12.dp))
+                    Text("描述需要完成的工作", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (state.loading) {
+                CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), strokeWidth = 2.dp)
+            }
+            AnimatedVisibility(
+                visible = !followOutput && state.timeline.isNotEmpty(),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+            ) {
+                Surface(
+                    color = Color(0xFF111111),
+                    shape = CircleShape,
+                    modifier = Modifier.size(46.dp).border(1.dp, CodexBorder, CircleShape),
+                ) {
+                    IconButton(
+                        onClick = {
+                            followOutput = true
+                            coroutineScope.launch {
+                                val lastIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                                listState.animateScrollToItem(lastIndex)
+                            }
+                        },
+                    ) {
+                        Icon(Icons.Default.ArrowDownward, contentDescription = "跳到最新消息")
+                    }
+                }
+            }
+        }
+    }
+
+    selectedDiff?.let { change ->
+        DiffViewer(change = change, onDismiss = { selectedDiff = null })
+    }
+
+    if (showModels) {
+        ModelSheet(
+            models = state.models,
+            selectedModel = state.selectedModel,
+            selectedEffort = state.selectedEffort,
+            onSelectModel = onSelectModel,
+            onSelectEffort = onSelectEffort,
+            onDismiss = { showModels = false },
+        )
+    }
+
+    if (showPermissions) {
+        ModalBottomSheet(onDismissRequest = { showPermissions = false }) {
+            Text(
+                "应如何批准 Codex 操作?",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            )
+            ApprovalMode.entries.forEach { mode ->
+                val selected = mode == state.approvalMode
+                val accent = mode == ApprovalMode.FullAccess
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        if (mode == ApprovalMode.FullAccess) {
+                            fullAccessRequested = true
+                        } else {
+                            onSelectApprovalMode(mode)
+                        }
+                        showPermissions = false
+                    }.padding(horizontal = 20.dp, vertical = 15.dp).semantics {
+                        stateDescription = if (selected) "已选择" else "未选择"
+                    },
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        when (mode) {
+                            ApprovalMode.RequestApproval -> Icons.Default.PanTool
+                            ApprovalMode.AutoApprove -> Icons.Default.Terminal
+                            ApprovalMode.FullAccess -> Icons.Default.Shield
+                        },
+                        contentDescription = null,
+                        tint = if (accent) CodexAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            mode.menuLabel,
+                            color = if (accent) CodexAmber else MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            mode.description,
+                            color = if (accent) CodexAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (selected) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = if (accent) CodexAmber else CodexGreen,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp).navigationBarsPadding())
+        }
+    }
+
+    if (fullAccessRequested) {
+        AlertDialog(
+            onDismissRequest = { fullAccessRequested = false },
+            title = { Text("启用完全访问") },
+            text = { Text("Codex 将不受工作区沙箱限制。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSelectApprovalMode(ApprovalMode.FullAccess)
+                    fullAccessRequested = false
+                }) { Text("启用", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { fullAccessRequested = false }) { Text("取消") } },
+        )
+    }
+
+    if (renameRequested) {
+        var name by remember { mutableStateOf(state.activeThread?.title.orEmpty()) }
+        AlertDialog(
+            onDismissRequest = { renameRequested = false },
+            title = { Text("重命名任务") },
+            text = {
+                OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = {
+                TextButton(onClick = { onRename(name); renameRequested = false }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { renameRequested = false }) { Text("取消") } },
+        )
+    }
+
+    if (archiveRequested) {
+        AlertDialog(
+            onDismissRequest = { archiveRequested = false },
+            title = { Text("归档任务") },
+            text = { Text(state.activeThread?.title.orEmpty()) },
+            confirmButton = {
+                TextButton(onClick = { archiveRequested = false; onArchive() }) { Text("归档") }
+            },
+            dismissButton = { TextButton(onClick = { archiveRequested = false }) { Text("取消") } },
+        )
+    }
+
+    if (rollbackRequested) {
+        AlertDialog(
+            onDismissRequest = { rollbackRequested = false },
+            title = { Text("撤销上一轮") },
+            text = {
+                Text("这只会回退 Codex 会话历史，不会自动恢复服务器上的本地文件。需要恢复文件时，请使用版本控制或手动编辑。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    rollbackRequested = false
+                    onRollback()
+                }) { Text("继续撤销") }
+            },
+            dismissButton = {
+                TextButton(onClick = { rollbackRequested = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun TimelineItem(
+    entry: TimelineEntry,
+    onOpenDiff: (FileChange) -> Unit,
+    onReview: () -> Unit,
+    canRollback: Boolean,
+    onRollback: () -> Unit,
+) {
+    when (entry.kind) {
+        TimelineKind.UserMessage -> Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            SelectionContainer {
+                Text(entry.text, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+            }
+        }
+
+        TimelineKind.AgentMessage -> MarkdownText(entry.text, Modifier.fillMaxWidth())
+        TimelineKind.Reasoning, TimelineKind.Plan -> CollapsibleText(entry)
+        TimelineKind.Command -> CommandBlock(entry)
+        TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canRollback, onRollback)
+        TimelineKind.Tool -> ToolBlock(entry)
+        TimelineKind.Review -> Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.RateReview, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(entry.title, fontWeight = FontWeight.Medium)
+                }
+                if (entry.text.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    MarkdownText(entry.text)
+                }
+            }
+        }
+
+        TimelineKind.Notice -> Text(
+            entry.text.ifBlank { entry.title },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+private fun CollapsibleText(entry: TimelineEntry) {
+    var expanded by remember(entry.id) { mutableStateOf(entry.kind == TimelineKind.Plan) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(if (entry.kind == TimelineKind.Plan) Icons.Default.Pending else Icons.Default.Search,
+                contentDescription = null, modifier = Modifier.size(17.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(8.dp))
+            Text(entry.title.ifBlank { "思考过程" }, style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = null, modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        AnimatedVisibility(expanded) {
+            Text(entry.text, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 25.dp, top = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun CommandBlock(entry: TimelineEntry) {
+    var expanded by remember(entry.id) { mutableStateOf(entry.status == "failed") }
+    Surface(
+        color = CodexSurfaceRaised,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(6.dp)),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                    .padding(horizontal = 11.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("终端", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                StatusText(entry.status)
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            SelectionContainer {
+                Text(
+                    entry.command,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF151515))
+                        .padding(horizontal = 11.dp, vertical = 9.dp),
+                )
+            }
+            AnimatedVisibility(expanded && entry.output.isNotBlank()) {
+                SelectionContainer {
+                    Text(
+                        entry.output,
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 0.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp)
+                            .verticalScroll(rememberScrollState())
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 11.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileChangeBlock(
+    entry: TimelineEntry,
+    onOpenDiff: (FileChange) -> Unit,
+    onReview: () -> Unit,
+    canRollback: Boolean,
+    onRollback: () -> Unit,
+) {
+    val additions = entry.changes.sumOf { it.additions }
+    val deletions = entry.changes.sumOf { it.deletions }
+    var expanded by remember(entry.id) { mutableStateOf(false) }
+    val visibleChanges = if (expanded) entry.changes else entry.changes.take(3)
+    val hiddenCount = entry.changes.size - visibleChanges.size
+    Surface(
+        color = Color(0xFF1B1B1B),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(8.dp)),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.size(38.dp).clip(RoundedCornerShape(7.dp))
+                        .background(CodexSurfaceRaised),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "已编辑 ${entry.changes.size} 个文件",
+                        fontWeight = FontWeight.Medium,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Row {
+                        Text("+$additions", color = CodexGreen, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.width(6.dp))
+                        Text("-$deletions", color = CodexRed, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                IconButton(
+                    onClick = onRollback,
+                    enabled = canRollback && entry.status != "inProgress" && entry.changes.isNotEmpty(),
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Undo,
+                        contentDescription = "撤销上一轮会话",
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+                OutlinedButton(
+                    onClick = onReview,
+                    modifier = Modifier.height(36.dp),
+                    shape = RoundedCornerShape(7.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) {
+                    Text("审核", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            visibleChanges.forEach { change ->
+                HorizontalDivider(color = CodexBorder)
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { onOpenDiff(change) }
+                        .padding(horizontal = 11.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(change.path, modifier = Modifier.weight(1f), maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
+                    Spacer(Modifier.width(8.dp))
+                    Text("+${change.additions}", color = CodexGreen, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.width(5.dp))
+                    Text("-${change.deletions}", color = CodexRed, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (entry.changes.size > 3) {
+                HorizontalDivider(color = CodexBorder)
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                        .padding(horizontal = 11.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (expanded) "收起文件" else "再显示 $hiddenCount 个文件",
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Icon(
+                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "收起" else "展开",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AggregateDiffBlock(change: FileChange, onOpen: () -> Unit) {
+    Surface(
+        color = CodexSurfaceRaised,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(6.dp)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Text("工作区差异", fontWeight = FontWeight.Medium)
+                Row {
+                    Text("+${change.additions}", color = CodexGreen, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.width(7.dp))
+                    Text("-${change.deletions}", color = CodexRed, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            TextButton(onClick = onOpen) { Text("查看差异") }
+        }
+    }
+}
+
+@Composable
+private fun ToolBlock(entry: TimelineEntry) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(entry.title.ifBlank { "工具" }, modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge)
+                StatusText(entry.status)
+            }
+            if (entry.text.isNotBlank()) {
+                Spacer(Modifier.height(7.dp))
+                SelectionContainer {
+                    Text(
+                        entry.text,
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 0.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
+                            .verticalScroll(rememberScrollState())
+                            .horizontalScroll(rememberScrollState()),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusText(status: String) {
+    if (status.isBlank()) return
+    val color = when (status) {
+        "completed" -> CodexGreen
+        "failed", "declined" -> CodexRed
+        "inProgress" -> CodexAmber
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Text(
+        when (status) {
+            "completed" -> "完成"
+            "failed" -> "失败"
+            "declined" -> "已拒绝"
+            "inProgress" -> "运行中"
+            else -> status
+        },
+        color = color,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(end = 8.dp),
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WorkComposer(
+    state: AppUiState,
+    value: String,
+    onValueChange: (String) -> Unit,
+    onAttach: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onShowModels: () -> Unit,
+    onShowPermissions: () -> Unit,
+    onSelectWorkspace: () -> Unit,
+) {
+    val composerScroll = rememberScrollState()
+    val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
+    val modelName = state.models.firstOrNull { it.model == state.selectedModel }?.displayName
+        ?: state.selectedModel ?: "模型"
+    val effortName = when (state.selectedEffort) {
+        "low" -> "低"
+        "medium" -> "中"
+        "high" -> "高"
+        "xhigh" -> "极高"
+        else -> state.selectedEffort.orEmpty()
+    }
+    val modelLabel = listOf(modelName.removePrefix("GPT-"), effortName)
+        .filter { it.isNotBlank() }.joinToString(" ")
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Column(
+            modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        ) {
+            if (state.attachments.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    state.attachments.forEach { attachment ->
+                        AssistChip(
+                            onClick = { onRemoveAttachment(attachment.remotePath) },
+                            label = { Text(attachment.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingIcon = { Icon(Icons.Default.Description, contentDescription = null,
+                                modifier = Modifier.size(16.dp)) },
+                            trailingIcon = { Icon(Icons.Default.Close, contentDescription = "移除",
+                                modifier = Modifier.size(15.dp)) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFF1B1B1B),
+                modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(8.dp)),
+            ) {
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 150.dp)
+                            .verticalScroll(composerScroll),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.onSurface),
+                        decorationBox = { inner ->
+                            Box {
+                                if (value.isBlank()) {
+                                    Text(
+                                        if (state.running) "提出后续变更要求" else "描述任务",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
+                                inner()
+                            }
+                        },
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onAttach, enabled = !state.loading,
+                            modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Default.Add, contentDescription = "添加附件", modifier = Modifier.size(20.dp))
+                        }
+                        TextButton(
+                            onClick = onShowPermissions,
+                            contentPadding = PaddingValues(horizontal = 5.dp),
+                        ) {
+                            val permissionColor = if (state.approvalMode == ApprovalMode.FullAccess) {
+                                CodexAmber
+                            } else MaterialTheme.colorScheme.onSurfaceVariant
+                            Icon(
+                                Icons.Default.Shield,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = permissionColor,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                state.approvalMode.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = permissionColor,
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(
+                            onClick = onShowModels,
+                            modifier = Modifier.widthIn(max = 132.dp),
+                            contentPadding = PaddingValues(horizontal = 5.dp),
+                        ) {
+                            Text(
+                                modelLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (state.running) {
+                            IconButton(onClick = onStop, modifier = Modifier.size(36.dp)) {
+                                Icon(Icons.Default.Stop, contentDescription = "停止", modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        val canSend = (value.isNotBlank() || state.attachments.isNotEmpty()) &&
+                            !state.loading && !state.submitting
+                        IconButton(
+                            onClick = onSend,
+                            enabled = canSend,
+                            modifier = Modifier.size(36.dp).clip(RoundedCornerShape(18.dp))
+                                .background(if (canSend) MaterialTheme.colorScheme.primary else Color(0xFF555555)),
+                        ) {
+                            Icon(Icons.Default.ArrowUpward, contentDescription = "发送",
+                                tint = if (canSend) MaterialTheme.colorScheme.onPrimary else Color(0xFFB0B0B0),
+                                modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().height(30.dp).clickable(onClick = onSelectWorkspace)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.Terminal,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "SSH 远程模式",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                profile?.name?.takeIf { it.isNotBlank() }?.let { name ->
+                    Text(
+                        "  ·  $name",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelSheet(
+    models: List<CodexModel>,
+    selectedModel: String?,
+    selectedEffort: String?,
+    onSelectModel: (String, String?) -> Unit,
+    onSelectEffort: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val selected = models.firstOrNull { it.model == selectedModel || it.id == selectedModel }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text("模型", style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        LazyColumn(Modifier.fillMaxWidth().fillMaxHeight(0.55f)) {
+            items(models, key = { it.id }) { model ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        onSelectModel(model.model, model.defaultEffort)
+                    }.padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(model.displayName, fontWeight = FontWeight.Medium)
+                        if (model.description.isNotBlank()) {
+                            Text(model.description, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (model == selected) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = CodexGreen,
+                            modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+        selected?.efforts?.takeIf { it.isNotEmpty() }?.let { efforts ->
+            HorizontalDivider(color = CodexBorder)
+            Text("推理强度", style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                efforts.forEach { effort ->
+                    FilterChip(
+                        selected = effort == selectedEffort,
+                        onClick = { onSelectEffort(effort) },
+                        label = { Text(effort) },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(22.dp).navigationBarsPadding())
+    }
+}

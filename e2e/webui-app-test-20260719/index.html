@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RelayOps Console</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-mark">R</span><span>RelayOps</span><button class="icon-button mobile-close" id="closeNav" aria-label="Close navigation">×</button></div>
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="active" href="#overview"><span class="nav-icon">⌂</span>Overview</a>
+        <a href="#servers"><span class="nav-icon">▤</span>Servers <span class="nav-count">24</span></a>
+        <a href="#deployments"><span class="nav-icon">↥</span>Deployments</a>
+        <a href="#alerts"><span class="nav-icon">!</span>Alerts <span class="nav-count warning">3</span></a>
+        <a href="#logs"><span class="nav-icon">≡</span>Logs</a>
+        <div class="nav-label">Manage</div>
+        <a href="#team"><span class="nav-icon">♙</span>Team</a>
+        <a href="#settings"><span class="nav-icon">⚙</span>Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="environment"><span class="status-dot"></span><div><strong>Production</strong><small>All systems operational</small></div></div>
+        <button class="profile"><span class="avatar">AK</span><span><strong>Alex Kim</strong><small>Administrator</small></span><span>⋮</span></button>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-left"><button class="icon-button menu-button" id="openNav" aria-label="Open navigation">☰</button><div class="crumb"><span>Operations</span><b>/</b><strong>Overview</strong></div></div>
+        <div class="top-actions">
+          <label class="search"><span>⌕</span><input id="globalSearch" type="search" placeholder="Search infrastructure"><kbd>⌘ K</kbd></label>
+          <button class="icon-button notification" aria-label="Notifications">♢<span></span></button>
+          <button class="primary-button" id="deployButton"><span>＋</span> New deployment</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="page-heading" id="overview">
+          <div><p class="eyebrow">Sunday, July 19</p><h1>Infrastructure overview</h1><p>Monitor your production environment and respond to incidents.</p></div>
+          <div class="heading-actions"><button class="secondary-button" id="refreshButton">↻ <span>Refresh</span></button><button class="range-button">Last 24 hours⌄</button></div>
+        </section>
+
+        <section class="metric-grid" aria-label="Infrastructure metrics">
+          <article class="metric"><div class="metric-top"><span>Server health</span><span class="metric-icon green">✓</span></div><div class="metric-value">23<span>/24</span></div><div class="metric-foot positive">↑ 2.4% <span>vs. previous period</span></div><div class="sparkline green-line"><i style="height:35%"></i><i style="height:48%"></i><i style="height:43%"></i><i style="height:66%"></i><i style="height:62%"></i><i style="height:83%"></i><i style="height:79%"></i><i style="height:92%"></i></div></article>
+          <article class="metric"><div class="metric-top"><span>Avg. CPU usage</span><span class="metric-icon blue">⌁</span></div><div class="metric-value">42.8<span>%</span></div><div class="metric-foot positive">↓ 6.1% <span>vs. previous period</span></div><div class="sparkline blue-line"><i style="height:70%"></i><i style="height:55%"></i><i style="height:72%"></i><i style="height:48%"></i><i style="height:51%"></i><i style="height:39%"></i><i style="height:45%"></i><i style="height:38%"></i></div></article>
+          <article class="metric"><div class="metric-top"><span>Memory usage</span><span class="metric-icon violet">▣</span></div><div class="metric-value">68.2<span>%</span></div><div class="metric-foot negative">↑ 4.3% <span>vs. previous period</span></div><div class="sparkline violet-line"><i style="height:45%"></i><i style="height:48%"></i><i style="height:60%"></i><i style="height:56%"></i><i style="height:67%"></i><i style="height:62%"></i><i style="height:71%"></i><i style="height:76%"></i></div></article>
+          <article class="metric"><div class="metric-top"><span>Monthly transfer</span><span class="metric-icon orange">⇄</span></div><div class="metric-value">4.6<span> TB</span></div><div class="metric-foot neutral">61% <span>of 7.5 TB allowance</span></div><div class="progress"><span style="width:61%"></span></div></article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel performance-panel">
+            <div class="panel-head"><div><h2>System performance</h2><p>Resource utilization across all servers</p></div><div class="segmented" id="chartTabs"><button class="active" data-series="cpu">CPU</button><button data-series="memory">Memory</button><button data-series="network">Network</button></div></div>
+            <div class="chart-legend"><span><i class="legend-dot primary"></i><b id="legendLabel">CPU usage</b></span><strong id="chartCurrent">42.8%</strong><span class="positive">−6.1%</span></div>
+            <div class="chart" id="chart"><div class="y-labels"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div><div class="plot"><div class="grid-lines"><i></i><i></i><i></i><i></i><i></i></div><svg viewBox="0 0 800 220" preserveAspectRatio="none"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3874ff" stop-opacity=".24"/><stop offset="100%" stop-color="#3874ff" stop-opacity="0"/></linearGradient></defs><path id="areaPath" class="area" d="M0 162 C70 150,95 92,160 118 S255 94,320 123 S412 142,475 89 S550 70,620 99 S720 128,800 80 L800 220 L0 220Z"/><path id="linePath" class="line" d="M0 162 C70 150,95 92,160 118 S255 94,320 123 S412 142,475 89 S550 70,620 99 S720 128,800 80"/></svg><div class="x-labels"><span>12 AM</span><span>4 AM</span><span>8 AM</span><span>12 PM</span><span>4 PM</span><span>8 PM</span><span>Now</span></div></div></div>
+          </article>
+
+          <article class="panel alerts-panel" id="alerts">
+            <div class="panel-head"><div><h2>Active alerts</h2><p>3 require attention</p></div><button class="text-button">View all</button></div>
+            <div class="alert-list">
+              <button class="alert-item"><span class="alert-icon critical">!</span><span><strong>High memory usage</strong><small>api-prod-03 · 92% utilized</small><time>8 min ago</time></span><b>›</b></button>
+              <button class="alert-item"><span class="alert-icon warning-bg">!</span><span><strong>Disk space low</strong><small>db-primary-01 · 12% remaining</small><time>24 min ago</time></span><b>›</b></button>
+              <button class="alert-item"><span class="alert-icon warning-bg">!</span><span><strong>Elevated response time</strong><small>web-prod-04 · 842ms average</small><time>41 min ago</time></span><b>›</b></button>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel server-panel" id="servers">
+          <div class="panel-head table-heading"><div><h2>Server fleet</h2><p>24 instances across 3 regions</p></div><div class="table-actions"><label class="small-search">⌕<input id="serverSearch" placeholder="Filter servers"></label><button class="icon-button" aria-label="Filter">≡</button><button class="icon-button" aria-label="More options">⋮</button></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Server</th><th>Status</th><th>Region</th><th>CPU</th><th>Memory</th><th>Uptime</th><th></th></tr></thead><tbody id="serverRows"></tbody></table></div>
+          <div class="table-footer"><span id="serverCount">Showing 5 of 24 servers</span><div><button disabled>‹</button><button class="active">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="deployModal" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><div><h2 id="modalTitle">New deployment</h2><p>Deploy a release to your infrastructure.</p></div><button class="icon-button" id="closeModal" aria-label="Close">×</button></div><form id="deployForm"><label>Service<select required><option value="">Select a service</option><option>api-service</option><option>web-client</option><option>worker-queue</option></select></label><label>Version<input required placeholder="e.g. v2.8.1"></label><label>Environment<select><option>Production</option><option>Staging</option></select></label><div class="modal-actions"><button type="button" class="secondary-button" id="cancelModal">Cancel</button><button class="primary-button" type="submit">Start deployment</button></div></form></section></div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

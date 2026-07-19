@@ -1,0 +1,2 @@
+allowed_approval_policies = ["untrusted", "on-request"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]

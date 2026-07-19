@@ -1,0 +1,109 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+export PATH="/usr/local/bin:/usr/bin:/bin"
+
+# Environment variables supplied through sshd AcceptEnv are not trusted for a forced command: a
+# caller must not be able to redirect the CLI, CODEX_HOME, workspace, or SFTP helper. For an actual
+# SSH session derive the account home from passwd and use fixed paths. Overrides remain available
+# when invoking this helper locally after clearing any inherited SSH_CONNECTION marker.
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    ACCOUNT_HOME=$(getent passwd "$(id -un)" | awk -F: 'NR == 1 { print $6 }')
+    [[ -n "$ACCOUNT_HOME" && -d "$ACCOUNT_HOME" ]] || {
+        echo "Unable to determine the SSH account home" >&2
+        exit 78
+    }
+    export HOME="$ACCOUNT_HOME"
+    export CODEX_HOME="$HOME/.codex"
+    CODEX_BIN="$HOME/.local/bin/codex-remote"
+    DAEMON_BIN="$CODEX_HOME/packages/standalone/current/codex"
+    MODE=direct
+    WORKSPACE="$HOME"
+    SFTP_SERVER=""
+else
+    export HOME=${CODEX_REMOTE_USER_HOME:-"$HOME"}
+    export CODEX_HOME=${CODEX_REMOTE_CODEX_HOME:-"$HOME/.codex"}
+    CODEX_BIN=${CODEX_REMOTE_BIN:-"$HOME/.local/bin/codex-remote"}
+    # The daemon/proxy command has a separate standalone-install requirement; see bootstrap-daemon.sh.
+    DAEMON_BIN=${CODEX_REMOTE_STANDALONE_BIN:-"$CODEX_HOME/packages/standalone/current/codex"}
+    MODE=${CODEX_REMOTE_MODE:-direct}
+    WORKSPACE=${CODEX_REMOTE_WORKSPACE:-"$HOME"}
+    SFTP_SERVER=${CODEX_REMOTE_SFTP_SERVER:-}
+fi
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+# A forced-command account can still provide an external SFTP subsystem without granting a shell.
+# Depending on sshd's Subsystem setting, SSH_ORIGINAL_COMMAND is either a subsystem name or the
+# configured external helper path (possibly with arguments). OpenSSH's built-in `internal-sftp`
+# cannot be dispatched from this wrapper, so fail clearly for that configuration. Match only known
+# helper paths; do not execute the client's arbitrary original command. `-d` sets the initial
+# directory; it is not a filesystem jail, so use a tested ChrootDirectory or a dedicated upload-only
+# account when the account must be confined.
+ORIGINAL_COMMAND=${SSH_ORIGINAL_COMMAND:-}
+is_sftp_request=false
+if [[ "$ORIGINAL_COMMAND" == "internal-sftp" ]]; then
+    echo "internal-sftp cannot be dispatched by this forced app-server command; configure an external sftp-server or use a separate upload account" >&2
+    exit 64
+elif [[ "$ORIGINAL_COMMAND" == "sftp" ]]; then
+    is_sftp_request=true
+else
+    for candidate in "$SFTP_SERVER" /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server; do
+        [[ -n "$candidate" ]] || continue
+        if [[ "$ORIGINAL_COMMAND" == "$candidate" || "$ORIGINAL_COMMAND" == "$candidate "* ]]; then
+            SFTP_SERVER=${SFTP_SERVER:-$candidate}
+            is_sftp_request=true
+            break
+        fi
+    done
+fi
+
+if [[ "$is_sftp_request" == true ]]; then
+    if [[ -z "$SFTP_SERVER" ]]; then
+        for candidate in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server; do
+            if [[ -x "$candidate" ]]; then
+                SFTP_SERVER=$candidate
+                break
+            fi
+        done
+    fi
+    [[ -n "$SFTP_SERVER" && -x "$SFTP_SERVER" ]] || {
+        echo "SFTP server is not installed; set CODEX_REMOTE_SFTP_SERVER to an executable path" >&2
+        exit 127
+    }
+    [[ -d "$HOME" ]] || {
+        echo "SSH home directory does not exist" >&2
+        exit 72
+    }
+    exec "$SFTP_SERVER" -d "$HOME"
+fi
+
+[[ -d "$CODEX_HOME" ]] || {
+    echo "CODEX_HOME does not exist" >&2
+    exit 78
+}
+[[ -d "$WORKSPACE" ]] || {
+    echo "Workspace does not exist" >&2
+    exit 72
+}
+
+cd "$WORKSPACE"
+case "$MODE" in
+    direct)
+        [[ -x "$CODEX_BIN" ]] || {
+            echo "Pinned Codex CLI is not installed" >&2
+            exit 127
+        }
+        exec "$CODEX_BIN" app-server --listen stdio://
+        ;;
+    daemon)
+        [[ -x "$DAEMON_BIN" ]] || {
+            echo "Durable daemon requires the official standalone Codex install at $DAEMON_BIN; npm direct mode cannot provide proxy" >&2
+            exit 78
+        }
+        exec "$DAEMON_BIN" app-server proxy
+        ;;
+    *)
+        echo "Unsupported CODEX_REMOTE_MODE" >&2
+        exit 64
+        ;;
+esac

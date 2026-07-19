@@ -1,0 +1,1 @@
+restrict,command="/usr/local/libexec/codex-app-server-ssh" ssh-ed25519 REPLACE_WITH_ANDROID_DEVICE_PUBLIC_KEY codex-remote-android

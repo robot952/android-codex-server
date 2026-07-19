@@ -1,0 +1,14 @@
+Match User codex-remote
+    # Do not add CODEX_REMOTE_* to AcceptEnv for this account. The forced command ignores those
+    # overrides during SSH sessions and derives fixed paths from the account's passwd entry.
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    DisableForwarding yes
+    PermitTTY no
+    X11Forwarding no
+    PermitUserRC no
+    # The forced entrypoint has an optional external sftp-server path for attachments, while
+    # shell/exec requests are routed to the app-server. It cannot dispatch built-in internal-sftp;
+    # verify the host helper and see server/README.md for caveats.
+    ForceCommand /usr/local/libexec/codex-app-server-ssh
