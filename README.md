@@ -25,6 +25,7 @@ The project is isolated in `/home/yan/ygy/codex-remote-android`. It does not mod
   paths are sent as `localImage` input
 - Encrypted profile storage with Android Keystore-backed `EncryptedSharedPreferences`
 - Pinned Codex CLI installer, restricted SSH entrypoint examples, schema generation, and smoke test
+- SSH preflight with an explicit, user-approved installation of private Node.js and pinned Codex
 
 ## Build
 
@@ -87,6 +88,27 @@ Workspace: an absolute project directory on the server
 Tap the fingerprint action, verify the SHA-256 value against a trusted server console, then trust and
 connect. The app loads the same persisted Codex threads visible to other Codex clients using that
 Unix user's `CODEX_HOME`.
+
+When the default managed command is selected, the app checks the remote host before starting Codex.
+An existing compatible `codex-cli 0.144.6` is reused. If Codex is missing or has a different version,
+the app asks before installing Node.js 22.17.0 and Codex into:
+
+```text
+~/.local/share/codex-remote/
+~/.local/bin/codex-remote
+```
+
+The bootstrap does not use `sudo`, modify a system Node.js installation, or overwrite the CLI bundled
+with the VS Code extension. Node.js archives are pinned by SHA-256 and the installed CLI version and
+`app-server` command are verified before the connection continues. The server needs Linux x86_64 or
+arm64, `sh`, `tar`, `sha256sum`, `curl` or `wget`, at least 300 MB free in the user's home directory,
+and outbound HTTPS access to nodejs.org and the npm registry. The host also needs `flock` and
+`setsid --wait` (normally provided by `util-linux`) so concurrent installs are serialized and an
+install is terminated if its SSH connection disappears.
+
+Installation does not create an OpenAI login. The CLI and IDE extension reuse the same login cache
+under the Unix user's `CODEX_HOME` (normally `~/.codex`). On a new headless account, run
+`~/.local/bin/codex-remote login --device-auth` after installation.
 
 For a hardened forced-command account and daemon/proxy mode, see [server/README.md](server/README.md).
 The sample forced entrypoint intentionally fixes direct mode, CLI paths, and its launch directory

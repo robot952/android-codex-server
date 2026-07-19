@@ -328,10 +328,18 @@ fun ServerScreen(
                     Button(
                         onClick = { onConnect(draft) },
                         enabled = draft.host.isNotBlank() && draft.username.isNotBlank() &&
-                            state.connection.phase !in setOf(ConnectionPhase.Connecting, ConnectionPhase.Probing),
+                            state.connection.phase !in setOf(
+                                ConnectionPhase.Connecting,
+                                ConnectionPhase.Installing,
+                                ConnectionPhase.Probing,
+                            ),
                         modifier = Modifier.weight(1f).height(50.dp),
                     ) {
-                        if (state.connection.phase == ConnectionPhase.Connecting) {
+                        if (state.connection.phase in setOf(
+                                ConnectionPhase.Connecting,
+                                ConnectionPhase.Installing,
+                            )
+                        ) {
                             CircularProgressIndicator(Modifier.width(20.dp), strokeWidth = 2.dp)
                         } else {
                             Icon(Icons.Default.Wifi, contentDescription = null)

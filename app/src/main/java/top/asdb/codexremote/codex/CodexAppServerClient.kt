@@ -30,10 +30,22 @@ import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.ssh.SshCodexTransport
+import top.asdb.codexremote.ssh.RemoteEnvironment
+import top.asdb.codexremote.ssh.SshTransportEvent
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
-data class CodexNotification(val method: String, val params: JsonObject)
+data class CodexNotification(val generation: Long, val method: String, val params: JsonObject)
+
+data class CodexApproval(val generation: Long, val prompt: ApprovalPrompt)
+
+data class CodexConnectionEvent(val generation: Long, val message: String)
+
+private data class ServerRequest(
+    val generation: Long,
+    val method: String,
+    val params: JsonObject,
+)
 
 class CodexRpcException(message: String) : RuntimeException(message)
 
@@ -43,42 +55,69 @@ class CodexAppServerClient(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val nextId = AtomicLong(1)
+    private val activeGeneration = AtomicLong(NO_GENERATION)
+    private val closedGeneration = AtomicLong(NO_GENERATION)
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonElement>>()
-    private val serverRequests = ConcurrentHashMap<String, Pair<String, JsonObject>>()
+    private val serverRequests = ConcurrentHashMap<String, ServerRequest>()
 
-    private val _notifications = MutableSharedFlow<CodexNotification>(extraBufferCapacity = 256)
+    private val _notifications = MutableSharedFlow<CodexNotification>()
     val notifications: SharedFlow<CodexNotification> = _notifications.asSharedFlow()
 
-    private val _approvals = MutableSharedFlow<ApprovalPrompt>(extraBufferCapacity = 8)
-    val approvals: SharedFlow<ApprovalPrompt> = _approvals.asSharedFlow()
+    private val _approvals = MutableSharedFlow<CodexApproval>()
+    val approvals: SharedFlow<CodexApproval> = _approvals.asSharedFlow()
 
-    private val _diagnostics = MutableSharedFlow<String>(extraBufferCapacity = 64)
-    val diagnostics: SharedFlow<String> = _diagnostics.asSharedFlow()
+    private val _diagnostics = MutableSharedFlow<CodexConnectionEvent>()
+    val diagnostics: SharedFlow<CodexConnectionEvent> = _diagnostics.asSharedFlow()
 
-    private val _closed = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val closed: SharedFlow<String> = _closed.asSharedFlow()
+    private val _closed = MutableSharedFlow<CodexConnectionEvent>()
+    val closed: SharedFlow<CodexConnectionEvent> = _closed.asSharedFlow()
 
     init {
         scope.launch(Dispatchers.Default) {
-            transport.lines.collect(::handleLine)
+            transport.lines.collect { event ->
+                if (isGenerationActive(event.generation)) handleLine(event)
+            }
         }
-        scope.launch { transport.diagnostics.collect { _diagnostics.emit(it) } }
         scope.launch {
-            transport.closed.collect { message ->
-                val error = CodexRpcException(message)
+            transport.diagnostics.collect { event ->
+                if (isGenerationActive(event.generation)) {
+                    _diagnostics.emit(CodexConnectionEvent(event.generation, event.value))
+                }
+            }
+        }
+        scope.launch {
+            transport.closed.collect { event ->
+                if (!activeGeneration.compareAndSet(event.generation, NO_GENERATION)) return@collect
+                closedGeneration.set(event.generation)
+                val error = CodexRpcException(event.value)
                 pending.values.forEach { deferred -> deferred.completeExceptionally(error) }
                 pending.clear()
                 serverRequests.clear()
-                _diagnostics.emit(message)
-                _closed.emit(message)
+                val closed = CodexConnectionEvent(event.generation, event.value)
+                _diagnostics.emit(closed)
+                _closed.emit(closed)
             }
         }
     }
 
     suspend fun probeFingerprint(profile: ServerProfile): String = transport.probeFingerprint(profile)
 
+    suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment = transport.inspectRemote(profile)
+
+    suspend fun installRemote(
+        profile: ServerProfile,
+        onProgress: (String) -> Unit,
+    ) = transport.installRemote(
+        profile = profile,
+        codexVersion = BuildConfig.PINNED_CODEX_VERSION,
+        nodeVersion = BuildConfig.PINNED_NODE_VERSION,
+        onProgress = onProgress,
+    )
+
     suspend fun connect(profile: ServerProfile): String {
-        transport.connect(profile)
+        invalidateGeneration("连接已替换")
+        val generation = transport.connect(profile)
+        activeGeneration.set(generation)
         return try {
             val initialize = request(
                 "initialize",
@@ -97,17 +136,26 @@ class CodexAppServerClient(
             notify("initialized", JsonObject(emptyMap()))
             initialize.string("userAgent").ifBlank { "codex-cli ${BuildConfig.PINNED_CODEX_VERSION}" }
         } catch (error: Throwable) {
+            activeGeneration.compareAndSet(generation, NO_GENERATION)
             transport.disconnect()
             throw error
         }
     }
 
     suspend fun disconnect() {
-        pending.values.forEach { it.completeExceptionally(CodexRpcException("连接已关闭")) }
-        pending.clear()
-        serverRequests.clear()
+        invalidateGeneration("连接已关闭")
         transport.disconnect()
     }
+
+    fun close() {
+        invalidateGeneration("连接已关闭")
+        transport.close()
+    }
+
+    fun isGenerationActive(generation: Long): Boolean = activeGeneration.get() == generation
+
+    fun isClosedGenerationCurrent(generation: Long): Boolean =
+        activeGeneration.get() == NO_GENERATION && closedGeneration.get() == generation
 
     suspend fun listThreads(search: String = "", archived: Boolean = false): List<CodexThread> {
         val result = request("thread/list", buildJsonObject {
@@ -240,8 +288,9 @@ class CodexAppServerClient(
     ) {
         val stored = serverRequests.remove(prompt.requestId)
             ?: throw IllegalStateException("审批请求已经失效")
-        val method = stored.first
-        val params = stored.second
+        check(isGenerationActive(stored.generation)) { "审批请求已经失效" }
+        val method = stored.method
+        val params = stored.params
         val result = when (method) {
             "item/commandExecution/requestApproval", "item/fileChange/requestApproval" ->
                 buildJsonObject { put("decision", if (accept) "accept" else "decline") }
@@ -269,10 +318,10 @@ class CodexAppServerClient(
             else -> throw IllegalStateException("不支持的审批类型: $method")
         }
         try {
-            sendResponse(prompt.requestId, prompt.requestIdIsString, result)
+            sendResponse(stored.generation, prompt.requestId, prompt.requestIdIsString, result)
         } catch (error: Throwable) {
             // Keep the request answerable if the write failed transiently; the caller can retry.
-            serverRequests[prompt.requestId] = stored
+            if (isGenerationActive(stored.generation)) serverRequests[prompt.requestId] = stored
             throw error
         }
     }
@@ -303,15 +352,19 @@ class CodexAppServerClient(
     }
 
     private suspend fun request(method: String, params: JsonObject): JsonElement {
+        val generation = requireActiveGeneration()
         val id = nextId.getAndIncrement().toString()
         val deferred = CompletableDeferred<JsonElement>()
         pending[id] = deferred
         try {
-            transport.sendLine(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-                put("method", method)
-                put("id", id.toLong())
-                put("params", params)
-            }))
+            transport.sendLine(
+                json.encodeToString(JsonObject.serializer(), buildJsonObject {
+                    put("method", method)
+                    put("id", id.toLong())
+                    put("params", params)
+                }),
+                generation,
+            )
         } catch (error: Throwable) {
             pending.remove(id)
             deferred.completeExceptionally(error)
@@ -325,42 +378,78 @@ class CodexAppServerClient(
     }
 
     private suspend fun notify(method: String, params: JsonObject) {
-        transport.sendLine(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-            put("method", method)
-            put("params", params)
-        }))
+        val generation = requireActiveGeneration()
+        transport.sendLine(
+            json.encodeToString(JsonObject.serializer(), buildJsonObject {
+                put("method", method)
+                put("params", params)
+            }),
+            generation,
+        )
     }
 
-    private suspend fun sendResponse(id: String, idIsString: Boolean, result: JsonObject) {
-        transport.sendLine(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-            if (idIsString) {
-                put("id", id)
-            } else {
-                id.toLongOrNull()?.let { put("id", it) } ?: put("id", id)
+    private suspend fun sendResponse(generation: Long, id: String, idIsString: Boolean, result: JsonObject) {
+        transport.sendLine(
+            json.encodeToString(JsonObject.serializer(), buildJsonObject {
+                if (idIsString) {
+                    put("id", id)
+                } else {
+                    id.toLongOrNull()?.let { put("id", it) } ?: put("id", id)
+                }
+                put("result", result)
+            }),
+            generation,
+        )
+    }
+
+    private suspend fun sendErrorResponse(
+        generation: Long,
+        id: String,
+        idIsString: Boolean,
+        code: Int,
+        message: String,
+    ) {
+        transport.sendLine(
+            json.encodeToString(JsonObject.serializer(), buildJsonObject {
+                if (idIsString) {
+                    put("id", id)
+                } else {
+                    id.toLongOrNull()?.let { put("id", it) } ?: put("id", id)
+                }
+                put("error", buildJsonObject {
+                    put("code", code)
+                    put("message", message)
+                })
+            }),
+            generation,
+        )
+    }
+
+    private fun requireActiveGeneration(): Long = activeGeneration.get().also { generation ->
+        check(generation != NO_GENERATION) { "SSH 通道尚未连接" }
+    }
+
+    private fun invalidateGeneration(message: String) {
+        activeGeneration.set(NO_GENERATION)
+        closedGeneration.set(NO_GENERATION)
+        val error = CodexRpcException(message)
+        pending.values.forEach { it.completeExceptionally(error) }
+        pending.clear()
+        serverRequests.clear()
+    }
+
+    private suspend fun handleLine(event: SshTransportEvent) {
+        val generation = event.generation
+        if (!isGenerationActive(generation)) return
+        val message = runCatching { json.parseToJsonElement(event.value).jsonObject }.getOrElse {
+            if (isGenerationActive(generation)) {
+                _diagnostics.emit(
+                    CodexConnectionEvent(generation, "无法解析 Codex 输出: ${event.value.take(240)}"),
+                )
             }
-            put("result", result)
-        }))
-    }
-
-    private suspend fun sendErrorResponse(id: String, idIsString: Boolean, code: Int, message: String) {
-        transport.sendLine(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-            if (idIsString) {
-                put("id", id)
-            } else {
-                id.toLongOrNull()?.let { put("id", it) } ?: put("id", id)
-            }
-            put("error", buildJsonObject {
-                put("code", code)
-                put("message", message)
-            })
-        }))
-    }
-
-    private suspend fun handleLine(line: String) {
-        val message = runCatching { json.parseToJsonElement(line).jsonObject }.getOrElse {
-            _diagnostics.emit("无法解析 Codex 输出: ${line.take(240)}")
             return
         }
+        if (!isGenerationActive(generation)) return
         val idElement = message["id"] as? JsonPrimitive
         val method = message.string("method")
         if (method.isNotBlank()) {
@@ -369,24 +458,51 @@ class CodexAppServerClient(
                 val params = message.obj("params") ?: JsonObject(emptyMap())
                 val approval = CodexPayloadParser.parseServerRequest(message)
                 if (approval != null) {
-                    serverRequests[key] = method to params
-                    _approvals.emit(approval)
+                    if (!isGenerationActive(generation)) return
+                    val request = ServerRequest(generation, method, params)
+                    serverRequests[key] = request
+                    if (!isGenerationActive(generation)) {
+                        serverRequests.remove(key, request)
+                        return
+                    }
+                    _approvals.emit(CodexApproval(generation, approval))
                 } else {
                     // Never leave an unknown server request pending: the active turn would wait
                     // forever for a response that this client cannot render.
                     runCatching {
-                        sendErrorResponse(key, idElement.isString, -32601, "Unsupported server request: $method")
+                        sendErrorResponse(
+                            generation,
+                            key,
+                            idElement.isString,
+                            -32601,
+                            "Unsupported server request: $method",
+                        )
                     }.onFailure { error ->
-                        _diagnostics.emit("无法回复未支持的服务端请求: ${error.message.orEmpty()}")
+                        if (isGenerationActive(generation)) {
+                            _diagnostics.emit(
+                                CodexConnectionEvent(
+                                    generation,
+                                    "无法回复未支持的服务端请求: ${error.message.orEmpty()}",
+                                ),
+                            )
+                        }
                     }
-                    _diagnostics.emit("未支持的 Codex 服务端请求，已拒绝: $method")
+                    if (isGenerationActive(generation)) {
+                        _diagnostics.emit(
+                            CodexConnectionEvent(generation, "未支持的 Codex 服务端请求，已拒绝: $method"),
+                        )
+                    }
                 }
             } else {
-                _notifications.emit(CodexNotification(method, message.obj("params") ?: JsonObject(emptyMap())))
+                if (!isGenerationActive(generation)) return
+                _notifications.emit(
+                    CodexNotification(generation, method, message.obj("params") ?: JsonObject(emptyMap())),
+                )
             }
             return
         }
         if (idElement == null) return
+        if (!isGenerationActive(generation)) return
         val deferred = pending.remove(idElement.content) ?: return
         val error = message.obj("error")
         if (error != null) {
@@ -397,6 +513,7 @@ class CodexAppServerClient(
     }
 
     companion object {
+        private const val NO_GENERATION = -1L
         private const val REQUEST_TIMEOUT_MS = 30_000L
     }
 }

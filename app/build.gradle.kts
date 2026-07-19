@@ -8,6 +8,10 @@ val pinnedCodexVersion = rootProject.file("protocol/codex-version.txt").readText
 require(Regex("\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?").matches(pinnedCodexVersion)) {
     "protocol/codex-version.txt must contain a semantic version"
 }
+val pinnedNodeVersion = rootProject.file("protocol/node-version.txt").readText().trim()
+require(Regex("\\d+\\.\\d+\\.\\d+").matches(pinnedNodeVersion)) {
+    "protocol/node-version.txt must contain a semantic version"
+}
 val stableSigningFile = rootProject.file("keystore/codex-remote-stable.keystore")
 require(stableSigningFile.isFile) {
     "Stable APK signing key is missing: ${stableSigningFile.absolutePath}"
@@ -21,12 +25,13 @@ android {
         applicationId = "top.asdb.codexremote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "PINNED_CODEX_VERSION", "\"$pinnedCodexVersion\"")
+        buildConfigField("String", "PINNED_NODE_VERSION", "\"$pinnedNodeVersion\"")
     }
 
     signingConfigs {

@@ -1,6 +1,7 @@
 # Pinned Codex app-server contract
 
-The Android client targets `codex-cli 0.144.6` and the pinned app-server API.
+The Android client targets `codex-cli 0.144.6` and the pinned app-server API. Its optional remote
+bootstrap also pins the private Node.js runtime in `node-version.txt`.
 The client performs the following JSON-RPC flow over newline-delimited JSON:
 
 1. `initialize`, followed by the `initialized` notification.

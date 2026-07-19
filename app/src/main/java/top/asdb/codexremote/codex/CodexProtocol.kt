@@ -22,6 +22,13 @@ import top.asdb.codexremote.data.InputQuestion
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 
+internal const val MAX_TIMELINE_TEXT_CHARS = 256 * 1024
+internal const val MAX_COMMAND_OUTPUT_CHARS = 512 * 1024
+internal const val MAX_AGGREGATE_DIFF_CHARS = 512 * 1024
+internal const val TEXT_TRUNCATION_MARKER = "\n\n[内容过长，后续已截断]"
+internal const val OUTPUT_TRUNCATION_MARKER = "\n\n[命令输出过长，后续已截断]"
+internal const val DIFF_TRUNCATION_MARKER = "\n\n[差异内容过长，后续已截断]"
+
 internal fun JsonObject.string(name: String): String =
     (this[name] as? JsonPrimitive)?.contentOrNull.orEmpty()
 
@@ -120,7 +127,7 @@ object CodexPayloadParser {
             "agentMessage" -> TimelineEntry(
                 id = id,
                 kind = TimelineKind.AgentMessage,
-                text = item.string("text"),
+                text = item.string("text").bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER),
                 status = item.string("phase"),
                 turnId = turnId,
             )
@@ -131,7 +138,8 @@ object CodexPayloadParser {
                 title = "思考过程",
                 text = (item.array("summary").orEmpty() + item.array("content").orEmpty())
                     .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-                    .joinToString("\n"),
+                    .joinToString("\n")
+                    .bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER),
                 turnId = turnId,
             )
 
@@ -139,7 +147,7 @@ object CodexPayloadParser {
                 id = id,
                 kind = TimelineKind.Plan,
                 title = "计划",
-                text = item.string("text"),
+                text = item.string("text").bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER),
                 turnId = turnId,
             )
 
@@ -150,7 +158,8 @@ object CodexPayloadParser {
                 command = item.string("command"),
                 cwd = item.string("cwd"),
                 status = item.string("status"),
-                output = item.string("aggregatedOutput"),
+                output = item.string("aggregatedOutput")
+                    .bounded(MAX_COMMAND_OUTPUT_CHARS, OUTPUT_TRUNCATION_MARKER),
                 turnId = turnId,
             )
 
@@ -293,7 +302,7 @@ object CodexPayloadParser {
         FileChange(
             path = change.string("path"),
             kind = change["kind"].wireType(),
-            diff = change.string("diff"),
+            diff = change.string("diff").bounded(MAX_AGGREGATE_DIFF_CHARS, DIFF_TRUNCATION_MARKER),
         )
     }
 
@@ -361,7 +370,14 @@ object CodexEventReducer {
         "item/agentMessage/delta" -> state.updateEntry(params.string("itemId")) {
             val delta = params.string("delta")
             (it ?: TimelineEntry(params.string("itemId"), TimelineKind.AgentMessage, turnId = params.string("turnId")))
-                .copy(text = (it?.text.orEmpty()) + delta)
+                .copy(
+                    text = appendBounded(
+                        current = it?.text.orEmpty(),
+                        delta = delta,
+                        limit = MAX_TIMELINE_TEXT_CHARS,
+                        marker = TEXT_TRUNCATION_MARKER,
+                    ),
+                )
         }
 
         "item/reasoning/summaryTextDelta", "item/reasoning/textDelta" ->
@@ -372,7 +388,14 @@ object CodexEventReducer {
                     TimelineKind.Reasoning,
                     title = "思考过程",
                     turnId = params.string("turnId"),
-                )).copy(text = (it?.text.orEmpty()) + delta)
+                )).copy(
+                    text = appendBounded(
+                        current = it?.text.orEmpty(),
+                        delta = delta,
+                        limit = MAX_TIMELINE_TEXT_CHARS,
+                        marker = TEXT_TRUNCATION_MARKER,
+                    ),
+                )
             }
 
         "item/plan/delta" -> state.updateEntry(params.string("itemId")) {
@@ -380,7 +403,14 @@ object CodexEventReducer {
             (it ?: TimelineEntry(
                 params.string("itemId"), TimelineKind.Plan, title = "计划",
                 turnId = params.string("turnId"),
-            )).copy(text = (it?.text.orEmpty()) + delta)
+            )).copy(
+                text = appendBounded(
+                    current = it?.text.orEmpty(),
+                    delta = delta,
+                    limit = MAX_TIMELINE_TEXT_CHARS,
+                    marker = TEXT_TRUNCATION_MARKER,
+                ),
+            )
         }
 
         "item/commandExecution/outputDelta" -> state.updateEntry(params.string("itemId")) {
@@ -388,7 +418,14 @@ object CodexEventReducer {
             (it ?: TimelineEntry(
                 params.string("itemId"), TimelineKind.Command, title = "终端",
                 status = "inProgress", turnId = params.string("turnId"),
-            )).copy(output = (it?.output.orEmpty()) + delta)
+            )).copy(
+                output = appendBounded(
+                    current = it?.output.orEmpty(),
+                    delta = delta,
+                    limit = MAX_COMMAND_OUTPUT_CHARS,
+                    marker = OUTPUT_TRUNCATION_MARKER,
+                ),
+            )
         }
 
         "item/fileChange/patchUpdated" -> state.updateEntry(params.string("itemId")) {
@@ -414,7 +451,10 @@ object CodexEventReducer {
             }
         }
 
-        "turn/diff/updated" -> state.copy(aggregateDiff = params.string("diff"))
+        "turn/diff/updated" -> state.copy(
+            aggregateDiff = params.string("diff")
+                .bounded(MAX_AGGREGATE_DIFF_CHARS, DIFF_TRUNCATION_MARKER),
+        )
         "thread/name/updated" -> state.copy(
             activeThread = state.activeThread?.copy(title = params.string("name")),
         )
@@ -472,5 +512,41 @@ object CodexEventReducer {
         val current = timeline.getOrNull(index)
         val next = transform(current)
         return copy(timeline = if (index < 0) timeline + next else timeline.toMutableList().also { it[index] = next })
+    }
+}
+
+private fun String.bounded(limit: Int, marker: String): String {
+    if (length <= limit) return this
+    val markerPart = marker.take(limit)
+    val contentLength = limit - markerPart.length
+    return buildString(limit) {
+        append(this@bounded, 0, contentLength)
+        append(markerPart)
+    }
+}
+
+private fun appendBounded(
+    current: String,
+    delta: String,
+    limit: Int,
+    marker: String,
+): String {
+    val normalized = current.bounded(limit, marker)
+    if (delta.isEmpty() || normalized.endsWith(marker)) return normalized
+    if (normalized.length.toLong() + delta.length <= limit.toLong()) {
+        return buildString(normalized.length + delta.length) {
+            append(normalized)
+            append(delta)
+        }
+    }
+
+    val markerPart = marker.take(limit)
+    val contentLimit = limit - markerPart.length
+    return buildString(limit) {
+        val currentLength = minOf(normalized.length, contentLimit)
+        append(normalized, 0, currentLength)
+        val remaining = contentLimit - currentLength
+        if (remaining > 0) append(delta, 0, minOf(delta.length, remaining))
+        append(markerPart)
     }
 }

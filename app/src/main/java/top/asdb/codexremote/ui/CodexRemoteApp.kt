@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.AlertDialog
@@ -162,6 +163,65 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             },
             confirmButton = { TextButton(onClick = viewModel::trustFingerprint) { Text("信任并连接") } },
             dismissButton = { TextButton(onClick = viewModel::rejectFingerprint) { Text("取消") } },
+        )
+    }
+
+    state.remoteSetup?.let { setup ->
+        AlertDialog(
+            onDismissRequest = {
+                if (!state.setupInProgress) viewModel.cancelRemoteSetup()
+            },
+            icon = { Icon(Icons.Default.Download, contentDescription = null) },
+            title = { Text(setup.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(setup.detail)
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                "${setup.os} · ${setup.architecture}",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Text(
+                                "Codex ${top.asdb.codexremote.BuildConfig.PINNED_CODEX_VERSION} · " +
+                                    "Node ${top.asdb.codexremote.BuildConfig.PINNED_NODE_VERSION}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                "${setup.home}/.local/share/codex-remote",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (state.setupInProgress) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.width(22.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(state.setupProgress.ifBlank { "正在安装" })
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::installRemoteSetup,
+                    enabled = !state.setupInProgress,
+                ) { Text(if (state.setupInProgress) "安装中" else "安装并连接") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::cancelRemoteSetup,
+                    enabled = !state.setupInProgress,
+                ) { Text("取消") }
+            },
         )
     }
 

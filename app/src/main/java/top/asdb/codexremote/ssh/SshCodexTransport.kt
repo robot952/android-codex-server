@@ -9,42 +9,62 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.ServerProfile
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
+import java.io.Reader
 import java.util.UUID
+import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+internal data class SshTransportEvent(
+    val generation: Long,
+    val value: String,
+)
 
 class SshCodexTransport {
-    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val connectionMutex = Mutex()
+    private val connectionStateLock = Any()
+    private var connectionGeneration = 0L
+    private var scope: CoroutineScope? = null
     private var session: Session? = null
     private var channel: ChannelExec? = null
     private var writer: OutputStream? = null
     private var readerJob: Job? = null
+    private var connectingSession: Session? = null
+    private var connectingChannel: ChannelExec? = null
     private val writeMutex = Mutex()
 
-    private val _lines = MutableSharedFlow<String>(extraBufferCapacity = 256)
-    val lines: SharedFlow<String> = _lines.asSharedFlow()
+    private val _lines = MutableSharedFlow<SshTransportEvent>()
+    internal val lines: SharedFlow<SshTransportEvent> = _lines.asSharedFlow()
 
-    private val _diagnostics = MutableSharedFlow<String>(extraBufferCapacity = 64)
-    val diagnostics: SharedFlow<String> = _diagnostics.asSharedFlow()
+    private val _diagnostics = MutableSharedFlow<SshTransportEvent>()
+    internal val diagnostics: SharedFlow<SshTransportEvent> = _diagnostics.asSharedFlow()
 
-    private val _closed = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val closed: SharedFlow<String> = _closed.asSharedFlow()
+    private val _closed = MutableSharedFlow<SshTransportEvent>()
+    internal val closed: SharedFlow<SshTransportEvent> = _closed.asSharedFlow()
 
     suspend fun probeFingerprint(profile: ServerProfile): String = withContext(Dispatchers.IO) {
         require(profile.host.isNotBlank()) { "请输入服务器地址" }
@@ -56,7 +76,10 @@ class SshCodexTransport {
         probe.timeout = CONNECT_TIMEOUT_MS
         try {
             try {
-                probe.connect(CONNECT_TIMEOUT_MS)
+                runCancellableConnect(
+                    connect = { probe.connect(CONNECT_TIMEOUT_MS) },
+                    disconnect = probe::disconnect,
+                )
                 throw IllegalStateException("SSH 指纹探测未在主机密钥校验阶段停止")
             } catch (error: JSchException) {
                 capture.fingerprint() ?: throw IllegalStateException(
@@ -72,88 +95,125 @@ class SshCodexTransport {
         }
     }
 
-    suspend fun connect(profile: ServerProfile) = withContext(Dispatchers.IO) {
-        disconnect()
+    suspend fun connect(profile: ServerProfile): Long = withContext(Dispatchers.IO) {
         require(profile.host.isNotBlank()) { "服务器地址不能为空" }
         require(profile.username.isNotBlank()) { "用户名不能为空" }
         require(profile.hostFingerprint.isNotBlank()) { "请先核对并保存 SSH 主机指纹" }
         require(profile.remoteCommand.isNotBlank()) { "Codex 远程命令不能为空" }
 
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        var sshSession: Session? = null
-        var exec: ChannelExec? = null
-        try {
-            val jsch = JSch().apply {
-                hostKeyRepository = PinnedHostKeyRepository(profile.hostFingerprint)
-                when (profile.authMode) {
-                    AuthMode.Password -> Unit
-                    AuthMode.PrivateKey -> {
-                        require(profile.privateKeyPem.isNotBlank()) { "请选择 SSH 私钥" }
-                        addIdentity(
-                            profile.name,
-                            profile.privateKeyPem.toByteArray(),
-                            null,
-                            profile.privateKeyPassphrase.takeIf { it.isNotEmpty() }?.toByteArray(),
-                        )
-                    }
-                }
-            }
-            sshSession = jsch.getSession(profile.username, profile.host, profile.port).apply {
-                setConfig("StrictHostKeyChecking", "yes")
-                setConfig(
-                    "PreferredAuthentications",
-                    if (profile.authMode == AuthMode.Password) "password,keyboard-interactive" else "publickey",
+        connectionMutex.withLock {
+            val attempt = beginConnectionAttempt()
+            closeResources(attempt.previous)
+            val generation = attempt.generation
+            val attemptScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            var sshSession: Session? = null
+            var exec: ChannelExec? = null
+            try {
+                sshSession = createSession(profile)
+                check(registerConnectingSession(generation, sshSession)) { "SSH 连接已取消" }
+                runCancellableConnect(
+                    connect = { sshSession.connect(CONNECT_TIMEOUT_MS) },
+                    disconnect = sshSession::disconnect,
                 )
-                if (profile.authMode == AuthMode.Password) {
-                    require(profile.password.isNotEmpty()) { "密码不能为空" }
-                    setPassword(profile.password)
+                check(isConnectionCurrent(generation)) { "SSH 连接已取消" }
+
+                val stderrIn = PipedInputStream(16 * 1024)
+                val stderrOut = PipedOutputStream(stderrIn)
+                exec = sshSession.openChannel("exec") as ChannelExec
+                check(registerConnectingChannel(generation, exec)) { "SSH 连接已取消" }
+                exec.setPty(false)
+                exec.setCommand(profile.remoteCommand)
+                exec.setErrStream(stderrOut)
+                val stdout = exec.inputStream
+                val stdin = exec.outputStream
+                runCancellableConnect(
+                    connect = { exec.connect(CHANNEL_TIMEOUT_MS) },
+                    disconnect = exec::disconnect,
+                )
+                check(publishConnection(generation, attemptScope, sshSession, exec, stdin)) {
+                    "SSH 连接已取消"
                 }
-                serverAliveInterval = 15_000
-                serverAliveCountMax = 3
-                timeout = CONNECT_TIMEOUT_MS
-            }
-            val connectedSession = requireNotNull(sshSession)
-            connectedSession.connect(CONNECT_TIMEOUT_MS)
 
-            val stderrIn = PipedInputStream(16 * 1024)
-            val stderrOut = PipedOutputStream(stderrIn)
-            val connectedExec = connectedSession.openChannel("exec") as ChannelExec
-            exec = connectedExec
-            connectedExec.setPty(false)
-            connectedExec.setCommand(profile.remoteCommand)
-            connectedExec.setErrStream(stderrOut)
-            val stdout = connectedExec.inputStream
-            val stdin = connectedExec.outputStream
-            connectedExec.connect(CHANNEL_TIMEOUT_MS)
-
-            session = sshSession
-            channel = exec
-            writer = stdin
-
-            readerJob = scope.launch {
-                runCatching {
-                    BufferedReader(InputStreamReader(stdout, Charsets.UTF_8)).useLines { sequence ->
-                        sequence.forEach { _lines.emit(it) }
+                val stdoutJob = attemptScope.launch {
+                    runCatching {
+                        readBoundedJsonLines(
+                            reader = InputStreamReader(stdout, Charsets.UTF_8),
+                            maxLineChars = MAX_APP_SERVER_LINE_CHARS,
+                            onLine = { _lines.emit(SshTransportEvent(generation, it)) },
+                            onOversizedLine = {
+                                _diagnostics.emit(
+                                    SshTransportEvent(
+                                        generation,
+                                        "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已丢弃该行",
+                                    ),
+                                )
+                            },
+                        )
+                    }.onFailure {
+                        if (isConnectionCurrent(generation)) {
+                            _diagnostics.emit(SshTransportEvent(generation, it.message ?: "SSH 输出流异常"))
+                        }
                     }
-                }.onFailure { _diagnostics.emit(it.message ?: "SSH 输出流异常") }
-                _closed.emit("Codex SSH 通道已关闭")
-            }
-            scope.launch {
-                BufferedReader(InputStreamReader(stderrIn, Charsets.UTF_8)).useLines { sequence ->
-                    sequence.forEach { line -> if (line.isNotBlank()) _diagnostics.emit(line) }
+                    closeConnectionFromReader(generation, "Codex SSH 通道已关闭")
                 }
+                registerReaderJob(generation, stdoutJob)
+                attemptScope.launch {
+                    readBoundedJsonLines(
+                        reader = InputStreamReader(stderrIn, Charsets.UTF_8),
+                        maxLineChars = MAX_LINE_CHARS,
+                        onLine = { line ->
+                            if (line.isNotBlank() && isConnectionCurrent(generation)) {
+                                _diagnostics.emit(SshTransportEvent(generation, line))
+                            }
+                        },
+                        onOversizedLine = {
+                            if (isConnectionCurrent(generation)) {
+                                _diagnostics.emit(SshTransportEvent(generation, "SSH 错误输出单行过长，已丢弃"))
+                            }
+                        },
+                    )
+                }
+                generation
+            } catch (error: Throwable) {
+                closeResources(invalidateConnection())
+                exec?.disconnect()
+                sshSession?.disconnect()
+                attemptScope.cancel()
+                throw error
             }
-        } catch (error: Throwable) {
-            exec?.disconnect()
-            sshSession?.disconnect()
-            scope.cancel()
-            throw error
         }
     }
 
-    suspend fun sendLine(line: String) = withContext(Dispatchers.IO) {
+    suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment {
+        val result = executeScript(profile, RemoteBootstrap.probeScript, PROBE_TIMEOUT_MS)
+        return RemoteBootstrap.parseProbe(result)
+    }
+
+    suspend fun installRemote(
+        profile: ServerProfile,
+        codexVersion: String,
+        nodeVersion: String,
+        onProgress: (String) -> Unit,
+    ) {
+        executeScript(
+            profile = profile,
+            script = RemoteBootstrap.installScript(codexVersion, nodeVersion),
+            timeoutMs = INSTALL_TIMEOUT_MS,
+            remoteCommand = INSTALL_SHELL_COMMAND,
+        ) { line ->
+            if (line.startsWith(PROGRESS_PREFIX)) {
+                onProgress(line.removePrefix(PROGRESS_PREFIX))
+            }
+        }
+    }
+
+    suspend fun sendLine(line: String, expectedGeneration: Long) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
-            val output = writer ?: throw IllegalStateException("SSH 通道尚未连接")
+            val output = synchronized(connectionStateLock) {
+                check(connectionGeneration == expectedGeneration) { "SSH 连接已经更改" }
+                writer
+            }
+                ?: throw IllegalStateException("SSH 通道尚未连接")
             output.write(line.toByteArray(Charsets.UTF_8))
             output.write('\n'.code)
             output.flush()
@@ -161,10 +221,14 @@ class SshCodexTransport {
     }
 
     suspend fun listDirectories(path: String?): RemoteDirectoryListing = withContext(Dispatchers.IO) {
-        val sshSession = session ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
         val sftp = sshSession.openChannel("sftp") as ChannelSftp
-        sftp.connect(CHANNEL_TIMEOUT_MS)
         try {
+            runCancellableConnect(
+                connect = { sftp.connect(CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
             val requested = path?.trim().takeUnless { it.isNullOrBlank() } ?: "."
             val current = sftp.realpath(requested)
             val parent = if (current == "/") {
@@ -190,10 +254,14 @@ class SshCodexTransport {
 
     suspend fun upload(name: String, bytes: ByteArray): String =
         withContext(Dispatchers.IO) {
-            val sshSession = session ?: throw IllegalStateException("SSH 通道尚未连接")
+            val sshSession = synchronized(connectionStateLock) { session }
+                ?: throw IllegalStateException("SSH 通道尚未连接")
             val sftp = sshSession.openChannel("sftp") as ChannelSftp
-            sftp.connect(CHANNEL_TIMEOUT_MS)
             try {
+                runCancellableConnect(
+                    connect = { sftp.connect(CHANNEL_TIMEOUT_MS) },
+                    disconnect = sftp::disconnect,
+                )
                 val home = sftp.home
                 val directory = "$home/.codex-mobile/uploads"
                 ensureDirectory(sftp, directory)
@@ -207,17 +275,294 @@ class SshCodexTransport {
             }
         }
 
-    fun isConnected(): Boolean = session?.isConnected == true && channel?.isConnected == true
+    fun isConnected(): Boolean = synchronized(connectionStateLock) {
+        session?.isConnected == true && channel?.isConnected == true
+    }
 
     suspend fun disconnect() = withContext(Dispatchers.IO) {
-        readerJob?.cancel()
-        writer?.runCatching { close() }
-        channel?.disconnect()
-        session?.disconnect()
+        closeResources(invalidateConnection())
+        connectionMutex.withLock {
+            closeResources(invalidateConnection())
+        }
+    }
+
+    fun close() {
+        closeResources(invalidateConnection())
+    }
+
+    private fun createSession(profile: ServerProfile): Session {
+        val jsch = JSch().apply {
+            hostKeyRepository = PinnedHostKeyRepository(profile.hostFingerprint)
+            when (profile.authMode) {
+                AuthMode.Password -> Unit
+                AuthMode.PrivateKey -> {
+                    require(profile.privateKeyPem.isNotBlank()) { "请选择 SSH 私钥" }
+                    addIdentity(
+                        profile.name,
+                        profile.privateKeyPem.toByteArray(),
+                        null,
+                        profile.privateKeyPassphrase.takeIf { it.isNotEmpty() }?.toByteArray(),
+                    )
+                }
+            }
+        }
+        return jsch.getSession(profile.username, profile.host, profile.port).apply {
+            setConfig("StrictHostKeyChecking", "yes")
+            setConfig(
+                "PreferredAuthentications",
+                if (profile.authMode == AuthMode.Password) "password,keyboard-interactive" else "publickey",
+            )
+            if (profile.authMode == AuthMode.Password) {
+                require(profile.password.isNotEmpty()) { "密码不能为空" }
+                setPassword(profile.password)
+            }
+            serverAliveInterval = 15_000
+            serverAliveCountMax = 3
+            timeout = CONNECT_TIMEOUT_MS
+        }
+    }
+
+    private suspend fun executeScript(
+        profile: ServerProfile,
+        script: String,
+        timeoutMs: Long,
+        remoteCommand: String = "sh -s",
+        onLine: (String) -> Unit = {},
+    ): List<String> = coroutineScope {
+        val sessionRef = AtomicReference<Session?>()
+        val channelRef = AtomicReference<ChannelExec?>()
+        val task = async(Dispatchers.IO) {
+            executeScriptBlocking(profile, script, remoteCommand, onLine, sessionRef, channelRef)
+        }
+        try {
+            withTimeout(timeoutMs) { task.await() }
+        } catch (error: Throwable) {
+            channelRef.getAndSet(null)?.disconnect()
+            sessionRef.getAndSet(null)?.disconnect()
+            task.cancel()
+            throw error
+        }
+    }
+
+    private suspend fun executeScriptBlocking(
+        profile: ServerProfile,
+        script: String,
+        remoteCommand: String,
+        onLine: (String) -> Unit,
+        sessionRef: AtomicReference<Session?>,
+        channelRef: AtomicReference<ChannelExec?>,
+    ): List<String> {
+        var sshSession: Session? = null
+        var exec: ChannelExec? = null
+        try {
+            sshSession = createSession(profile).also(sessionRef::set)
+            runCancellableConnect(
+                connect = { sshSession.connect(CONNECT_TIMEOUT_MS) },
+                disconnect = sshSession::disconnect,
+            )
+            exec = (sshSession.openChannel("exec") as ChannelExec).also(channelRef::set)
+            val stderr = LimitedByteArrayOutputStream(MAX_STDERR_BYTES)
+            exec.setPty(false)
+            exec.setCommand(remoteCommand)
+            exec.setErrStream(stderr)
+            val stdout = exec.inputStream
+            val stdin = exec.outputStream
+            runCancellableConnect(
+                connect = { exec.connect(CHANNEL_TIMEOUT_MS) },
+                disconnect = exec::disconnect,
+            )
+            stdin.bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write("exec 2>&1\n")
+                writer.write(script)
+                writer.write('\n'.code)
+            }
+            val tail = ArrayDeque<String>(MAX_CAPTURED_LINES)
+            readBoundedLines(InputStreamReader(stdout, Charsets.UTF_8)) { line ->
+                if (tail.size == MAX_CAPTURED_LINES) tail.removeFirst()
+                tail.addLast(line)
+                onLine(line)
+            }
+            while (!exec.isClosed) Thread.sleep(10)
+            val lines = tail.toList()
+            val exitCode = exec.exitStatus
+            if (exitCode != 0) {
+                val detail = (lines.takeLast(8) + stderr.toString(Charsets.UTF_8.name()))
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n")
+                throw IllegalStateException(
+                    buildString {
+                        append("远程安装命令失败（退出码 ").append(exitCode).append('）')
+                        if (detail.isNotBlank()) append("\n").append(detail)
+                    },
+                )
+            }
+            return lines
+        } finally {
+            channelRef.compareAndSet(exec, null)
+            sessionRef.compareAndSet(sshSession, null)
+            exec?.disconnect()
+            sshSession?.disconnect()
+        }
+    }
+
+    private fun readBoundedLines(reader: InputStreamReader, onLine: (String) -> Unit) {
+        reader.use {
+            val buffer = CharArray(2048)
+            val line = StringBuilder()
+            var truncated = false
+            fun emitLine() {
+                if (truncated) line.append(" [输出已截断]")
+                onLine(line.toString().trimEnd('\r'))
+                line.setLength(0)
+                truncated = false
+            }
+            while (true) {
+                val count = it.read(buffer)
+                if (count < 0) break
+                for (index in 0 until count) {
+                    val character = buffer[index]
+                    if (character == '\n') {
+                        emitLine()
+                    } else if (line.length < MAX_LINE_CHARS) {
+                        line.append(character)
+                    } else {
+                        truncated = true
+                    }
+                }
+            }
+            if (line.isNotEmpty() || truncated) emitLine()
+        }
+    }
+
+    private class LimitedByteArrayOutputStream(private val limit: Int) : ByteArrayOutputStream() {
+        override fun write(value: Int) {
+            if (count < limit) super.write(value)
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            val remaining = limit - count
+            if (remaining > 0) super.write(bytes, offset, minOf(length, remaining))
+        }
+    }
+
+    private data class ConnectionResources(
+        val scope: CoroutineScope?,
+        val readerJob: Job?,
+        val writer: OutputStream?,
+        val channel: ChannelExec?,
+        val session: Session?,
+        val connectingChannel: ChannelExec?,
+        val connectingSession: Session?,
+    )
+
+    private data class ConnectionAttempt(
+        val generation: Long,
+        val previous: ConnectionResources,
+    )
+
+    private fun beginConnectionAttempt(): ConnectionAttempt = synchronized(connectionStateLock) {
+        connectionGeneration += 1
+        ConnectionAttempt(connectionGeneration, detachConnectionLocked())
+    }
+
+    private fun invalidateConnection(): ConnectionResources = synchronized(connectionStateLock) {
+        connectionGeneration += 1
+        detachConnectionLocked()
+    }
+
+    private fun detachConnectionLocked(): ConnectionResources {
+        val resources = ConnectionResources(
+            scope = scope,
+            readerJob = readerJob,
+            writer = writer,
+            channel = channel,
+            session = session,
+            connectingChannel = connectingChannel,
+            connectingSession = connectingSession,
+        )
+        scope = null
+        readerJob = null
         writer = null
         channel = null
         session = null
-        scope.cancel()
+        connectingChannel = null
+        connectingSession = null
+        return resources
+    }
+
+    private fun closeResources(resources: ConnectionResources) {
+        resources.readerJob?.cancel()
+        resources.scope?.cancel()
+        resources.connectingChannel?.runCatching { disconnect() }
+        resources.channel?.runCatching { disconnect() }
+        resources.writer?.runCatching { close() }
+        resources.connectingSession?.runCatching { disconnect() }
+        resources.session?.runCatching { disconnect() }
+    }
+
+    private fun registerConnectingSession(generation: Long, value: Session): Boolean =
+        synchronized(connectionStateLock) {
+            if (connectionGeneration != generation) return@synchronized false
+            connectingSession = value
+            true
+        }
+
+    private fun registerConnectingChannel(generation: Long, value: ChannelExec): Boolean =
+        synchronized(connectionStateLock) {
+            if (connectionGeneration != generation || connectingSession == null) {
+                return@synchronized false
+            }
+            connectingChannel = value
+            true
+        }
+
+    private fun publishConnection(
+        generation: Long,
+        valueScope: CoroutineScope,
+        valueSession: Session,
+        valueChannel: ChannelExec,
+        valueWriter: OutputStream,
+    ): Boolean = synchronized(connectionStateLock) {
+        if (
+            connectionGeneration != generation ||
+            connectingSession !== valueSession ||
+            connectingChannel !== valueChannel
+        ) {
+            return@synchronized false
+        }
+        scope = valueScope
+        session = valueSession
+        channel = valueChannel
+        writer = valueWriter
+        connectingSession = null
+        connectingChannel = null
+        true
+    }
+
+    private fun registerReaderJob(generation: Long, value: Job) {
+        val registered = synchronized(connectionStateLock) {
+            if (connectionGeneration != generation || scope == null) return@synchronized false
+            readerJob = value
+            true
+        }
+        if (!registered) value.cancel()
+    }
+
+    private fun isConnectionCurrent(generation: Long): Boolean = synchronized(connectionStateLock) {
+        connectionGeneration == generation
+    }
+
+    private suspend fun closeConnectionFromReader(generation: Long, message: String) {
+        val resources = synchronized(connectionStateLock) {
+            if (connectionGeneration != generation) return
+            connectionGeneration += 1
+            detachConnectionLocked()
+        }
+        try {
+            _closed.emit(SshTransportEvent(generation, message))
+        } finally {
+            closeResources(resources)
+        }
     }
 
     private fun ensureDirectory(sftp: ChannelSftp, absolutePath: String) {
@@ -232,5 +577,78 @@ class SshCodexTransport {
     companion object {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val CHANNEL_TIMEOUT_MS = 10_000
+        private const val PROBE_TIMEOUT_MS = 30_000L
+        private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
+        internal const val INSTALL_SHELL_COMMAND = "CODEX_REMOTE_SSH_PID=\$PPID setsid --wait sh -s"
+        private const val PROGRESS_PREFIX = "::progress::"
+        private const val MAX_CAPTURED_LINES = 64
+        private const val MAX_LINE_CHARS = 8 * 1024
+        private const val MAX_STDERR_BYTES = 8 * 1024
+        private const val MAX_APP_SERVER_LINE_CHARS = 4 * 1024 * 1024
+    }
+}
+
+internal suspend fun runCancellableConnect(
+    connect: () -> Unit,
+    disconnect: () -> Unit,
+) {
+    suspendCancellableCoroutine<Unit> { continuation ->
+        continuation.invokeOnCancellation { runCatching { disconnect() } }
+        if (!continuation.isActive) {
+            runCatching { disconnect() }
+            return@suspendCancellableCoroutine
+        }
+        try {
+            connect()
+            if (continuation.isActive) {
+                continuation.resume(Unit)
+            } else {
+                runCatching { disconnect() }
+            }
+        } catch (error: Throwable) {
+            runCatching { disconnect() }
+            if (continuation.isActive) continuation.resumeWithException(error)
+        }
+    }
+}
+
+internal suspend fun readBoundedJsonLines(
+    reader: Reader,
+    maxLineChars: Int,
+    onLine: suspend (String) -> Unit,
+    onOversizedLine: suspend () -> Unit,
+) {
+    require(maxLineChars > 0)
+    reader.use {
+        val buffer = CharArray(8 * 1024)
+        var line = StringBuilder(minOf(maxLineChars, 8 * 1024))
+        var discarding = false
+        suspend fun finishLine() {
+            if (discarding) {
+                onOversizedLine()
+            } else {
+                onLine(line.toString().trimEnd('\r'))
+            }
+            line = StringBuilder(minOf(maxLineChars, 8 * 1024))
+            discarding = false
+        }
+        while (true) {
+            val count = it.read(buffer)
+            if (count < 0) break
+            for (index in 0 until count) {
+                val character = buffer[index]
+                if (character == '\n') {
+                    finishLine()
+                } else if (!discarding && line.length < maxLineChars) {
+                    line.append(character)
+                } else if (!discarding && character == '\r' && line.length == maxLineChars) {
+                    line.append(character)
+                } else if (!discarding) {
+                    line = StringBuilder()
+                    discarding = true
+                }
+            }
+        }
+        if (discarding || line.isNotEmpty()) finishLine()
     }
 }

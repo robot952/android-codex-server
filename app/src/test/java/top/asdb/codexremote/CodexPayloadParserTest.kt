@@ -1,12 +1,19 @@
 package top.asdb.codexremote
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.asdb.codexremote.codex.CodexEventReducer
 import top.asdb.codexremote.codex.CodexPayloadParser
+import top.asdb.codexremote.codex.MAX_COMMAND_OUTPUT_CHARS
+import top.asdb.codexremote.codex.MAX_TIMELINE_TEXT_CHARS
+import top.asdb.codexremote.codex.OUTPUT_TRUNCATION_MARKER
+import top.asdb.codexremote.codex.TEXT_TRUNCATION_MARKER
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.TimelineKind
 
@@ -92,6 +99,77 @@ class CodexPayloadParserTest {
         assertEquals("turn-1", state.activeTurnId)
         assertEquals(1, state.timeline.size)
         assertEquals("你好你好", state.timeline.single().text)
+    }
+
+    @Test
+    fun capsStreamedTextAndStopsCopyingAfterTheLimit() {
+        val contentLimit = MAX_TIMELINE_TEXT_CHARS - TEXT_TRUNCATION_MARKER.length
+        val initial = buildJsonObject {
+            put("itemId", "agent-large")
+            put("delta", "a".repeat(contentLimit))
+        }
+        val overflow = buildJsonObject {
+            put("itemId", "agent-large")
+            put("delta", "b".repeat(TEXT_TRUNCATION_MARKER.length + 1))
+        }
+        val ignored = buildJsonObject {
+            put("itemId", "agent-large")
+            put("delta", "must-not-be-appended")
+        }
+
+        var state = CodexEventReducer.reduce(AppUiState(), "item/agentMessage/delta", initial)
+        state = CodexEventReducer.reduce(state, "item/agentMessage/delta", overflow)
+        val truncated = state.timeline.single().text
+
+        assertEquals(MAX_TIMELINE_TEXT_CHARS, truncated.length)
+        assertTrue(truncated.endsWith(TEXT_TRUNCATION_MARKER))
+        state = CodexEventReducer.reduce(state, "item/agentMessage/delta", ignored)
+        assertSame(truncated, state.timeline.single().text)
+    }
+
+    @Test
+    fun preservesNormalReasoningPlanAndCommandDeltas() {
+        var state = AppUiState()
+        listOf(
+            "item/reasoning/textDelta" to "reasoning",
+            "item/plan/delta" to "plan",
+            "item/commandExecution/outputDelta" to "command",
+        ).forEach { (method, itemId) ->
+            listOf("first", "-second").forEach { value ->
+                state = CodexEventReducer.reduce(state, method, buildJsonObject {
+                    put("itemId", itemId)
+                    put("delta", value)
+                })
+            }
+        }
+
+        assertEquals("first-second", state.timeline.first { it.id == "reasoning" }.text)
+        assertEquals("first-second", state.timeline.first { it.id == "plan" }.text)
+        assertEquals("first-second", state.timeline.first { it.id == "command" }.output)
+    }
+
+    @Test
+    fun capsCommandOutputAndCompletedPayloads() {
+        val commandDelta = buildJsonObject {
+            put("itemId", "command-large")
+            put("delta", "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 1))
+        }
+        val state = CodexEventReducer.reduce(
+            AppUiState(),
+            "item/commandExecution/outputDelta",
+            commandDelta,
+        )
+        assertEquals(MAX_COMMAND_OUTPUT_CHARS, state.timeline.single().output.length)
+        assertTrue(state.timeline.single().output.endsWith(OUTPUT_TRUNCATION_MARKER))
+
+        val completed = buildJsonObject {
+            put("id", "agent-completed")
+            put("type", "agentMessage")
+            put("text", "z".repeat(MAX_TIMELINE_TEXT_CHARS + 1))
+        }
+        val parsed = requireNotNull(CodexPayloadParser.parseItem(completed, "turn-1"))
+        assertEquals(MAX_TIMELINE_TEXT_CHARS, parsed.text.length)
+        assertTrue(parsed.text.endsWith(TEXT_TRUNCATION_MARKER))
     }
 
     @Test

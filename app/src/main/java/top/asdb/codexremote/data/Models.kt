@@ -29,7 +29,7 @@ data class StoredProfiles(
     val selectedProfileId: String? = null,
 )
 
-enum class ConnectionPhase { Disconnected, Probing, Connecting, Connected, Failed }
+enum class ConnectionPhase { Disconnected, Probing, Connecting, Installing, Connected, Failed }
 
 data class ConnectionState(
     val phase: ConnectionPhase = ConnectionPhase.Disconnected,
@@ -180,12 +180,24 @@ data class RemoteDirectoryListing(
     val directories: List<RemoteDirectory>,
 )
 
+data class RemoteSetupPrompt(
+    val title: String,
+    val detail: String,
+    val os: String,
+    val architecture: String,
+    val home: String,
+    val detectedVersion: String? = null,
+)
+
 data class AppUiState(
     val screen: AppScreen = AppScreen.Servers,
     val profiles: List<ServerProfile> = emptyList(),
     val selectedProfileId: String? = null,
     val connection: ConnectionState = ConnectionState(),
     val pendingFingerprint: String? = null,
+    val remoteSetup: RemoteSetupPrompt? = null,
+    val setupInProgress: Boolean = false,
+    val setupProgress: String = "",
     val threads: List<CodexThread> = emptyList(),
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,
