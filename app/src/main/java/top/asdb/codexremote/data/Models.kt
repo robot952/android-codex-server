@@ -12,13 +12,15 @@ data class ServerProfile(
     val name: String = "我的服务器",
     val host: String = "",
     val port: Int = 22,
-    val username: String = "",
+    val username: String = "root",
     val authMode: AuthMode = AuthMode.PrivateKey,
     val password: String = "",
     val privateKeyPem: String = "",
     val privateKeyPassphrase: String = "",
     val hostFingerprint: String = "",
     val workspace: String = "",
+    /** Optional proxy used only while downloading the managed Node/Codex runtime. */
+    val proxyUrl: String = "",
     val approvalMode: ApprovalMode = ApprovalMode.RequestApproval,
     val remoteCommand: String = "~/.local/bin/codex-remote app-server --listen stdio://",
 )
@@ -59,6 +61,20 @@ data class CodexModel(
     val isDefault: Boolean,
     val defaultEffort: String,
     val efforts: List<String>,
+)
+
+data class TokenUsage(
+    val last: TokenUsageBreakdown = TokenUsageBreakdown(),
+    val total: TokenUsageBreakdown = TokenUsageBreakdown(),
+    val modelContextWindow: Long = 0,
+)
+
+data class TokenUsageBreakdown(
+    val cachedInputTokens: Long = 0,
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val reasoningOutputTokens: Long = 0,
+    val totalTokens: Long = 0,
 )
 
 enum class TimelineKind {
@@ -194,10 +210,12 @@ data class AppUiState(
     val profiles: List<ServerProfile> = emptyList(),
     val selectedProfileId: String? = null,
     val connection: ConnectionState = ConnectionState(),
+    val connectionStates: Map<String, ConnectionState> = emptyMap(),
     val pendingFingerprint: String? = null,
     val remoteSetup: RemoteSetupPrompt? = null,
     val setupInProgress: Boolean = false,
     val setupProgress: String = "",
+    val setupProgressPercent: Int = 0,
     val threads: List<CodexThread> = emptyList(),
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,
@@ -223,6 +241,7 @@ data class AppUiState(
     val attachments: List<PendingAttachment> = emptyList(),
     val composerClearNonce: Int = 0,
     val aggregateDiff: String = "",
+    val tokenUsage: TokenUsage? = null,
     val error: String? = null,
     val diagnostic: String? = null,
 )

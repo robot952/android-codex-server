@@ -267,7 +267,7 @@ fun WorkScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 10.dp),
+                contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 64.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(state.timeline, key = { it.id }) { entry ->
@@ -341,6 +341,10 @@ fun WorkScreen(
                     }
                 }
             }
+            ContextUsageRing(
+                usage = contextUsageDisplay(state),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp),
+            )
         }
     }
 
@@ -441,7 +445,7 @@ fun WorkScreen(
             title = { Text("重命名任务") },
             text = {
                 OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth())
+                    modifier = Modifier.fillMaxWidth().imePadding())
             },
             confirmButton = {
                 TextButton(onClick = { onRename(name); renameRequested = false }) { Text("保存") }
@@ -603,6 +607,65 @@ private fun CommandBlock(entry: TimelineEntry) {
             }
         }
     }
+}
+
+/**
+ * Codex does not expose a stable context window size on every app-server build.
+ * Keep the indicator useful by estimating the consumed transcript size while
+ * retaining a fixed visual footprint for the eventual server-provided value.
+ */
+private data class ContextUsageDisplay(val fraction: Float, val estimated: Boolean)
+
+@Composable
+private fun ContextUsageRing(usage: ContextUsageDisplay, modifier: Modifier = Modifier) {
+    val percent = (usage.fraction * 100).toInt().coerceIn(0, 100)
+    val label = if (usage.estimated) "~$percent%" else "$percent%"
+    Box(
+        modifier = modifier.size(44.dp).semantics {
+            contentDescription = if (usage.estimated) "上下文占用约 $percent%" else "上下文占用 $percent%"
+            stateDescription = label
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator(
+            progress = { usage.fraction },
+            modifier = Modifier.fillMaxSize(),
+            strokeWidth = 3.dp,
+            color = when {
+                usage.fraction >= .85f -> CodexRed
+                usage.fraction >= .65f -> CodexAmber
+                else -> CodexGreen
+            },
+            trackColor = CodexBorder,
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+private fun contextUsageDisplay(state: AppUiState): ContextUsageDisplay {
+    state.tokenUsage?.let { usage ->
+        val window = usage.modelContextWindow
+        if (window > 0) {
+            val used = usage.total.totalTokens.coerceAtLeast(usage.last.totalTokens)
+            return ContextUsageDisplay(
+                fraction = (used.toFloat() / window.toFloat()).coerceIn(0.01f, 0.99f),
+                estimated = false,
+            )
+        }
+    }
+    val chars = state.timeline.sumOf { entry ->
+        entry.title.length.toLong() + entry.text.length + entry.command.length + entry.output.length +
+            entry.changes.sumOf { change -> change.path.length.toLong() + change.diff.length }
+    } + state.aggregateDiff.length
+    // A conservative visual estimate; the server remains authoritative for limits.
+    return ContextUsageDisplay(
+        fraction = (chars / 120_000f).coerceIn(0.02f, 0.99f),
+        estimated = true,
+    )
 }
 
 @Composable

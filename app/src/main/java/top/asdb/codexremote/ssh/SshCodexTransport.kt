@@ -44,6 +44,11 @@ internal data class SshTransportEvent(
     val value: String,
 )
 
+data class RemoteInstallProgress(
+    val percent: Int,
+    val message: String,
+)
+
 class SshCodexTransport {
     private val connectionMutex = Mutex()
     private val connectionStateLock = Any()
@@ -194,15 +199,24 @@ class SshCodexTransport {
         codexVersion: String,
         nodeVersion: String,
         onProgress: (String) -> Unit,
+    ) = installRemoteDetailed(profile, codexVersion, nodeVersion) { progress ->
+        onProgress(progress.message)
+    }
+
+    suspend fun installRemoteDetailed(
+        profile: ServerProfile,
+        codexVersion: String,
+        nodeVersion: String,
+        onProgress: (RemoteInstallProgress) -> Unit,
     ) {
         executeScript(
             profile = profile,
-            script = RemoteBootstrap.installScript(codexVersion, nodeVersion),
+            script = RemoteBootstrap.installScript(codexVersion, nodeVersion, profile.proxyUrl),
             timeoutMs = INSTALL_TIMEOUT_MS,
             remoteCommand = INSTALL_SHELL_COMMAND,
         ) { line ->
             if (line.startsWith(PROGRESS_PREFIX)) {
-                onProgress(line.removePrefix(PROGRESS_PREFIX))
+                onProgress(parseInstallProgress(line.removePrefix(PROGRESS_PREFIX)))
             }
         }
     }
@@ -586,6 +600,13 @@ class SshCodexTransport {
         private const val MAX_STDERR_BYTES = 8 * 1024
         private const val MAX_APP_SERVER_LINE_CHARS = 4 * 1024 * 1024
     }
+}
+
+internal fun parseInstallProgress(value: String): RemoteInstallProgress {
+    val parts = value.split('|', limit = 2)
+    val percent = parts.firstOrNull()?.toIntOrNull()?.coerceIn(0, 100) ?: 0
+    val message = parts.getOrNull(1)?.trim().orEmpty().ifBlank { value.trim() }
+    return RemoteInstallProgress(percent, message)
 }
 
 internal suspend fun runCancellableConnect(

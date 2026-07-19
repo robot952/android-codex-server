@@ -3,25 +3,33 @@ package top.asdb.codexremote.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -48,6 +56,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -73,9 +82,11 @@ import androidx.compose.ui.unit.dp
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.ConnectionPhase
+import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
+import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,6 +96,7 @@ fun ServerScreen(
     onNewProfile: () -> ServerProfile,
     onSave: (ServerProfile) -> Unit,
     onDelete: (String) -> Unit,
+    onDisconnectProfile: (String) -> Unit,
     onProbeFingerprint: (ServerProfile) -> Unit,
     onConnect: (ServerProfile) -> Unit,
 ) {
@@ -96,6 +108,8 @@ fun ServerScreen(
     var passwordVisible by remember { mutableStateOf(false) }
     var deleteRequested by remember { mutableStateOf(false) }
     var keyImportError by remember { mutableStateOf<String?>(null) }
+    val activeConnection = state.connectionStates[draft.id]
+        ?: if (draft.id == state.selectedProfileId) state.connection else ConnectionState()
     val context = LocalContext.current
     val keyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
@@ -119,8 +133,11 @@ fun ServerScreen(
                 title = {
                     Column {
                         Text("CODEX REMOTE", fontWeight = FontWeight.SemiBold)
-                        Text("SSH 服务器", style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (state.profiles.isEmpty()) "添加第一台 SSH 服务器" else "${state.profiles.size} 台 SSH 服务器",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
@@ -129,9 +146,27 @@ fun ServerScreen(
     ) { padding ->
         Column(
             modifier = Modifier.padding(padding).navigationBarsPadding().fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+                .imePadding().verticalScroll(rememberScrollState()),
         ) {
-            if (state.profiles.isNotEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("服务器", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "保存多个连接，并在标签间快速切换",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { draft = onNewProfile() }) {
+                        Icon(Icons.Default.Add, contentDescription = "添加服务器")
+                    }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -140,23 +175,59 @@ fun ServerScreen(
                     state.profiles.forEach { profile ->
                         FilterChip(
                             selected = profile.id == draft.id,
-                            onClick = { onSelectProfile(profile.id) },
+                            onClick = { draft = profile },
                             label = { Text(profile.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            leadingIcon = { Icon(Icons.Default.Terminal, contentDescription = null) },
+                            leadingIcon = {
+                                val profileConnection = state.connectionStates[profile.id]
+                                if (profileConnection?.phase in setOf(
+                                        ConnectionPhase.Connecting,
+                                        ConnectionPhase.Installing,
+                                        ConnectionPhase.Probing,
+                                    )
+                                ) {
+                                    CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(
+                                        Icons.Default.Terminal,
+                                        contentDescription = null,
+                                        tint = when (profileConnection?.phase) {
+                                            ConnectionPhase.Connected -> CodexGreen
+                                            ConnectionPhase.Failed -> MaterialTheme.colorScheme.error
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
+                            },
                         )
                     }
-                    IconButton(onClick = { draft = onNewProfile() }) {
-                        Icon(Icons.Default.Add, contentDescription = "添加服务器")
+                    if (state.profiles.isEmpty()) {
+                        OutlinedButton(onClick = { draft = onNewProfile() }, modifier = Modifier.height(40.dp)) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.width(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("新建服务器")
+                        }
                     }
                 }
                 HorizontalDivider(color = CodexBorder)
             }
 
             Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp),
+                modifier = Modifier.fillMaxWidth().animateContentSize()
+                    .padding(horizontal = 16.dp, vertical = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Text("连接", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Column {
+                    Text(
+                        if (state.profiles.any { it.id == draft.id }) "连接设置" else "新服务器",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "通过 SSH 启动独立的远程 Codex",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 OutlinedTextField(
                     value = draft.name,
                     onValueChange = { draft = draft.copy(name = it) },
@@ -260,9 +331,9 @@ fun ServerScreen(
                     IconButton(
                         onClick = { onProbeFingerprint(draft) },
                         enabled = draft.host.isNotBlank() && draft.username.isNotBlank() &&
-                            state.connection.phase != ConnectionPhase.Probing,
+                            activeConnection.phase != ConnectionPhase.Probing,
                     ) {
-                        if (state.connection.phase == ConnectionPhase.Probing) {
+                        if (activeConnection.phase == ConnectionPhase.Probing) {
                             CircularProgressIndicator(Modifier.width(20.dp), strokeWidth = 2.dp)
                         } else {
                             Icon(Icons.Default.Fingerprint, contentDescription = "读取主机指纹")
@@ -275,7 +346,11 @@ fun ServerScreen(
                     Icon(if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = null)
                 }
-                AnimatedVisibility(advanced) {
+                AnimatedVisibility(
+                    visible = advanced,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut(),
+                ) {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         OutlinedTextField(
                             value = draft.workspace,
@@ -294,25 +369,52 @@ fun ServerScreen(
                             maxLines = 4,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        OutlinedTextField(
+                            value = draft.proxyUrl,
+                            onValueChange = { draft = draft.copy(proxyUrl = it) },
+                            label = { Text("下载代理地址（可选）") },
+                            placeholder = { Text("http://127.0.0.1:7890") },
+                            supportingText = { Text("仅用于安装 Node.js 和 Codex，不会改变会话代理") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
 
-                Box(
-                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                Surface(
+                    color = CodexSurfaceRaised,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(6.dp)),
                 ) {
                     Row(
-                        modifier = Modifier.semantics {
-                            contentDescription = "SSH 连接状态：${state.connection.message}"
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp).semantics {
+                            contentDescription = "SSH 连接状态：${activeConnection.message}"
                         },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(Icons.Default.Wifi, contentDescription = null,
-                            tint = if (state.connection.phase == ConnectionPhase.Failed) {
+                            tint = if (activeConnection.phase == ConnectionPhase.Failed) {
                                 MaterialTheme.colorScheme.error
                             } else MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(10.dp))
-                        Text(state.connection.message, style = MaterialTheme.typography.bodySmall)
+                        Column(Modifier.weight(1f)) {
+                            Text(activeConnection.message, style = MaterialTheme.typography.bodyMedium)
+                            activeConnection.cliVersion?.takeIf { it.isNotBlank() }?.let { version ->
+                                Text(
+                                    version,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (activeConnection.phase == ConnectionPhase.Connected) {
+                            IconButton(
+                                onClick = { onDisconnectProfile(draft.id) },
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "断开此服务器")
+                            }
+                        }
                     }
                 }
 
@@ -326,16 +428,22 @@ fun ServerScreen(
                         Text("保存")
                     }
                     Button(
-                        onClick = { onConnect(draft) },
+                        onClick = {
+                            if (activeConnection.phase == ConnectionPhase.Connected) {
+                                onSelectProfile(draft.id)
+                            } else {
+                                onConnect(draft)
+                            }
+                        },
                         enabled = draft.host.isNotBlank() && draft.username.isNotBlank() &&
-                            state.connection.phase !in setOf(
+                            activeConnection.phase !in setOf(
                                 ConnectionPhase.Connecting,
                                 ConnectionPhase.Installing,
                                 ConnectionPhase.Probing,
                             ),
                         modifier = Modifier.weight(1f).height(50.dp),
                     ) {
-                        if (state.connection.phase in setOf(
+                        if (activeConnection.phase in setOf(
                                 ConnectionPhase.Connecting,
                                 ConnectionPhase.Installing,
                             )
@@ -344,7 +452,7 @@ fun ServerScreen(
                         } else {
                             Icon(Icons.Default.Wifi, contentDescription = null)
                             Spacer(Modifier.width(7.dp))
-                            Text("连接")
+                            Text(if (activeConnection.phase == ConnectionPhase.Connected) "进入" else "连接")
                         }
                     }
                 }

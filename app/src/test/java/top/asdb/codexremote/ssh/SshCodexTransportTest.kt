@@ -14,6 +14,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class SshCodexTransportTest {
     @Test
+    fun `structured installer progress is parsed and clamped`() {
+        assertEquals(RemoteInstallProgress(65, "下载并安装 Codex CLI"), parseInstallProgress("65|下载并安装 Codex CLI"))
+        assertEquals(RemoteInstallProgress(100, "完成"), parseInstallProgress("150|完成"))
+        assertEquals(RemoteInstallProgress(0, "旧格式进度"), parseInstallProgress("旧格式进度"))
+    }
+
+    @Test
     fun `installer shell is isolated and receives the SSH parent pid`() {
         assertEquals(
             "CODEX_REMOTE_SSH_PID=\$PPID setsid --wait sh -s",

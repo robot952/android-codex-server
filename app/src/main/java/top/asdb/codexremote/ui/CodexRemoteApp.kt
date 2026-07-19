@@ -1,6 +1,13 @@
 package top.asdb.codexremote.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -12,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -34,6 +42,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
@@ -60,6 +69,7 @@ import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalPrompt
 import top.asdb.codexremote.ui.theme.CodexBorder
 
+@OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun CodexRemoteApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -81,19 +91,34 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     BackHandler(enabled = state.screen != AppScreen.Servers) {
         when (state.screen) {
             AppScreen.Work -> viewModel.backToThreads()
-            AppScreen.Threads -> viewModel.disconnect()
+            AppScreen.Threads -> viewModel.showServers()
             AppScreen.Servers -> Unit
         }
     }
 
     Box(Modifier.fillMaxSize()) {
-        when (state.screen) {
+        AnimatedContent(
+            targetState = state.screen,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                if (targetState.ordinal > initialState.ordinal) {
+                    (slideInHorizontally { it / 5 } + fadeIn()) togetherWith
+                        (slideOutHorizontally { -it / 8 } + fadeOut())
+                } else {
+                    (slideInHorizontally { -it / 5 } + fadeIn()) togetherWith
+                        (slideOutHorizontally { it / 8 } + fadeOut())
+                }
+            },
+            label = "screen-transition",
+        ) { screen ->
+            when (screen) {
             AppScreen.Servers -> ServerScreen(
                 state = state,
                 onSelectProfile = viewModel::selectProfile,
                 onNewProfile = viewModel::newProfile,
                 onSave = viewModel::saveProfile,
                 onDelete = viewModel::deleteProfile,
+                onDisconnectProfile = viewModel::disconnectProfile,
                 onProbeFingerprint = viewModel::probeFingerprint,
                 onConnect = viewModel::connect,
             )
@@ -105,7 +130,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onCreate = viewModel::createThread,
                 onOpen = viewModel::openThread,
                 onSelectWorkspace = viewModel::showWorkspacePicker,
-                onDisconnect = viewModel::disconnect,
+                onShowServers = viewModel::showServers,
             )
 
             AppScreen.Work -> WorkScreen(
@@ -124,6 +149,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onSelectApprovalMode = viewModel::selectApprovalMode,
                 onSelectWorkspace = viewModel::showWorkspacePicker,
             )
+            }
         }
         SnackbarHost(
             hostState = snackbar,
@@ -199,13 +225,41 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            state.profiles.firstOrNull { it.id == state.selectedProfileId }
+                                ?.proxyUrl?.trim()?.takeIf { it.isNotBlank() }?.let { proxy ->
+                                    Text(
+                                        "下载代理：$proxy",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                        maxLines = 2,
+                                    )
+                                }
                         }
                     }
                     if (state.setupInProgress) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(modifier = Modifier.width(22.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(10.dp))
-                            Text(state.setupProgress.ifBlank { "正在安装" })
+                        val progress = if (state.setupProgressPercent > 0) {
+                            state.setupProgressPercent.coerceIn(0, 100) / 100f
+                        } else {
+                            setupProgressFraction(state.setupProgress)
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    state.setupProgress.ifBlank { "正在安装" },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "${(progress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 5.dp, max = 6.dp),
+                            )
                         }
                     }
                 }
@@ -240,6 +294,21 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             onApprove = { answer -> viewModel.answerApproval(true, answer) },
             onDecline = viewModel::dismissApproval,
         )
+    }
+}
+
+private fun setupProgressFraction(message: String): Float {
+    val normalized = message.trim()
+    if (normalized.isBlank()) return 0.04f
+    Regex("^(\\d{1,3})(?:%|\\|)").find(normalized)?.groupValues?.getOrNull(1)
+        ?.toIntOrNull()?.let { return (it.coerceIn(0, 100) / 100f).coerceAtLeast(0.02f) }
+    return when {
+        normalized.contains("下载") -> 0.18f
+        normalized.contains("校验") -> 0.36f
+        normalized.contains("安装 Codex") -> 0.58f
+        normalized.contains("验证") -> 0.86f
+        normalized.contains("完成") -> 1f
+        else -> 0.08f
     }
 }
 
@@ -368,7 +437,7 @@ private fun ApprovalDialog(
         title = { Text(prompt.title) },
         text = {
             Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
+                modifier = Modifier.imePadding().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (prompt.detail.isNotBlank()) Text(prompt.detail)

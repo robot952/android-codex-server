@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -18,10 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddComment
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -30,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -40,11 +44,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.CodexThread
+import top.asdb.codexremote.ui.theme.CodexBorder
+import top.asdb.codexremote.ui.theme.CodexGreen
 import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 import java.time.Instant
 
@@ -57,7 +66,7 @@ fun ThreadListScreen(
     onCreate: () -> Unit,
     onOpen: (CodexThread) -> Unit,
     onSelectWorkspace: () -> Unit,
-    onDisconnect: () -> Unit,
+    onShowServers: () -> Unit,
 ) {
     val query = state.threadSearch.trim()
     val threads = state.threads.filter { thread ->
@@ -72,19 +81,29 @@ fun ThreadListScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("Codex", fontWeight = FontWeight.Medium)
-                        Text(
-                            profile?.name.orEmpty().ifBlank { "远程服务器" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Text("CODEX", fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(6.dp).clip(CircleShape).background(CodexGreen),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                profile?.name.orEmpty().ifBlank { "远程服务器" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 },
                 actions = {
                     IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        if (state.loading) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        }
                     }
                     IconButton(onClick = onCreate) {
                         Icon(Icons.Default.AddComment, contentDescription = "新任务")
@@ -92,15 +111,17 @@ fun ThreadListScreen(
                     IconButton(onClick = onSelectWorkspace) {
                         Icon(Icons.Default.FolderOpen, contentDescription = "选择工作目录")
                     }
-                    IconButton(onClick = onDisconnect) {
-                        Icon(Icons.Default.Close, contentDescription = "断开连接")
+                    IconButton(onClick = onShowServers) {
+                        Icon(Icons.Default.Dns, contentDescription = "切换服务器")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             )
         },
     ) { padding ->
-        Column(Modifier.padding(padding).navigationBarsPadding().fillMaxSize()) {
+        Column(
+            Modifier.padding(padding).navigationBarsPadding().imePadding().fillMaxSize(),
+        ) {
             SearchBox(
                 value = state.threadSearch,
                 onValueChange = onSearchChange,
@@ -131,7 +152,7 @@ fun ThreadListScreen(
                         end = 10.dp,
                         bottom = 16.dp,
                     ),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalArrangement = Arrangement.spacedBy(0.dp),
                 ) {
                     items(threads, key = { it.id }) { thread ->
                         ThreadRow(thread, onClick = { onOpen(thread) })
@@ -211,26 +232,110 @@ private fun SearchBox(
 
 @Composable
 private fun ThreadRow(thread: CodexThread, onClick: () -> Unit) {
-    val active = thread.status == "active"
-    Row(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
-            .background(if (active) CodexSurfaceRaised else Color.Transparent)
-            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            thread.title.ifBlank { "未命名任务" },
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            relativeTime(thread.updatedAt),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val active = thread.activeTurnId != null || thread.status.lowercase() in setOf(
+        "active",
+        "running",
+        "working",
+        "inprogress",
+        "in_progress",
+    )
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .background(if (active) CodexSurfaceRaised else Color.Transparent)
+                .clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                modifier = Modifier.size(28.dp).semantics {
+                    contentDescription = if (active) "任务正在工作" else "任务空闲"
+                },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (active) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(17.dp),
+                        strokeWidth = 2.dp,
+                        color = CodexGreen,
+                        trackColor = CodexBorder,
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Terminal,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        thread.title.ifBlank { "未命名任务" },
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        relativeTime(thread.updatedAt),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                thread.preview.takeIf { it.isNotBlank() }?.let { preview ->
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.FolderOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        thread.cwd.ifBlank { "未指定目录" },
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    thread.source.takeIf { it.isNotBlank() }?.let { source ->
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            Icons.Default.Code,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            source,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 46.dp),
+            color = CodexBorder,
         )
     }
 }

@@ -47,12 +47,26 @@ private data class ServerRequest(
     val params: JsonObject,
 )
 
-class CodexRpcException(message: String) : RuntimeException(message)
+open class CodexRpcException(message: String) : RuntimeException(message)
 
 class CodexAppServerClient(
     private val scope: CoroutineScope,
     private val transport: SshCodexTransport = SshCodexTransport(),
+    private val requestTimeoutMs: Long = DEFAULT_REQUEST_TIMEOUT_MS,
+    private val threadRequestTimeoutMs: Long = DEFAULT_THREAD_REQUEST_TIMEOUT_MS,
+    private val threadCache: ThreadSessionCache = ThreadSessionCache(),
 ) {
+    init {
+        require(requestTimeoutMs > 0) { "requestTimeoutMs must be positive" }
+        require(threadRequestTimeoutMs > 0) { "threadRequestTimeoutMs must be positive" }
+    }
+
+    @Volatile
+    private var connectedProfileId: String? = null
+    private val threadCacheLock = Any()
+    private val threadCaches = ConcurrentHashMap<String, ThreadSessionCache>()
+    @Volatile
+    private var activeThreadCache: ThreadSessionCache = threadCache
     private val json = Json { ignoreUnknownKeys = true }
     private val nextId = AtomicLong(1)
     private val activeGeneration = AtomicLong(NO_GENERATION)
@@ -114,7 +128,21 @@ class CodexAppServerClient(
         onProgress = onProgress,
     )
 
+    suspend fun installRemoteDetailed(
+        profile: ServerProfile,
+        onProgress: (top.asdb.codexremote.ssh.RemoteInstallProgress) -> Unit,
+    ) = transport.installRemoteDetailed(
+        profile = profile,
+        codexVersion = BuildConfig.PINNED_CODEX_VERSION,
+        nodeVersion = BuildConfig.PINNED_NODE_VERSION,
+        onProgress = onProgress,
+    )
+
     suspend fun connect(profile: ServerProfile): String {
+        if (connectedProfileId != profile.id) {
+            connectedProfileId = profile.id
+            activeThreadCache = cacheForProfile(profile.id)
+        }
         invalidateGeneration("连接已替换")
         val generation = transport.connect(profile)
         activeGeneration.set(generation)
@@ -154,6 +182,9 @@ class CodexAppServerClient(
 
     fun isGenerationActive(generation: Long): Boolean = activeGeneration.get() == generation
 
+    /** Captures the app-server generation so UI callbacks cannot publish after reconnect. */
+    fun currentGeneration(): Long? = activeGeneration.get().takeUnless { it == NO_GENERATION }
+
     fun isClosedGenerationCurrent(generation: Long): Boolean =
         activeGeneration.get() == NO_GENERATION && closedGeneration.get() == generation
 
@@ -177,19 +208,43 @@ class CodexAppServerClient(
         threadId: String,
         approvalMode: ApprovalMode,
     ): Pair<CodexThread, List<TimelineEntry>> {
-        val result = request("thread/resume", buildJsonObject {
-            put("threadId", threadId)
-            put("approvalPolicy", approvalMode.approvalPolicy)
-        }).jsonObject
-        return CodexPayloadParser.parseThreadPayload(result)
+        val result = request(
+            "thread/resume",
+            buildJsonObject {
+                put("threadId", threadId)
+                put("approvalPolicy", approvalMode.approvalPolicy)
+            },
+            timeoutMs = threadRequestTimeoutMs,
+        ).jsonObject
+        val snapshot = CodexPayloadParser.parseThreadPayload(result)
+        activeThreadCache.put(snapshot.first, snapshot.second)
+        return snapshot
     }
 
     suspend fun readThread(threadId: String): Pair<CodexThread, List<TimelineEntry>> {
-        val result = request("thread/read", buildJsonObject {
-            put("threadId", threadId)
-            put("includeTurns", true)
-        }).jsonObject
-        return CodexPayloadParser.parseThreadPayload(result)
+        val result = request(
+            "thread/read",
+            buildJsonObject {
+                put("threadId", threadId)
+                put("includeTurns", true)
+            },
+            timeoutMs = threadRequestTimeoutMs,
+        ).jsonObject
+        val snapshot = CodexPayloadParser.parseThreadPayload(result)
+        activeThreadCache.put(snapshot.first, snapshot.second)
+        return snapshot
+    }
+
+    /** Returns a recent snapshot without doing network I/O. */
+    fun cachedThread(threadId: String): Pair<CodexThread, List<TimelineEntry>>? =
+        activeThreadCache.get(threadId)?.let { it.thread to it.timeline }
+
+    /** Returns an expired snapshot for a UI fast path while a remote refresh is running. */
+    fun cachedThreadStale(threadId: String): Pair<CodexThread, List<TimelineEntry>>? =
+        activeThreadCache.getStale(threadId)?.let { it.thread to it.timeline }
+
+    fun cacheThread(thread: CodexThread, timeline: List<TimelineEntry>) {
+        activeThreadCache.put(thread, timeline)
     }
 
     suspend fun startThread(
@@ -203,8 +258,10 @@ class CodexAppServerClient(
             put("approvalPolicy", approvalMode.approvalPolicy)
             put("sandbox", approvalMode.sandbox.wireValue)
             put("ephemeral", false)
-        }).jsonObject
-        return CodexPayloadParser.parseThreadPayload(result)
+        }, timeoutMs = threadRequestTimeoutMs).jsonObject
+        val snapshot = CodexPayloadParser.parseThreadPayload(result)
+        activeThreadCache.put(snapshot.first, snapshot.second)
+        return snapshot
     }
 
     suspend fun startTurn(
@@ -254,14 +311,17 @@ class CodexAppServerClient(
 
     suspend fun archiveThread(threadId: String) {
         request("thread/archive", buildJsonObject { put("threadId", threadId) })
+        activeThreadCache.remove(threadId)
     }
 
     suspend fun rollbackThread(threadId: String, turns: Int = 1): Pair<CodexThread, List<TimelineEntry>> {
         val result = request("thread/rollback", buildJsonObject {
             put("threadId", threadId)
             put("numTurns", turns)
-        }).jsonObject
-        return CodexPayloadParser.parseThreadPayload(result)
+        }, timeoutMs = threadRequestTimeoutMs).jsonObject
+        val snapshot = CodexPayloadParser.parseThreadPayload(result)
+        activeThreadCache.put(snapshot.first, snapshot.second)
+        return snapshot
     }
 
     suspend fun setThreadName(threadId: String, name: String) {
@@ -269,6 +329,9 @@ class CodexAppServerClient(
             put("threadId", threadId)
             put("name", name)
         })
+        activeThreadCache.getStale(threadId)?.let { cached ->
+            activeThreadCache.put(cached.thread.copy(title = name), cached.timeline)
+        }
     }
 
     suspend fun startReview(threadId: String) {
@@ -351,7 +414,11 @@ class CodexAppServerClient(
         }
     }
 
-    private suspend fun request(method: String, params: JsonObject): JsonElement {
+    private suspend fun request(
+        method: String,
+        params: JsonObject,
+        timeoutMs: Long = requestTimeoutMs,
+    ): JsonElement {
         val generation = requireActiveGeneration()
         val id = nextId.getAndIncrement().toString()
         val deferred = CompletableDeferred<JsonElement>()
@@ -370,10 +437,10 @@ class CodexAppServerClient(
             deferred.completeExceptionally(error)
         }
         return try {
-            withTimeout(REQUEST_TIMEOUT_MS) { deferred.await() }
+            withTimeout(timeoutMs) { deferred.await() }
         } catch (error: TimeoutCancellationException) {
             pending.remove(id)
-            throw CodexRpcException("Codex 请求超时: $method")
+            throw CodexRequestTimeoutException(method, timeoutMs)
         }
     }
 
@@ -427,6 +494,12 @@ class CodexAppServerClient(
 
     private fun requireActiveGeneration(): Long = activeGeneration.get().also { generation ->
         check(generation != NO_GENERATION) { "SSH 通道尚未连接" }
+    }
+
+    private fun cacheForProfile(profileId: String): ThreadSessionCache = synchronized(threadCacheLock) {
+        threadCaches[profileId] ?: (if (threadCaches.isEmpty()) threadCache else ThreadSessionCache()).also {
+            threadCaches[profileId] = it
+        }
     }
 
     private fun invalidateGeneration(message: String) {
@@ -514,6 +587,12 @@ class CodexAppServerClient(
 
     companion object {
         private const val NO_GENERATION = -1L
-        private const val REQUEST_TIMEOUT_MS = 30_000L
+        const val DEFAULT_REQUEST_TIMEOUT_MS = 120_000L
+        const val DEFAULT_THREAD_REQUEST_TIMEOUT_MS = 180_000L
     }
 }
+
+class CodexRequestTimeoutException(
+    val method: String,
+    val timeoutMs: Long,
+) : CodexRpcException("Codex 请求超时（${timeoutMs / 1000} 秒）: $method")

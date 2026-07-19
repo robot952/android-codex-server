@@ -21,6 +21,8 @@ import top.asdb.codexremote.data.InputOption
 import top.asdb.codexremote.data.InputQuestion
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
+import top.asdb.codexremote.data.TokenUsage
+import top.asdb.codexremote.data.TokenUsageBreakdown
 
 internal const val MAX_TIMELINE_TEXT_CHARS = 256 * 1024
 internal const val MAX_COMMAND_OUTPUT_CHARS = 512 * 1024
@@ -69,6 +71,23 @@ object CodexPayloadParser {
                 },
             )
         }
+
+    fun parseTokenUsage(params: JsonObject): TokenUsage {
+        fun breakdown(value: JsonObject?): TokenUsageBreakdown = TokenUsageBreakdown(
+            cachedInputTokens = value?.long("cachedInputTokens") ?: 0,
+            inputTokens = value?.long("inputTokens") ?: 0,
+            outputTokens = value?.long("outputTokens") ?: 0,
+            reasoningOutputTokens = value?.long("reasoningOutputTokens") ?: 0,
+            totalTokens = value?.long("totalTokens") ?: 0,
+        )
+
+        val usage = params.obj("tokenUsage") ?: JsonObject(emptyMap())
+        return TokenUsage(
+            last = breakdown(usage.obj("last")),
+            total = breakdown(usage.obj("total")),
+            modelContextWindow = usage.long("modelContextWindow"),
+        )
+    }
 
     fun parseThreadPayload(result: JsonObject): Pair<CodexThread, List<TimelineEntry>> {
         val thread = result.obj("thread") ?: result
@@ -358,6 +377,10 @@ object CodexEventReducer {
                 )
             }
         }
+
+        "thread/tokenUsage/updated" -> state.copy(
+            tokenUsage = CodexPayloadParser.parseTokenUsage(params),
+        )
 
         "item/started", "item/completed" -> {
             val item = params.obj("item")

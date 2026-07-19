@@ -1,5 +1,7 @@
 package top.asdb.codexremote.ssh
 
+import java.util.Locale
+
 data class RemoteEnvironment(
     val os: String,
     val architecture: String,
@@ -113,9 +115,15 @@ object RemoteBootstrap {
         )
     }
 
-    fun installScript(codexVersion: String, nodeVersion: String): String = """
+    fun installScript(
+        codexVersion: String,
+        nodeVersion: String,
+        proxyUrl: String = "",
+    ): String {
+        val normalizedProxy = validateProxyUrl(proxyUrl)
+        return """
         set -eu
-        progress() { printf '::progress::%s\n' "${'$'}1"; }
+        progress() { printf '::progress::%s|%s\n' "${'$'}1" "${'$'}2"; }
         ROOT="${'$'}HOME/.local/share/codex-remote"
         BIN_DIR="${'$'}HOME/.local/bin"
         LOCK_FILE="${'$'}ROOT/.install.lock"
@@ -136,6 +144,20 @@ object RemoteBootstrap {
         SSH_PARENT="${'$'}{CODEX_REMOTE_SSH_PID:-${'$'}PPID}"
         WATCHDOG_PID=
         INSTALL_COMMITTED=0
+        DOWNLOAD_PROXY=${shellQuote(normalizedProxy)}
+        if [ -n "${'$'}DOWNLOAD_PROXY" ]; then
+          HTTP_PROXY="${'$'}DOWNLOAD_PROXY"
+          HTTPS_PROXY="${'$'}DOWNLOAD_PROXY"
+          ALL_PROXY="${'$'}DOWNLOAD_PROXY"
+          http_proxy="${'$'}DOWNLOAD_PROXY"
+          https_proxy="${'$'}DOWNLOAD_PROXY"
+          all_proxy="${'$'}DOWNLOAD_PROXY"
+          npm_config_proxy="${'$'}DOWNLOAD_PROXY"
+          npm_config_https_proxy="${'$'}DOWNLOAD_PROXY"
+          export HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          export npm_config_proxy npm_config_https_proxy
+        fi
+        progress 5 '准备远程安装环境'
         mkdir -p "${'$'}ROOT" "${'$'}BIN_DIR" "${'$'}ROOT/runtime" "${'$'}ROOT/releases"
         ssh_parent_alive() {
           kill -0 "${'$'}SSH_PARENT" 2>/dev/null || return 1
@@ -188,7 +210,7 @@ object RemoteBootstrap {
           NODE_OK=1
         fi
         if [ "${'$'}NODE_OK" != 1 ]; then
-          progress '下载独立 Node.js 运行时'
+          progress 15 '下载独立 Node.js 运行时'
           ARCHIVE="${'$'}WORK/${'$'}NODE_NAME.tar.gz"
           if command -v curl >/dev/null 2>&1; then
             curl --fail --location --retry 3 --connect-timeout 15 --output "${'$'}ARCHIVE" "${'$'}NODE_URL"
@@ -198,7 +220,7 @@ object RemoteBootstrap {
             printf '服务器缺少 curl 或 wget\n' >&2
             exit 69
           fi
-          progress '校验 Node.js 下载文件'
+          progress 40 '校验 Node.js 下载文件'
           printf '%s  %s\n' "${'$'}NODE_SHA" "${'$'}ARCHIVE" | sha256sum -c -
           mkdir -p "${'$'}WORK/node"
           tar -xzf "${'$'}ARCHIVE" -C "${'$'}WORK/node" --strip-components=1
@@ -215,13 +237,14 @@ object RemoteBootstrap {
           mv "${'$'}WORK/node" "${'$'}NODE_DIR"
           NEW_NODE_DIR="${'$'}NODE_DIR"
         fi
-        progress '安装 Codex CLI $codexVersion'
+        progress 55 '准备 Codex CLI 安装目录'
         RELEASE_SLOT="$codexVersion-${'$'}${'$'}"
         while [ -e "${'$'}ROOT/releases/${'$'}RELEASE_SLOT" ]; do
           RELEASE_SLOT="${'$'}RELEASE_SLOT-next"
         done
         TEMP_RELEASE="${'$'}ROOT/releases/${'$'}RELEASE_SLOT"
         mkdir "${'$'}TEMP_RELEASE"
+        progress 65 '下载并安装 Codex CLI $codexVersion'
         PATH="${'$'}NODE_DIR/bin:${'$'}PATH" "${'$'}NODE_DIR/bin/npm" install --global --prefix "${'$'}TEMP_RELEASE" \
           "@openai/codex@$codexVersion" --omit=dev --no-audit --no-fund --loglevel=error
         CLI_JS="${'$'}TEMP_RELEASE/lib/node_modules/@openai/codex/bin/codex.js"
@@ -240,10 +263,30 @@ object RemoteBootstrap {
         "${'$'}WRAPPER" --version >/dev/null
         INSTALL_COMMITTED=1
         mv -f "${'$'}WRAPPER" "${'$'}BIN_DIR/codex-remote"
-        progress '验证 Codex app-server'
+        progress 90 '验证 Codex app-server'
         "${'$'}BIN_DIR/codex-remote" --version
-        progress '安装完成'
-    """.trimIndent()
+        progress 100 '安装完成'
+        """.trimIndent()
+    }
+
+    /** Reject whitespace/control characters before embedding the value in a remote shell script. */
+    internal fun validateProxyUrl(value: String): String {
+        val proxy = value.trim()
+        if (proxy.isEmpty()) return ""
+        require(proxy.all { !it.isWhitespace() && it.code in 0x20..0x7e }) {
+            "代理地址不能包含空格、换行或控制字符"
+        }
+        val scheme = proxy.substringBefore("://", missingDelimiterValue = "").lowercase(Locale.ROOT)
+        require(scheme in SUPPORTED_PROXY_SCHEMES && proxy.length > scheme.length + 3) {
+            "代理地址必须以 http://、https://、socks5:// 或 socks5h:// 开头"
+        }
+        require(proxy.substringAfter("://").substringBefore('/').isNotBlank()) {
+            "代理地址缺少主机"
+        }
+        return proxy
+    }
+
+    private val SUPPORTED_PROXY_SCHEMES = setOf("http", "https", "socks5", "socks5h")
 }
 
 private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"

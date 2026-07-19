@@ -21,6 +21,39 @@ class CodexPayloadParserTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     @Test
+    fun parsesAndReducesTokenUsageOnlyForActiveThread() {
+        val usage = json.parseToJsonElement(
+            """
+            {
+              "threadId":"thr-1",
+              "tokenUsage": {
+                "last": {"cachedInputTokens":2,"inputTokens":3,"outputTokens":5,"reasoningOutputTokens":1,"totalTokens":10},
+                "total": {"cachedInputTokens":20,"inputTokens":30,"outputTokens":50,"reasoningOutputTokens":10,"totalTokens":100},
+                "modelContextWindow": 200000
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+        val active = AppUiState(activeThread = top.asdb.codexremote.data.CodexThread(
+            id = "thr-1", title = "", preview = "", cwd = "", source = "", status = "idle",
+            createdAt = 0, updatedAt = 0, cliVersion = "",
+        ))
+        val reduced = CodexEventReducer.reduce(active, "thread/tokenUsage/updated", usage)
+        assertEquals(200000L, reduced.tokenUsage?.modelContextWindow)
+        assertEquals(10L, reduced.tokenUsage?.last?.totalTokens)
+
+        val ignored = CodexEventReducer.reduce(
+            active,
+            "thread/tokenUsage/updated",
+            buildJsonObject {
+                put("threadId", "other")
+                put("tokenUsage", usage.getValue("tokenUsage"))
+            },
+        )
+        assertEquals(null, ignored.tokenUsage)
+    }
+
+    @Test
     fun parsesThreadListAndTimeline() {
         val list = json.parseToJsonElement(
             """
