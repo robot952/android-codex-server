@@ -23,12 +23,19 @@ data class ServerProfile(
     val proxyUrl: String = "",
     val approvalMode: ApprovalMode = ApprovalMode.RequestApproval,
     val remoteCommand: String = "~/.local/bin/codex-remote app-server --listen stdio://",
+    /** Whether the automatic first-connection workspace prompt has already been presented. */
+    val workspacePromptShown: Boolean = false,
+    /** Per-server model preferences restored after reconnecting or restarting the app. */
+    val preferredModel: String = "",
+    val preferredEffort: String = "",
 )
 
 @Serializable
 data class StoredProfiles(
     val profiles: List<ServerProfile> = emptyList(),
     val selectedProfileId: String? = null,
+    /** Unsent composer text keyed by server id and thread id. */
+    val composerDrafts: Map<String, String> = emptyMap(),
 )
 
 enum class ConnectionPhase { Disconnected, Probing, Connecting, Installing, Connected, Failed }
@@ -244,6 +251,7 @@ data class AppUiState(
     val approvalQueue: List<ApprovalPrompt> = emptyList(),
     val attachments: List<PendingAttachment> = emptyList(),
     val composerClearNonce: Int = 0,
+    val composerDraft: String = "",
     val aggregateDiff: String = "",
     val tokenUsage: TokenUsage? = null,
     val error: String? = null,

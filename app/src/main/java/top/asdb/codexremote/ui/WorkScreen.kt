@@ -134,6 +134,7 @@ fun WorkScreen(
     onRename: (String) -> Unit,
     onUpload: (Context, Uri) -> Unit,
     onRemoveAttachment: (String) -> Unit,
+    onComposerChange: (String) -> Unit,
     onSelectModel: (String, String?) -> Unit,
     onSelectEffort: (String) -> Unit,
     onSelectApprovalMode: (ApprovalMode) -> Unit,
@@ -142,8 +143,6 @@ fun WorkScreen(
 ) {
     val listState = remember(state.activeThread?.id) { LazyListState() }
     val coroutineScope = rememberCoroutineScope()
-    var composer by remember(state.activeThread?.id) { mutableStateOf("") }
-    var submittedComposer by remember(state.activeThread?.id) { mutableStateOf<String?>(null) }
     var selectedDiff by remember { mutableStateOf<FileChange?>(null) }
     var showModels by remember { mutableStateOf(false) }
     var showPermissions by remember { mutableStateOf(false) }
@@ -174,12 +173,6 @@ fun WorkScreen(
                 atEnd -> followOutput = true
                 userScrolling -> followOutput = false
             }
-        }
-    }
-
-    LaunchedEffect(state.composerClearNonce) {
-        if (state.composerClearNonce > 0 && submittedComposer == composer) {
-            composer = ""
         }
     }
 
@@ -255,14 +248,11 @@ fun WorkScreen(
         bottomBar = {
             WorkComposer(
                 state = state,
-                value = composer,
-                onValueChange = { composer = it },
+                value = state.composerDraft,
+                onValueChange = onComposerChange,
                 onAttach = { filePicker.launch(arrayOf("image/*", "text/*", "application/pdf")) },
                 onRemoveAttachment = onRemoveAttachment,
-                onSend = {
-                    submittedComposer = composer
-                    onSend(composer)
-                },
+                onSend = { onSend(state.composerDraft) },
                 onStop = onStop,
                 onShowModels = { showModels = true },
                 onShowPermissions = { showPermissions = true },

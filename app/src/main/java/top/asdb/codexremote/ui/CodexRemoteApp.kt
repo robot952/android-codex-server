@@ -160,6 +160,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onRename = viewModel::renameActiveThread,
                 onUpload = viewModel::uploadAttachment,
                 onRemoveAttachment = viewModel::removeAttachment,
+                onComposerChange = viewModel::updateComposerDraft,
                 onSelectModel = viewModel::selectModel,
                 onSelectEffort = viewModel::selectEffort,
                 onSelectApprovalMode = viewModel::selectApprovalMode,

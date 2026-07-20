@@ -873,6 +873,9 @@ private val ServerProfileSaver = Saver<ServerProfile, ArrayList<String>>(
             profile.proxyUrl,
             profile.approvalMode.name,
             profile.remoteCommand,
+            profile.workspacePromptShown.toString(),
+            profile.preferredModel,
+            profile.preferredEffort,
         )
     },
     restore = { values ->
@@ -896,11 +899,14 @@ private val ServerProfileSaver = Saver<ServerProfile, ArrayList<String>>(
                     top.asdb.codexremote.data.ApprovalMode.valueOf(values[12])
                 }.getOrDefault(top.asdb.codexremote.data.ApprovalMode.RequestApproval),
                 remoteCommand = values[13],
+                workspacePromptShown = values[14].toBooleanStrictOrNull() ?: false,
+                preferredModel = values[15],
+                preferredEffort = values[16],
             )
         }
     },
 )
 
-private const val SAVED_PROFILE_FIELD_COUNT = 14
+private const val SAVED_PROFILE_FIELD_COUNT = 17
 private const val SAVED_STATE_CREDENTIAL_OMITTED = "\u0000codex-remote-credential-omitted\u0000"
 private const val MAX_PRIVATE_KEY_BYTES = 128 * 1024

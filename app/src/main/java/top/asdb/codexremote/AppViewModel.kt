@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -65,6 +66,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val sessionNavigationJobs = mutableMapOf<String, Job>()
     private val threadHistoryJobs = mutableMapOf<String, Job>()
     private val threadMutationJobs = mutableMapOf<String, Job>()
+    private var draftPersistJob: Job? = null
     private val sessionSnapshots = object : LinkedHashMap<String, SessionSnapshot>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SessionSnapshot>?): Boolean =
             size > MAX_PROFILE_SESSION_SNAPSHOTS
@@ -72,6 +74,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val pendingApprovalsByProfile = mutableMapOf<String, List<ApprovalPrompt>>()
     private val resumeNotificationBuffers = mutableMapOf<String, ResumeNotificationBuffer>()
     private val setupStates = ConcurrentHashMap<String, SetupUiState>()
+    private val composerDrafts = LinkedHashMap<String, String>().apply {
+        loaded.composerDrafts.entries.toList().takeLast(MAX_COMPOSER_DRAFTS).forEach { (key, value) ->
+            if (key.isNotBlank() && value.isNotBlank()) put(key, value.take(MAX_COMPOSER_DRAFT_CHARS))
+        }
+    }
     private val pendingFingerprints = mutableMapOf<String, String>()
     /** Resolved executable for a managed profile; keeps later saves from replacing its client. */
     private val effectiveProfiles = mutableMapOf<String, ServerProfile>()
@@ -127,7 +134,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             connections.diagnostics.collect { event ->
                 if (isActiveProfile(event.profileId)) {
-                    _state.update { it.copy(diagnostic = event.value.message) }
+                    val diagnostic = sanitizeCodexDiagnostic(event.value.message)
+                    if (shouldSurfaceCodexDiagnostic(diagnostic)) {
+                        _state.update { it.copy(diagnostic = diagnostic) }
+                    }
                 }
             }
         }
@@ -139,6 +149,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        persistProfiles()
+        draftPersistJob?.cancel()
         fingerprintJobs.values.forEach(Job::cancel)
         connectionJobs.values.forEach(Job::cancel)
         setupJobs.values.forEach(Job::cancel)
@@ -152,10 +164,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveProfile(profile: ServerProfile) {
-        val normalized = normalizeProfile(profile)
         val before = _state.value
-        val existing = before.profiles.firstOrNull { it.id == normalized.id }
-        val identityChanged = existing != null && !sameConnectionIdentity(existing, normalized)
+        val input = normalizeProfile(profile)
+        val existing = before.profiles.firstOrNull { it.id == input.id }
+        val identityChanged = existing != null && !sameConnectionIdentity(existing, input)
+        // These fields are managed outside the server form. Preserve them when an older form
+        // draft is saved, but reset them when the profile is repointed at a different server.
+        val normalized = if (existing != null && !identityChanged) {
+            input.copy(
+                workspacePromptShown = input.workspacePromptShown || existing.workspacePromptShown,
+                preferredModel = input.preferredModel.ifBlank { existing.preferredModel },
+                preferredEffort = input.preferredEffort.ifBlank { existing.preferredEffort },
+            )
+        } else input
         val switching = before.selectedProfileId != normalized.id
         if (identityChanged) {
             invalidateProfile(normalized.id)
@@ -169,6 +190,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             pendingApprovalsByProfile.remove(normalized.id)
             sessionSnapshots.remove(normalized.id)
             effectiveProfiles.remove(normalized.id)
+            removeComposerDrafts(normalized.id)
         }
         if (switching) {
             before.selectedProfileId?.let { sessionSnapshots[it] = SessionSnapshot.capture(before) }
@@ -241,6 +263,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         effectiveProfiles.remove(id)
         pendingFingerprints.remove(id)
         fingerprintProfiles.remove(id)
+        removeComposerDrafts(id)
         if (fingerprintDialogProfileId == id) fingerprintDialogProfileId = null
         fingerprintJobs.remove(id)?.cancel()
         connectionJobs.remove(id)?.cancel()
@@ -576,6 +599,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 diagnostic = null,
             )
         }
+        persistProfiles()
     }
 
     fun disconnectProfile(profileId: String) {
@@ -683,6 +707,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         running = false,
                         aggregateDiff = "",
                         tokenUsage = null,
+                        composerDraft = composerDraft(profile.id, thread.id),
                         loading = false,
                         )
                     }
@@ -719,6 +744,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     screen = AppScreen.Work,
                     activeThread = cachedThread,
+                    composerDraft = composerDraft(profileId, cachedThread.id),
                     timeline = timeline,
                     olderTurnsCursor = snapshot.nextTurnsCursor,
                     olderTurnsLoading = false,
@@ -760,6 +786,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             screen = AppScreen.Work,
                             activeThread = loaded,
+                            composerDraft = composerDraft(profileId, loaded.id),
                             timeline = timeline,
                             olderTurnsCursor = nextTurnsCursor,
                             olderTurnsLoading = false,
@@ -932,6 +959,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         profileId?.let { pendingApprovalsByProfile[it] = emptyList() }
+        persistProfiles()
         refreshThreads(silent = true)
     }
 
@@ -968,6 +996,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 if (isOperationCurrent(operation)) {
+                    composerDrafts.remove(composerDraftKey(profileId, thread.id))
                     applySessionState(profileId) {
                         it.copy(
                         activeTurnId = turnId.ifBlank { it.activeTurnId },
@@ -975,8 +1004,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         submitting = false,
                         attachments = emptyList(),
                         composerClearNonce = it.composerClearNonce + 1,
+                        composerDraft = "",
                         )
                     }
+                    persistProfiles()
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -1162,6 +1193,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 client.archiveThread(threadId)
                 if (isOperationCurrent(operation)) {
+                    composerDrafts.remove(composerDraftKey(profileId, threadId))
                     pendingApprovalsByProfile[profileId] = emptyList()
                     applySessionState(profileId) {
                         it.copy(
@@ -1176,9 +1208,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             approvalQueue = emptyList(),
                             aggregateDiff = "",
                             tokenUsage = null,
+                            composerDraft = "",
                             submitting = false,
                         )
                     }
+                    persistProfiles()
                     if (isActiveProfile(profileId)) refreshThreads(silent = true)
                 }
             } catch (error: CancellationException) {
@@ -1329,12 +1363,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(attachments = it.attachments.filterNot { file -> file.remotePath == path }) }
     }
 
+    fun updateComposerDraft(value: String) {
+        val current = _state.value
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
+        val bounded = value.take(MAX_COMPOSER_DRAFT_CHARS)
+        val key = composerDraftKey(profileId, threadId)
+        if (bounded.isBlank()) composerDrafts.remove(key) else composerDrafts[key] = bounded
+        trimComposerDrafts()
+        applySessionState(profileId) { state ->
+            if (state.activeThread?.id == threadId) state.copy(composerDraft = bounded) else state
+        }
+        draftPersistJob?.cancel()
+        draftPersistJob = viewModelScope.launch {
+            delay(500)
+            persistProfiles()
+            if (draftPersistJob === currentCoroutineContext()[Job]) draftPersistJob = null
+        }
+    }
+
     fun selectModel(model: String, effort: String?) {
-        _state.update { it.copy(selectedModel = model, selectedEffort = effort) }
+        persistModelPreference(model, effort.orEmpty())
     }
 
     fun selectEffort(effort: String) {
-        _state.update { it.copy(selectedEffort = effort) }
+        val model = _state.value.selectedModel ?: return
+        persistModelPreference(model, effort)
     }
 
     fun selectApprovalMode(mode: ApprovalMode) {
@@ -1584,6 +1638,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         models = emptyList(),
         selectedModel = null,
         selectedEffort = null,
+        composerDraft = "",
         workspacePickerVisible = false,
         workspaceLoading = false,
         workspaceCurrentPath = "",
@@ -1874,6 +1929,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showConnected(profile: ServerProfile, connected: ConnectedSession) {
         val defaultModel = connected.models.firstOrNull { it.isDefault } ?: connected.models.firstOrNull()
+        val preferredSelection = resolveModelSelection(
+            models = connected.models,
+            preferredModel = profile.preferredModel,
+            preferredEffort = profile.preferredEffort,
+        )
         val pinned = isPinnedVersion(connected.version)
         val versionMessage = if (pinned) {
             "已连接 · Codex ${BuildConfig.PINNED_CODEX_VERSION}"
@@ -1888,8 +1948,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             sessionSnapshots[profile.id] = SessionSnapshot(
                 threads = connected.threads,
                 models = connected.models,
-                selectedModel = defaultModel?.model,
-                selectedEffort = defaultModel?.defaultEffort,
+                selectedModel = preferredSelection.model ?: defaultModel?.model,
+                selectedEffort = preferredSelection.effort ?: defaultModel?.defaultEffort,
                 workspaceCurrentPath = connected.workspace?.currentPath ?: profile.workspace.ifBlank { "/" },
                 workspaceParentPath = connected.workspace?.parentPath,
                 workspaceDirectories = connected.workspace?.directories.orEmpty(),
@@ -1900,17 +1960,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         // Keep the resolved command/client created by loadConnectedSession.
         connections.select(profile.id)
+        val showInitialWorkspacePrompt = profile.workspace.isBlank() && !profile.workspacePromptShown
         _state.update {
+            val profiles = it.profiles.map { stored ->
+                if (stored.id == profile.id && !stored.workspacePromptShown) {
+                    stored.copy(workspacePromptShown = true)
+                } else stored
+            }
             it.copy(
+                profiles = profiles,
                 screen = AppScreen.Threads,
                 connection = ConnectionState(ConnectionPhase.Connected, versionMessage, connected.version),
                 threads = connected.threads,
                 models = connected.models,
-                selectedModel = it.selectedModel ?: defaultModel?.model,
-                selectedEffort = it.selectedEffort ?: defaultModel?.defaultEffort,
+                selectedModel = preferredSelection.model ?: defaultModel?.model,
+                selectedEffort = preferredSelection.effort ?: defaultModel?.defaultEffort,
                 approvalMode = profile.approvalMode,
                 sandbox = profile.approvalMode.sandbox,
-                workspacePickerVisible = true,
+                workspacePickerVisible = showInitialWorkspacePrompt,
                 workspaceLoading = false,
                 workspaceCurrentPath = connected.workspace?.currentPath
                     ?: profile.workspace.ifBlank { "/" },
@@ -1940,6 +2007,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else it.diagnostic,
             ).also { updated -> sessionSnapshots[profile.id] = SessionSnapshot.capture(updated) }
         }
+        persistProfiles()
     }
 
     private fun currentProfile(): ServerProfile? {
@@ -1959,7 +2027,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun persistProfiles() {
         val state = _state.value
-        store.save(StoredProfiles(state.profiles, state.selectedProfileId))
+        store.save(StoredProfiles(state.profiles, state.selectedProfileId, composerDrafts.toMap()))
+    }
+
+    private fun persistModelPreference(model: String, effort: String) {
+        _state.update { current ->
+            val profiles = current.profiles.map { profile ->
+                if (profile.id == current.selectedProfileId) {
+                    profile.copy(preferredModel = model, preferredEffort = effort)
+                } else profile
+            }
+            current.copy(
+                profiles = profiles,
+                selectedModel = model,
+                selectedEffort = effort.ifBlank { null },
+            )
+        }
+        persistProfiles()
+    }
+
+    private fun composerDraft(profileId: String, threadId: String): String =
+        composerDrafts[composerDraftKey(profileId, threadId)].orEmpty()
+
+    private fun removeComposerDrafts(profileId: String) {
+        val prefix = "$profileId\u0000"
+        composerDrafts.keys.removeAll { it.startsWith(prefix) }
+    }
+
+    private fun trimComposerDrafts() {
+        while (composerDrafts.size > MAX_COMPOSER_DRAFTS) {
+            composerDrafts.remove(composerDrafts.keys.first())
+        }
     }
 
     private fun showConnectionError(error: Throwable, profileId: String? = _state.value.selectedProfileId) {
@@ -1989,6 +2087,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
         private const val MAX_PENDING_APPROVALS = 8
+        private const val MAX_COMPOSER_DRAFTS = 64
+        private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
     }
 }
 
@@ -2014,6 +2114,38 @@ private data class SetupUiState(
 )
 
 private fun TimelineEntry.sessionIdentity(): String = "$turnId\u0000$kind\u0000$id"
+
+internal data class ResolvedModelSelection(val model: String?, val effort: String?)
+
+internal fun resolveModelSelection(
+    models: List<top.asdb.codexremote.data.CodexModel>,
+    preferredModel: String,
+    preferredEffort: String,
+): ResolvedModelSelection {
+    val selected = models.firstOrNull { it.model == preferredModel }
+        ?: models.firstOrNull { it.isDefault }
+        ?: models.firstOrNull()
+        ?: return ResolvedModelSelection(null, null)
+    val effort = preferredEffort.takeIf {
+        it.isNotBlank() && (selected.efforts.isEmpty() || it in selected.efforts)
+    } ?: selected.defaultEffort.takeIf(String::isNotBlank)
+    return ResolvedModelSelection(selected.model, effort)
+}
+
+internal fun sanitizeCodexDiagnostic(message: String): String =
+    ANSI_ESCAPE_REGEX.replace(message, "").trim()
+
+internal fun shouldSurfaceCodexDiagnostic(message: String): Boolean {
+    if (message.isBlank()) return false
+    return !message.contains("could not find bubblewrap", ignoreCase = true) &&
+        !message.contains("sandboxing#prerequisites", ignoreCase = true) &&
+        !message.contains("will use the bun", ignoreCase = true)
+}
+
+private fun composerDraftKey(profileId: String, threadId: String): String =
+    "$profileId\u0000$threadId"
+
+private val ANSI_ESCAPE_REGEX = Regex("\\u001B\\[[0-9;]*[A-Za-z]")
 
 internal data class OlderTimelineMerge(
     val timeline: List<TimelineEntry>,
@@ -2152,6 +2284,7 @@ private data class SessionSnapshot(
     val tokenUsage: top.asdb.codexremote.data.TokenUsage? = null,
     val attachments: List<PendingAttachment> = emptyList(),
     val composerClearNonce: Int = 0,
+    val composerDraft: String = "",
     val workspaceCurrentPath: String = "",
     val workspaceParentPath: String? = null,
     val workspaceDirectories: List<top.asdb.codexremote.data.RemoteDirectory> = emptyList(),
@@ -2177,6 +2310,7 @@ private data class SessionSnapshot(
         tokenUsage = tokenUsage,
         attachments = attachments,
         composerClearNonce = composerClearNonce,
+        composerDraft = composerDraft,
         workspaceCurrentPath = workspaceCurrentPath,
         workspaceParentPath = workspaceParentPath,
         workspaceDirectories = workspaceDirectories,
@@ -2210,6 +2344,7 @@ private data class SessionSnapshot(
                 tokenUsage = state.tokenUsage,
                 attachments = state.attachments,
                 composerClearNonce = state.composerClearNonce,
+                composerDraft = state.composerDraft,
                 workspaceCurrentPath = state.workspaceCurrentPath,
                 workspaceParentPath = state.workspaceParentPath,
                 workspaceDirectories = state.workspaceDirectories,
