@@ -1,3 +1,7 @@
 <resources>
-    <string name="app_name">Codex Remote</string>
+    <string name="app_name">codex</string>
+    <string name="connection_notification_channel">远程连接</string>
+    <string name="connection_notification_channel_description">在后台保持 SSH 和 Codex 通道</string>
+    <string name="connection_notification_title">Codex 连接保护已开启</string>
+    <string name="connection_notification_text">返回应用可继续当前远程会话</string>
 </resources>

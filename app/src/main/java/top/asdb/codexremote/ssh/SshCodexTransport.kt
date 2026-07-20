@@ -21,6 +21,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonPrimitive
 import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
@@ -41,6 +43,14 @@ import kotlin.coroutines.resumeWithException
 
 internal data class SshTransportEvent(
     val generation: Long,
+    val value: String,
+)
+
+internal data class SshOversizedLineEvent(
+    val generation: Long,
+    val id: String?,
+    val idIsString: Boolean,
+    val hasMethod: Boolean,
     val value: String,
 )
 
@@ -67,6 +77,9 @@ class SshCodexTransport {
 
     private val _diagnostics = MutableSharedFlow<SshTransportEvent>()
     internal val diagnostics: SharedFlow<SshTransportEvent> = _diagnostics.asSharedFlow()
+
+    private val _oversizedLines = MutableSharedFlow<SshOversizedLineEvent>()
+    internal val oversizedLines: SharedFlow<SshOversizedLineEvent> = _oversizedLines.asSharedFlow()
 
     private val _closed = MutableSharedFlow<SshTransportEvent>()
     internal val closed: SharedFlow<SshTransportEvent> = _closed.asSharedFlow()
@@ -145,11 +158,29 @@ class SshCodexTransport {
                             reader = InputStreamReader(stdout, Charsets.UTF_8),
                             maxLineChars = MAX_APP_SERVER_LINE_CHARS,
                             onLine = { _lines.emit(SshTransportEvent(generation, it)) },
-                            onOversizedLine = {
+                            onOversizedLine = { prefix ->
+                                val envelope = inspectJsonRpcEnvelopePrefix(prefix)
+                                val message = when {
+                                    envelope.id != null && !envelope.hasMethod ->
+                                        "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已改用精简响应"
+                                    envelope.id != null ->
+                                        "Codex 服务端请求过大，已拒绝该请求以避免回合卡住"
+                                    else ->
+                                        "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已丢弃该条通知"
+                                }
+                                _oversizedLines.emit(
+                                    SshOversizedLineEvent(
+                                        generation,
+                                        envelope.id,
+                                        envelope.idIsString,
+                                        envelope.hasMethod,
+                                        message,
+                                    ),
+                                )
                                 _diagnostics.emit(
                                     SshTransportEvent(
                                         generation,
-                                        "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已丢弃该行",
+                                        message,
                                     ),
                                 )
                             },
@@ -214,11 +245,22 @@ class SshCodexTransport {
             script = RemoteBootstrap.installScript(codexVersion, nodeVersion, profile.proxyUrl),
             timeoutMs = INSTALL_TIMEOUT_MS,
             remoteCommand = INSTALL_SHELL_COMMAND,
+            operationName = "远程安装",
         ) { line ->
             if (line.startsWith(PROGRESS_PREFIX)) {
                 onProgress(parseInstallProgress(line.removePrefix(PROGRESS_PREFIX)))
             }
         }
+    }
+
+    /** Removes only the managed Codex Remote runtime; system and VS Code Codex installs are kept. */
+    suspend fun uninstallRemote(profile: ServerProfile) {
+        executeScript(
+            profile = profile,
+            script = RemoteBootstrap.uninstallScript,
+            timeoutMs = UNINSTALL_TIMEOUT_MS,
+            operationName = "远程卸载",
+        )
     }
 
     suspend fun sendLine(line: String, expectedGeneration: Long) = withContext(Dispatchers.IO) {
@@ -330,8 +372,8 @@ class SshCodexTransport {
                 require(profile.password.isNotEmpty()) { "密码不能为空" }
                 setPassword(profile.password)
             }
-            serverAliveInterval = 15_000
-            serverAliveCountMax = 3
+            serverAliveInterval = KEEPALIVE_INTERVAL_MS
+            serverAliveCountMax = KEEPALIVE_MISSES_BEFORE_CLOSE
             timeout = CONNECT_TIMEOUT_MS
         }
     }
@@ -341,12 +383,21 @@ class SshCodexTransport {
         script: String,
         timeoutMs: Long,
         remoteCommand: String = "sh -s",
+        operationName: String = "远程命令",
         onLine: (String) -> Unit = {},
     ): List<String> = coroutineScope {
         val sessionRef = AtomicReference<Session?>()
         val channelRef = AtomicReference<ChannelExec?>()
         val task = async(Dispatchers.IO) {
-            executeScriptBlocking(profile, script, remoteCommand, onLine, sessionRef, channelRef)
+            executeScriptBlocking(
+                profile,
+                script,
+                remoteCommand,
+                operationName,
+                onLine,
+                sessionRef,
+                channelRef,
+            )
         }
         try {
             withTimeout(timeoutMs) { task.await() }
@@ -362,6 +413,7 @@ class SshCodexTransport {
         profile: ServerProfile,
         script: String,
         remoteCommand: String,
+        operationName: String,
         onLine: (String) -> Unit,
         sessionRef: AtomicReference<Session?>,
         channelRef: AtomicReference<ChannelExec?>,
@@ -405,7 +457,7 @@ class SshCodexTransport {
                     .joinToString("\n")
                 throw IllegalStateException(
                     buildString {
-                        append("远程安装命令失败（退出码 ").append(exitCode).append('）')
+                        append(operationName).append("失败（退出码 ").append(exitCode).append('）')
                         if (detail.isNotBlank()) append("\n").append(detail)
                     },
                 )
@@ -591,14 +643,17 @@ class SshCodexTransport {
     companion object {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val CHANNEL_TIMEOUT_MS = 10_000
+        private const val KEEPALIVE_INTERVAL_MS = 15_000
+        private const val KEEPALIVE_MISSES_BEFORE_CLOSE = 12
         private const val PROBE_TIMEOUT_MS = 30_000L
         private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
+        private const val UNINSTALL_TIMEOUT_MS = 60_000L
         internal const val INSTALL_SHELL_COMMAND = "CODEX_REMOTE_SSH_PID=\$PPID setsid --wait sh -s"
         private const val PROGRESS_PREFIX = "::progress::"
         private const val MAX_CAPTURED_LINES = 64
         private const val MAX_LINE_CHARS = 8 * 1024
         private const val MAX_STDERR_BYTES = 8 * 1024
-        private const val MAX_APP_SERVER_LINE_CHARS = 4 * 1024 * 1024
+        private const val MAX_APP_SERVER_LINE_CHARS = 8 * 1024 * 1024
     }
 }
 
@@ -637,20 +692,22 @@ internal suspend fun readBoundedJsonLines(
     reader: Reader,
     maxLineChars: Int,
     onLine: suspend (String) -> Unit,
-    onOversizedLine: suspend () -> Unit,
+    onOversizedLine: suspend (prefix: String) -> Unit,
 ) {
     require(maxLineChars > 0)
     reader.use {
         val buffer = CharArray(8 * 1024)
         var line = StringBuilder(minOf(maxLineChars, 8 * 1024))
+        var prefix = StringBuilder(minOf(maxLineChars, MAX_OVERSIZED_JSON_PREFIX_CHARS))
         var discarding = false
         suspend fun finishLine() {
             if (discarding) {
-                onOversizedLine()
+                onOversizedLine(prefix.toString().trimEnd('\r'))
             } else {
                 onLine(line.toString().trimEnd('\r'))
             }
             line = StringBuilder(minOf(maxLineChars, 8 * 1024))
+            prefix = StringBuilder(minOf(maxLineChars, MAX_OVERSIZED_JSON_PREFIX_CHARS))
             discarding = false
         }
         while (true) {
@@ -660,16 +717,132 @@ internal suspend fun readBoundedJsonLines(
                 val character = buffer[index]
                 if (character == '\n') {
                     finishLine()
-                } else if (!discarding && line.length < maxLineChars) {
-                    line.append(character)
-                } else if (!discarding && character == '\r' && line.length == maxLineChars) {
-                    line.append(character)
-                } else if (!discarding) {
-                    line = StringBuilder()
-                    discarding = true
+                } else {
+                    if (prefix.length < MAX_OVERSIZED_JSON_PREFIX_CHARS) prefix.append(character)
+                    if (!discarding && line.length < maxLineChars) {
+                        line.append(character)
+                    } else if (!discarding && character == '\r' && line.length == maxLineChars) {
+                        line.append(character)
+                    } else if (!discarding) {
+                        line = StringBuilder()
+                        discarding = true
+                    }
                 }
             }
         }
         if (discarding || line.isNotEmpty()) finishLine()
     }
 }
+
+internal data class JsonRpcEnvelopeHint(
+    val id: String?,
+    val idIsString: Boolean,
+    val hasMethod: Boolean,
+)
+
+/** Reads only complete top-level fields present in a retained oversized-line prefix. */
+internal fun inspectJsonRpcEnvelopePrefix(value: String): JsonRpcEnvelopeHint {
+    var index = value.skipJsonWhitespace(0)
+    if (value.getOrNull(index) != '{') return JsonRpcEnvelopeHint(null, false, false)
+    index += 1
+    var id: String? = null
+    var idIsString = false
+    var hasMethod = false
+    while (index < value.length) {
+        index = value.skipJsonWhitespace(index)
+        when (value.getOrNull(index)) {
+            '}' -> break
+            ',' -> {
+                index += 1
+                continue
+            }
+        }
+        val key = value.parseJsonString(index) ?: break
+        index = value.skipJsonWhitespace(key.nextIndex)
+        if (value.getOrNull(index) != ':') break
+        index = value.skipJsonWhitespace(index + 1)
+        if (key.value == "method") hasMethod = true
+        if (key.value == "id") {
+            value.parseJsonRpcId(index)?.let { parsed ->
+                id = parsed.value
+                idIsString = parsed.isString
+            }
+        }
+        index = value.skipJsonValue(index) ?: break
+    }
+    return JsonRpcEnvelopeHint(id, idIsString, hasMethod)
+}
+
+private data class ParsedJsonString(val value: String, val nextIndex: Int)
+
+private fun String.parseJsonString(start: Int): ParsedJsonString? {
+    if (getOrNull(start) != '"') return null
+    var escaped = false
+    var index = start + 1
+    while (index < length) {
+        val character = this[index]
+        if (!escaped && character == '"') {
+            val token = substring(start, index + 1)
+            val decoded = runCatching { Json.parseToJsonElement(token).jsonPrimitive.content }.getOrNull()
+                ?: return null
+            return ParsedJsonString(decoded, index + 1)
+        }
+        escaped = !escaped && character == '\\'
+        if (character != '\\') escaped = false
+        index += 1
+    }
+    return null
+}
+
+private data class ParsedJsonRpcId(val value: String, val isString: Boolean)
+
+private fun String.parseJsonRpcId(start: Int): ParsedJsonRpcId? {
+    parseJsonString(start)?.let { return ParsedJsonRpcId(it.value, true) }
+    var end = start
+    while (end < length && this[end] !in charArrayOf(',', '}', ' ', '\t', '\r', '\n')) end += 1
+    return substring(start, end).takeIf { it.matches(Regex("-?(0|[1-9][0-9]*)")) }
+        ?.let { ParsedJsonRpcId(it, false) }
+}
+
+private fun String.skipJsonWhitespace(start: Int): Int {
+    var index = start
+    while (index < length && this[index].isWhitespace()) index += 1
+    return index
+}
+
+private fun String.skipJsonValue(start: Int): Int? {
+    val first = getOrNull(start) ?: return null
+    if (first == '"') return parseJsonString(start)?.nextIndex
+    if (first != '{' && first != '[') {
+        var index = start
+        while (index < length && this[index] != ',' && this[index] != '}') index += 1
+        return index
+    }
+    val closes = ArrayDeque<Char>()
+    closes.addLast(if (first == '{') '}' else ']')
+    var inString = false
+    var escaped = false
+    var index = start + 1
+    while (index < length) {
+        val character = this[index]
+        if (inString) {
+            if (!escaped && character == '"') inString = false
+            escaped = !escaped && character == '\\'
+            if (character != '\\') escaped = false
+        } else {
+            when (character) {
+                '"' -> inString = true
+                '{' -> closes.addLast('}')
+                '[' -> closes.addLast(']')
+                '}', ']' -> {
+                    if (closes.isEmpty() || closes.removeLast() != character) return null
+                    if (closes.isEmpty()) return index + 1
+                }
+            }
+        }
+        index += 1
+    }
+    return null
+}
+
+private const val MAX_OVERSIZED_JSON_PREFIX_CHARS = 64 * 1024

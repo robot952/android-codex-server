@@ -117,6 +117,28 @@ class CodexConnectionManager(
         onProgress: (RemoteInstallProgress) -> Unit,
     ) = ensureEntry(profile).client.installRemoteDetailed(profile, onProgress)
 
+    /** Uninstalls only this app's isolated remote runtime and leaves all other Codex installs. */
+    suspend fun uninstallRemote(profile: ServerProfile) {
+        val entry = ensureEntry(profile)
+        entry.connectMutex.withLock {
+            updateState(entry, ConnectionState(ConnectionPhase.Installing, "正在卸载远程 App Service"))
+            try {
+                entry.client.uninstallRemote(profile)
+                // Idempotently invalidate any reader/close event that raced with the remote cleanup.
+                entry.client.disconnect()
+                entry.cliVersion = null
+                updateState(entry, ConnectionState())
+            } catch (error: Throwable) {
+                entry.cliVersion = null
+                updateState(
+                    entry,
+                    ConnectionState(ConnectionPhase.Failed, error.message ?: "卸载失败"),
+                )
+                throw error
+            }
+        }
+    }
+
     suspend fun connect(profile: ServerProfile): String {
         val entry = ensureEntry(profile)
         return entry.connectMutex.withLock {

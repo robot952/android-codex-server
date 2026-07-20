@@ -56,6 +56,8 @@ import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
 import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -342,13 +344,16 @@ private fun ThreadRow(thread: CodexThread, onClick: () -> Unit) {
 
 private fun relativeTime(epochSeconds: Long): String {
     if (epochSeconds <= 0) return ""
-    val delta = (Instant.now().epochSecond - epochSeconds).coerceAtLeast(0)
+    val normalizedEpoch = if (epochSeconds > 100_000_000_000L) epochSeconds / 1_000 else epochSeconds
+    val delta = (Instant.now().epochSecond - normalizedEpoch).coerceAtLeast(0)
     return when {
         delta < 60 -> "刚刚"
         delta < 3_600 -> "${delta / 60} 分钟"
         delta < 86_400 -> "${delta / 3_600} 小时"
         delta < 604_800 -> "${delta / 86_400} 天"
         delta < 2_592_000 -> "${delta / 604_800} 周"
-        else -> "${delta / 2_592_000} 月"
+        else -> DateTimeFormatter.ofPattern("yyyy-MM-dd")
+            .withZone(ZoneId.systemDefault())
+            .format(Instant.ofEpochSecond(normalizedEpoch))
     }
 }

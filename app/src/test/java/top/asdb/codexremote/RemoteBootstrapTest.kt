@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.asdb.codexremote.ssh.RemoteBootstrap
+import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
 class RemoteBootstrapTest {
@@ -159,5 +160,72 @@ class RemoteBootstrapTest {
 
         assertTrue(process.waitFor(5, TimeUnit.SECONDS))
         assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+    }
+
+    @Test
+    fun `uninstaller removes only app managed runtime`() {
+        val home = Files.createTempDirectory("codex-remote-uninstall").toFile()
+        var vscodeProcess: Process? = null
+        try {
+            val managedRoot = home.resolve(".local/share/codex-remote")
+            val managedWrapper = home.resolve(".local/bin/codex-remote")
+            val systemCodex = home.resolve(".local/bin/codex")
+            val accountState = home.resolve(".codex/auth.json")
+            val appUploads = home.resolve(".codex-mobile/uploads/attachment.txt")
+            val vscodeState = home.resolve(".vscode-server/extensions/openai.chatgpt")
+            managedRoot.resolve("runtime/node/bin").mkdirs()
+            managedRoot.resolve("runtime/node/bin/node").writeText("managed")
+            requireNotNull(managedWrapper.parentFile).mkdirs()
+            managedWrapper.writeText("managed")
+            systemCodex.writeText("system")
+            requireNotNull(accountState.parentFile).mkdirs()
+            accountState.writeText("account")
+            requireNotNull(appUploads.parentFile).mkdirs()
+            appUploads.writeText("attachment")
+            vscodeState.mkdirs()
+            vscodeProcess = ProcessBuilder(
+                "bash",
+                "-c",
+                "while :; do sleep 1; done",
+                home.resolve(".vscode-server/bin/node").absolutePath,
+                home.resolve(".vscode-server/extensions/openai/codex.js").absolutePath,
+                "app-server",
+            ).start()
+
+            val process = ProcessBuilder("sh", "-c", RemoteBootstrap.uninstallScript)
+                .apply { environment()["HOME"] = home.absolutePath }
+                .start()
+
+            assertTrue(process.waitFor(10, TimeUnit.SECONDS))
+            assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+            assertFalse(managedRoot.exists())
+            assertFalse(managedWrapper.exists())
+            assertFalse(home.resolve(".codex-mobile").exists())
+            assertTrue(systemCodex.exists())
+            assertTrue(accountState.exists())
+            assertTrue(vscodeState.exists())
+            assertTrue(vscodeProcess.isAlive)
+        } finally {
+            vscodeProcess?.destroyForcibly()
+            vscodeProcess?.waitFor(2, TimeUnit.SECONDS)
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `generated uninstaller has valid posix shell syntax and no broad process matcher`() {
+        val process = ProcessBuilder("sh", "-n").start()
+        process.outputStream.bufferedWriter().use { it.write(RemoteBootstrap.uninstallScript) }
+
+        assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+        assertFalse(RemoteBootstrap.uninstallScript.contains("pkill"))
+        assertFalse(RemoteBootstrap.uninstallScript.contains("\$HOME/.codex\""))
+        assertFalse(RemoteBootstrap.uninstallScript.contains(".vscode-server"))
+        assertTrue(
+            RemoteBootstrap.uninstallScript.contains(
+                "\$ROOT\"/runtime/*/bin/node\\ \"\$ROOT\"/releases/*/lib/node_modules/@openai/codex/bin/codex.js\\ app-server*",
+            ),
+        )
     }
 }

@@ -51,6 +51,51 @@ class CodexPayloadParserTest {
             },
         )
         assertEquals(null, ignored.tokenUsage)
+
+        val unknownWindow = json.parseToJsonElement(
+            """{
+              "threadId":"thr-1",
+              "tokenUsage": {
+                "last": {"cachedInputTokens":0,"inputTokens":1,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":1},
+                "total": {"cachedInputTokens":0,"inputTokens":1,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":1},
+                "modelContextWindow": null
+              }
+            }""",
+        ).jsonObject
+        val withoutWindow = CodexEventReducer.reduce(active, "thread/tokenUsage/updated", unknownWindow)
+        assertEquals(0L, withoutWindow.tokenUsage?.modelContextWindow)
+    }
+
+    @Test
+    fun `context compaction is pending until completed and accepts fresh usage`() {
+        val active = AppUiState(activeThread = top.asdb.codexremote.data.CodexThread(
+            id = "thr-1", title = "", preview = "", cwd = "", source = "", status = "idle",
+            createdAt = 0, updatedAt = 0, cliVersion = "",
+        ))
+        val item = json.parseToJsonElement(
+            """{"threadId":"thr-1","turnId":"turn-1","item":{"id":"compact-1","type":"contextCompaction"}}""",
+        ).jsonObject
+
+        val started = CodexEventReducer.reduce(active, "item/started", item)
+        assertEquals("正在压缩上下文", started.timeline.single().text)
+        assertEquals("inProgress", started.timeline.single().status)
+
+        val completed = CodexEventReducer.reduce(started, "item/completed", item)
+        assertEquals("上下文已压缩", completed.timeline.single().text)
+        assertEquals("completed", completed.timeline.single().status)
+
+        val usage = json.parseToJsonElement(
+            """{
+              "threadId":"thr-1","turnId":"turn-1",
+              "tokenUsage": {
+                "last": {"cachedInputTokens":0,"inputTokens":20,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":20},
+                "total": {"cachedInputTokens":0,"inputTokens":200,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":200},
+                "modelContextWindow": 1000
+              }
+            }""",
+        ).jsonObject
+        val refreshed = CodexEventReducer.reduce(completed, "thread/tokenUsage/updated", usage)
+        assertEquals(20L, refreshed.tokenUsage?.last?.totalTokens)
     }
 
     @Test
@@ -182,6 +227,49 @@ class CodexPayloadParserTest {
     }
 
     @Test
+    fun `keeps indexed reasoning summary separate from raw reasoning`() {
+        var state = AppUiState()
+        fun reasoning(method: String, indexName: String, index: Int, delta: String = "") {
+            state = CodexEventReducer.reduce(state, method, buildJsonObject {
+                put("itemId", "reasoning")
+                put("turnId", "turn-1")
+                put(indexName, index)
+                if (delta.isNotEmpty()) put("delta", delta)
+            })
+        }
+
+        reasoning("item/reasoning/textDelta", "contentIndex", 0, "raw-content")
+        assertEquals("raw-content", state.timeline.single().text)
+
+        reasoning("item/reasoning/summaryPartAdded", "summaryIndex", 1)
+        reasoning("item/reasoning/summaryTextDelta", "summaryIndex", 1, "second")
+        reasoning("item/reasoning/summaryTextDelta", "summaryIndex", 0, "first")
+        reasoning("item/reasoning/textDelta", "contentIndex", 0, "-more-raw")
+
+        val entry = state.timeline.single()
+        assertEquals("first\n\nsecond", entry.text)
+        assertEquals(listOf("first", "second"), entry.reasoningSummary)
+        assertEquals(listOf("raw-content-more-raw"), entry.reasoningContent)
+    }
+
+    @Test
+    fun `parses object shaped reasoning parts from resumed thread`() {
+        val item = json.parseToJsonElement(
+            """{
+              "id":"reasoning-1",
+              "type":"reasoning",
+              "summary":[{"type":"summary_text","text":"summary"}],
+              "content":[{"type":"reasoning_text","text":"raw"}]
+            }""",
+        ).jsonObject
+
+        val entry = requireNotNull(CodexPayloadParser.parseItem(item, "turn-1"))
+        assertEquals("summary", entry.text)
+        assertEquals(listOf("summary"), entry.reasoningSummary)
+        assertEquals(listOf("raw"), entry.reasoningContent)
+    }
+
+    @Test
     fun capsCommandOutputAndCompletedPayloads() {
         val commandDelta = buildJsonObject {
             put("itemId", "command-large")
@@ -296,5 +384,128 @@ class CodexPayloadParserTest {
         ).jsonObject
         val withError = CodexEventReducer.reduce(state, "error", error)
         assertEquals("网络中断", withError.timeline.single().text)
+    }
+
+    @Test
+    fun keepsThreadListRuntimeStatusInSyncWithTurnNotifications() {
+        val listed = top.asdb.codexremote.data.CodexThread(
+            id = "thr-1", title = "任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "idle", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+        )
+        val base = AppUiState(threads = listOf(listed))
+        val started = CodexEventReducer.reduce(
+            base,
+            "turn/started",
+            json.parseToJsonElement(
+                """{"threadId":"thr-1","turn":{"id":"turn-1"}}""",
+            ).jsonObject,
+        )
+        assertEquals("active", started.threads.single().status)
+        assertEquals("turn-1", started.threads.single().activeTurnId)
+
+        val completed = CodexEventReducer.reduce(
+            started,
+            "turn/completed",
+            json.parseToJsonElement(
+                """{"threadId":"thr-1","turn":{"id":"turn-1"}}""",
+            ).jsonObject,
+        )
+        assertEquals("idle", completed.threads.single().status)
+        assertEquals(null, completed.threads.single().activeTurnId)
+    }
+
+    @Test
+    fun backgroundStatusDoesNotInheritActiveTurnFromOpenThread() {
+        val active = top.asdb.codexremote.data.CodexThread(
+            id = "thr-active", title = "当前任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "active", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+            activeTurnId = "turn-active",
+        )
+        val background = top.asdb.codexremote.data.CodexThread(
+            id = "thr-background", title = "后台任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "idle", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+        )
+        val state = AppUiState(
+            activeThread = active,
+            activeTurnId = "turn-active",
+            running = true,
+            threads = listOf(active, background),
+        )
+
+        // The protocol status notification has no activeTurnId field. It must not reuse the
+        // turn belonging to the currently open thread when updating a background row.
+        val reduced = CodexEventReducer.reduce(
+            state,
+            "thread/status/changed",
+            json.parseToJsonElement(
+                """{"threadId":"thr-background","status":{"type":"active"}}""",
+            ).jsonObject,
+        )
+
+        val listedBackground = reduced.threads.first { it.id == "thr-background" }
+        assertEquals("active", listedBackground.status)
+        assertEquals(null, listedBackground.activeTurnId)
+        assertEquals("turn-active", reduced.activeTurnId)
+        assertEquals("thr-active", reduced.activeThread?.id)
+    }
+
+    @Test
+    fun backgroundStatusKeepsPreviouslyKnownTurnWhenAvailable() {
+        val background = top.asdb.codexremote.data.CodexThread(
+            id = "thr-background", title = "后台任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "active", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+            activeTurnId = "turn-background",
+        )
+        val state = AppUiState(
+            activeThread = top.asdb.codexremote.data.CodexThread(
+                id = "thr-active", title = "当前任务", preview = "", cwd = "/srv/app", source = "appServer",
+                status = "idle", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+            ),
+            activeTurnId = null,
+            threads = listOf(background),
+        )
+
+        val reduced = CodexEventReducer.reduce(
+            state,
+            "thread/status/changed",
+            json.parseToJsonElement(
+                """{"threadId":"thr-background","status":{"type":"active"}}""",
+            ).jsonObject,
+        )
+
+        assertEquals("turn-background", reduced.threads.single().activeTurnId)
+    }
+
+    @Test
+    fun backgroundTurnStartWithoutIdDoesNotInheritOpenThreadTurn() {
+        val active = top.asdb.codexremote.data.CodexThread(
+            id = "thr-active", title = "当前任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "active", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+            activeTurnId = "turn-active",
+        )
+        val background = top.asdb.codexremote.data.CodexThread(
+            id = "thr-background", title = "后台任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "idle", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+        )
+        val state = AppUiState(
+            activeThread = active,
+            activeTurnId = "turn-active",
+            running = true,
+            threads = listOf(active, background),
+        )
+
+        val reduced = CodexEventReducer.reduce(
+            state,
+            "turn/started",
+            json.parseToJsonElement(
+                """{"threadId":"thr-background","turn":{}}""",
+            ).jsonObject,
+        )
+
+        val listedBackground = reduced.threads.first { it.id == "thr-background" }
+        assertEquals("active", listedBackground.status)
+        assertEquals(null, listedBackground.activeTurnId)
+        assertEquals("turn-active", reduced.activeTurnId)
+        assertEquals("thr-active", reduced.activeThread?.id)
     }
 }

@@ -21,6 +21,7 @@ class ThreadSessionCache(
         val thread: CodexThread,
         val timeline: List<TimelineEntry>,
         val savedAtMs: Long,
+        val nextTurnsCursor: String? = null,
     )
 
     private data class WeightedSnapshot(val value: Snapshot, val weightChars: Int)
@@ -43,11 +44,11 @@ class ThreadSessionCache(
     fun getStale(threadId: String): Snapshot? = entries[threadId]?.value
 
     @Synchronized
-    fun put(thread: CodexThread, timeline: List<TimelineEntry>) {
-        removeLocked(thread.id)
-        val weight = snapshotWeight(thread, timeline)
+    fun put(thread: CodexThread, timeline: List<TimelineEntry>, nextTurnsCursor: String? = null) {
+        val weight = snapshotWeight(thread, timeline, nextTurnsCursor)
         if (weight > maxWeightChars) return
-        val snapshot = Snapshot(thread, timeline.toList(), nowMs())
+        removeLocked(thread.id)
+        val snapshot = Snapshot(thread, timeline.toList(), nowMs(), nextTurnsCursor)
         entries[thread.id] = WeightedSnapshot(snapshot, weight)
         currentWeightChars += weight
         while (entries.size > maxEntries || currentWeightChars > maxWeightChars) {
@@ -73,19 +74,14 @@ class ThreadSessionCache(
         entries.remove(threadId)?.let { currentWeightChars -= it.weightChars }
     }
 
-    private fun snapshotWeight(thread: CodexThread, timeline: List<TimelineEntry>): Int {
+    private fun snapshotWeight(
+        thread: CodexThread,
+        timeline: List<TimelineEntry>,
+        nextTurnsCursor: String?,
+    ): Int {
         var result = thread.id.length + thread.title.length + thread.preview.length + thread.cwd.length +
-            thread.source.length + thread.status.length + thread.cliVersion.length
-        timeline.forEach { entry ->
-            result = saturatedAdd(
-                result,
-                entry.id.length + entry.title.length + entry.text.length + entry.status.length +
-                    entry.command.length + entry.cwd.length + entry.output.length + entry.turnId.length,
-            )
-            entry.changes.forEach { change ->
-                result = saturatedAdd(result, change.path.length + change.kind.length + change.diff.length)
-            }
-        }
+            thread.source.length + thread.status.length + thread.cliVersion.length + nextTurnsCursor.orEmpty().length
+        result = saturatedAdd(result, estimateTimelineWeightChars(timeline))
         return result
     }
 
@@ -93,8 +89,28 @@ class ThreadSessionCache(
         if (right > Int.MAX_VALUE - left) Int.MAX_VALUE else left + right
 
     companion object {
-        const val DEFAULT_MAX_ENTRIES = 12
+        const val DEFAULT_MAX_ENTRIES = 8
         const val DEFAULT_TTL_MS = 30 * 60 * 1000L
-        const val DEFAULT_MAX_WEIGHT_CHARS = 8 * 1024 * 1024
+        const val DEFAULT_MAX_WEIGHT_CHARS = 2 * 1024 * 1024
     }
 }
+
+internal fun estimateTimelineWeightChars(timeline: List<TimelineEntry>): Int {
+    var result = 0
+    timeline.forEach { entry ->
+        result = saturatedAdd(
+            result,
+            entry.id.length + entry.title.length + entry.text.length + entry.status.length +
+                entry.command.length + entry.cwd.length + entry.output.length + entry.turnId.length,
+        )
+        entry.reasoningSummary.forEach { result = saturatedAdd(result, it.length) }
+        entry.reasoningContent.forEach { result = saturatedAdd(result, it.length) }
+        entry.changes.forEach { change ->
+            result = saturatedAdd(result, change.path.length + change.kind.length + change.diff.length)
+        }
+    }
+    return result
+}
+
+private fun saturatedAdd(left: Int, right: Int): Int =
+    if (right > Int.MAX_VALUE - left) Int.MAX_VALUE else left + right

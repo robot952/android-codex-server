@@ -35,7 +35,68 @@ import top.asdb.codexremote.ssh.SshTransportEvent
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
-data class CodexNotification(val generation: Long, val method: String, val params: JsonObject)
+private const val INITIAL_TURNS_PAGE_LIMIT = 4
+private const val OLDER_TURNS_PAGE_LIMIT = 4
+private const val OVERSIZED_RETRY_PAGE_LIMIT = 1
+
+internal fun buildThreadResumeParams(
+    threadId: String,
+    approvalMode: ApprovalMode,
+    itemsView: String = "full",
+    limit: Int = INITIAL_TURNS_PAGE_LIMIT,
+): JsonObject {
+    require(limit > 0)
+    return buildJsonObject {
+        put("threadId", threadId)
+        put("approvalPolicy", approvalMode.approvalPolicy)
+        put("excludeTurns", true)
+        put("initialTurnsPage", buildJsonObject {
+            put("limit", limit)
+            put("sortDirection", "desc")
+            put("itemsView", itemsView)
+        })
+    }
+}
+
+internal fun buildThreadTurnsListParams(
+    threadId: String,
+    cursor: String,
+    itemsView: String = "full",
+    limit: Int = OLDER_TURNS_PAGE_LIMIT,
+): JsonObject {
+    require(limit > 0)
+    return buildJsonObject {
+        put("threadId", threadId)
+        put("cursor", cursor)
+        put("limit", limit)
+        put("sortDirection", "desc")
+        put("itemsView", itemsView)
+    }
+}
+
+data class CodexNotification(
+    val generation: Long,
+    val method: String,
+    val params: JsonObject,
+    val sequence: Long = 0,
+)
+
+data class ResumedThread(
+    val thread: CodexThread,
+    val timeline: List<TimelineEntry>,
+    /** Last wire message included in the thread/resume response snapshot. */
+    val responseSequence: Long,
+    val nextTurnsCursor: String? = null,
+    val turnIds: List<String> = emptyList(),
+    val itemsView: String = "full",
+)
+
+data class ThreadTurnsPage(
+    val timeline: List<TimelineEntry>,
+    val nextCursor: String?,
+    val turnIds: List<String> = emptyList(),
+    val itemsView: String = "full",
+)
 
 data class CodexApproval(val generation: Long, val prompt: ApprovalPrompt)
 
@@ -47,7 +108,11 @@ private data class ServerRequest(
     val params: JsonObject,
 )
 
+private data class RpcResponse(val result: JsonElement, val sequence: Long)
+
 open class CodexRpcException(message: String) : RuntimeException(message)
+
+class CodexResponseTooLargeException(message: String) : CodexRpcException(message)
 
 class CodexAppServerClient(
     private val scope: CoroutineScope,
@@ -69,9 +134,10 @@ class CodexAppServerClient(
     private var activeThreadCache: ThreadSessionCache = threadCache
     private val json = Json { ignoreUnknownKeys = true }
     private val nextId = AtomicLong(1)
+    private val nextWireSequence = AtomicLong(0)
     private val activeGeneration = AtomicLong(NO_GENERATION)
     private val closedGeneration = AtomicLong(NO_GENERATION)
-    private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonElement>>()
+    private val pending = ConcurrentHashMap<String, CompletableDeferred<RpcResponse>>()
     private val serverRequests = ConcurrentHashMap<String, ServerRequest>()
 
     private val _notifications = MutableSharedFlow<CodexNotification>()
@@ -100,12 +166,31 @@ class CodexAppServerClient(
             }
         }
         scope.launch {
+            transport.oversizedLines.collect { event ->
+                if (!isGenerationActive(event.generation)) return@collect
+                val id = event.id ?: return@collect
+                val error = CodexResponseTooLargeException(event.value)
+                if (event.hasMethod) {
+                    runCatching {
+                        sendErrorResponse(
+                            event.generation,
+                            id,
+                            event.idIsString,
+                            -32600,
+                            "Codex server request exceeded the mobile response limit",
+                        )
+                    }
+                } else {
+                    pending.remove(id)?.completeExceptionally(error)
+                }
+            }
+        }
+        scope.launch {
             transport.closed.collect { event ->
                 if (!activeGeneration.compareAndSet(event.generation, NO_GENERATION)) return@collect
                 closedGeneration.set(event.generation)
                 val error = CodexRpcException(event.value)
-                pending.values.forEach { deferred -> deferred.completeExceptionally(error) }
-                pending.clear()
+                failPending(error)
                 serverRequests.clear()
                 val closed = CodexConnectionEvent(event.generation, event.value)
                 _diagnostics.emit(closed)
@@ -137,6 +222,12 @@ class CodexAppServerClient(
         nodeVersion = BuildConfig.PINNED_NODE_VERSION,
         onProgress = onProgress,
     )
+
+    /** Disconnects this client and removes only the runtime managed by Codex Remote. */
+    suspend fun uninstallRemote(profile: ServerProfile) {
+        disconnect()
+        transport.uninstallRemote(profile)
+    }
 
     suspend fun connect(profile: ServerProfile): String {
         if (connectedProfileId != profile.id) {
@@ -207,19 +298,91 @@ class CodexAppServerClient(
     suspend fun openThread(
         threadId: String,
         approvalMode: ApprovalMode,
-    ): Pair<CodexThread, List<TimelineEntry>> {
-        val result = request(
-            "thread/resume",
-            buildJsonObject {
-                put("threadId", threadId)
-                put("approvalPolicy", approvalMode.approvalPolicy)
-            },
-            timeoutMs = threadRequestTimeoutMs,
-        ).jsonObject
-        val snapshot = CodexPayloadParser.parseThreadPayload(result)
-        activeThreadCache.put(snapshot.first, snapshot.second)
-        return snapshot
+    ): ResumedThread {
+        val (response, itemsView) = try {
+            requestThreadResume(threadId, approvalMode, itemsView = "full") to "full"
+        } catch (_: CodexResponseTooLargeException) {
+            try {
+                requestThreadResume(
+                    threadId,
+                    approvalMode,
+                    itemsView = "full",
+                    limit = OVERSIZED_RETRY_PAGE_LIMIT,
+                ) to "full"
+            } catch (_: CodexResponseTooLargeException) {
+                try {
+                    requestThreadResume(
+                        threadId,
+                        approvalMode,
+                        itemsView = "summary",
+                        limit = OVERSIZED_RETRY_PAGE_LIMIT,
+                    ) to "summary"
+                } catch (_: CodexResponseTooLargeException) {
+                    requestThreadResume(
+                        threadId,
+                        approvalMode,
+                        itemsView = "notLoaded",
+                        limit = OVERSIZED_RETRY_PAGE_LIMIT,
+                    ) to "notLoaded"
+                }
+            }
+        }
+        return parseResumedThreadPayload(response.result.jsonObject, response.sequence).copy(itemsView = itemsView)
     }
+
+    suspend fun listThreadTurnsPage(threadId: String, cursor: String): ThreadTurnsPage {
+        val (result, itemsView) = try {
+            requestThreadTurnsPage(threadId, cursor, itemsView = "full") to "full"
+        } catch (_: CodexResponseTooLargeException) {
+            try {
+                requestThreadTurnsPage(
+                    threadId,
+                    cursor,
+                    itemsView = "full",
+                    limit = OVERSIZED_RETRY_PAGE_LIMIT,
+                ) to "full"
+            } catch (_: CodexResponseTooLargeException) {
+                try {
+                    requestThreadTurnsPage(
+                        threadId,
+                        cursor,
+                        itemsView = "summary",
+                        limit = OVERSIZED_RETRY_PAGE_LIMIT,
+                    ) to "summary"
+                } catch (_: CodexResponseTooLargeException) {
+                    requestThreadTurnsPage(
+                        threadId,
+                        cursor,
+                        itemsView = "notLoaded",
+                        limit = OVERSIZED_RETRY_PAGE_LIMIT,
+                    ) to "notLoaded"
+                }
+            }
+        }
+        return parseThreadTurnsPagePayload(result.jsonObject).copy(itemsView = itemsView)
+    }
+
+    private suspend fun requestThreadResume(
+        threadId: String,
+        approvalMode: ApprovalMode,
+        itemsView: String,
+        limit: Int = INITIAL_TURNS_PAGE_LIMIT,
+    ): RpcResponse = requestSequenced(
+        "thread/resume",
+        buildThreadResumeParams(threadId, approvalMode, itemsView, limit),
+        timeoutMs = threadRequestTimeoutMs,
+    )
+
+    private suspend fun requestThreadTurnsPage(
+        threadId: String,
+        cursor: String,
+        itemsView: String,
+        limit: Int = OLDER_TURNS_PAGE_LIMIT,
+    ): JsonElement = request(
+        "thread/turns/list",
+        buildThreadTurnsListParams(threadId, cursor, itemsView, limit),
+        timeoutMs = threadRequestTimeoutMs,
+    )
 
     suspend fun readThread(threadId: String): Pair<CodexThread, List<TimelineEntry>> {
         val result = request(
@@ -236,15 +399,13 @@ class CodexAppServerClient(
     }
 
     /** Returns a recent snapshot without doing network I/O. */
-    fun cachedThread(threadId: String): Pair<CodexThread, List<TimelineEntry>>? =
-        activeThreadCache.get(threadId)?.let { it.thread to it.timeline }
+    fun cachedThread(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.get(threadId)
 
     /** Returns an expired snapshot for a UI fast path while a remote refresh is running. */
-    fun cachedThreadStale(threadId: String): Pair<CodexThread, List<TimelineEntry>>? =
-        activeThreadCache.getStale(threadId)?.let { it.thread to it.timeline }
+    fun cachedThreadStale(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.getStale(threadId)
 
-    fun cacheThread(thread: CodexThread, timeline: List<TimelineEntry>) {
-        activeThreadCache.put(thread, timeline)
+    fun cacheThread(thread: CodexThread, timeline: List<TimelineEntry>, nextTurnsCursor: String? = null) {
+        activeThreadCache.put(thread, timeline, nextTurnsCursor)
     }
 
     suspend fun startThread(
@@ -307,6 +468,15 @@ class CodexAppServerClient(
         })
     }
 
+    /** Starts the app-server's native manual context compaction flow. */
+    suspend fun compactThread(threadId: String) {
+        request(
+            "thread/compact/start",
+            buildJsonObject { put("threadId", threadId) },
+            timeoutMs = threadRequestTimeoutMs,
+        )
+    }
+
     suspend fun listDirectories(path: String?): RemoteDirectoryListing = transport.listDirectories(path)
 
     suspend fun archiveThread(threadId: String) {
@@ -314,14 +484,26 @@ class CodexAppServerClient(
         activeThreadCache.remove(threadId)
     }
 
-    suspend fun rollbackThread(threadId: String, turns: Int = 1): Pair<CodexThread, List<TimelineEntry>> {
-        val result = request("thread/rollback", buildJsonObject {
-            put("threadId", threadId)
-            put("numTurns", turns)
-        }, timeoutMs = threadRequestTimeoutMs).jsonObject
-        val snapshot = CodexPayloadParser.parseThreadPayload(result)
-        activeThreadCache.put(snapshot.first, snapshot.second)
-        return snapshot
+    suspend fun rollbackThread(
+        threadId: String,
+        approvalMode: ApprovalMode,
+        turns: Int = 1,
+    ): ResumedThread {
+        return try {
+            val response = requestSequenced(
+                "thread/rollback",
+                buildJsonObject {
+                    put("threadId", threadId)
+                    put("numTurns", turns)
+                },
+                timeoutMs = threadRequestTimeoutMs,
+            )
+            parseResumedThreadPayload(response.result.jsonObject, response.sequence)
+        } catch (_: CodexResponseTooLargeException) {
+            // The rollback mutation already succeeded on the server; resume the resulting thread
+            // with bounded paging instead of issuing rollback a second time.
+            openThread(threadId, approvalMode)
+        }
     }
 
     suspend fun setThreadName(threadId: String, name: String) {
@@ -330,7 +512,11 @@ class CodexAppServerClient(
             put("name", name)
         })
         activeThreadCache.getStale(threadId)?.let { cached ->
-            activeThreadCache.put(cached.thread.copy(title = name), cached.timeline)
+            activeThreadCache.put(
+                cached.thread.copy(title = name),
+                cached.timeline,
+                cached.nextTurnsCursor,
+            )
         }
     }
 
@@ -418,10 +604,16 @@ class CodexAppServerClient(
         method: String,
         params: JsonObject,
         timeoutMs: Long = requestTimeoutMs,
-    ): JsonElement {
+    ): JsonElement = requestSequenced(method, params, timeoutMs).result
+
+    private suspend fun requestSequenced(
+        method: String,
+        params: JsonObject,
+        timeoutMs: Long = requestTimeoutMs,
+    ): RpcResponse {
         val generation = requireActiveGeneration()
         val id = nextId.getAndIncrement().toString()
-        val deferred = CompletableDeferred<JsonElement>()
+        val deferred = CompletableDeferred<RpcResponse>()
         pending[id] = deferred
         try {
             transport.sendLine(
@@ -439,8 +631,9 @@ class CodexAppServerClient(
         return try {
             withTimeout(timeoutMs) { deferred.await() }
         } catch (error: TimeoutCancellationException) {
-            pending.remove(id)
             throw CodexRequestTimeoutException(method, timeoutMs)
+        } finally {
+            pending.remove(id, deferred)
         }
     }
 
@@ -506,14 +699,23 @@ class CodexAppServerClient(
         activeGeneration.set(NO_GENERATION)
         closedGeneration.set(NO_GENERATION)
         val error = CodexRpcException(message)
-        pending.values.forEach { it.completeExceptionally(error) }
-        pending.clear()
+        failPending(error)
         serverRequests.clear()
+    }
+
+    /** Removes the current snapshot before resuming callers, so immediate retries cannot be erased. */
+    private fun failPending(error: Throwable) {
+        val snapshot = pending.entries.map { it.key to it.value }
+        val removed = snapshot.mapNotNull { (id, deferred) ->
+            deferred.takeIf { pending.remove(id, deferred) }
+        }
+        removed.forEach { it.completeExceptionally(error) }
     }
 
     private suspend fun handleLine(event: SshTransportEvent) {
         val generation = event.generation
         if (!isGenerationActive(generation)) return
+        val sequence = nextWireSequence.incrementAndGet()
         val message = runCatching { json.parseToJsonElement(event.value).jsonObject }.getOrElse {
             if (isGenerationActive(generation)) {
                 _diagnostics.emit(
@@ -569,7 +771,12 @@ class CodexAppServerClient(
             } else {
                 if (!isGenerationActive(generation)) return
                 _notifications.emit(
-                    CodexNotification(generation, method, message.obj("params") ?: JsonObject(emptyMap())),
+                    CodexNotification(
+                        generation,
+                        method,
+                        message.obj("params") ?: JsonObject(emptyMap()),
+                        sequence,
+                    ),
                 )
             }
             return
@@ -581,7 +788,7 @@ class CodexAppServerClient(
         if (error != null) {
             deferred.completeExceptionally(CodexRpcException(error.string("message").ifBlank { error.toString() }))
         } else {
-            deferred.complete(message["result"] ?: JsonNull)
+            deferred.complete(RpcResponse(message["result"] ?: JsonNull, sequence))
         }
     }
 
@@ -590,6 +797,39 @@ class CodexAppServerClient(
         const val DEFAULT_REQUEST_TIMEOUT_MS = 120_000L
         const val DEFAULT_THREAD_REQUEST_TIMEOUT_MS = 180_000L
     }
+}
+
+internal fun parseThreadTurnsPagePayload(result: JsonObject): ThreadTurnsPage {
+    val turns = result.array("data").orEmpty().mapNotNull { it as? JsonObject }.asReversed()
+    val timeline = CodexPayloadParser.parseTimeline(
+        JsonObject(mapOf("turns" to JsonArray(turns))),
+    )
+    return ThreadTurnsPage(
+        timeline = timeline,
+        nextCursor = result.string("nextCursor").takeIf { it.isNotBlank() },
+        turnIds = turns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },
+    )
+}
+
+internal fun parseResumedThreadPayload(result: JsonObject, responseSequence: Long): ResumedThread {
+    val thread = result.obj("thread") ?: result
+    val initialPage = result.obj("initialTurnsPage")
+    // Paged data is requested newest-first and must be reversed. A legacy thread.turns payload is
+    // already chronological, so reversing it would scramble the entire restored conversation.
+    val chronologicalTurns = if (initialPage != null) {
+        initialPage.array("data").orEmpty().mapNotNull { it as? JsonObject }.asReversed()
+    } else {
+        thread.array("turns").orEmpty().mapNotNull { it as? JsonObject }
+    }
+    val hydratedThread = JsonObject(thread + ("turns" to JsonArray(chronologicalTurns)))
+    val snapshot = CodexPayloadParser.parseThreadPayload(hydratedThread)
+    return ResumedThread(
+        thread = snapshot.first,
+        timeline = snapshot.second,
+        responseSequence = responseSequence,
+        nextTurnsCursor = initialPage?.string("nextCursor")?.takeIf { it.isNotBlank() },
+        turnIds = chronologicalTurns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },
+    )
 }
 
 class CodexRequestTimeoutException(

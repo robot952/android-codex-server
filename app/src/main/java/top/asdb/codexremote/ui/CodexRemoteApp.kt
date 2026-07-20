@@ -2,6 +2,7 @@ package top.asdb.codexremote.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,16 +23,21 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -58,22 +64,31 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.asdb.codexremote.AppViewModel
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalPrompt
+import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.ui.theme.CodexBorder
+import top.asdb.codexremote.ui.theme.CodexGreen
+import top.asdb.codexremote.ui.theme.CodexMuted
+import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun CodexRemoteApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    var serverSwitcherVisible by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -119,6 +134,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onSave = viewModel::saveProfile,
                 onDelete = viewModel::deleteProfile,
                 onDisconnectProfile = viewModel::disconnectProfile,
+                onUninstallRemote = viewModel::uninstallRemote,
                 onProbeFingerprint = viewModel::probeFingerprint,
                 onConnect = viewModel::connect,
             )
@@ -130,7 +146,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onCreate = viewModel::createThread,
                 onOpen = viewModel::openThread,
                 onSelectWorkspace = viewModel::showWorkspacePicker,
-                onShowServers = viewModel::showServers,
+                onShowServers = { serverSwitcherVisible = true },
             )
 
             AppScreen.Work -> WorkScreen(
@@ -147,7 +163,8 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onSelectModel = viewModel::selectModel,
                 onSelectEffort = viewModel::selectEffort,
                 onSelectApprovalMode = viewModel::selectApprovalMode,
-                onSelectWorkspace = viewModel::showWorkspacePicker,
+                onCompact = viewModel::compactActiveThread,
+                onLoadOlder = viewModel::loadOlderThreadHistory,
             )
             }
         }
@@ -164,6 +181,21 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             } else {
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp)
             },
+        )
+    }
+
+    if (serverSwitcherVisible) {
+        ServerSwitcherDialog(
+            state = state,
+            onSelect = { profileId ->
+                serverSwitcherVisible = false
+                viewModel.selectProfile(profileId)
+            },
+            onManage = {
+                serverSwitcherVisible = false
+                viewModel.showServers()
+            },
+            onDismiss = { serverSwitcherVisible = false },
         )
     }
 
@@ -193,49 +225,62 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     }
 
     state.remoteSetup?.let { setup ->
+        val profileId = state.selectedProfileId
+        val savedProxy = state.profiles.firstOrNull { it.id == profileId }?.proxyUrl.orEmpty()
+        var setupProxy by remember(profileId, setup) { mutableStateOf(savedProxy) }
+        var proxyFocused by remember(profileId, setup) { mutableStateOf(false) }
         AlertDialog(
+            modifier = Modifier.imePadding(),
             onDismissRequest = {
                 if (!state.setupInProgress) viewModel.cancelRemoteSetup()
             },
             icon = { Icon(Icons.Default.Download, contentDescription = null) },
             title = { Text(setup.title) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(setup.detail)
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Text(
-                                "${setup.os} · ${setup.architecture}",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                            Text(
-                                "Codex ${top.asdb.codexremote.BuildConfig.PINNED_CODEX_VERSION} · " +
-                                    "Node ${top.asdb.codexremote.BuildConfig.PINNED_NODE_VERSION}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            Text(
-                                "${setup.home}/.local/share/codex-remote",
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            state.profiles.firstOrNull { it.id == state.selectedProfileId }
-                                ?.proxyUrl?.trim()?.takeIf { it.isNotBlank() }?.let { proxy ->
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AnimatedVisibility(visible = !proxyFocused) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(setup.detail)
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                                ) {
                                     Text(
-                                        "下载代理：$proxy",
+                                        "${setup.os} · ${setup.architecture}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                    Text(
+                                        "Codex ${top.asdb.codexremote.BuildConfig.PINNED_CODEX_VERSION} · " +
+                                            "Node ${top.asdb.codexremote.BuildConfig.PINNED_NODE_VERSION}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        "${setup.home}/.local/share/codex-remote",
                                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                        maxLines = 2,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                            }
                         }
                     }
+                    OutlinedTextField(
+                        value = setupProxy,
+                        onValueChange = { setupProxy = it },
+                        modifier = Modifier.fillMaxWidth().onFocusChanged { proxyFocused = it.isFocused },
+                        enabled = !state.setupInProgress,
+                        singleLine = true,
+                        label = { Text("下载代理（可选）") },
+                        placeholder = { Text("http://127.0.0.1:7890") },
+                        supportingText = { Text("仅用于本次远程 Node.js 和 Codex 下载，并保存到此服务器") },
+                    )
                     if (state.setupInProgress) {
                         val progress = if (state.setupProgressPercent > 0) {
                             state.setupProgressPercent.coerceIn(0, 100) / 100f
@@ -266,7 +311,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             },
             confirmButton = {
                 Button(
-                    onClick = viewModel::installRemoteSetup,
+                    onClick = { viewModel.installRemoteSetup(setupProxy) },
                     enabled = !state.setupInProgress,
                 ) { Text(if (state.setupInProgress) "安装中" else "安装并连接") }
             },
@@ -294,6 +339,94 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             onApprove = { answer -> viewModel.answerApproval(true, answer) },
             onDecline = viewModel::dismissApproval,
         )
+    }
+}
+
+@Composable
+private fun ServerSwitcherDialog(
+    state: AppUiState,
+    onSelect: (String) -> Unit,
+    onManage: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = CodexSurfaceRaised,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().widthIn(max = 440.dp),
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 10.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "切换服务器",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${state.connectionStates.values.count { it.phase == ConnectionPhase.Connected }} 台已连接",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭")
+                    }
+                }
+                HorizontalDivider(color = CodexBorder)
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp),
+                ) {
+                    items(state.profiles, key = { it.id }) { profile ->
+                        val connected = state.connectionStates[profile.id]?.phase == ConnectionPhase.Connected
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { onSelect(profile.id) }
+                                .padding(horizontal = 18.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.size(8.dp).clip(CircleShape)
+                                    .background(if (connected) CodexGreen else CodexMuted.copy(alpha = 0.62f)),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    profile.name.ifBlank { "未命名服务器" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "${profile.username}@${profile.host.ifBlank { "待配置" }}:${profile.port}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (profile.id == state.selectedProfileId) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "当前服务器",
+                                    modifier = Modifier.size(19.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(color = CodexBorder)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onManage) { Text("管理服务器") }
+                }
+            }
+        }
     }
 }
 
@@ -432,12 +565,13 @@ private fun ApprovalDialog(
         answers[question.id].orEmpty().isNotBlank()
     }
     AlertDialog(
+        modifier = Modifier.imePadding(),
         onDismissRequest = {},
         icon = { Icon(Icons.Default.Security, contentDescription = null) },
         title = { Text(prompt.title) },
         text = {
             Column(
-                modifier = Modifier.imePadding().verticalScroll(rememberScrollState()),
+                modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (prompt.detail.isNotBlank()) Text(prompt.detail)

@@ -31,8 +31,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -137,9 +137,10 @@ fun WorkScreen(
     onSelectModel: (String, String?) -> Unit,
     onSelectEffort: (String) -> Unit,
     onSelectApprovalMode: (ApprovalMode) -> Unit,
-    onSelectWorkspace: () -> Unit,
+    onCompact: () -> Unit = {},
+    onLoadOlder: () -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
+    val listState = remember(state.activeThread?.id) { LazyListState() }
     val coroutineScope = rememberCoroutineScope()
     var composer by remember(state.activeThread?.id) { mutableStateOf("") }
     var submittedComposer by remember(state.activeThread?.id) { mutableStateOf<String?>(null) }
@@ -151,6 +152,7 @@ fun WorkScreen(
     var rollbackRequested by remember { mutableStateOf(false) }
     var archiveRequested by remember { mutableStateOf(false) }
     var fullAccessRequested by remember { mutableStateOf(false) }
+    var compactRequested by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { onUpload(context, it) }
@@ -165,7 +167,7 @@ fun WorkScreen(
         snapshotFlow {
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val atEnd = layout.totalItemsCount == 0 || lastVisible >= layout.totalItemsCount - 2
+            val atEnd = layout.totalItemsCount == 0 || lastVisible >= layout.totalItemsCount - 1
             atEnd to listState.isScrollInProgress
         }.distinctUntilChanged().collect { (atEnd, userScrolling) ->
             when {
@@ -187,8 +189,11 @@ fun WorkScreen(
         lastEntry?.output?.length,
         lastEntry?.changes?.size,
         state.aggregateDiff.length,
+        state.olderTurnsCursor,
+        state.olderTurnsLoading,
     ) {
         val trailingItemIndex = state.timeline.size +
+            (if (state.olderTurnsCursor != null || state.olderTurnsLoading) 1 else 0) +
             (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
             (if (state.running) 1 else 0)
         if (followOutput && trailingItemIndex > 0) {
@@ -225,18 +230,20 @@ fun WorkScreen(
                 },
                 actions = {
                     Box {
-                        IconButton(onClick = { showMenu = true }) {
+                        IconButton(onClick = { showMenu = true }, enabled = !state.loading) {
                             Icon(Icons.Default.MoreVert, contentDescription = "更多")
                         }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             DropdownMenuItem(
                                 text = { Text("重命名") },
                                 leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                enabled = !state.loading && !state.submitting,
                                 onClick = { showMenu = false; renameRequested = true },
                             )
                             DropdownMenuItem(
                                 text = { Text("归档") },
                                 leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                                enabled = !state.loading && !state.submitting && !state.running,
                                 onClick = { showMenu = false; archiveRequested = true },
                             )
                         }
@@ -259,7 +266,7 @@ fun WorkScreen(
                 onStop = onStop,
                 onShowModels = { showModels = true },
                 onShowPermissions = { showPermissions = true },
-                onSelectWorkspace = onSelectWorkspace,
+                onCompact = { compactRequested = true },
             )
         },
     ) { padding ->
@@ -267,15 +274,50 @@ fun WorkScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 64.dp),
+                // Keep the final assistant item above the composer. A fixed safe area covers the
+                // expanded multi-line composer as well as navigation-bar insets on small phones.
+                contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 184.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(state.timeline, key = { it.id }) { entry ->
+                if (state.olderTurnsCursor != null || state.olderTurnsLoading) {
+                    item(key = "older-history-loader") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(42.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            TextButton(
+                                onClick = onLoadOlder,
+                                enabled = !state.loading && !state.olderTurnsLoading,
+                            ) {
+                                if (state.olderTurnsLoading) {
+                                    CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(
+                                        Icons.Default.ArrowUpward,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                Spacer(Modifier.width(7.dp))
+                                Text(if (state.olderTurnsLoading) "正在加载" else "加载更早记录")
+                            }
+                        }
+                    }
+                }
+                items(
+                    items = state.timeline,
+                    key = { entry ->
+                        "${state.activeThread?.id}:${entry.turnId}:${entry.kind}:${entry.id}"
+                    },
+                    contentType = { entry -> entry.kind },
+                ) { entry ->
                     TimelineItem(
                         entry = entry,
                         onOpenDiff = { selectedDiff = it },
                         onReview = onReview,
-                        canRollback = !state.running && entry.id == latestFileChangeId,
+                        canMutate = !state.loading && !state.submitting && !state.running,
+                        canRollback = !state.loading && !state.submitting &&
+                            !state.running && entry.id == latestFileChangeId,
                         onRollback = { rollbackRequested = true },
                     )
                 }
@@ -341,10 +383,6 @@ fun WorkScreen(
                     }
                 }
             }
-            ContextUsageRing(
-                usage = contextUsageDisplay(state),
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp),
-            )
         }
     }
 
@@ -438,14 +476,41 @@ fun WorkScreen(
         )
     }
 
+    if (compactRequested) {
+        AlertDialog(
+            onDismissRequest = { compactRequested = false },
+            title = { Text("压缩会话") },
+            text = { Text("是否压缩当前会话？压缩后可以释放一部分上下文空间。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    compactRequested = false
+                    onCompact()
+                }) { Text("压缩") }
+            },
+            dismissButton = {
+                TextButton(onClick = { compactRequested = false }) { Text("取消") }
+            },
+        )
+    }
+
     if (renameRequested) {
         var name by remember { mutableStateOf(state.activeThread?.title.orEmpty()) }
         AlertDialog(
+            modifier = Modifier.imePadding(),
             onDismissRequest = { renameRequested = false },
             title = { Text("重命名任务") },
             text = {
-                OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth().imePadding())
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = { onRename(name); renameRequested = false }) { Text("保存") }
@@ -491,6 +556,7 @@ private fun TimelineItem(
     entry: TimelineEntry,
     onOpenDiff: (FileChange) -> Unit,
     onReview: () -> Unit,
+    canMutate: Boolean,
     canRollback: Boolean,
     onRollback: () -> Unit,
 ) {
@@ -508,7 +574,7 @@ private fun TimelineItem(
         TimelineKind.AgentMessage -> MarkdownText(entry.text, Modifier.fillMaxWidth())
         TimelineKind.Reasoning, TimelineKind.Plan -> CollapsibleText(entry)
         TimelineKind.Command -> CommandBlock(entry)
-        TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canRollback, onRollback)
+        TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canMutate, canRollback, onRollback)
         TimelineKind.Tool -> ToolBlock(entry)
         TimelineKind.Review -> Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -565,7 +631,7 @@ private fun CollapsibleText(entry: TimelineEntry) {
 
 @Composable
 private fun CommandBlock(entry: TimelineEntry) {
-    var expanded by remember(entry.id) { mutableStateOf(entry.status == "failed") }
+    var expanded by remember(entry.id) { mutableStateOf(false) }
     Surface(
         color = CodexSurfaceRaised,
         shape = RoundedCornerShape(6.dp),
@@ -579,30 +645,41 @@ private fun CommandBlock(entry: TimelineEntry) {
             ) {
                 Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("终端", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                Text("运行了命令", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
                 StatusText(entry.status)
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null, modifier = Modifier.size(18.dp))
+                    contentDescription = if (expanded) "收起命令详情" else "展开命令详情",
+                    modifier = Modifier.size(18.dp))
             }
-            SelectionContainer {
-                Text(
-                    entry.command,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    modifier = Modifier.fillMaxWidth().background(Color(0xFF151515))
-                        .padding(horizontal = 11.dp, vertical = 9.dp),
-                )
-            }
-            AnimatedVisibility(expanded && entry.output.isNotBlank()) {
-                SelectionContainer {
-                    Text(
-                        entry.output,
-                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 0.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp)
-                            .verticalScroll(rememberScrollState())
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 11.dp, vertical = 10.dp),
-                    )
+            AnimatedVisibility(expanded) {
+                Column {
+                    SelectionContainer {
+                        Text(
+                            entry.command.ifBlank { "未提供命令内容" },
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.fillMaxWidth().background(Color(0xFF151515))
+                                .padding(horizontal = 11.dp, vertical = 9.dp),
+                        )
+                    }
+                    if (entry.output.isNotBlank()) {
+                        HorizontalDivider(color = CodexBorder)
+                        SelectionContainer {
+                            Text(
+                                entry.output,
+                                style = TextStyle(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    letterSpacing = 0.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 11.dp, vertical = 10.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -610,62 +687,39 @@ private fun CommandBlock(entry: TimelineEntry) {
 }
 
 /**
- * Codex does not expose a stable context window size on every app-server build.
- * Keep the indicator useful by estimating the consumed transcript size while
- * retaining a fixed visual footprint for the eventual server-provided value.
+ * Context usage is based on the latest request, which represents the current
+ * context. The cumulative total grows across turns and must not drive the ring.
  */
-private data class ContextUsageDisplay(val fraction: Float, val estimated: Boolean)
+private data class ContextUsageDisplay(val fraction: Float, val available: Boolean)
 
 @Composable
-private fun ContextUsageRing(usage: ContextUsageDisplay, modifier: Modifier = Modifier) {
-    val percent = (usage.fraction * 100).toInt().coerceIn(0, 100)
-    val label = if (usage.estimated) "~$percent%" else "$percent%"
+private fun ContextUsageRing(
+    usage: ContextUsageDisplay,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Box(
-        modifier = modifier.size(44.dp).semantics {
-            contentDescription = if (usage.estimated) "上下文占用约 $percent%" else "上下文占用 $percent%"
-            stateDescription = label
+        modifier = modifier.size(36.dp).clip(CircleShape).clickable(onClick = onClick).semantics {
+            contentDescription = "上下文用量，点击压缩会话"
+            stateDescription = if (usage.available) "已获取" else "等待用量数据"
         },
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator(
             progress = { usage.fraction },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.size(22.dp),
             strokeWidth = 3.dp,
-            color = when {
-                usage.fraction >= .85f -> CodexRed
-                usage.fraction >= .65f -> CodexAmber
-                else -> CodexGreen
-            },
-            trackColor = CodexBorder,
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = Color.White.copy(alpha = 0.94f),
+            trackColor = Color(0xFF555555),
         )
     }
 }
 
 private fun contextUsageDisplay(state: AppUiState): ContextUsageDisplay {
-    state.tokenUsage?.let { usage ->
-        val window = usage.modelContextWindow
-        if (window > 0) {
-            val used = usage.total.totalTokens.coerceAtLeast(usage.last.totalTokens)
-            return ContextUsageDisplay(
-                fraction = (used.toFloat() / window.toFloat()).coerceIn(0.01f, 0.99f),
-                estimated = false,
-            )
-        }
+    contextUsageFraction(state.tokenUsage)?.let { fraction ->
+        return ContextUsageDisplay(fraction = fraction, available = true)
     }
-    val chars = state.timeline.sumOf { entry ->
-        entry.title.length.toLong() + entry.text.length + entry.command.length + entry.output.length +
-            entry.changes.sumOf { change -> change.path.length.toLong() + change.diff.length }
-    } + state.aggregateDiff.length
-    // A conservative visual estimate; the server remains authoritative for limits.
-    return ContextUsageDisplay(
-        fraction = (chars / 120_000f).coerceIn(0.02f, 0.99f),
-        estimated = true,
-    )
+    return ContextUsageDisplay(fraction = 0f, available = false)
 }
 
 @Composable
@@ -673,6 +727,7 @@ private fun FileChangeBlock(
     entry: TimelineEntry,
     onOpenDiff: (FileChange) -> Unit,
     onReview: () -> Unit,
+    canMutate: Boolean,
     canRollback: Boolean,
     onRollback: () -> Unit,
 ) {
@@ -725,6 +780,7 @@ private fun FileChangeBlock(
                 Spacer(Modifier.width(4.dp))
                 OutlinedButton(
                     onClick = onReview,
+                    enabled = canMutate,
                     modifier = Modifier.height(36.dp),
                     shape = RoundedCornerShape(7.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp),
@@ -868,10 +924,9 @@ private fun WorkComposer(
     onStop: () -> Unit,
     onShowModels: () -> Unit,
     onShowPermissions: () -> Unit,
-    onSelectWorkspace: () -> Unit,
+    onCompact: () -> Unit,
 ) {
     val composerScroll = rememberScrollState()
-    val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
     val modelName = state.models.firstOrNull { it.model == state.selectedModel }?.displayName
         ?: state.selectedModel ?: "模型"
     val effortName = when (state.selectedEffort) {
@@ -942,6 +997,7 @@ private fun WorkComposer(
                         }
                         TextButton(
                             onClick = onShowPermissions,
+                            modifier = Modifier.widthIn(max = 82.dp),
                             contentPadding = PaddingValues(horizontal = 5.dp),
                         ) {
                             val permissionColor = if (state.approvalMode == ApprovalMode.FullAccess) {
@@ -958,12 +1014,14 @@ private fun WorkComposer(
                                 state.approvalMode.label,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = permissionColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                         Spacer(Modifier.weight(1f))
                         TextButton(
                             onClick = onShowModels,
-                            modifier = Modifier.widthIn(max = 132.dp),
+                            modifier = Modifier.widthIn(max = if (state.running) 88.dp else 116.dp),
                             contentPadding = PaddingValues(horizontal = 5.dp),
                         ) {
                             Text(
@@ -974,6 +1032,12 @@ private fun WorkComposer(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        Spacer(Modifier.width(2.dp))
+                        ContextUsageRing(
+                            usage = contextUsageDisplay(state),
+                            onClick = onCompact,
+                        )
+                        Spacer(Modifier.width(6.dp))
                         if (state.running) {
                             IconButton(onClick = onStop, modifier = Modifier.size(36.dp)) {
                                 Icon(Icons.Default.Stop, contentDescription = "停止", modifier = Modifier.size(20.dp))
@@ -992,33 +1056,6 @@ private fun WorkComposer(
                                 modifier = Modifier.size(20.dp))
                         }
                     }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().height(30.dp).clickable(onClick = onSelectWorkspace)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Default.Terminal,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "SSH 远程模式",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                profile?.name?.takeIf { it.isNotBlank() }?.let { name ->
-                    Text(
-                        "  ·  $name",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
             }
         }

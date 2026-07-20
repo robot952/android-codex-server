@@ -109,6 +109,8 @@ data class TimelineEntry(
     val output: String = "",
     val changes: List<FileChange> = emptyList(),
     val turnId: String = "",
+    val reasoningSummary: List<String> = emptyList(),
+    val reasoningContent: List<String> = emptyList(),
 )
 
 enum class ApprovalKind { Command, FileChange, Permission, UserInput }
@@ -220,6 +222,8 @@ data class AppUiState(
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,
     val timeline: List<TimelineEntry> = emptyList(),
+    val olderTurnsCursor: String? = null,
+    val olderTurnsLoading: Boolean = false,
     val activeTurnId: String? = null,
     val running: Boolean = false,
     val submitting: Boolean = false,

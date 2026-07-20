@@ -67,4 +67,20 @@ class SshCodexTransportTest {
         assertEquals(listOf("{\"ok\":1}"), lines)
         assertEquals(1, oversizedLines)
     }
+
+    @Test
+    fun `oversized envelope targets only a response id`() {
+        assertEquals(
+            JsonRpcEnvelopeHint("42", false, false),
+            inspectJsonRpcEnvelopePrefix("{\"id\":42,\"result\":{\"large\":\"payload"),
+        )
+        assertEquals(
+            JsonRpcEnvelopeHint("9", false, true),
+            inspectJsonRpcEnvelopePrefix("{\"id\":9,\"method\":\"item/completed\",\"params\":{"),
+        )
+        assertEquals(
+            JsonRpcEnvelopeHint(null, false, true),
+            inspectJsonRpcEnvelopePrefix("{\"method\":\"item/delta\",\"params\":{\"id\":42,"),
+        )
+    }
 }

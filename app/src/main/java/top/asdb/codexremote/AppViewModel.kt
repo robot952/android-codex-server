@@ -19,6 +19,8 @@ import kotlinx.coroutines.withContext
 import top.asdb.codexremote.codex.CodexAppServerClient
 import top.asdb.codexremote.codex.CodexConnectionManager
 import top.asdb.codexremote.codex.CodexEventReducer
+import top.asdb.codexremote.codex.ResumeNotificationBuffer
+import top.asdb.codexremote.codex.estimateTimelineWeightChars
 import top.asdb.codexremote.codex.ProfileOperationTracker
 import top.asdb.codexremote.codex.ProfiledCodexApproval
 import top.asdb.codexremote.codex.ProfiledCodexConnectionEvent
@@ -36,9 +38,11 @@ import top.asdb.codexremote.data.RemoteSetupPrompt
 import top.asdb.codexremote.data.SandboxChoice
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.StoredProfiles
+import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import java.io.ByteArrayOutputStream
+import java.util.LinkedHashMap
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -57,8 +61,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val connectionJobs = mutableMapOf<String, Job>()
     private val setupJobs = mutableMapOf<String, Job>()
     private val disconnectJobs = mutableMapOf<String, Job>()
-    private val sessionSnapshots = mutableMapOf<String, SessionSnapshot>()
+    private val uninstallJobs = mutableMapOf<String, Job>()
+    private val sessionNavigationJobs = mutableMapOf<String, Job>()
+    private val threadHistoryJobs = mutableMapOf<String, Job>()
+    private val threadMutationJobs = mutableMapOf<String, Job>()
+    private val sessionSnapshots = object : LinkedHashMap<String, SessionSnapshot>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SessionSnapshot>?): Boolean =
+            size > MAX_PROFILE_SESSION_SNAPSHOTS
+    }
     private val pendingApprovalsByProfile = mutableMapOf<String, List<ApprovalPrompt>>()
+    private val resumeNotificationBuffers = mutableMapOf<String, ResumeNotificationBuffer>()
     private val setupStates = ConcurrentHashMap<String, SetupUiState>()
     private val pendingFingerprints = mutableMapOf<String, String>()
     /** Resolved executable for a managed profile; keeps later saves from replacing its client. */
@@ -131,6 +143,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         connectionJobs.values.forEach(Job::cancel)
         setupJobs.values.forEach(Job::cancel)
         disconnectJobs.values.forEach(Job::cancel)
+        uninstallJobs.values.forEach(Job::cancel)
+        sessionNavigationJobs.values.forEach(Job::cancel)
+        threadHistoryJobs.values.forEach(Job::cancel)
+        threadMutationJobs.values.forEach(Job::cancel)
         connections.close()
         super.onCleared()
     }
@@ -146,6 +162,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             fingerprintJobs.remove(normalized.id)?.cancel()
             connectionJobs.remove(normalized.id)?.cancel()
             setupJobs.remove(normalized.id)?.cancel()
+            uninstallJobs.remove(normalized.id)?.cancel()
             setupStates.remove(normalized.id)
             pendingFingerprints.remove(normalized.id)
             fingerprintProfiles.remove(normalized.id)
@@ -228,6 +245,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fingerprintJobs.remove(id)?.cancel()
         connectionJobs.remove(id)?.cancel()
         setupJobs.remove(id)?.cancel()
+        uninstallJobs.remove(id)?.cancel()
         disconnectJobs.remove(id)?.cancel()
         _state.update { current ->
             val profiles = current.profiles.filterNot { it.id == id }
@@ -352,7 +370,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun connectProfile(profile: ServerProfile, makeActive: Boolean) {
         val normalized = normalizeProfile(profile)
         if (connectionJobs[normalized.id]?.isActive == true || setupJobs[normalized.id]?.isActive == true ||
-            fingerprintJobs[normalized.id]?.isActive == true || disconnectJobs[normalized.id]?.isActive == true
+            fingerprintJobs[normalized.id]?.isActive == true || disconnectJobs[normalized.id]?.isActive == true ||
+            uninstallJobs[normalized.id]?.isActive == true
         ) return
         invalidateProfile(normalized.id)
         if (makeActive) {
@@ -409,12 +428,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         connectionJobs[normalized.id] = job
     }
 
-    fun installRemoteSetup() {
+    fun installRemoteSetup(proxyUrl: String = currentProfile()?.proxyUrl.orEmpty()) {
         val profileId = _state.value.selectedProfileId ?: return
         if (setupJobs[profileId]?.isActive == true || connectionJobs[profileId]?.isActive == true ||
-            fingerprintJobs[profileId]?.isActive == true || disconnectJobs[profileId]?.isActive == true
+            fingerprintJobs[profileId]?.isActive == true || disconnectJobs[profileId]?.isActive == true ||
+            uninstallJobs[profileId]?.isActive == true
         ) return
-        val profile = setupProfiles[profileId] ?: return
+        val normalizedProxy = try {
+            RemoteBootstrap.validateProxyUrl(proxyUrl)
+        } catch (error: IllegalArgumentException) {
+            showError(error, profileId)
+            return
+        }
+        val profile = setupProfiles[profileId]?.copy(proxyUrl = normalizedProxy) ?: return
+        setupProfiles[profileId] = profile
+        connections.register(profile)
+        _state.update { current ->
+            current.copy(
+                profiles = current.profiles.map { stored ->
+                    if (stored.id == profileId) stored.copy(proxyUrl = normalizedProxy) else stored
+                },
+            )
+        }
+        persistProfiles()
         val ticket = operations.begin(profileId, "setup")
         updateSetupState(profileId) { it.copy(inProgress = true, progress = "准备安装", percent = 0) }
         _state.update {
@@ -525,7 +561,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             invalidateLane(id, "thread-list")
             invalidateLane(id, "workspace")
             _state.value.activeThread?.let { thread ->
-                activeClient()?.cacheThread(thread, _state.value.timeline)
+                activeClient()?.cacheThread(thread, _state.value.timeline, _state.value.olderTurnsCursor)
             }
             sessionSnapshots[id] = SessionSnapshot.capture(_state.value)
         }
@@ -546,6 +582,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         startDisconnect(profileId)
     }
 
+    fun uninstallRemote(profileId: String) {
+        if (uninstallJobs[profileId]?.isActive == true) return
+        val storedProfile = _state.value.profiles.firstOrNull { it.id == profileId } ?: return
+        val profile = effectiveProfiles[profileId] ?: storedProfile
+        if (_state.value.connectionStates[profileId]?.phase == ConnectionPhase.Installing) {
+            showError(IllegalStateException("远程安装正在进行，请完成或取消后再卸载"), profileId)
+            return
+        }
+        val job = viewModelScope.launch {
+            try {
+                updateProfileConnection(
+                    profileId,
+                    ConnectionState(ConnectionPhase.Installing, "正在卸载远端 App Service"),
+                )
+                connections.uninstallRemote(profile)
+                if (_state.value.profiles.any { it.id == profileId }) {
+                    startDisconnect(profileId)
+                    if (isActiveProfile(profileId)) {
+                        _state.update { it.copy(diagnostic = "远端 App Service 已卸载") }
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                showError(error, profileId)
+            } finally {
+                if (uninstallJobs[profileId] === currentCoroutineContext()[Job]) {
+                    uninstallJobs.remove(profileId)
+                }
+            }
+        }
+        uninstallJobs[profileId] = job
+    }
+
     fun setThreadSearch(value: String) {
         _state.update { it.copy(threadSearch = value) }
     }
@@ -562,7 +632,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val threads = client.listThreads(search)
                 if (isOperationCurrent(operation)) {
-                    applySessionState(profileId) { it.copy(threads = threads, loading = false) }
+                    applySessionState(profileId) { current ->
+                        current.copy(
+                            threads = threads,
+                            activeThread = current.activeThread?.let { active ->
+                                threads.firstOrNull { it.id == active.id } ?: active
+                            },
+                            loading = false,
+                        )
+                    }
+                    sessionSnapshots[profileId]?.let { snapshot ->
+                        snapshot.activeThread?.let { active ->
+                            client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
+                        }
+                    }
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -579,10 +662,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun createThread() {
         val profile = currentProfile() ?: return
         val client = connections.client(profile.id)?.takeIf { it.isConnected() } ?: return
+        invalidateLane(profile.id, "session-navigation")
+        invalidateLane(profile.id, "thread-history")
         val operation = beginClientOperation(profile.id, "session-navigation", client) ?: return
         val model = _state.value.selectedModel
         val approvalMode = _state.value.approvalMode
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             if (isOperationVisible(operation)) applySessionState(profile.id) { it.copy(loading = true, error = null) }
             try {
                 val (thread, timeline) = client.startThread(profile, model, approvalMode)
@@ -592,6 +677,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         screen = AppScreen.Work,
                         activeThread = thread,
                         timeline = timeline,
+                        olderTurnsCursor = null,
+                        olderTurnsLoading = false,
                         activeTurnId = null,
                         running = false,
                         aggregateDiff = "",
@@ -606,23 +693,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (isOperationVisible(operation)) showError(error, profile.id)
             } finally {
                 finishClientOperation(operation)
+                if (sessionNavigationJobs[profile.id] === currentCoroutineContext()[Job]) {
+                    sessionNavigationJobs.remove(profile.id)
+                }
             }
         }
+        sessionNavigationJobs[profile.id] = job
     }
 
     fun openThread(thread: top.asdb.codexremote.data.CodexThread) {
         val profileId = _state.value.selectedProfileId ?: return
         val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
+        invalidateLane(profileId, "session-navigation")
+        invalidateLane(profileId, "thread-history")
         val operation = beginClientOperation(profileId, "session-navigation", client) ?: return
+        val resumeBuffer = ResumeNotificationBuffer(thread.id, operation.generation)
+        resumeNotificationBuffers[profileId] = resumeBuffer
         val approvalMode = _state.value.approvalMode
         val cached = client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id)
-        cached?.takeIf { isOperationVisible(operation) }?.let { (cachedThread, timeline) ->
+        cached?.takeIf { isOperationVisible(operation) }?.let { snapshot ->
+            val cachedThread = snapshot.thread
+            val timeline = snapshot.timeline
             val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
             applySessionState(profileId) {
                 it.copy(
                     screen = AppScreen.Work,
                     activeThread = cachedThread,
                     timeline = timeline,
+                    olderTurnsCursor = snapshot.nextTurnsCursor,
+                    olderTurnsLoading = false,
                     activeTurnId = cachedThread.activeTurnId ?: activeTurn,
                     running = cachedThread.activeTurnId != null || activeTurn != null || cachedThread.status == "active",
                     aggregateDiff = "",
@@ -632,7 +731,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             if (isOperationVisible(operation)) {
                 applySessionState(profileId) { it.copy(loading = true, error = null) }
             }
@@ -640,7 +739,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // replace it with `thread/read`, which is a read-only payload and cannot safely accept
             // subsequent turns or steering.
             try {
-                val (loaded, timeline) = client.openThread(thread.id, approvalMode)
+                val resumed = client.openThread(thread.id, approvalMode)
+                val loaded = resumed.thread
+                val reconciled = reconcileResumedTimeline(
+                    cachedTimeline = cached?.timeline,
+                    cachedNextCursor = cached?.nextTurnsCursor,
+                    refreshedTimeline = resumed.timeline,
+                    refreshedNextCursor = resumed.nextTurnsCursor,
+                    refreshedTurnIds = resumed.turnIds,
+                    cachedThreadUpdatedAt = cached?.thread?.updatedAt,
+                    refreshedThreadUpdatedAt = loaded.updatedAt,
+                    refreshedItemsView = resumed.itemsView,
+                )
+                val timeline = reconciled.timeline
+                val nextTurnsCursor = reconciled.nextCursor
+                val responseSequence = resumed.responseSequence
                 if (isOperationCurrent(operation)) {
                     val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
                     applySessionState(profileId) {
@@ -648,26 +761,144 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             screen = AppScreen.Work,
                             activeThread = loaded,
                             timeline = timeline,
+                            olderTurnsCursor = nextTurnsCursor,
+                            olderTurnsLoading = false,
                             activeTurnId = loaded.activeTurnId ?: activeTurn,
                             running = loaded.activeTurnId != null || activeTurn != null || loaded.status == "active",
                             aggregateDiff = "",
                             tokenUsage = null,
                             loading = false,
+                            diagnostic = if (resumed.itemsView == "notLoaded") {
+                                "最近一个回合内容过大，已跳过详情；会话仍可继续使用"
+                            } else {
+                                it.diagnostic
+                            },
                         )
+                    }
+                    releaseResumeNotifications(
+                        profileId,
+                        resumeBuffer,
+                        timeline,
+                        replay = true,
+                        snapshotSequence = responseSequence,
+                    )
+                    sessionSnapshots[profileId]?.let { snapshot ->
+                        snapshot.activeThread?.let { active ->
+                            client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
+                        }
+                    }
+                } else {
+                    releaseResumeNotifications(profileId, resumeBuffer, timeline, replay = false)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationCurrent(operation)) {
+                    val baseline = if (isActiveProfile(profileId)) {
+                        _state.value.timeline
+                    } else {
+                        sessionSnapshots[profileId]?.timeline.orEmpty()
+                    }
+                    releaseResumeNotifications(
+                        profileId,
+                        resumeBuffer,
+                        baseline,
+                        replay = true,
+                        snapshotSequence = Long.MIN_VALUE,
+                    )
+                    applySessionState(profileId) {
+                        it.copy(loading = false, submitting = false, error = error.message ?: "无法恢复会话")
+                    }
+                } else {
+                    releaseResumeNotifications(profileId, resumeBuffer, emptyList(), replay = false)
+                }
+            } finally {
+                releaseResumeNotifications(profileId, resumeBuffer, emptyList(), replay = false)
+                finishClientOperation(operation)
+                if (sessionNavigationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    sessionNavigationJobs.remove(profileId)
+                }
+            }
+        }
+        sessionNavigationJobs[profileId] = job
+    }
+
+    /** Fetches one bounded page on demand so opening a large thread remains fast. */
+    fun loadOlderThreadHistory() {
+        val current = _state.value
+        if (current.loading) return
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
+        val cursor = current.olderTurnsCursor ?: return
+        if (current.olderTurnsLoading) return
+        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
+        val operation = beginClientOperation(profileId, "thread-history", client) ?: return
+        applySessionState(profileId) { state ->
+            if (state.activeThread?.id == threadId && state.olderTurnsCursor == cursor) {
+                state.copy(olderTurnsLoading = true)
+            } else state
+        }
+        val job = viewModelScope.launch {
+            try {
+                val page = client.listThreadTurnsPage(threadId, cursor)
+                if (!isOperationCurrent(operation)) return@launch
+                applySessionState(profileId) { state ->
+                    if (state.activeThread?.id != threadId || state.olderTurnsCursor != cursor) {
+                        return@applySessionState state
+                    }
+                    val merged = prependOlderTimeline(state.timeline, page.timeline)
+                    if (merged.accepted) {
+                        state.copy(
+                            timeline = merged.timeline,
+                            olderTurnsCursor = page.nextCursor?.takeUnless { it == cursor },
+                            olderTurnsLoading = false,
+                            diagnostic = if (page.itemsView == "notLoaded") {
+                                "一个较早回合内容过大，已跳过详情"
+                            } else {
+                                state.diagnostic
+                            },
+                        )
+                    } else {
+                        state.copy(
+                            olderTurnsCursor = null,
+                            olderTurnsLoading = false,
+                            diagnostic = "会话记录过多，已停止加载更早内容以避免内存不足",
+                        )
+                    }
+                }
+                sessionSnapshots[profileId]?.let { snapshot ->
+                    snapshot.activeThread?.let { thread ->
+                        client.cacheThread(thread, snapshot.timeline, snapshot.olderTurnsCursor)
                     }
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (isOperationVisible(operation)) {
+                if (isOperationCurrent(operation)) {
+                    val invalidCursor = error.message?.contains("invalid cursor", ignoreCase = true) == true
                     applySessionState(profileId) {
-                        it.copy(loading = false, submitting = false, error = error.message ?: "无法恢复会话")
+                        it.copy(
+                            olderTurnsCursor = if (invalidCursor) null else it.olderTurnsCursor,
+                            olderTurnsLoading = false,
+                            diagnostic = if (invalidCursor) {
+                                "服务器上的会话历史已变化，请返回列表后重新进入"
+                            } else {
+                                "较早的会话记录加载失败：${error.message.orEmpty()}"
+                            },
+                        )
                     }
                 }
             } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(olderTurnsLoading = false) }
+                }
                 finishClientOperation(operation)
+                if (threadHistoryJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadHistoryJobs.remove(profileId)
+                }
             }
         }
+        threadHistoryJobs[profileId] = job
     }
 
     fun backToThreads() {
@@ -675,13 +906,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             showError(IllegalStateException("请先处理当前审批请求"))
             return
         }
+        if (_state.value.submitting) {
+            showError(IllegalStateException("当前操作尚未完成，请稍后返回"))
+            return
+        }
         val profileId = _state.value.selectedProfileId
         profileId?.let {
             invalidateLane(it, "session-navigation")
             invalidateLane(it, "thread-mutation")
+            invalidateLane(it, "thread-history")
         }
         _state.value.activeThread?.let { thread ->
-            activeClient()?.cacheThread(thread, _state.value.timeline)
+            activeClient()?.cacheThread(thread, _state.value.timeline, _state.value.olderTurnsCursor)
         }
         _state.update {
             it.copy(
@@ -690,6 +926,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 approvalQueue = emptyList(),
                 loading = false,
                 submitting = false,
+                olderTurnsLoading = false,
             ).also { updated ->
                 profileId?.let { id -> sessionSnapshots[id] = SessionSnapshot.capture(updated) }
             }
@@ -705,11 +942,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val thread = current.activeThread ?: return
         val client = activeClient() ?: return
         if (clean.isBlank() && current.attachments.isEmpty()) return
-        if (current.submitting) return
+        if (current.loading || current.submitting) return
         if (current.running && current.activeTurnId == null) {
             showError(IllegalStateException("当前回合仍在运行，尚未收到回合 ID，请稍后再试"))
             return
         }
+        invalidateLane(profileId, "session-navigation")
         val operation = beginClientOperation(profileId, "send", client) ?: return
         applySessionState(profileId) { it.copy(submitting = true, error = null) }
         viewModelScope.launch {
@@ -751,13 +989,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopTurn() {
-        val profileId = _state.value.selectedProfileId ?: return
-        val threadId = _state.value.activeThread?.id ?: return
+        val current = _state.value
+        if (current.loading) return
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
         val client = activeClient() ?: return
-        val turnId = _state.value.activeTurnId ?: run {
+        val turnId = current.activeTurnId ?: run {
             showError(IllegalStateException("当前回合 ID 尚未可用"))
             return
         }
+        invalidateLane(profileId, "session-navigation")
         val operation = beginClientOperation(profileId, "stop-turn", client) ?: return
         viewModelScope.launch {
             try {
@@ -772,46 +1013,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun reviewChanges() {
-        val profileId = _state.value.selectedProfileId ?: return
-        val threadId = _state.value.activeThread?.id ?: return
+    fun compactActiveThread() {
+        val current = _state.value
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
         val client = activeClient() ?: return
-        val operation = beginClientOperation(profileId, "review", client) ?: return
-        viewModelScope.launch {
-            try {
-                client.startReview(threadId)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (isOperationVisible(operation)) showError(error, profileId)
-            } finally {
-                finishClientOperation(operation)
-            }
-        }
-    }
-
-    fun rollbackActiveThread() {
-        val profileId = _state.value.selectedProfileId ?: return
-        val threadId = _state.value.activeThread?.id ?: return
-        val client = activeClient() ?: return
-        if (_state.value.running) {
-            showError(IllegalStateException("回合运行中，完成或停止后才能回退会话历史"))
+        if (current.loading || current.running || current.submitting) {
+            showError(IllegalStateException("当前回合运行中，完成或停止后才能压缩会话"))
             return
         }
+        if (threadMutationJobs[profileId]?.isActive == true) return
+        invalidateLane(profileId, "session-navigation")
         val operation = beginClientOperation(profileId, "thread-mutation", client) ?: return
-        viewModelScope.launch {
+        applySessionState(profileId) { it.copy(submitting = true, error = null) }
+        val job = viewModelScope.launch {
             try {
-                val (thread, timeline) = client.rollbackThread(threadId)
+                client.compactThread(threadId)
                 if (isOperationCurrent(operation)) {
                     applySessionState(profileId) {
-                        it.copy(
-                            activeThread = thread,
-                            timeline = timeline,
-                            activeTurnId = thread.activeTurnId,
-                            running = thread.status == "active" || thread.activeTurnId != null,
-                            aggregateDiff = "",
-                            tokenUsage = null,
-                        )
+                        it.copy(submitting = false, diagnostic = "已开始压缩会话上下文")
                     }
                 }
             } catch (error: CancellationException) {
@@ -819,17 +1039,126 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (isOperationVisible(operation)) showError(error, profileId)
             } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(submitting = false) }
+                }
                 finishClientOperation(operation)
+                if (threadMutationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadMutationJobs.remove(profileId)
+                }
             }
         }
+        threadMutationJobs[profileId] = job
+    }
+
+    fun reviewChanges() {
+        val current = _state.value
+        if (current.loading || current.running || current.submitting) return
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
+        val client = activeClient() ?: return
+        if (threadMutationJobs[profileId]?.isActive == true) return
+        invalidateLane(profileId, "session-navigation")
+        val operation = beginClientOperation(profileId, "thread-mutation", client) ?: return
+        applySessionState(profileId) { it.copy(submitting = true, error = null) }
+        val job = viewModelScope.launch {
+            try {
+                client.startReview(threadId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) showError(error, profileId)
+            } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(submitting = false) }
+                }
+                finishClientOperation(operation)
+                if (threadMutationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadMutationJobs.remove(profileId)
+                }
+            }
+        }
+        threadMutationJobs[profileId] = job
+    }
+
+    fun rollbackActiveThread() {
+        val current = _state.value
+        if (current.loading) return
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
+        val client = activeClient() ?: return
+        if (current.running) {
+            showError(IllegalStateException("回合运行中，完成或停止后才能回退会话历史"))
+            return
+        }
+        if (current.submitting || threadMutationJobs[profileId]?.isActive == true) return
+        invalidateLane(profileId, "session-navigation")
+        invalidateLane(profileId, "thread-history")
+        val operation = beginClientOperation(profileId, "thread-mutation", client) ?: return
+        val approvalMode = _state.value.approvalMode
+        applySessionState(profileId) { it.copy(submitting = true, error = null) }
+        val job = viewModelScope.launch {
+            try {
+                val rolledBack = client.rollbackThread(threadId, approvalMode)
+                val thread = rolledBack.thread
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) {
+                        it.copy(
+                            activeThread = thread,
+                            timeline = rolledBack.timeline,
+                            olderTurnsCursor = rolledBack.nextTurnsCursor,
+                            olderTurnsLoading = false,
+                            activeTurnId = thread.activeTurnId,
+                            running = thread.status == "active" || thread.activeTurnId != null,
+                            aggregateDiff = "",
+                            tokenUsage = null,
+                            submitting = false,
+                            diagnostic = if (rolledBack.itemsView == "notLoaded") {
+                                "回退已完成，但最近回合内容过大，已跳过详情"
+                            } else {
+                                it.diagnostic
+                            },
+                        )
+                    }
+                    sessionSnapshots[profileId]?.let { snapshot ->
+                        snapshot.activeThread?.let { active ->
+                            client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
+                        }
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) showError(error, profileId)
+            } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(submitting = false) }
+                }
+                finishClientOperation(operation)
+                if (threadMutationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadMutationJobs.remove(profileId)
+                }
+            }
+        }
+        threadMutationJobs[profileId] = job
     }
 
     fun archiveActiveThread() {
-        val profileId = _state.value.selectedProfileId ?: return
-        val threadId = _state.value.activeThread?.id ?: return
+        val current = _state.value
+        if (current.loading) return
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
         val client = activeClient() ?: return
+        if (current.running) {
+            showError(IllegalStateException("回合运行中，完成或停止后才能归档"))
+            return
+        }
+        if (current.submitting || threadMutationJobs[profileId]?.isActive == true) return
+        invalidateLane(profileId, "session-navigation")
+        invalidateLane(profileId, "thread-history")
         val operation = beginClientOperation(profileId, "thread-mutation", client) ?: return
-        viewModelScope.launch {
+        applySessionState(profileId) { it.copy(submitting = true, error = null) }
+        val job = viewModelScope.launch {
             try {
                 client.archiveThread(threadId)
                 if (isOperationCurrent(operation)) {
@@ -839,12 +1168,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             screen = AppScreen.Threads,
                             activeThread = null,
                             timeline = emptyList(),
+                            olderTurnsCursor = null,
+                            olderTurnsLoading = false,
                             activeTurnId = null,
                             running = false,
                             approval = null,
                             approvalQueue = emptyList(),
                             aggregateDiff = "",
                             tokenUsage = null,
+                            submitting = false,
                         )
                     }
                     if (isActiveProfile(profileId)) refreshThreads(silent = true)
@@ -854,25 +1186,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (isOperationVisible(operation)) showError(error, profileId)
             } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(submitting = false) }
+                }
                 finishClientOperation(operation)
+                if (threadMutationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadMutationJobs.remove(profileId)
+                }
             }
         }
+        threadMutationJobs[profileId] = job
     }
 
     fun renameActiveThread(name: String) {
-        val profileId = _state.value.selectedProfileId ?: return
-        val thread = _state.value.activeThread ?: return
+        val current = _state.value
+        if (current.loading) return
+        val profileId = current.selectedProfileId ?: return
+        val thread = current.activeThread ?: return
         val client = activeClient() ?: return
         val clean = name.trim()
         if (clean.isBlank()) return
+        if (current.submitting || threadMutationJobs[profileId]?.isActive == true) return
+        invalidateLane(profileId, "session-navigation")
         val operation = beginClientOperation(profileId, "thread-mutation", client) ?: return
-        viewModelScope.launch {
+        applySessionState(profileId) { it.copy(submitting = true, error = null) }
+        val job = viewModelScope.launch {
             try {
                 client.setThreadName(thread.id, clean)
                 if (isOperationCurrent(operation)) {
                     applySessionState(profileId) {
                         if (it.activeThread?.id == thread.id) {
-                            it.copy(activeThread = it.activeThread.copy(title = clean))
+                            it.copy(activeThread = it.activeThread.copy(title = clean), submitting = false)
                         } else it
                     }
                 }
@@ -881,9 +1225,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (isOperationVisible(operation)) showError(error, profileId)
             } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(submitting = false) }
+                }
                 finishClientOperation(operation)
+                if (threadMutationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadMutationJobs.remove(profileId)
+                }
             }
         }
+        threadMutationJobs[profileId] = job
     }
 
     fun answerApproval(accept: Boolean, answers: Map<String, String> = emptyMap()) {
@@ -1109,17 +1460,45 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun invalidateProfile(profileId: String) {
         operations.invalidateProfile(profileId)
+        sessionNavigationJobs.remove(profileId)?.cancel()
+        threadHistoryJobs.remove(profileId)?.cancel()
+        threadMutationJobs.remove(profileId)?.cancel()
+        resumeNotificationBuffers.remove(profileId)
     }
 
     private fun invalidateLane(profileId: String, lane: String) {
+        if (lane == "session-navigation") {
+            sessionNavigationJobs.remove(profileId)?.cancel()
+            releasePendingResumeNotifications(profileId)
+        } else if (lane == "thread-history") {
+            threadHistoryJobs.remove(profileId)?.cancel()
+        } else if (lane == "thread-mutation") {
+            threadMutationJobs.remove(profileId)?.cancel()
+        }
         operations.invalidateLane(profileId, lane)
+    }
+
+    private fun releasePendingResumeNotifications(profileId: String) {
+        val buffer = resumeNotificationBuffers[profileId] ?: return
+        val timeline = if (isActiveProfile(profileId)) {
+            _state.value.timeline
+        } else {
+            sessionSnapshots[profileId]?.timeline.orEmpty()
+        }
+        releaseResumeNotifications(
+            profileId = profileId,
+            buffer = buffer,
+            snapshot = timeline,
+            replay = true,
+            snapshotSequence = Long.MIN_VALUE,
+        )
     }
 
     private fun applySessionState(profileId: String, transform: (AppUiState) -> AppUiState) {
         if (isActiveProfile(profileId)) {
             _state.update { current ->
                 if (current.selectedProfileId != profileId) return@update current
-                transform(current).also { updated ->
+                enforceActiveTimelineBounds(transform(current)).also { updated ->
                     sessionSnapshots[profileId] = SessionSnapshot.capture(updated)
                 }
             }
@@ -1133,7 +1512,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 sandbox = (profile?.approvalMode ?: ApprovalMode.RequestApproval).sandbox,
             ),
         )
-        sessionSnapshots[profileId] = SessionSnapshot.capture(transform(base))
+        sessionSnapshots[profileId] = SessionSnapshot.capture(enforceActiveTimelineBounds(transform(base)))
     }
 
     private fun restoreProfileState(
@@ -1196,6 +1575,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threadSearch = "",
         activeThread = null,
         timeline = emptyList(),
+        olderTurnsCursor = null,
+        olderTurnsLoading = false,
         activeTurnId = null,
         running = false,
         submitting = false,
@@ -1313,14 +1694,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val client = connections.client(profileId) ?: return
         val notification = event.value
         if (!client.isGenerationActive(notification.generation)) return
+        resumeNotificationBuffers[profileId]?.let { buffer ->
+            if (buffer.offer(notification)) return
+        }
         applySessionState(profileId) { current ->
             CodexEventReducer.reduce(current, notification.method, notification.params)
         }
         if (notification.method == "turn/completed") {
             sessionSnapshots[profileId]?.activeThread?.let { thread ->
-                client.cacheThread(thread, sessionSnapshots[profileId]?.timeline.orEmpty())
+                val snapshot = sessionSnapshots[profileId]
+                client.cacheThread(thread, snapshot?.timeline.orEmpty(), snapshot?.olderTurnsCursor)
             }
             if (isActiveProfile(profileId)) refreshThreads(silent = true)
+        }
+    }
+
+    private fun releaseResumeNotifications(
+        profileId: String,
+        buffer: ResumeNotificationBuffer,
+        snapshot: List<top.asdb.codexremote.data.TimelineEntry>,
+        replay: Boolean,
+        snapshotSequence: Long = Long.MAX_VALUE,
+    ) {
+        if (resumeNotificationBuffers[profileId] !== buffer) return
+        resumeNotificationBuffers.remove(profileId)
+        if (!replay) return
+        val client = connections.client(profileId) ?: return
+        val notifications = buffer.drain(snapshot, snapshotSequence).filter { notification ->
+            client.isGenerationActive(notification.generation)
+        }
+        var reducedState: AppUiState? = null
+        if (notifications.isNotEmpty()) {
+            applySessionState(profileId) { current ->
+                notifications.fold(current) { state, notification ->
+                    CodexEventReducer.reduce(state, notification.method, notification.params)
+                }.also { reducedState = it }
+            }
+        }
+        if (notifications.any { it.method == "turn/completed" }) {
+            val snapshotState = reducedState ?: if (isActiveProfile(profileId)) {
+                _state.value
+            } else {
+                sessionSnapshots[profileId]?.restore(AppUiState(selectedProfileId = profileId))
+            }
+            snapshotState?.activeThread?.let { thread ->
+                client.cacheThread(thread, snapshotState.timeline, snapshotState.olderTurnsCursor)
+            }
+            if (isActiveProfile(profileId)) refreshThreads(silent = true)
+        }
+        if (buffer.overflowed && isActiveProfile(profileId)) {
+            _state.update { it.copy(diagnostic = "恢复会话期间输出过多，部分流式内容已截断") }
         }
     }
 
@@ -1353,7 +1776,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         invalidateProfile(profileId)
         val snapshot = sessionSnapshots[profileId]
         if (snapshot != null) {
-            sessionSnapshots[profileId] = snapshot.copy(activeTurnId = null, running = false, loading = false, submitting = false)
+            sessionSnapshots[profileId] = snapshot.copy(
+                activeTurnId = null,
+                running = false,
+                loading = false,
+                submitting = false,
+                olderTurnsLoading = false,
+            )
         }
         pendingApprovalsByProfile.remove(profileId)
         setupStates.remove(profileId)
@@ -1365,6 +1794,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 running = false,
                 loading = false,
                 submitting = false,
+                olderTurnsLoading = false,
                 activeTurnId = null,
                 approval = null,
                 approvalQueue = emptyList(),
@@ -1489,6 +1919,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceError = connected.workspaceError,
                 activeThread = null,
                 timeline = emptyList(),
+                olderTurnsCursor = null,
+                olderTurnsLoading = false,
                 activeTurnId = null,
                 running = false,
                 submitting = false,
@@ -1556,7 +1988,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
-        private const val MAX_PENDING_APPROVALS = 32
+        private const val MAX_PENDING_APPROVALS = 8
     }
 }
 
@@ -1581,6 +2013,127 @@ private data class SetupUiState(
     val percent: Int = 0,
 )
 
+private fun TimelineEntry.sessionIdentity(): String = "$turnId\u0000$kind\u0000$id"
+
+internal data class OlderTimelineMerge(
+    val timeline: List<TimelineEntry>,
+    val accepted: Boolean,
+)
+
+internal data class BoundedTimeline(
+    val timeline: List<TimelineEntry>,
+    val truncated: Boolean,
+)
+
+internal fun boundActiveTimeline(
+    timeline: List<TimelineEntry>,
+    maxWeightChars: Int = MAX_ACTIVE_TIMELINE_WEIGHT_CHARS,
+    maxEntries: Int = MAX_ACTIVE_TIMELINE_ENTRIES,
+): BoundedTimeline {
+    require(maxWeightChars > 0)
+    require(maxEntries > 0)
+    if (timeline.size <= maxEntries && estimateTimelineWeightChars(timeline) <= maxWeightChars) {
+        return BoundedTimeline(timeline, truncated = false)
+    }
+    val newest = ArrayList<TimelineEntry>(minOf(timeline.size, maxEntries))
+    var weight = 0
+    for (index in timeline.indices.reversed()) {
+        val entry = timeline[index]
+        val entryWeight = estimateTimelineWeightChars(listOf(entry))
+        if (newest.size >= maxEntries || entryWeight > maxWeightChars - weight) break
+        newest += entry
+        weight += entryWeight
+    }
+    newest.reverse()
+    return BoundedTimeline(newest, truncated = true)
+}
+
+private fun enforceActiveTimelineBounds(state: AppUiState): AppUiState {
+    val bounded = boundActiveTimeline(state.timeline)
+    if (!bounded.truncated) return state
+    return state.copy(
+        timeline = bounded.timeline,
+        olderTurnsCursor = null,
+        olderTurnsLoading = false,
+        diagnostic = state.diagnostic
+            ?: "会话内容过多，已仅保留最近内容以避免内存不足；重新进入可按页查看历史",
+    )
+}
+
+internal fun prependOlderTimeline(
+    existing: List<TimelineEntry>,
+    older: List<TimelineEntry>,
+    maxWeightChars: Int = MAX_ACTIVE_TIMELINE_WEIGHT_CHARS,
+    maxEntries: Int = MAX_ACTIVE_TIMELINE_ENTRIES,
+): OlderTimelineMerge {
+    val identities = existing.mapTo(HashSet()) { it.sessionIdentity() }
+    val uniqueOlder = older.filter { identities.add(it.sessionIdentity()) }
+    if (uniqueOlder.isEmpty()) return OlderTimelineMerge(existing, accepted = true)
+    val merged = uniqueOlder + existing
+    val accepted = merged.size <= maxEntries && estimateTimelineWeightChars(merged) <= maxWeightChars
+    return OlderTimelineMerge(if (accepted) merged else existing, accepted)
+}
+
+internal data class ResumedTimelineMerge(
+    val timeline: List<TimelineEntry>,
+    val nextCursor: String?,
+)
+
+internal fun reconcileResumedTimeline(
+    cachedTimeline: List<TimelineEntry>?,
+    cachedNextCursor: String?,
+    refreshedTimeline: List<TimelineEntry>,
+    refreshedNextCursor: String?,
+    refreshedTurnIds: List<String> = refreshedTimeline.mapNotNull { it.turnId.takeIf(String::isNotBlank) },
+    cachedThreadUpdatedAt: Long? = null,
+    refreshedThreadUpdatedAt: Long? = null,
+    refreshedItemsView: String = "full",
+): ResumedTimelineMerge {
+    val refreshedTurns = refreshedTurnIds.toHashSet()
+    val overlapIndex = cachedTimeline?.indexOfFirst { it.turnId in refreshedTurns } ?: -1
+    val retainedPrefix = cachedTimeline?.take(overlapIndex.coerceAtLeast(0)).orEmpty()
+    val revisionUnchanged = cachedThreadUpdatedAt != null &&
+        refreshedThreadUpdatedAt != null &&
+        cachedThreadUpdatedAt == refreshedThreadUpdatedAt
+    val cachedBoundaryUsable = cachedNextCursor != null || refreshedNextCursor == null
+    val hasVerifiedOverlap = overlapIndex >= 0 && revisionUnchanged && cachedBoundaryUsable
+    val unchangedSummary = cachedTimeline != null && revisionUnchanged && cachedBoundaryUsable &&
+        refreshedItemsView == "summary"
+    val unchangedNotLoaded = cachedTimeline != null && revisionUnchanged && cachedBoundaryUsable &&
+        refreshedItemsView == "notLoaded"
+    val unchangedEmptyPage = cachedTimeline != null && refreshedTimeline.isEmpty() &&
+        cachedNextCursor == refreshedNextCursor && revisionUnchanged
+    return ResumedTimelineMerge(
+        timeline = if (unchangedNotLoaded || unchangedEmptyPage) {
+            cachedTimeline.orEmpty()
+        } else if (unchangedSummary) {
+            mergeSummaryTimeline(cachedTimeline.orEmpty(), refreshedTimeline)
+        } else if (hasVerifiedOverlap) {
+            retainedPrefix + refreshedTimeline
+        } else {
+            refreshedTimeline
+        },
+        nextCursor = if (hasVerifiedOverlap || unchangedSummary || unchangedNotLoaded || unchangedEmptyPage) {
+            cachedNextCursor
+        } else {
+            refreshedNextCursor
+        },
+    )
+}
+
+private fun mergeSummaryTimeline(
+    cached: List<TimelineEntry>,
+    summary: List<TimelineEntry>,
+): List<TimelineEntry> {
+    val replacements = summary.associateBy(TimelineEntry::sessionIdentity)
+    val cachedIdentities = cached.mapTo(HashSet(), TimelineEntry::sessionIdentity)
+    return cached.map { replacements[it.sessionIdentity()] ?: it } +
+        summary.filter { it.sessionIdentity() !in cachedIdentities }
+}
+
+private const val MAX_ACTIVE_TIMELINE_WEIGHT_CHARS = 8 * 1024 * 1024
+private const val MAX_ACTIVE_TIMELINE_ENTRIES = 1_024
+
 private data class SessionSnapshot(
     val threads: List<top.asdb.codexremote.data.CodexThread> = emptyList(),
     val threadSearch: String = "",
@@ -1589,6 +2142,8 @@ private data class SessionSnapshot(
     val selectedEffort: String? = null,
     val activeThread: top.asdb.codexremote.data.CodexThread? = null,
     val timeline: List<top.asdb.codexremote.data.TimelineEntry> = emptyList(),
+    val olderTurnsCursor: String? = null,
+    val olderTurnsLoading: Boolean = false,
     val activeTurnId: String? = null,
     val running: Boolean = false,
     val submitting: Boolean = false,
@@ -1612,6 +2167,8 @@ private data class SessionSnapshot(
         selectedEffort = selectedEffort,
         activeThread = activeThread,
         timeline = timeline,
+        olderTurnsCursor = olderTurnsCursor,
+        olderTurnsLoading = olderTurnsLoading,
         activeTurnId = activeTurnId,
         running = running,
         submitting = submitting,
@@ -1629,28 +2186,41 @@ private data class SessionSnapshot(
     )
 
     companion object {
-        fun capture(state: AppUiState): SessionSnapshot = SessionSnapshot(
-            threads = state.threads,
-            threadSearch = state.threadSearch,
-            models = state.models,
-            selectedModel = state.selectedModel,
-            selectedEffort = state.selectedEffort,
-            activeThread = state.activeThread,
-            timeline = state.timeline,
-            activeTurnId = state.activeTurnId,
-            running = state.running,
-            submitting = state.submitting,
-            loading = state.loading,
-            aggregateDiff = state.aggregateDiff,
-            tokenUsage = state.tokenUsage,
-            attachments = state.attachments,
-            composerClearNonce = state.composerClearNonce,
-            workspaceCurrentPath = state.workspaceCurrentPath,
-            workspaceParentPath = state.workspaceParentPath,
-            workspaceDirectories = state.workspaceDirectories,
-            workspaceError = state.workspaceError,
-            error = state.error,
-            diagnostic = state.diagnostic,
-        )
+        fun capture(state: AppUiState): SessionSnapshot {
+            val bounded = boundActiveTimeline(
+                state.timeline,
+                maxWeightChars = MAX_SESSION_SNAPSHOT_WEIGHT_CHARS,
+                maxEntries = MAX_SESSION_SNAPSHOT_ENTRIES,
+            )
+            return SessionSnapshot(
+                threads = state.threads,
+                threadSearch = state.threadSearch,
+                models = state.models,
+                selectedModel = state.selectedModel,
+                selectedEffort = state.selectedEffort,
+                activeThread = state.activeThread,
+                timeline = bounded.timeline,
+                olderTurnsCursor = state.olderTurnsCursor.takeUnless { bounded.truncated },
+                olderTurnsLoading = state.olderTurnsLoading,
+                activeTurnId = state.activeTurnId,
+                running = state.running,
+                submitting = state.submitting,
+                loading = state.loading,
+                aggregateDiff = state.aggregateDiff,
+                tokenUsage = state.tokenUsage,
+                attachments = state.attachments,
+                composerClearNonce = state.composerClearNonce,
+                workspaceCurrentPath = state.workspaceCurrentPath,
+                workspaceParentPath = state.workspaceParentPath,
+                workspaceDirectories = state.workspaceDirectories,
+                workspaceError = state.workspaceError,
+                error = state.error,
+                diagnostic = state.diagnostic,
+            )
+        }
     }
 }
+
+private const val MAX_PROFILE_SESSION_SNAPSHOTS = 6
+private const val MAX_SESSION_SNAPSHOT_WEIGHT_CHARS = 2 * 1024 * 1024
+private const val MAX_SESSION_SNAPSHOT_ENTRIES = 512

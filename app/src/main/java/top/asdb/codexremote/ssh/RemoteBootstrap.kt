@@ -269,6 +269,72 @@ object RemoteBootstrap {
         """.trimIndent()
     }
 
+    /**
+     * Removes only the runtime and launcher installed by [installScript]. System Codex installs,
+     * VS Code server data, account state in ~/.codex, and user workspaces are intentionally outside
+     * these paths and are never touched. The app-owned ~/.codex-mobile attachment staging directory
+     * is removed with the runtime.
+     */
+    val uninstallScript: String = """
+        set -eu
+        ROOT="${'$'}HOME/.local/share/codex-remote"
+        WRAPPER="${'$'}HOME/.local/bin/codex-remote"
+        UPLOAD_ROOT="${'$'}HOME/.codex-mobile"
+
+        if [ -d "${'$'}ROOT" ] && [ ! -L "${'$'}ROOT" ] && command -v flock >/dev/null 2>&1; then
+          exec 9>>"${'$'}ROOT/.install.lock"
+          if ! flock -n 9; then
+            printf 'Codex Remote 正在安装，请稍后再卸载\n' >&2
+            exit 75
+          fi
+        fi
+
+        is_managed_app_server() {
+          CHECK_PID="${'$'}1"
+          [ "${'$'}CHECK_PID" != "${'$'}${'$'}" ] || return 1
+          [ -r "/proc/${'$'}CHECK_PID/cmdline" ] || return 1
+          CHECK_COMMAND_LINE="${'$'}(tr '\000' ' ' < "/proc/${'$'}CHECK_PID/cmdline" 2>/dev/null || true)"
+          case "${'$'}CHECK_COMMAND_LINE" in
+            "${'$'}ROOT"/runtime/*/bin/node\ "${'$'}ROOT"/releases/*/lib/node_modules/@openai/codex/bin/codex.js\ app-server*)
+              return 0 ;;
+          esac
+          return 1
+        }
+
+        MANAGED_PIDS=
+        for PROC in /proc/[0-9]*; do
+          PID="${'$'}{PROC##*/}"
+          if is_managed_app_server "${'$'}PID"; then
+            kill -TERM "${'$'}PID" 2>/dev/null || true
+            MANAGED_PIDS="${'$'}MANAGED_PIDS ${'$'}PID"
+          fi
+        done
+
+        ATTEMPT=0
+        while [ -n "${'$'}MANAGED_PIDS" ] && [ "${'$'}ATTEMPT" -lt 5 ]; do
+          LIVE_PIDS=
+          for PID in ${'$'}MANAGED_PIDS; do
+            if is_managed_app_server "${'$'}PID"; then
+              LIVE_PIDS="${'$'}LIVE_PIDS ${'$'}PID"
+            fi
+          done
+          [ -n "${'$'}LIVE_PIDS" ] || break
+          MANAGED_PIDS="${'$'}LIVE_PIDS"
+          ATTEMPT="${'$'}((ATTEMPT + 1))"
+          sleep 1
+        done
+        for PID in ${'$'}MANAGED_PIDS; do
+          if is_managed_app_server "${'$'}PID"; then
+            kill -KILL "${'$'}PID" 2>/dev/null || true
+          fi
+        done
+
+        rm -f -- "${'$'}WRAPPER"
+        rm -rf -- "${'$'}ROOT"
+        rm -rf -- "${'$'}UPLOAD_ROOT"
+        printf 'Codex Remote app service 已卸载\n'
+    """.trimIndent()
+
     /** Reject whitespace/control characters before embedding the value in a remote shell script. */
     internal fun validateProxyUrl(value: String): String {
         val proxy = value.trim()
