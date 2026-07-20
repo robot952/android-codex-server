@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.asdb.codexremote.data.CodexModel
+import top.asdb.codexremote.data.ThreadModelPreference
 
 class PersistedUiPreferenceTest {
     private val models = listOf(
@@ -30,6 +31,25 @@ class PersistedUiPreferenceTest {
             ResolvedModelSelection("gpt-chosen", "high"),
             resolveModelSelection(models, "gpt-chosen", "removed-effort"),
         )
+    }
+
+    @Test
+    fun `each thread resolves its own independent model preference`() {
+        val first = resolveThreadModelSelection(
+            models,
+            ThreadModelPreference("gpt-default", "low"),
+            fallbackModel = "gpt-default",
+            fallbackEffort = "medium",
+        )
+        val second = resolveThreadModelSelection(
+            models,
+            ThreadModelPreference("gpt-chosen", "xhigh"),
+            fallbackModel = "gpt-default",
+            fallbackEffort = "medium",
+        )
+
+        assertEquals(ResolvedModelSelection("gpt-default", "low"), first)
+        assertEquals(ResolvedModelSelection("gpt-chosen", "xhigh"), second)
     }
 
     @Test

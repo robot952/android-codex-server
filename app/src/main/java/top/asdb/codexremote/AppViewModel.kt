@@ -39,6 +39,7 @@ import top.asdb.codexremote.data.RemoteSetupPrompt
 import top.asdb.codexremote.data.SandboxChoice
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.StoredProfiles
+import top.asdb.codexremote.data.ThreadModelPreference
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteEnvironment
@@ -78,6 +79,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         loaded.composerDrafts.entries.toList().takeLast(MAX_COMPOSER_DRAFTS).forEach { (key, value) ->
             if (key.isNotBlank() && value.isNotBlank()) put(key, value.take(MAX_COMPOSER_DRAFT_CHARS))
         }
+    }
+    private val threadModelPreferences = LinkedHashMap<String, ThreadModelPreference>().apply {
+        loaded.threadModelPreferences.entries.toList().takeLast(MAX_THREAD_MODEL_PREFERENCES)
+            .forEach { (key, preference) ->
+                if (key.isNotBlank() && preference.model.isNotBlank()) put(key, preference)
+            }
     }
     private val pendingFingerprints = mutableMapOf<String, String>()
     /** Resolved executable for a managed profile; keeps later saves from replacing its client. */
@@ -191,6 +198,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             sessionSnapshots.remove(normalized.id)
             effectiveProfiles.remove(normalized.id)
             removeComposerDrafts(normalized.id)
+            removeThreadModelPreferences(normalized.id)
         }
         if (switching) {
             before.selectedProfileId?.let { sessionSnapshots[it] = SessionSnapshot.capture(before) }
@@ -264,6 +272,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pendingFingerprints.remove(id)
         fingerprintProfiles.remove(id)
         removeComposerDrafts(id)
+        removeThreadModelPreferences(id)
         if (fingerprintDialogProfileId == id) fingerprintDialogProfileId = null
         fingerprintJobs.remove(id)?.cancel()
         connectionJobs.remove(id)?.cancel()
@@ -689,13 +698,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         invalidateLane(profile.id, "session-navigation")
         invalidateLane(profile.id, "thread-history")
         val operation = beginClientOperation(profile.id, "session-navigation", client) ?: return
-        val model = _state.value.selectedModel
+        val selection = resolveModelSelection(
+            models = _state.value.models,
+            preferredModel = profile.preferredModel,
+            preferredEffort = profile.preferredEffort,
+        )
+        val model = selection.model
         val approvalMode = _state.value.approvalMode
         val job = viewModelScope.launch {
             if (isOperationVisible(operation)) applySessionState(profile.id) { it.copy(loading = true, error = null) }
             try {
                 val (thread, timeline) = client.startThread(profile, model, approvalMode)
                 if (isOperationCurrent(operation)) {
+                    rememberThreadModelPreference(profile.id, thread.id, selection)
                     applySessionState(profile.id) {
                         it.copy(
                         screen = AppScreen.Work,
@@ -708,6 +723,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         aggregateDiff = "",
                         tokenUsage = null,
                         composerDraft = composerDraft(profile.id, thread.id),
+                        selectedModel = selection.model,
+                        selectedEffort = selection.effort,
                         loading = false,
                         )
                     }
@@ -735,6 +752,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val resumeBuffer = ResumeNotificationBuffer(thread.id, operation.generation)
         resumeNotificationBuffers[profileId] = resumeBuffer
         val approvalMode = _state.value.approvalMode
+        val threadSelection = resolveThreadModelSelection(profileId, thread.id, _state.value.models)
         val cached = client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id)
         cached?.takeIf { isOperationVisible(operation) }?.let { snapshot ->
             val cachedThread = snapshot.thread
@@ -745,6 +763,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     screen = AppScreen.Work,
                     activeThread = cachedThread,
                     composerDraft = composerDraft(profileId, cachedThread.id),
+                    selectedModel = threadSelection.model,
+                    selectedEffort = threadSelection.effort,
                     timeline = timeline,
                     olderTurnsCursor = snapshot.nextTurnsCursor,
                     olderTurnsLoading = false,
@@ -782,11 +802,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val responseSequence = resumed.responseSequence
                 if (isOperationCurrent(operation)) {
                     val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
+                    // Re-read the preference in case the user changed it while resume was loading.
+                    val latestThreadSelection = resolveThreadModelSelection(
+                        profileId,
+                        loaded.id,
+                        _state.value.models,
+                    )
                     applySessionState(profileId) {
                         it.copy(
                             screen = AppScreen.Work,
                             activeThread = loaded,
                             composerDraft = composerDraft(profileId, loaded.id),
+                            selectedModel = latestThreadSelection.model,
+                            selectedEffort = latestThreadSelection.effort,
                             timeline = timeline,
                             olderTurnsCursor = nextTurnsCursor,
                             olderTurnsLoading = false,
@@ -1194,6 +1222,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 client.archiveThread(threadId)
                 if (isOperationCurrent(operation)) {
                     composerDrafts.remove(composerDraftKey(profileId, threadId))
+                    threadModelPreferences.remove(threadStorageKey(profileId, threadId))
                     pendingApprovalsByProfile[profileId] = emptyList()
                     applySessionState(profileId) {
                         it.copy(
@@ -1383,12 +1412,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectModel(model: String, effort: String?) {
-        persistModelPreference(model, effort.orEmpty())
+        persistThreadModelPreference(model, effort.orEmpty())
     }
 
     fun selectEffort(effort: String) {
         val model = _state.value.selectedModel ?: return
-        persistModelPreference(model, effort)
+        persistThreadModelPreference(model, effort)
     }
 
     fun selectApprovalMode(mode: ApprovalMode) {
@@ -2027,22 +2056,55 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun persistProfiles() {
         val state = _state.value
-        store.save(StoredProfiles(state.profiles, state.selectedProfileId, composerDrafts.toMap()))
+        store.save(
+            StoredProfiles(
+                profiles = state.profiles,
+                selectedProfileId = state.selectedProfileId,
+                composerDrafts = composerDrafts.toMap(),
+                threadModelPreferences = threadModelPreferences.toMap(),
+            ),
+        )
     }
 
-    private fun persistModelPreference(model: String, effort: String) {
-        _state.update { current ->
-            val profiles = current.profiles.map { profile ->
-                if (profile.id == current.selectedProfileId) {
-                    profile.copy(preferredModel = model, preferredEffort = effort)
-                } else profile
-            }
-            current.copy(
-                profiles = profiles,
-                selectedModel = model,
-                selectedEffort = effort.ifBlank { null },
-            )
+    private fun persistThreadModelPreference(model: String, effort: String) {
+        val current = _state.value
+        val profileId = current.selectedProfileId ?: return
+        val threadId = current.activeThread?.id ?: return
+        threadModelPreferences[threadStorageKey(profileId, threadId)] =
+            ThreadModelPreference(model = model, effort = effort)
+        trimThreadModelPreferences()
+        applySessionState(profileId) { state ->
+            if (state.activeThread?.id == threadId) {
+                state.copy(selectedModel = model, selectedEffort = effort.ifBlank { null })
+            } else state
         }
+        persistProfiles()
+    }
+
+    private fun resolveThreadModelSelection(
+        profileId: String,
+        threadId: String,
+        models: List<top.asdb.codexremote.data.CodexModel>,
+    ): ResolvedModelSelection {
+        val stored = threadModelPreferences[threadStorageKey(profileId, threadId)]
+        val profile = _state.value.profiles.firstOrNull { it.id == profileId }
+        return resolveThreadModelSelection(
+            models = models,
+            preference = stored,
+            fallbackModel = profile?.preferredModel.orEmpty(),
+            fallbackEffort = profile?.preferredEffort.orEmpty(),
+        )
+    }
+
+    private fun rememberThreadModelPreference(
+        profileId: String,
+        threadId: String,
+        selection: ResolvedModelSelection,
+    ) {
+        val model = selection.model ?: return
+        threadModelPreferences[threadStorageKey(profileId, threadId)] =
+            ThreadModelPreference(model, selection.effort.orEmpty())
+        trimThreadModelPreferences()
         persistProfiles()
     }
 
@@ -2054,9 +2116,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         composerDrafts.keys.removeAll { it.startsWith(prefix) }
     }
 
+    private fun removeThreadModelPreferences(profileId: String) {
+        val prefix = "$profileId\u0000"
+        threadModelPreferences.keys.removeAll { it.startsWith(prefix) }
+    }
+
     private fun trimComposerDrafts() {
         while (composerDrafts.size > MAX_COMPOSER_DRAFTS) {
             composerDrafts.remove(composerDrafts.keys.first())
+        }
+    }
+
+    private fun trimThreadModelPreferences() {
+        while (threadModelPreferences.size > MAX_THREAD_MODEL_PREFERENCES) {
+            threadModelPreferences.remove(threadModelPreferences.keys.first())
         }
     }
 
@@ -2089,6 +2162,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_PENDING_APPROVALS = 8
         private const val MAX_COMPOSER_DRAFTS = 64
         private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
+        private const val MAX_THREAD_MODEL_PREFERENCES = 512
     }
 }
 
@@ -2132,6 +2206,17 @@ internal fun resolveModelSelection(
     return ResolvedModelSelection(selected.model, effort)
 }
 
+internal fun resolveThreadModelSelection(
+    models: List<top.asdb.codexremote.data.CodexModel>,
+    preference: ThreadModelPreference?,
+    fallbackModel: String,
+    fallbackEffort: String,
+): ResolvedModelSelection = resolveModelSelection(
+    models = models,
+    preferredModel = preference?.model ?: fallbackModel,
+    preferredEffort = preference?.effort ?: fallbackEffort,
+)
+
 internal fun sanitizeCodexDiagnostic(message: String): String =
     ANSI_ESCAPE_REGEX.replace(message, "").trim()
 
@@ -2143,6 +2228,9 @@ internal fun shouldSurfaceCodexDiagnostic(message: String): Boolean {
 }
 
 private fun composerDraftKey(profileId: String, threadId: String): String =
+    "$profileId\u0000$threadId"
+
+private fun threadStorageKey(profileId: String, threadId: String): String =
     "$profileId\u0000$threadId"
 
 private val ANSI_ESCAPE_REGEX = Regex("\\u001B\\[[0-9;]*[A-Za-z]")

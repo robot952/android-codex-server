@@ -36,6 +36,14 @@ data class StoredProfiles(
     val selectedProfileId: String? = null,
     /** Unsent composer text keyed by server id and thread id. */
     val composerDrafts: Map<String, String> = emptyMap(),
+    /** Model and reasoning effort selected independently for each server thread. */
+    val threadModelPreferences: Map<String, ThreadModelPreference> = emptyMap(),
+)
+
+@Serializable
+data class ThreadModelPreference(
+    val model: String = "",
+    val effort: String = "",
 )
 
 enum class ConnectionPhase { Disconnected, Probing, Connecting, Installing, Connected, Failed }
