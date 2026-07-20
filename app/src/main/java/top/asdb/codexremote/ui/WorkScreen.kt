@@ -274,9 +274,9 @@ fun WorkScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                // Keep the final assistant item above the composer. A fixed safe area covers the
-                // expanded multi-line composer as well as navigation-bar insets on small phones.
-                contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 184.dp),
+                // Scaffold's content padding already keeps the transcript above the dynamically
+                // sized composer. Only retain the normal visual spacing at the end of the list.
+                contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (state.olderTurnsCursor != null || state.olderTurnsLoading) {
