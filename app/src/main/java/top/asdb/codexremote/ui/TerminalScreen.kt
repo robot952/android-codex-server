@@ -236,9 +236,10 @@ private fun TerminalTopBar(
     onHide: () -> Unit,
     onClose: () -> Unit,
 ) {
+    val actionTint = MaterialTheme.colorScheme.onSurfaceVariant
     Row(
-        modifier = Modifier.fillMaxWidth().height(58.dp).background(Color(0xFF151515))
-            .padding(start = 12.dp, end = 4.dp),
+        modifier = Modifier.fillMaxWidth().height(64.dp).background(Color(0xFF151515))
+            .padding(start = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -266,18 +267,38 @@ private fun TerminalTopBar(
             )
         }
         if (session.phase == SshTerminalPhase.Connected) {
-            IconButton(onClick = onCopy, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Default.ContentCopy, contentDescription = "复制终端文字", modifier = Modifier.size(18.dp))
+            IconButton(onClick = onCopy, modifier = Modifier.size(48.dp)) {
+                Icon(
+                    Icons.Default.ContentCopy,
+                    contentDescription = "复制终端文字",
+                    tint = actionTint,
+                    modifier = Modifier.size(24.dp),
+                )
             }
-            IconButton(onClick = onPaste, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Default.ContentPaste, contentDescription = "粘贴到终端", modifier = Modifier.size(18.dp))
+            IconButton(onClick = onPaste, modifier = Modifier.size(48.dp)) {
+                Icon(
+                    Icons.Default.ContentPaste,
+                    contentDescription = "粘贴到终端",
+                    tint = actionTint,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
-        IconButton(onClick = onHide, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "隐藏 SSH 终端", modifier = Modifier.size(23.dp))
+        IconButton(onClick = onHide, modifier = Modifier.size(48.dp)) {
+            Icon(
+                Icons.Default.KeyboardArrowDown,
+                contentDescription = "隐藏 SSH 终端",
+                tint = actionTint,
+                modifier = Modifier.size(24.dp),
+            )
         }
-        IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Default.Close, contentDescription = "关闭 SSH 终端", modifier = Modifier.size(21.dp))
+        IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "关闭 SSH 终端",
+                tint = actionTint,
+                modifier = Modifier.size(24.dp),
+            )
         }
     }
 }
