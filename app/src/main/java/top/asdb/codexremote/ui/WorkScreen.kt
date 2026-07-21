@@ -113,6 +113,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import top.asdb.codexremote.data.AppUiState
@@ -184,6 +186,10 @@ fun WorkScreen(
     val lastEntry = state.timeline.lastOrNull()
     val latestFileChangeId = state.timeline.lastOrNull { it.kind == TimelineKind.FileChange }?.id
     var followOutput by remember(state.activeThread?.id) { mutableStateOf(true) }
+    val trailingItemIndex = state.timeline.size +
+        (if (state.olderTurnsCursor != null || state.olderTurnsLoading) 1 else 0) +
+        (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
+        (if (state.running) 1 else 0)
 
     // Track whether the reader is at the end before a streaming update arrives.
     // New deltas should not pull a user away from an earlier part of the transcript.
@@ -210,13 +216,29 @@ fun WorkScreen(
         state.olderTurnsCursor,
         state.olderTurnsLoading,
     ) {
-        val trailingItemIndex = state.timeline.size +
-            (if (state.olderTurnsCursor != null || state.olderTurnsLoading) 1 else 0) +
-            (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
-            (if (state.running) 1 else 0)
         if (followOutput && trailingItemIndex > 0) {
             // Scroll to the fixed spacer after the timeline, aggregate diff, and running indicator.
             listState.animateScrollToItem(trailingItemIndex)
+        }
+    }
+
+    // The IME changes the LazyColumn's measured viewport without consistently exposing a
+    // composable inset value on all devices. Observe the viewport itself and keep its trailing
+    // item visible after the final keyboard animation frame.
+    LaunchedEffect(listState, trailingItemIndex) {
+        var previousViewportHeight = 0
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            (layout.viewportEndOffset - layout.viewportStartOffset).coerceAtLeast(0)
+        }.distinctUntilChanged().collectLatest { viewportHeight ->
+            val previousHeight = previousViewportHeight
+            previousViewportHeight = viewportHeight
+            if (viewportHeight > 0 && previousHeight > 0 && viewportHeight < previousHeight &&
+                followOutput && trailingItemIndex > 0
+            ) {
+                delay(80)
+                listState.animateScrollToItem(trailingItemIndex)
+            }
         }
     }
 
