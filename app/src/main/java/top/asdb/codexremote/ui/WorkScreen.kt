@@ -113,8 +113,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import top.asdb.codexremote.data.AppUiState
@@ -223,21 +221,20 @@ fun WorkScreen(
     }
 
     // The IME changes the LazyColumn's measured viewport without consistently exposing a
-    // composable inset value on all devices. Observe the viewport itself and keep its trailing
-    // item visible after the final keyboard animation frame.
+    // composable inset value on all devices. Keep the trailing item aligned on every shrinking
+    // frame so the transcript moves together with the composer during the keyboard animation.
     LaunchedEffect(listState, trailingItemIndex) {
         var previousViewportHeight = 0
         snapshotFlow {
             val layout = listState.layoutInfo
             (layout.viewportEndOffset - layout.viewportStartOffset).coerceAtLeast(0)
-        }.distinctUntilChanged().collectLatest { viewportHeight ->
+        }.distinctUntilChanged().collect { viewportHeight ->
             val previousHeight = previousViewportHeight
             previousViewportHeight = viewportHeight
             if (viewportHeight > 0 && previousHeight > 0 && viewportHeight < previousHeight &&
                 followOutput && trailingItemIndex > 0
             ) {
-                delay(80)
-                listState.animateScrollToItem(trailingItemIndex)
+                listState.scrollToItem(trailingItemIndex)
             }
         }
     }
@@ -736,7 +733,7 @@ private fun ContextUsageRing(
     modifier: Modifier = Modifier,
 ) {
     Box(
-        modifier = modifier.size(36.dp).clip(CircleShape).clickable(onClick = onClick).semantics {
+        modifier = modifier.size(32.dp).clip(CircleShape).clickable(onClick = onClick).semantics {
             contentDescription = "上下文用量，点击压缩会话"
             stateDescription = if (usage.available) "已获取" else "等待用量数据"
         },
@@ -744,8 +741,8 @@ private fun ContextUsageRing(
     ) {
         CircularProgressIndicator(
             progress = { usage.fraction },
-            modifier = Modifier.size(22.dp),
-            strokeWidth = 3.dp,
+            modifier = Modifier.size(18.dp),
+            strokeWidth = 2.dp,
             color = Color.White.copy(alpha = 0.94f),
             trackColor = Color(0xFF555555),
         )
@@ -1056,9 +1053,14 @@ private fun WorkComposer(
                             )
                         }
                         Spacer(Modifier.weight(1f))
+                        ContextUsageRing(
+                            usage = contextUsageDisplay(state),
+                            onClick = onCompact,
+                        )
+                        Spacer(Modifier.width(2.dp))
                         TextButton(
                             onClick = onShowModels,
-                            modifier = Modifier.widthIn(max = if (state.running) 88.dp else 116.dp),
+                            modifier = Modifier.widthIn(max = 116.dp),
                             contentPadding = PaddingValues(horizontal = 5.dp),
                         ) {
                             Text(
@@ -1069,28 +1071,28 @@ private fun WorkComposer(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Spacer(Modifier.width(2.dp))
-                        ContextUsageRing(
-                            usage = contextUsageDisplay(state),
-                            onClick = onCompact,
-                        )
                         Spacer(Modifier.width(6.dp))
-                        if (state.running) {
-                            IconButton(onClick = onStop, modifier = Modifier.size(36.dp)) {
-                                Icon(Icons.Default.Stop, contentDescription = "停止", modifier = Modifier.size(20.dp))
-                            }
-                        }
                         val canSend = (value.isNotBlank() || state.attachments.isNotEmpty()) &&
                             !state.loading && !state.submitting
+                        val actionEnabled = if (state.running) !state.loading else canSend
                         IconButton(
-                            onClick = onSend,
-                            enabled = canSend,
+                            onClick = if (state.running) onStop else onSend,
+                            enabled = actionEnabled,
                             modifier = Modifier.size(36.dp).clip(RoundedCornerShape(18.dp))
-                                .background(if (canSend) MaterialTheme.colorScheme.primary else Color(0xFF555555)),
+                                .background(
+                                    if (actionEnabled) MaterialTheme.colorScheme.primary else Color(0xFF555555),
+                                ),
                         ) {
-                            Icon(Icons.Default.ArrowUpward, contentDescription = "发送",
-                                tint = if (canSend) MaterialTheme.colorScheme.onPrimary else Color(0xFFB0B0B0),
-                                modifier = Modifier.size(20.dp))
+                            Icon(
+                                imageVector = if (state.running) Icons.Default.Stop else Icons.Default.ArrowUpward,
+                                contentDescription = if (state.running) "停止" else "发送",
+                                tint = if (actionEnabled) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    Color(0xFFB0B0B0)
+                                },
+                                modifier = Modifier.size(if (state.running) 18.dp else 20.dp),
+                            )
                         }
                     }
                 }
