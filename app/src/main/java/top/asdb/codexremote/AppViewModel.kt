@@ -41,6 +41,7 @@ import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.StoredProfiles
 import top.asdb.codexremote.data.ThreadModelPreference
 import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import java.io.ByteArrayOutputStream
@@ -94,6 +95,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(
         AppUiState(
+            debugModeEnabled = DiagnosticLogger.isEnabled(),
             profiles = saved.profiles,
             selectedProfileId = initialProfileId,
             approvalMode = initialProfile?.approvalMode ?: ApprovalMode.RequestApproval,
@@ -103,6 +105,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     init {
+        DiagnosticLogger.info("ViewModel", "initialized profiles=${saved.profiles.size}")
         if (saved != loaded) store.save(saved)
         saved.profiles.forEach { connections.register(it) }
         initialProfile?.let { connections.select(it) }
@@ -140,6 +143,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             connections.diagnostics.collect { event ->
+                DiagnosticLogger.warn(
+                    "Remote",
+                    "diagnostic profile=${profileRef(event.profileId)} ${event.value.message}",
+                )
                 if (isActiveProfile(event.profileId)) {
                     val diagnostic = sanitizeCodexDiagnostic(event.value.message)
                     if (shouldSurfaceCodexDiagnostic(diagnostic)) {
@@ -150,6 +157,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             connections.closed.collect { event ->
+                DiagnosticLogger.warn(
+                    "Connection",
+                    "closed profile=${profileRef(event.profileId)} ${event.value.message}",
+                )
                 handleProfileClosed(event)
             }
         }
@@ -185,6 +196,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         } else input
         val switching = before.selectedProfileId != normalized.id
+        DiagnosticLogger.info(
+            "Profile",
+            "save profile=${profileRef(normalized.id)} new=${existing == null} identity_changed=$identityChanged",
+        )
         if (identityChanged) {
             invalidateProfile(normalized.id)
             fingerprintJobs.remove(normalized.id)?.cancel()
@@ -245,6 +260,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectProfile(id: String) {
         val profile = _state.value.profiles.firstOrNull { it.id == id } ?: return
+        DiagnosticLogger.info("Profile", "select profile=${profileRef(id)}")
         val previousId = _state.value.selectedProfileId
         if (previousId != id) previousId?.let { sessionSnapshots[it] = SessionSnapshot.capture(_state.value) }
         // loadConnectedSession may have resolved the managed command to a concrete executable.
@@ -262,6 +278,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteProfile(id: String) {
+        DiagnosticLogger.info("Profile", "delete profile=${profileRef(id)}")
         val wasSelected = _state.value.selectedProfileId == id
         invalidateProfile(id)
         sessionSnapshots.remove(id)
@@ -405,6 +422,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             fingerprintJobs[normalized.id]?.isActive == true || disconnectJobs[normalized.id]?.isActive == true ||
             uninstallJobs[normalized.id]?.isActive == true
         ) return
+        DiagnosticLogger.info(
+            "Connection",
+            "connect_start profile=${profileRef(normalized.id)} active=$makeActive fingerprint=${normalized.hostFingerprint.isNotBlank()}",
+        )
         invalidateProfile(normalized.id)
         if (makeActive) {
             saveProfile(normalized)
@@ -466,6 +487,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             fingerprintJobs[profileId]?.isActive == true || disconnectJobs[profileId]?.isActive == true ||
             uninstallJobs[profileId]?.isActive == true
         ) return
+        DiagnosticLogger.info("Setup", "install_start profile=${profileRef(profileId)}")
         val normalizedProxy = try {
             RemoteBootstrap.validateProxyUrl(proxyUrl)
         } catch (error: IllegalArgumentException) {
@@ -694,6 +716,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createThread() {
         val profile = currentProfile() ?: return
+        DiagnosticLogger.info("Thread", "create_start profile=${profileRef(profile.id)}")
         val client = connections.client(profile.id)?.takeIf { it.isConnected() } ?: return
         invalidateLane(profile.id, "session-navigation")
         invalidateLane(profile.id, "thread-history")
@@ -710,6 +733,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val (thread, timeline) = client.startThread(profile, model, approvalMode)
                 if (isOperationCurrent(operation)) {
+                    DiagnosticLogger.info(
+                        "Thread",
+                        "create_success profile=${profileRef(profile.id)} thread=${profileRef(thread.id)}",
+                    )
                     rememberThreadModelPreference(profile.id, thread.id, selection)
                     applySessionState(profile.id) {
                         it.copy(
@@ -745,6 +772,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openThread(thread: top.asdb.codexremote.data.CodexThread) {
         val profileId = _state.value.selectedProfileId ?: return
+        DiagnosticLogger.info(
+            "Thread",
+            "open_start profile=${profileRef(profileId)} thread=${profileRef(thread.id)}",
+        )
         val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
         invalidateLane(profileId, "session-navigation")
         invalidateLane(profileId, "thread-history")
@@ -801,6 +832,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val nextTurnsCursor = reconciled.nextCursor
                 val responseSequence = resumed.responseSequence
                 if (isOperationCurrent(operation)) {
+                    DiagnosticLogger.info(
+                        "Thread",
+                        "open_success profile=${profileRef(profileId)} thread=${profileRef(loaded.id)} items=${timeline.size}",
+                    )
                     val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
                     // Re-read the preference in case the user changed it while resume was loading.
                     val latestThreadSelection = resolveThreadModelSelection(
@@ -1003,6 +1038,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             showError(IllegalStateException("当前回合仍在运行，尚未收到回合 ID，请稍后再试"))
             return
         }
+        DiagnosticLogger.info(
+            "Turn",
+            "send_start profile=${profileRef(profileId)} thread=${profileRef(thread.id)} steering=${current.running} attachments=${current.attachments.size}",
+        )
         invalidateLane(profileId, "session-navigation")
         val operation = beginClientOperation(profileId, "send", client) ?: return
         applySessionState(profileId) { it.copy(submitting = true, error = null) }
@@ -1024,6 +1063,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 if (isOperationCurrent(operation)) {
+                    DiagnosticLogger.info(
+                        "Turn",
+                        "send_accepted profile=${profileRef(profileId)} thread=${profileRef(thread.id)}",
+                    )
                     composerDrafts.remove(composerDraftKey(profileId, thread.id))
                     applySessionState(profileId) {
                         it.copy(
@@ -1513,6 +1556,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(diagnostic = null) }
     }
 
+    fun enableDebugMode() {
+        DiagnosticLogger.setEnabled(true)
+        _state.update { it.copy(debugModeEnabled = true, diagnostic = "Debug 模式已启用") }
+    }
+
+    fun disableDebugMode() {
+        DiagnosticLogger.setEnabled(false)
+        _state.update { it.copy(debugModeEnabled = false, diagnostic = "Debug 模式已关闭") }
+    }
+
     private fun beginClientOperation(
         profileId: String,
         lane: String,
@@ -1685,6 +1738,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startDisconnect(profileId: String) {
         if (disconnectJobs[profileId]?.isActive == true) return
+        DiagnosticLogger.info("Connection", "disconnect_start profile=${profileRef(profileId)}")
         val expectedClient = connections.client(profileId)
         invalidateProfile(profileId)
         fingerprintJobs[profileId]?.cancel()
@@ -1721,6 +1775,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (_state.value.profiles.any { it.id == profileId }) {
                     updateProfileConnection(profileId, ConnectionState())
                 }
+                DiagnosticLogger.info("Connection", "disconnect_success profile=${profileRef(profileId)}")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -1957,6 +2012,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun showConnected(profile: ServerProfile, connected: ConnectedSession) {
+        DiagnosticLogger.info(
+            "Connection",
+            "connect_success profile=${profileRef(profile.id)} version=${connected.version} threads=${connected.threads.size} models=${connected.models.size}",
+        )
         val defaultModel = connected.models.firstOrNull { it.isDefault } ?: connected.models.firstOrNull()
         val preferredSelection = resolveModelSelection(
             models = connected.models,
@@ -2135,6 +2194,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showConnectionError(error: Throwable, profileId: String? = _state.value.selectedProfileId) {
         profileId ?: return
+        DiagnosticLogger.error(
+            "Connection",
+            "connect_failed profile=${profileRef(profileId)}",
+            error,
+        )
         updateProfileConnection(profileId, ConnectionState(ConnectionPhase.Failed, error.message ?: "连接失败"))
         applySessionState(profileId) {
             it.copy(
@@ -2147,6 +2211,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showError(error: Throwable, profileId: String? = _state.value.selectedProfileId) {
         profileId ?: return
+        DiagnosticLogger.error("Operation", "failed profile=${profileRef(profileId)}", error)
         applySessionState(profileId) {
             it.copy(loading = false, submitting = false, error = error.message ?: "操作失败")
         }
@@ -2165,6 +2230,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_THREAD_MODEL_PREFERENCES = 512
     }
 }
+
+private fun profileRef(value: String): String = value.take(8).ifBlank { "unknown" }
 
 private data class ConnectedSession(
     val version: String,

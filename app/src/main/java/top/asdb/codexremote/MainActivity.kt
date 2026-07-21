@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import top.asdb.codexremote.data.ConnectionPhase
+import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.CodexRemoteApp
 import top.asdb.codexremote.ui.theme.CodexRemoteTheme
 
@@ -23,7 +24,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DiagnosticLogger.info("Activity", "created restored=${savedInstanceState != null}")
         observeConnectionProtection()
+        observeDiagnosticState()
         enableEdgeToEdge()
         setContent {
             CodexRemoteTheme {
@@ -33,10 +36,31 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        DiagnosticLogger.info("Activity", "destroyed finishing=$isFinishing changing_config=$isChangingConfigurations")
         if (isFinishing && !isChangingConfigurations) {
             ConnectionForegroundService.stop(this)
         }
         super.onDestroy()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        DiagnosticLogger.info("Activity", "started")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        DiagnosticLogger.info("Activity", "resumed")
+    }
+
+    override fun onPause() {
+        DiagnosticLogger.info("Activity", "paused")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        DiagnosticLogger.info("Activity", "stopped")
+        super.onStop()
     }
 
     private fun observeConnectionProtection() {
@@ -54,6 +78,36 @@ class MainActivity : ComponentActivity() {
                     } else {
                         ConnectionForegroundService.stop(this@MainActivity)
                     }
+                }
+        }
+    }
+
+    private fun observeDiagnosticState() {
+        lifecycleScope.launch {
+            viewModel.state
+                .map { state ->
+                    DiagnosticUiState(
+                        screen = state.screen.name,
+                        profile = state.selectedProfileId?.take(8).orEmpty(),
+                        connection = state.connection.phase.name,
+                        connectedProfiles = state.connectionStates.values.count {
+                            it.phase == ConnectionPhase.Connected
+                        },
+                        thread = state.activeThread?.id?.take(8).orEmpty(),
+                        loading = state.loading,
+                        submitting = state.submitting,
+                        running = state.running,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect { state ->
+                    DiagnosticLogger.info(
+                        "UI",
+                        "screen=${state.screen} profile=${state.profile.ifBlank { "none" }} " +
+                            "connection=${state.connection} connected=${state.connectedProfiles} " +
+                            "thread=${state.thread.ifBlank { "none" }} loading=${state.loading} " +
+                            "submitting=${state.submitting} running=${state.running}",
+                    )
                 }
         }
     }
@@ -76,6 +130,17 @@ class MainActivity : ComponentActivity() {
         const val NOTIFICATION_PERMISSION_REQUEST = 1001
     }
 }
+
+private data class DiagnosticUiState(
+    val screen: String,
+    val profile: String,
+    val connection: String,
+    val connectedProfiles: Int,
+    val thread: String,
+    val loading: Boolean,
+    val submitting: Boolean,
+    val running: Boolean,
+)
 
 private fun ConnectionPhase.keepsBackgroundConnection(): Boolean = when (this) {
     ConnectionPhase.Connecting,

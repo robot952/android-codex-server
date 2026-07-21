@@ -224,6 +224,7 @@ data class RemoteSetupPrompt(
 
 data class AppUiState(
     val screen: AppScreen = AppScreen.Servers,
+    val debugModeEnabled: Boolean = false,
     val profiles: List<ServerProfile> = emptyList(),
     val selectedProfileId: String? = null,
     val connection: ConnectionState = ConnectionState(),

@@ -1,5 +1,9 @@
 package top.asdb.codexremote.ui
 
+import android.content.Context
+import android.content.Intent
+import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -34,13 +38,16 @@ import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -48,7 +55,9 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
@@ -62,6 +71,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -113,6 +124,8 @@ import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.ServerProfile
+import top.asdb.codexremote.diagnostics.DebugTapCounter
+import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
 import top.asdb.codexremote.ui.theme.CodexMuted
@@ -133,6 +146,8 @@ fun ServerScreen(
     onUninstallRemote: (String) -> Unit,
     onProbeFingerprint: (ServerProfile) -> Unit,
     onConnect: (ServerProfile) -> Unit,
+    onEnableDebugMode: () -> Unit,
+    onDisableDebugMode: () -> Unit,
 ) {
     val selected = state.profiles.firstOrNull { it.id == state.selectedProfileId }
     val unsavedDrafts = remember { mutableStateMapOf<String, ServerProfile>() }
@@ -161,6 +176,8 @@ fun ServerScreen(
     var deleteRequested by remember { mutableStateOf(false) }
     var uninstallRequested by remember { mutableStateOf(false) }
     var keyImportError by remember { mutableStateOf<String?>(null) }
+    var showDebugLogs by remember { mutableStateOf(false) }
+    val debugTapCounter = remember { DebugTapCounter() }
     fun showDraft(next: ServerProfile) {
         unsavedDrafts[draft.id] = draft
         draft = unsavedDrafts[next.id] ?: next
@@ -223,7 +240,13 @@ fun ServerScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                             contentColor = MaterialTheme.colorScheme.surface,
                             shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.size(34.dp),
+                            modifier = Modifier.size(34.dp).clickable {
+                                if (state.debugModeEnabled) {
+                                    showDebugLogs = true
+                                } else if (debugTapCounter.registerTap(SystemClock.elapsedRealtime())) {
+                                    onEnableDebugMode()
+                                }
+                            },
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -304,6 +327,14 @@ fun ServerScreen(
                     }
                     AddServerTab(onClick = ::showNewDraft)
                 }
+                HorizontalDivider(color = CodexBorder)
+            }
+
+            if (state.debugModeEnabled) {
+                DebugLogBar(
+                    onOpen = { showDebugLogs = true },
+                    onShare = { shareDiagnosticLog(context) },
+                )
                 HorizontalDivider(color = CodexBorder)
             }
 
@@ -564,6 +595,16 @@ fun ServerScreen(
         }
     }
 
+    if (showDebugLogs && state.debugModeEnabled) {
+        DiagnosticLogSheet(
+            onDismiss = { showDebugLogs = false },
+            onDisable = {
+                showDebugLogs = false
+                onDisableDebugMode()
+            },
+        )
+    }
+
     if (uninstallRequested) {
         AlertDialog(
             onDismissRequest = { uninstallRequested = false },
@@ -623,6 +664,136 @@ fun ServerScreen(
             },
         )
     }
+}
+
+@Composable
+private fun DebugLogBar(onOpen: () -> Unit, onShare: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.BugReport,
+            contentDescription = null,
+            tint = CodexGreen,
+            modifier = Modifier.size(21.dp),
+        )
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Debug 模式", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                "运行日志正在记录",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Default.Share, contentDescription = "分享诊断日志", modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DiagnosticLogSheet(onDismiss: () -> Unit, onDisable: () -> Unit) {
+    val context = LocalContext.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var snapshot by remember { mutableStateOf(DiagnosticLogger.snapshot()) }
+    var clearRequested by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding()
+                .padding(start = 18.dp, end = 18.dp, bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.BugReport, contentDescription = null, tint = CodexGreen)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("诊断日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "${formatLogSize(snapshot.bytes)} · 自动轮转",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = { snapshot = DiagnosticLogger.snapshot() }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "刷新日志")
+                }
+            }
+
+            Surface(
+                color = Color(0xFF111111),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.fillMaxWidth().height(260.dp)
+                    .border(1.dp, CodexBorder, RoundedCornerShape(6.dp)),
+            ) {
+                SelectionContainer {
+                    Text(
+                        snapshot.preview.ifBlank { "暂无日志" },
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                            .padding(11.dp),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = { clearRequested = true }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("清空")
+                }
+                Button(onClick = { shareDiagnosticLog(context) }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("分享")
+                }
+            }
+
+            TextButton(onClick = onDisable, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("关闭 Debug 模式", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+
+    if (clearRequested) {
+        AlertDialog(
+            onDismissRequest = { clearRequested = false },
+            title = { Text("清空诊断日志") },
+            text = { Text("确定删除当前设备上的诊断日志吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    DiagnosticLogger.clear()
+                    snapshot = DiagnosticLogger.snapshot()
+                    clearRequested = false
+                }) { Text("清空", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearRequested = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+private fun shareDiagnosticLog(context: Context) {
+    DiagnosticLogger.info("Debug", "diagnostic_log_share_requested")
+    runCatching {
+        val shareIntent = DiagnosticLogger.createShareIntent(context)
+        context.startActivity(Intent.createChooser(shareIntent, "分享诊断日志"))
+    }.onFailure {
+        DiagnosticLogger.error("Debug", "diagnostic_log_share_failed", it)
+        Toast.makeText(context, "无法打开系统分享", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun formatLogSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / (1024f * 1024f))
+    bytes >= 1024L -> "%.1f KB".format(bytes / 1024f)
+    else -> "$bytes B"
 }
 
 @Composable

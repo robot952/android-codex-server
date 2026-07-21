@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import top.asdb.codexremote.diagnostics.DiagnosticLogger
 
 /** Keeps interactive SSH traffic in a foreground process while the activity is backgrounded. */
 class ConnectionForegroundService : Service() {
@@ -25,12 +26,14 @@ class ConnectionForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        DiagnosticLogger.info("Service", "connection_foreground_created")
         acquireConnectionWakeLock()
         createNotificationChannel()
         showForegroundNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        DiagnosticLogger.info("Service", "connection_foreground_started start_id=$startId")
         if (wakeLock?.isHeld != true) acquireConnectionWakeLock()
         showForegroundNotification()
         return START_NOT_STICKY
@@ -39,6 +42,7 @@ class ConnectionForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        DiagnosticLogger.info("Service", "connection_foreground_destroyed")
         wakeLockHandler.removeCallbacks(renewWakeLock)
         wakeLock?.let { lock ->
             if (lock.isHeld) lock.release()

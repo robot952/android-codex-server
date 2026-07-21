@@ -137,6 +137,8 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onUninstallRemote = viewModel::uninstallRemote,
                 onProbeFingerprint = viewModel::probeFingerprint,
                 onConnect = viewModel::connect,
+                onEnableDebugMode = viewModel::enableDebugMode,
+                onDisableDebugMode = viewModel::disableDebugMode,
             )
 
             AppScreen.Threads -> ThreadListScreen(
