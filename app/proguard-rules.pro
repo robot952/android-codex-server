@@ -1,6 +1,9 @@
 -keep class com.jcraft.jsch.** { *; }
 -dontwarn org.bouncycastle.**
 -keepattributes Signature,*Annotation*
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
 
 # JSch and AndroidX Security share artifacts with optional desktop integrations. These classes are
 # not used by the SSH/password/private-key paths in this app (GSS, Pageant/JNA, desktop logging),

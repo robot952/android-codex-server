@@ -23,7 +23,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
-import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.ServerProfile
@@ -91,11 +90,11 @@ class SshCodexTransport {
         val probe = JSch().apply { hostKeyRepository = capture }
             .getSession(profile.username, profile.host, profile.port)
         probe.setConfig("StrictHostKeyChecking", "yes")
-        probe.timeout = CONNECT_TIMEOUT_MS
+        probe.timeout = SSH_CONNECT_TIMEOUT_MS
         try {
             try {
                 runCancellableConnect(
-                    connect = { probe.connect(CONNECT_TIMEOUT_MS) },
+                    connect = { probe.connect(SSH_CONNECT_TIMEOUT_MS) },
                     disconnect = probe::disconnect,
                 )
                 throw IllegalStateException("SSH 指纹探测未在主机密钥校验阶段停止")
@@ -127,10 +126,10 @@ class SshCodexTransport {
             var sshSession: Session? = null
             var exec: ChannelExec? = null
             try {
-                sshSession = createSession(profile)
+                sshSession = createPinnedSshSession(profile)
                 check(registerConnectingSession(generation, sshSession)) { "SSH 连接已取消" }
                 runCancellableConnect(
-                    connect = { sshSession.connect(CONNECT_TIMEOUT_MS) },
+                    connect = { sshSession.connect(SSH_CONNECT_TIMEOUT_MS) },
                     disconnect = sshSession::disconnect,
                 )
                 check(isConnectionCurrent(generation)) { "SSH 连接已取消" }
@@ -145,7 +144,7 @@ class SshCodexTransport {
                 val stdout = exec.inputStream
                 val stdin = exec.outputStream
                 runCancellableConnect(
-                    connect = { exec.connect(CHANNEL_TIMEOUT_MS) },
+                    connect = { exec.connect(SSH_CHANNEL_TIMEOUT_MS) },
                     disconnect = exec::disconnect,
                 )
                 check(publishConnection(generation, attemptScope, sshSession, exec, stdin)) {
@@ -282,7 +281,7 @@ class SshCodexTransport {
         val sftp = sshSession.openChannel("sftp") as ChannelSftp
         try {
             runCancellableConnect(
-                connect = { sftp.connect(CHANNEL_TIMEOUT_MS) },
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
                 disconnect = sftp::disconnect,
             )
             val requested = path?.trim().takeUnless { it.isNullOrBlank() } ?: "."
@@ -315,7 +314,7 @@ class SshCodexTransport {
             val sftp = sshSession.openChannel("sftp") as ChannelSftp
             try {
                 runCancellableConnect(
-                    connect = { sftp.connect(CHANNEL_TIMEOUT_MS) },
+                    connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
                     disconnect = sftp::disconnect,
                 )
                 val home = sftp.home
@@ -344,38 +343,6 @@ class SshCodexTransport {
 
     fun close() {
         closeResources(invalidateConnection())
-    }
-
-    private fun createSession(profile: ServerProfile): Session {
-        val jsch = JSch().apply {
-            hostKeyRepository = PinnedHostKeyRepository(profile.hostFingerprint)
-            when (profile.authMode) {
-                AuthMode.Password -> Unit
-                AuthMode.PrivateKey -> {
-                    require(profile.privateKeyPem.isNotBlank()) { "请选择 SSH 私钥" }
-                    addIdentity(
-                        profile.name,
-                        profile.privateKeyPem.toByteArray(),
-                        null,
-                        profile.privateKeyPassphrase.takeIf { it.isNotEmpty() }?.toByteArray(),
-                    )
-                }
-            }
-        }
-        return jsch.getSession(profile.username, profile.host, profile.port).apply {
-            setConfig("StrictHostKeyChecking", "yes")
-            setConfig(
-                "PreferredAuthentications",
-                if (profile.authMode == AuthMode.Password) "password,keyboard-interactive" else "publickey",
-            )
-            if (profile.authMode == AuthMode.Password) {
-                require(profile.password.isNotEmpty()) { "密码不能为空" }
-                setPassword(profile.password)
-            }
-            serverAliveInterval = KEEPALIVE_INTERVAL_MS
-            serverAliveCountMax = KEEPALIVE_MISSES_BEFORE_CLOSE
-            timeout = CONNECT_TIMEOUT_MS
-        }
     }
 
     private suspend fun executeScript(
@@ -421,9 +388,9 @@ class SshCodexTransport {
         var sshSession: Session? = null
         var exec: ChannelExec? = null
         try {
-            sshSession = createSession(profile).also(sessionRef::set)
+            sshSession = createPinnedSshSession(profile).also(sessionRef::set)
             runCancellableConnect(
-                connect = { sshSession.connect(CONNECT_TIMEOUT_MS) },
+                connect = { sshSession.connect(SSH_CONNECT_TIMEOUT_MS) },
                 disconnect = sshSession::disconnect,
             )
             exec = (sshSession.openChannel("exec") as ChannelExec).also(channelRef::set)
@@ -434,7 +401,7 @@ class SshCodexTransport {
             val stdout = exec.inputStream
             val stdin = exec.outputStream
             runCancellableConnect(
-                connect = { exec.connect(CHANNEL_TIMEOUT_MS) },
+                connect = { exec.connect(SSH_CHANNEL_TIMEOUT_MS) },
                 disconnect = exec::disconnect,
             )
             stdin.bufferedWriter(Charsets.UTF_8).use { writer ->
@@ -641,10 +608,6 @@ class SshCodexTransport {
     }
 
     companion object {
-        private const val CONNECT_TIMEOUT_MS = 15_000
-        private const val CHANNEL_TIMEOUT_MS = 10_000
-        private const val KEEPALIVE_INTERVAL_MS = 15_000
-        private const val KEEPALIVE_MISSES_BEFORE_CLOSE = 12
         private const val PROBE_TIMEOUT_MS = 30_000L
         private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
         private const val UNINSTALL_TIMEOUT_MS = 60_000L

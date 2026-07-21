@@ -11,7 +11,8 @@ The project is isolated in `/home/yan/ygy/codex-remote-android`. It does not mod
 
 - Multiple encrypted server profiles with password or imported private-key authentication
 - SHA-256 SSH host-key fingerprint probing, explicit trust, and strict pinning
-- Fixed remote command and no PTY/terminal scraping
+- Fixed Codex app-server command over a non-PTY JSON-RPC channel
+- Independent SSH terminal with a local xterm renderer, hide/resume history, and explicit disconnect
 - Codex `initialize` handshake and model catalog
 - Task list, search, refresh, new task, resume, rename, and archive
 - Streaming user/agent messages, reasoning, plans, command output, tool calls, and notices
@@ -31,14 +32,36 @@ The project is isolated in `/home/yan/ygy/codex-remote-android`. It does not mod
 
 The repository pins Gradle 8.2, AGP 8.2.2, Kotlin 1.9.22, and Android SDK 34.
 
+For local iteration, use the tiered build entry point. It keeps Gradle's daemon, configuration
+cache, task cache, and incremental Kotlin outputs between runs; normal development should not call
+`clean`. By default the shared dependency cache is stored beside the checkout at
+`../.gradle-cache`; set `GRADLE_USER_HOME` to override it.
+
+```bash
+./scripts/build-android.sh fast     # Kotlin compile only
+./scripts/build-android.sh debug    # unit tests + installable debug APK
+./scripts/build-android.sh release  # release unit tests + Lint + signed release APK
+./scripts/build-android.sh all      # tests, Lint, and APKs for both variants
+```
+
+The script is offline by default once dependencies are cached. When a download is required, it
+detects and uses the local `127.0.0.1:7890` proxy:
+
+```bash
+CODEX_BUILD_ONLINE=1 ./scripts/build-android.sh debug
+```
+
 ```bash
 docker run --rm \
+  --network host \
   -v "$PWD:/project" \
-  -v /home/yan/ygy/.gradle-cache:/root/.gradle \
+  -v /home/yan/ygy/.gradle-cache:/gradle-cache \
   -v android-sdk:/opt/android-sdk \
+  -e GRADLE_USER_HOME=/gradle-cache \
+  -e CODEX_BUILD_ONLINE=1 \
   -w /project \
   thyrlian/android-sdk:latest \
-  sh -lc './gradlew testDebugUnitTest lintDebug assembleDebug'
+  sh -lc './scripts/build-android.sh all'
 ```
 
 APK:

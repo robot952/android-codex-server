@@ -87,6 +87,7 @@ import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 @Composable
 fun CodexRemoteApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val terminalState by viewModel.terminalState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var serverSwitcherVisible by remember { mutableStateOf(false) }
 
@@ -149,6 +150,8 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onOpen = viewModel::openThread,
                 onSelectWorkspace = viewModel::showWorkspacePicker,
                 onShowServers = { serverSwitcherVisible = true },
+                terminalSession = state.selectedProfileId?.let(terminalState.sessions::get),
+                onOpenTerminal = viewModel::openTerminal,
             )
 
             AppScreen.Work -> WorkScreen(
@@ -185,6 +188,20 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp)
             },
         )
+        terminalState.visibleProfileId?.let { profileId ->
+            terminalState.sessions[profileId]?.let { terminalSession ->
+                SshTerminalScreen(
+                    session = terminalSession,
+                    outputSignals = viewModel.terminalOutputSignals,
+                    onReadOutput = viewModel::terminalOutputAfter,
+                    onSend = viewModel::sendTerminalInput,
+                    onResize = viewModel::resizeTerminal,
+                    onRetry = viewModel::retryTerminal,
+                    onHide = viewModel::hideTerminal,
+                    onClose = viewModel::closeTerminal,
+                )
+            }
+        }
     }
 
     if (serverSwitcherVisible) {

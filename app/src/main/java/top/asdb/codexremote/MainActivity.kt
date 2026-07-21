@@ -12,10 +12,12 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
+import top.asdb.codexremote.ssh.SshTerminalPhase
 import top.asdb.codexremote.ui.CodexRemoteApp
 import top.asdb.codexremote.ui.theme.CodexRemoteTheme
 
@@ -65,10 +67,12 @@ class MainActivity : ComponentActivity() {
 
     private fun observeConnectionProtection() {
         lifecycleScope.launch {
-            viewModel.state
-                .map { state ->
-                    state.connectionStates.values.any { it.phase.keepsBackgroundConnection() } ||
-                        state.connection.phase.keepsBackgroundConnection()
+            combine(viewModel.state, viewModel.terminalState) { state, terminal ->
+                state.connectionStates.values.any { it.phase.keepsBackgroundConnection() } ||
+                    state.connection.phase.keepsBackgroundConnection() ||
+                    terminal.sessions.values.any {
+                        it.phase in setOf(SshTerminalPhase.Connecting, SshTerminalPhase.Connected)
+                    }
                 }
                 .distinctUntilChanged()
                 .collect { required ->

@@ -44,6 +44,8 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteEnvironment
+import top.asdb.codexremote.ssh.SshTerminalManager
+import top.asdb.codexremote.ssh.SshTerminalOutputBatch
 import java.io.ByteArrayOutputStream
 import java.util.LinkedHashMap
 import java.util.UUID
@@ -52,6 +54,7 @@ import java.util.concurrent.ConcurrentHashMap
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ProfileStore(application)
     private val connections = CodexConnectionManager(viewModelScope)
+    private val terminals = SshTerminalManager(viewModelScope)
     private val loaded = store.load()
     private val saved = loaded.copy(profiles = loaded.profiles.map(::normalizeProfile))
     private val initialProfileId = saved.selectedProfileId
@@ -103,6 +106,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
+    internal val terminalState = terminals.state
+    internal val terminalOutputSignals = terminals.outputSignals
 
     init {
         DiagnosticLogger.info("ViewModel", "initialized profiles=${saved.profiles.size}")
@@ -177,6 +182,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         sessionNavigationJobs.values.forEach(Job::cancel)
         threadHistoryJobs.values.forEach(Job::cancel)
         threadMutationJobs.values.forEach(Job::cancel)
+        terminals.closeAll()
         connections.close()
         super.onCleared()
     }
@@ -201,6 +207,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "save profile=${profileRef(normalized.id)} new=${existing == null} identity_changed=$identityChanged",
         )
         if (identityChanged) {
+            terminals.closeProfile(normalized.id)
             invalidateProfile(normalized.id)
             fingerprintJobs.remove(normalized.id)?.cancel()
             connectionJobs.remove(normalized.id)?.cancel()
@@ -279,6 +286,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteProfile(id: String) {
         DiagnosticLogger.info("Profile", "delete profile=${profileRef(id)}")
+        terminals.closeProfile(id)
         val wasSelected = _state.value.selectedProfileId == id
         invalidateProfile(id)
         sessionSnapshots.remove(id)
@@ -632,6 +640,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         persistProfiles()
     }
+
+    internal fun openTerminal() {
+        val profileId = _state.value.selectedProfileId ?: return
+        val profile = _state.value.profiles.firstOrNull { it.id == profileId } ?: return
+        terminals.open(profile)
+    }
+
+    internal fun retryTerminal(profileId: String) {
+        val profile = _state.value.profiles.firstOrNull { it.id == profileId } ?: return
+        terminals.open(profile)
+    }
+
+    internal fun hideTerminal() = terminals.hide()
+
+    internal fun closeTerminal() = terminals.closeVisible()
+
+    internal fun sendTerminalInput(profileId: String, value: ByteArray): Boolean =
+        terminals.send(profileId, value)
+
+    internal fun resizeTerminal(profileId: String, columns: Int, rows: Int) {
+        terminals.resize(profileId, columns, rows)
+    }
+
+    internal fun terminalOutputAfter(
+        profileId: String,
+        generation: Long,
+        sequence: Long,
+    ): SshTerminalOutputBatch = terminals.outputAfter(profileId, generation, sequence)
 
     fun disconnectProfile(profileId: String) {
         startDisconnect(profileId)
@@ -1738,6 +1774,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startDisconnect(profileId: String) {
         if (disconnectJobs[profileId]?.isActive == true) return
+        terminals.closeProfile(profileId)
         DiagnosticLogger.info("Connection", "disconnect_start profile=${profileRef(profileId)}")
         val expectedClient = connections.client(profileId)
         invalidateProfile(profileId)

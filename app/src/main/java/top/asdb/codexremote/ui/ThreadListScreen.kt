@@ -52,6 +52,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.CodexThread
+import top.asdb.codexremote.ssh.SshTerminalPhase
+import top.asdb.codexremote.ssh.SshTerminalSessionState
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
 import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
@@ -69,6 +71,8 @@ fun ThreadListScreen(
     onOpen: (CodexThread) -> Unit,
     onSelectWorkspace: () -> Unit,
     onShowServers: () -> Unit,
+    terminalSession: SshTerminalSessionState?,
+    onOpenTerminal: () -> Unit,
 ) {
     val query = state.threadSearch.trim()
     val threads = state.threads.filter { thread ->
@@ -100,6 +104,17 @@ fun ThreadListScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenTerminal, enabled = profile != null) {
+                        val terminalActive = terminalSession?.phase in setOf(
+                            SshTerminalPhase.Connecting,
+                            SshTerminalPhase.Connected,
+                        )
+                        Icon(
+                            Icons.Default.Terminal,
+                            contentDescription = if (terminalActive) "显示 SSH 终端" else "打开 SSH 终端",
+                            tint = if (terminalActive) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(onClick = onRefresh) {
                         if (state.loading) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
