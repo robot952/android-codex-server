@@ -127,8 +127,18 @@ object CodexPayloadParser {
         thread.array("turns").orEmpty().flatMap { turnElement ->
             val turn = turnElement as? JsonObject ?: return@flatMap emptyList()
             val turnId = turn.string("id")
+            val turnStatus = turn["status"].wireType()
+            val historicalTurn = turnStatus.isNotBlank() && turnStatus != "inProgress"
             turn.array("items").orEmpty().mapNotNull { item ->
-                (item as? JsonObject)?.let { parseItem(it, turnId) }
+                (item as? JsonObject)?.let { parseItem(it, turnId) }?.let { entry ->
+                    if (historicalTurn && entry.kind == TimelineKind.SubAgent &&
+                        (entry.status == "started" || entry.status == "interacted")
+                    ) {
+                        entry.copy(status = "completed")
+                    } else {
+                        entry
+                    }
+                }
             }
         }
 
@@ -225,7 +235,9 @@ object CodexPayloadParser {
                 turnId = turnId,
             )
 
-            "imageView", "imageGeneration", "sleep", "subAgentActivity" -> TimelineEntry(
+            "subAgentActivity" -> parseSubAgentActivity(item, id, turnId)
+
+            "imageView", "imageGeneration", "sleep" -> TimelineEntry(
                 id = id,
                 kind = TimelineKind.Tool,
                 title = type,
@@ -245,6 +257,38 @@ object CodexPayloadParser {
                 )
             } else null
         }
+    }
+
+    private fun parseSubAgentActivity(item: JsonObject, id: String, turnId: String): TimelineEntry {
+        val activity = item.string("kind")
+        val path = item.string("agentPath")
+            .bounded(MAX_TIMELINE_METADATA_CHARS, TEXT_TRUNCATION_MARKER)
+        val threadId = item.string("agentThreadId")
+            .bounded(MAX_TIMELINE_METADATA_CHARS, TEXT_TRUNCATION_MARKER)
+        val explicitText = sequenceOf("message", "summary", "description")
+            .map { item.string(it) }
+            .firstOrNull { it.isNotBlank() }
+        val text = explicitText
+            ?.bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER)
+            ?: item["result"].boundedJsonPreview(MAX_TIMELINE_TEXT_CHARS).ifBlank {
+                when (activity) {
+                    "started" -> "已启动子 Agent"
+                    "interacted" -> "正在与子 Agent 协作"
+                    "interrupted" -> "子 Agent 已中断"
+                    else -> "子 Agent 活动"
+                }
+            }
+        return TimelineEntry(
+            id = id,
+            kind = TimelineKind.SubAgent,
+            title = "子 Agent",
+            text = text,
+            status = activity,
+            turnId = turnId,
+            subAgentPath = path,
+            subAgentThreadId = threadId,
+            subAgentActivity = activity,
+        )
     }
 
     fun parseServerRequest(message: JsonObject): ApprovalPrompt? {
@@ -462,6 +506,10 @@ object CodexEventReducer {
                 } else {
                     parsed?.copy(text = "上下文已压缩", status = "completed")
                 }
+            } else if (item?.string("type") == "subAgentActivity" && method == "item/completed") {
+                parsed?.copy(
+                    status = if (parsed.status == "interrupted") "interrupted" else "completed",
+                )
             } else {
                 parsed
             }
@@ -645,6 +693,9 @@ object CodexEventReducer {
             output = value.output.ifBlank { old.output },
             changes = value.changes.ifEmpty { old.changes },
             turnId = value.turnId.ifBlank { old.turnId },
+            subAgentPath = value.subAgentPath.ifBlank { old.subAgentPath },
+            subAgentThreadId = value.subAgentThreadId.ifBlank { old.subAgentThreadId },
+            subAgentActivity = value.subAgentActivity.ifBlank { old.subAgentActivity },
             reasoningSummary = value.reasoningSummary.ifEmpty { old.reasoningSummary },
             reasoningContent = value.reasoningContent.ifEmpty { old.reasoningContent },
         )
@@ -735,6 +786,7 @@ private fun JsonElement?.boundedJsonPreview(limit: Int): String {
             }
         }
     }
+
     appendElement(this, 0)
     if (result.length >= limit && limit >= TEXT_TRUNCATION_MARKER.length) {
         result.replace(limit - TEXT_TRUNCATION_MARKER.length, limit, TEXT_TRUNCATION_MARKER)

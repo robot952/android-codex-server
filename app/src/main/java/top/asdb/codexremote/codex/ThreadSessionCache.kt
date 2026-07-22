@@ -101,7 +101,8 @@ internal fun estimateTimelineWeightChars(timeline: List<TimelineEntry>): Int {
         result = saturatedAdd(
             result,
             entry.id.length + entry.title.length + entry.text.length + entry.status.length +
-                entry.command.length + entry.cwd.length + entry.output.length + entry.turnId.length,
+                entry.command.length + entry.cwd.length + entry.output.length + entry.turnId.length +
+                entry.subAgentPath.length + entry.subAgentThreadId.length + entry.subAgentActivity.length,
         )
         entry.reasoningSummary.forEach { result = saturatedAdd(result, it.length) }
         entry.reasoningContent.forEach { result = saturatedAdd(result, it.length) }

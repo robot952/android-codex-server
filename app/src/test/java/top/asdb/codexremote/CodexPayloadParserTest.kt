@@ -157,6 +157,69 @@ class CodexPayloadParserTest {
     }
 
     @Test
+    fun parsesSubAgentActivityAsDedicatedEntryAndTracksCompletion() {
+        val item = json.parseToJsonElement(
+            """
+            {
+              "id":"agent-1",
+              "type":"subAgentActivity",
+              "agentPath":"root/researcher",
+              "agentThreadId":"sub-thread-1",
+              "kind":"started"
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val entry = requireNotNull(CodexPayloadParser.parseItem(item, "turn-1"))
+        assertEquals(TimelineKind.SubAgent, entry.kind)
+        assertEquals("子 Agent", entry.title)
+        assertEquals("root/researcher", entry.subAgentPath)
+        assertEquals("sub-thread-1", entry.subAgentThreadId)
+        assertEquals("started", entry.subAgentActivity)
+        assertEquals("已启动子 Agent", entry.text)
+
+        val notification = buildJsonObject {
+            put("threadId", "thread-1")
+            put("turnId", "turn-1")
+            put("item", item)
+        }
+        val started = CodexEventReducer.reduce(AppUiState(), "item/started", notification)
+        assertEquals("started", started.timeline.single().status)
+
+        val completed = CodexEventReducer.reduce(started, "item/completed", notification)
+        assertEquals("completed", completed.timeline.single().status)
+        assertEquals(1, completed.timeline.size)
+    }
+
+    @Test
+    fun marksSubAgentActivityFromCompletedTurnAsFinished() {
+        val payload = json.parseToJsonElement(
+            """
+            {
+              "thread": {
+                "id":"thread-1",
+                "turns":[{
+                  "id":"turn-1",
+                  "status":"completed",
+                  "items":[{
+                    "id":"agent-1",
+                    "type":"subAgentActivity",
+                    "agentPath":"root/researcher",
+                    "agentThreadId":"sub-thread-1",
+                    "kind":"started"
+                  }]
+                }]
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val (_, timeline) = CodexPayloadParser.parseThreadPayload(payload)
+        assertEquals("completed", timeline.single().status)
+        assertEquals(TimelineKind.SubAgent, timeline.single().kind)
+    }
+
+    @Test
     fun reducesStreamingNotificationsWithoutDuplicatingItems() {
         val started = json.parseToJsonElement(
             """{"turn":{"id":"turn-1","status":"inProgress","items":[]}}""",

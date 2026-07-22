@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.AlertDialog
@@ -610,6 +611,7 @@ private fun TimelineItem(
         TimelineKind.Command -> CommandBlock(entry)
         TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canMutate, canRollback, onRollback)
         TimelineKind.Tool -> ToolBlock(entry)
+        TimelineKind.SubAgent -> SubAgentBlock(entry)
         TimelineKind.Review -> Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(6.dp),
@@ -918,6 +920,76 @@ private fun ToolBlock(entry: TimelineEntry) {
                             .horizontalScroll(rememberScrollState()),
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubAgentBlock(entry: TimelineEntry) {
+    val activity = when (entry.status) {
+        "completed", "interrupted" -> entry.status
+        else -> entry.subAgentActivity.ifBlank { entry.status }
+    }
+    val active = activity == "started" || activity == "interacted"
+    val statusColor = when (activity) {
+        "started", "interacted" -> CodexAmber
+        "interrupted" -> CodexRed
+        "completed" -> CodexGreen
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val statusLabel = when (activity) {
+        "started" -> "已启动"
+        "interacted" -> "协作中"
+        "interrupted" -> "已中断"
+        "completed" -> "完成"
+        else -> activity.ifBlank { "活动" }
+    }
+    Surface(
+        color = CodexSurfaceRaised,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(6.dp)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.SmartToy,
+                contentDescription = null,
+                modifier = Modifier.size(19.dp),
+                tint = statusColor,
+            )
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Text("子 Agent", style = MaterialTheme.typography.labelLarge)
+                if (entry.subAgentPath.isNotBlank()) {
+                    Text(
+                        entry.subAgentPath,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (entry.text.isNotBlank()) {
+                    Text(
+                        entry.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (active) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = statusColor,
+                )
+            } else {
+                Text(statusLabel, color = statusColor, style = MaterialTheme.typography.bodySmall)
             }
         }
     }

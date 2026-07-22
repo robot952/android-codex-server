@@ -100,6 +100,7 @@ enum class TimelineKind {
     Command,
     FileChange,
     Tool,
+    SubAgent,
     Review,
     Notice,
 }
@@ -124,6 +125,9 @@ data class TimelineEntry(
     val output: String = "",
     val changes: List<FileChange> = emptyList(),
     val turnId: String = "",
+    val subAgentPath: String = "",
+    val subAgentThreadId: String = "",
+    val subAgentActivity: String = "",
     val reasoningSummary: List<String> = emptyList(),
     val reasoningContent: List<String> = emptyList(),
 )
