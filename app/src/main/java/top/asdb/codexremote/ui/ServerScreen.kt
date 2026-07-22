@@ -21,6 +21,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -254,6 +255,17 @@ fun ServerScreen(
     val activeConnection = state.connectionStates[draft.id]
         ?: if (draft.id == state.selectedProfileId) state.connection else ConnectionState()
     val connectedCount = state.connectionStates.values.count { it.phase == ConnectionPhase.Connected }
+    val connectionForProfile: (ServerProfile) -> ConnectionState = { profile ->
+        state.connectionStates[profile.id]
+            ?: if (profile.id == state.selectedProfileId) state.connection else ConnectionState()
+    }
+    val blockingProfile = state.profiles.firstOrNull { profile ->
+        connectionForProfile(profile).phase in setOf(
+            ConnectionPhase.Probing,
+            ConnectionPhase.Connecting,
+        )
+    }
+    val blockingConnection = blockingProfile?.let { connectionForProfile(it) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -379,10 +391,7 @@ fun ServerScreen(
                         profiles = state.profiles,
                         pendingNewDraft = pendingNewDraft,
                         connectedCount = connectedCount,
-                        connectionFor = { profile ->
-                            state.connectionStates[profile.id]
-                                ?: if (profile.id == state.selectedProfileId) state.connection else ConnectionState()
-                        },
+                        connectionFor = connectionForProfile,
                         onSettings = ::showSettings,
                         onOpen = { profile, connection ->
                             if (connection.phase == ConnectionPhase.Connected) {
@@ -702,6 +711,56 @@ fun ServerScreen(
                         }
                     }
                     Spacer(Modifier.height(14.dp))
+                }
+            }
+        }
+    }
+
+    if (blockingProfile != null && blockingConnection != null) {
+        BackHandler { }
+        Box(
+            modifier = Modifier.fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                )
+                .semantics {
+                    contentDescription = "正在连接服务器，暂时无法操作"
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(8.dp),
+                tonalElevation = 6.dp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 42.dp),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(36.dp),
+                        color = CodexAmber,
+                        strokeWidth = 3.dp,
+                    )
+                    Text(
+                        blockingProfile.name.ifBlank { "未命名服务器" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        blockingConnection.message.ifBlank { blockingConnection.shortLabel() },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -1068,15 +1127,28 @@ private fun ServerSessionRow(
         }
         Spacer(Modifier.width(6.dp))
         Box(
-            Modifier.size(8.dp).clip(CircleShape).background(
-                if (connection.phase == ConnectionPhase.Connected) {
-                    CodexGreen
-                } else {
-                    CodexMuted.copy(alpha = 0.62f)
-                },
-            ),
-        )
-        Spacer(Modifier.width(9.dp))
+            modifier = Modifier.size(14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    color = CodexAmber,
+                    strokeWidth = 1.6.dp,
+                )
+            } else {
+                Box(
+                    Modifier.size(8.dp).clip(CircleShape).background(
+                        if (connection.phase == ConnectionPhase.Connected) {
+                            CodexGreen
+                        } else {
+                            CodexMuted.copy(alpha = 0.62f)
+                        },
+                    ),
+                )
+            }
+        }
+        Spacer(Modifier.width(6.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 title,
