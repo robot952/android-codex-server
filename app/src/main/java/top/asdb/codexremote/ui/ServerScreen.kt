@@ -17,6 +17,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -70,6 +71,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -182,6 +184,8 @@ fun ServerScreen(
     var passwordVisible by remember(draft.id) { mutableStateOf(false) }
     var deleteRequested by remember { mutableStateOf(false) }
     var uninstallRequested by remember { mutableStateOf(false) }
+    var connectRequested by remember { mutableStateOf<ServerProfile?>(null) }
+    var disconnectRequested by remember { mutableStateOf<ServerProfile?>(null) }
     var keyImportError by remember { mutableStateOf<String?>(null) }
     var showDebugLogs by remember { mutableStateOf(false) }
     var editorVisible by rememberSaveable { mutableStateOf(false) }
@@ -380,13 +384,14 @@ fun ServerScreen(
                                 ?: if (profile.id == state.selectedProfileId) state.connection else ConnectionState()
                         },
                         onSettings = ::showSettings,
-                        onConnect = { profile, connection ->
+                        onOpen = { profile, connection ->
                             if (connection.phase == ConnectionPhase.Connected) {
-                                onDisconnectProfile(profile.id)
+                                onSelectProfile(profile.id)
                             } else {
-                                onConnect(profile.copy(port = profile.port.takeIf { it in 1..65535 } ?: 22))
+                                connectRequested = profile
                             }
                         },
+                        onDisconnect = { disconnectRequested = it },
                         onAdd = ::showNewDraft,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                     )
@@ -712,6 +717,40 @@ fun ServerScreen(
         )
     }
 
+    connectRequested?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { connectRequested = null },
+            title = { Text("连接服务器") },
+            text = { Text("确定连接到“${profile.name.ifBlank { "未命名服务器" }}”吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    connectRequested = null
+                    onConnect(profile.copy(port = profile.port.takeIf { it in 1..65535 } ?: 22))
+                }) { Text("连接") }
+            },
+            dismissButton = {
+                TextButton(onClick = { connectRequested = null }) { Text("取消") }
+            },
+        )
+    }
+
+    disconnectRequested?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { disconnectRequested = null },
+            title = { Text("断开服务器") },
+            text = { Text("确定断开与“${profile.name.ifBlank { "未命名服务器" }}”的连接吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    disconnectRequested = null
+                    onDisconnectProfile(profile.id)
+                }) { Text("断开", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { disconnectRequested = null }) { Text("取消") }
+            },
+        )
+    }
+
     if (uninstallRequested) {
         AlertDialog(
             onDismissRequest = { uninstallRequested = false },
@@ -912,7 +951,8 @@ private fun ServerSessionPanel(
     connectedCount: Int,
     connectionFor: (ServerProfile) -> ConnectionState,
     onSettings: (ServerProfile) -> Unit,
-    onConnect: (ServerProfile, ConnectionState) -> Unit,
+    onOpen: (ServerProfile, ConnectionState) -> Unit,
+    onDisconnect: (ServerProfile) -> Unit,
     onAdd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -964,7 +1004,8 @@ private fun ServerSessionPanel(
                     connection = connection,
                     unsaved = false,
                     onSettings = { onSettings(profile) },
-                    onConnect = { onConnect(profile, connection) },
+                    onOpen = { onOpen(profile, connection) },
+                    onDisconnect = { onDisconnect(profile) },
                 )
                 if (index != profiles.lastIndex || pendingNewDraft != null) {
                     HorizontalDivider(color = CodexBorder.copy(alpha = 0.72f), modifier = Modifier.padding(start = 52.dp))
@@ -976,7 +1017,8 @@ private fun ServerSessionPanel(
                     connection = ConnectionState(),
                     unsaved = true,
                     onSettings = { onSettings(pending) },
-                    onConnect = null,
+                    onOpen = null,
+                    onDisconnect = null,
                 )
             }
         }
@@ -989,12 +1031,19 @@ private fun ServerSessionRow(
     connection: ConnectionState,
     unsaved: Boolean,
     onSettings: () -> Unit,
-    onConnect: (() -> Unit)?,
+    onOpen: (() -> Unit)?,
+    onDisconnect: (() -> Unit)?,
 ) {
     val name = profile.name.trim()
     val title = name.ifBlank { if (unsaved) "新服务器" else "未命名服务器" }
+    val busy = connection.phase in setOf(
+        ConnectionPhase.Probing,
+        ConnectionPhase.Connecting,
+        ConnectionPhase.Installing,
+    )
     Row(
         modifier = Modifier.fillMaxWidth()
+            .clickable(enabled = onOpen != null && !busy, onClick = { onOpen?.invoke() })
             .padding(horizontal = 11.dp, vertical = 10.dp)
             .semantics {
                 contentDescription = buildString {
@@ -1017,6 +1066,16 @@ private fun ServerSessionRow(
                 Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp))
             }
         }
+        Spacer(Modifier.width(6.dp))
+        Box(
+            Modifier.size(8.dp).clip(CircleShape).background(
+                if (connection.phase == ConnectionPhase.Connected) {
+                    CodexGreen
+                } else {
+                    CodexMuted.copy(alpha = 0.62f)
+                },
+            ),
+        )
         Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -1034,22 +1093,20 @@ private fun ServerSessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (onConnect != null) {
+        if (connection.phase == ConnectionPhase.Connected && onDisconnect != null) {
             Spacer(Modifier.width(6.dp))
-            ServerRowActionButton(
-                label = if (connection.phase == ConnectionPhase.Connected) "断开" else "连接",
-                enabled = connection.phase !in setOf(
-                    ConnectionPhase.Probing,
-                    ConnectionPhase.Connecting,
-                    ConnectionPhase.Installing,
+            OutlinedButton(
+                onClick = onDisconnect,
+                shape = FieldShape,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
                 ),
-                loading = connection.phase in setOf(
-                    ConnectionPhase.Probing,
-                    ConnectionPhase.Connecting,
-                    ConnectionPhase.Installing,
-                ),
-                onClick = onConnect,
-            )
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
+                modifier = Modifier.height(40.dp),
+            ) {
+                Text("断开", maxLines = 1)
+            }
         }
         Spacer(Modifier.width(6.dp))
         ServerSettingsButton(onClick = onSettings)
@@ -1076,28 +1133,6 @@ private fun ServerSettingsButton(onClick: () -> Unit) {
             contentDescription = "服务器设置",
             modifier = Modifier.size(18.dp),
         )
-    }
-}
-
-@Composable
-private fun ServerRowActionButton(
-    label: String,
-    enabled: Boolean = true,
-    loading: Boolean = false,
-    onClick: () -> Unit,
-) {
-    OutlinedButton(
-        onClick = onClick,
-        enabled = enabled,
-        shape = FieldShape,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
-        modifier = Modifier.height(40.dp),
-    ) {
-        if (loading) {
-            CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.5.dp)
-        } else {
-            Text(label, maxLines = 1)
-        }
     }
 }
 
