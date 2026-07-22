@@ -927,23 +927,25 @@ private fun ToolBlock(entry: TimelineEntry) {
 
 @Composable
 private fun SubAgentBlock(entry: TimelineEntry) {
-    val activity = when (entry.status) {
-        "completed", "interrupted" -> entry.status
-        else -> entry.subAgentActivity.ifBlank { entry.status }
-    }
-    val active = activity == "started" || activity == "interacted"
-    val statusColor = when (activity) {
-        "started", "interacted" -> CodexAmber
-        "interrupted" -> CodexRed
+    val status = entry.status.ifBlank { subAgentStatusForDisplay(entry.subAgentActivity) }
+    val active = status == "pendingInit" || status == "running" || status == "inProgress"
+    val statusColor = when (status) {
+        "pendingInit", "running", "inProgress" -> CodexAmber
         "completed" -> CodexGreen
+        "interrupted", "errored", "failed", "notFound" -> CodexRed
+        "shutdown" -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    val statusLabel = when (activity) {
-        "started" -> "已启动"
-        "interacted" -> "协作中"
-        "interrupted" -> "已中断"
+    val statusLabel = when (status) {
+        "pendingInit" -> "准备中"
+        "running", "inProgress" -> "运行中"
         "completed" -> "完成"
-        else -> activity.ifBlank { "活动" }
+        "interrupted" -> "已中断"
+        "errored", "failed" -> "失败"
+        "shutdown" -> "已停止"
+        "notFound" -> "未找到"
+        "unknown" -> ""
+        else -> status
     }
     Surface(
         color = CodexSurfaceRaised,
@@ -962,12 +964,11 @@ private fun SubAgentBlock(entry: TimelineEntry) {
             )
             Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
-                Text("子 Agent", style = MaterialTheme.typography.labelLarge)
-                if (entry.subAgentPath.isNotBlank()) {
+                val path = entry.subAgentPath.ifBlank { entry.subAgentThreadId }
+                if (path.isNotBlank()) {
                     Text(
-                        entry.subAgentPath,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        path,
+                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = FontFamily.Monospace),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -993,6 +994,12 @@ private fun SubAgentBlock(entry: TimelineEntry) {
             }
         }
     }
+}
+
+private fun subAgentStatusForDisplay(activity: String): String = when (activity) {
+    "started", "interacted" -> "running"
+    "interrupted" -> "interrupted"
+    else -> activity
 }
 
 @Composable

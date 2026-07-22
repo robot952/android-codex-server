@@ -123,24 +123,34 @@ object CodexPayloadParser {
         )
     }
 
-    fun parseTimeline(thread: JsonObject): List<TimelineEntry> =
-        thread.array("turns").orEmpty().flatMap { turnElement ->
-            val turn = turnElement as? JsonObject ?: return@flatMap emptyList()
+    fun parseTimeline(thread: JsonObject): List<TimelineEntry> {
+        val entries = ArrayList<TimelineEntry>()
+        val historicalTurnIds = HashSet<String>()
+        thread.array("turns").orEmpty().forEach turnLoop@{ turnElement ->
+            val turn = turnElement as? JsonObject ?: return@turnLoop
             val turnId = turn.string("id")
             val turnStatus = turn["status"].wireType()
-            val historicalTurn = turnStatus.isNotBlank() && turnStatus != "inProgress"
-            turn.array("items").orEmpty().mapNotNull { item ->
-                (item as? JsonObject)?.let { parseItem(it, turnId) }?.let { entry ->
-                    if (historicalTurn && entry.kind == TimelineKind.SubAgent &&
-                        (entry.status == "started" || entry.status == "interacted")
-                    ) {
-                        entry.copy(status = "completed")
-                    } else {
-                        entry
-                    }
+            if (turnStatus.isNotBlank() && turnStatus != "inProgress") historicalTurnIds += turnId
+            turn.array("items").orEmpty().forEach itemLoop@{ itemElement ->
+                val item = itemElement as? JsonObject ?: return@itemLoop
+                parseItem(item, turnId)?.let { entries += it }
+                if (item.string("type") == "collabAgentToolCall") {
+                    val updated = applySubAgentStates(entries, item)
+                    entries.clear()
+                    entries += updated
                 }
             }
         }
+        return entries.map { entry ->
+            if (entry.kind == TimelineKind.SubAgent && entry.turnId in historicalTurnIds &&
+                entry.status in ACTIVE_SUB_AGENT_STATES
+            ) {
+                entry.copy(status = "completed")
+            } else {
+                entry
+            }
+        }
+    }
 
     fun parseItem(item: JsonObject, turnId: String): TimelineEntry? {
         val id = item.string("id").ifBlank { "item-${item.hashCode()}" }
@@ -270,20 +280,13 @@ object CodexPayloadParser {
             .firstOrNull { it.isNotBlank() }
         val text = explicitText
             ?.bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER)
-            ?: item["result"].boundedJsonPreview(MAX_TIMELINE_TEXT_CHARS).ifBlank {
-                when (activity) {
-                    "started" -> "已启动子 Agent"
-                    "interacted" -> "正在与子 Agent 协作"
-                    "interrupted" -> "子 Agent 已中断"
-                    else -> "子 Agent 活动"
-                }
-            }
+            ?: item["result"].boundedJsonPreview(MAX_TIMELINE_TEXT_CHARS).ifBlank { "" }
         return TimelineEntry(
             id = id,
             kind = TimelineKind.SubAgent,
-            title = "子 Agent",
+            title = "",
             text = text,
-            status = activity,
+            status = subAgentStatusForActivity(activity),
             turnId = turnId,
             subAgentPath = path,
             subAgentThreadId = threadId,
@@ -420,6 +423,53 @@ object CodexPayloadParser {
     }
 }
 
+private val ACTIVE_SUB_AGENT_STATES = setOf("pendingInit", "running", "inProgress", "started", "interacted")
+
+private fun subAgentStatusForActivity(activity: String): String = when (activity) {
+    "started", "interacted" -> "running"
+    "interrupted" -> "interrupted"
+    else -> "unknown"
+}
+
+private fun JsonObject.agentStates(): Map<String, String> {
+    val states = obj("agentsStates") ?: obj("agents_states") ?: return emptyMap()
+    return states.mapNotNull { (threadId, value) ->
+        val status = (value as? JsonObject)?.string("status").orEmpty()
+        threadId.takeIf { it.isNotBlank() }?.let { it to status }
+    }.toMap()
+}
+
+private fun applySubAgentStates(
+    entries: List<TimelineEntry>,
+    collabItem: JsonObject,
+): List<TimelineEntry> {
+    val states = collabItem.agentStates()
+    if (states.isEmpty()) return entries
+    return entries.map { entry ->
+        if (entry.kind != TimelineKind.SubAgent) {
+            entry
+        } else {
+            states[entry.subAgentThreadId]?.takeIf { it.isNotBlank() }
+                ?.let { entry.copy(status = it) }
+                ?: entry
+        }
+    }
+}
+
+private fun completeSubAgentsForTurn(
+    entries: List<TimelineEntry>,
+    turnId: String,
+): List<TimelineEntry> = entries.map { entry ->
+    if (entry.kind == TimelineKind.SubAgent &&
+        (turnId.isBlank() || entry.turnId.isBlank() || entry.turnId == turnId) &&
+        entry.status in ACTIVE_SUB_AGENT_STATES
+    ) {
+        entry.copy(status = "completed")
+    } else {
+        entry
+    }
+}
+
 object CodexEventReducer {
     fun reduce(state: AppUiState, method: String, params: JsonObject): AppUiState =
         if (!state.acceptsThreadEvent(method, params)) state else when (method) {
@@ -461,6 +511,7 @@ object CodexEventReducer {
                     running = false,
                     activeThread = state.activeThread?.copy(status = "idle"),
                     error = error?.takeIf { it.isNotBlank() } ?: state.error,
+                    timeline = completeSubAgentsForTurn(state.timeline, completedTurnId),
                 ).updateThreadRuntime(threadId.ifBlank { state.activeThread?.id.orEmpty() }, "idle", null)
             }
         }
@@ -506,16 +557,16 @@ object CodexEventReducer {
                 } else {
                     parsed?.copy(text = "上下文已压缩", status = "completed")
                 }
-            } else if (item?.string("type") == "subAgentActivity" && method == "item/completed") {
-                parsed?.copy(
-                    status = if (parsed.status == "interrupted") "interrupted" else "completed",
-                )
             } else {
                 parsed
             }
-            if (entry == null) state else state.copy(
-                timeline = upsert(state.timeline, entry),
-            )
+            if (entry == null) state else {
+                var timeline = upsert(state.timeline, entry)
+                if (item?.string("type") == "collabAgentToolCall") {
+                    timeline = applySubAgentStates(timeline, item)
+                }
+                state.copy(timeline = timeline)
+            }
         }
 
         "item/agentMessage/delta" -> state.updateEntry(

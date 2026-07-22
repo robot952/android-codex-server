@@ -172,11 +172,12 @@ class CodexPayloadParserTest {
 
         val entry = requireNotNull(CodexPayloadParser.parseItem(item, "turn-1"))
         assertEquals(TimelineKind.SubAgent, entry.kind)
-        assertEquals("子 Agent", entry.title)
+        assertEquals("", entry.title)
         assertEquals("root/researcher", entry.subAgentPath)
         assertEquals("sub-thread-1", entry.subAgentThreadId)
         assertEquals("started", entry.subAgentActivity)
-        assertEquals("已启动子 Agent", entry.text)
+        assertEquals("running", entry.status)
+        assertEquals("", entry.text)
 
         val notification = buildJsonObject {
             put("threadId", "thread-1")
@@ -184,11 +185,98 @@ class CodexPayloadParserTest {
             put("item", item)
         }
         val started = CodexEventReducer.reduce(AppUiState(), "item/started", notification)
-        assertEquals("started", started.timeline.single().status)
+        assertEquals("running", started.timeline.single().status)
 
         val completed = CodexEventReducer.reduce(started, "item/completed", notification)
-        assertEquals("completed", completed.timeline.single().status)
+        assertEquals("running", completed.timeline.single().status)
         assertEquals(1, completed.timeline.size)
+    }
+
+    @Test
+    fun collabAgentStatesUpdateMatchingSubAgentActivity() {
+        val subAgent = json.parseToJsonElement(
+            """
+            {
+              "id":"agent-1",
+              "type":"subAgentActivity",
+              "agentPath":"root/researcher",
+              "agentThreadId":"sub-thread-1",
+              "kind":"started"
+            }
+            """.trimIndent(),
+        ).jsonObject
+        val collab = json.parseToJsonElement(
+            """
+            {
+              "id":"wait-1",
+              "type":"collabAgentToolCall",
+              "tool":"wait",
+              "status":"completed",
+              "senderThreadId":"thread-1",
+              "receiverThreadIds":["sub-thread-1"],
+              "agentsStates":{
+                "sub-thread-1":{"status":"completed","message":"已完成"}
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val base = buildJsonObject {
+            put("threadId", "thread-1")
+            put("turnId", "turn-1")
+            put("item", subAgent)
+        }
+        val started = CodexEventReducer.reduce(AppUiState(), "item/started", base)
+        assertEquals("running", started.timeline.single().status)
+
+        val completed = CodexEventReducer.reduce(
+            started,
+            "item/completed",
+            buildJsonObject {
+                put("threadId", "thread-1")
+                put("turnId", "turn-1")
+                put("item", collab)
+            },
+        )
+        assertEquals("completed", completed.timeline.first { it.kind == TimelineKind.SubAgent }.status)
+    }
+
+    @Test
+    fun parentTurnCompletionStopsUnresolvedSubAgentSpinner() {
+        val started = CodexEventReducer.reduce(
+            AppUiState(),
+            "item/started",
+            json.parseToJsonElement(
+                """
+                {
+                  "threadId":"thread-1",
+                  "turnId":"turn-1",
+                  "item":{
+                    "id":"agent-1",
+                    "type":"subAgentActivity",
+                    "agentPath":"root/researcher",
+                    "agentThreadId":"sub-thread-1",
+                    "kind":"started"
+                  }
+                }
+                """.trimIndent(),
+            ).jsonObject,
+        )
+        val completed = CodexEventReducer.reduce(
+            started.copy(
+                activeThread = top.asdb.codexremote.data.CodexThread(
+                    id = "thread-1", title = "", preview = "", cwd = "", source = "",
+                    status = "active", createdAt = 0, updatedAt = 0, cliVersion = "",
+                ),
+                activeTurnId = "turn-1",
+                running = true,
+            ),
+            "turn/completed",
+            json.parseToJsonElement(
+                """{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}""",
+            ).jsonObject,
+        )
+        assertEquals("completed", completed.timeline.single().status)
     }
 
     @Test
