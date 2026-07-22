@@ -4,14 +4,19 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -39,6 +44,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.BugReport
@@ -54,6 +60,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Terminal
@@ -61,6 +68,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -177,26 +185,44 @@ fun ServerScreen(
     var uninstallRequested by remember { mutableStateOf(false) }
     var keyImportError by remember { mutableStateOf<String?>(null) }
     var showDebugLogs by remember { mutableStateOf(false) }
+    var editorVisible by rememberSaveable { mutableStateOf(false) }
+    var newDraftStarted by rememberSaveable { mutableStateOf(false) }
     val debugTapCounter = remember { DebugTapCounter() }
     val focusManager = LocalFocusManager.current
-    fun showDraft(next: ServerProfile) {
-        focusManager.clearFocus(force = true)
-        if (next.id == draft.id) return
+    fun cacheCurrentDraft() {
         val persisted = state.profiles.firstOrNull { it.id == draft.id }
         if (persisted == null || persisted != draft) {
             unsavedDrafts[draft.id] = draft
         } else {
             unsavedDrafts.remove(draft.id)
         }
+    }
+    fun showDraft(next: ServerProfile) {
+        focusManager.clearFocus(force = true)
+        if (next.id == draft.id) return
+        if (editorVisible || newDraftStarted) cacheCurrentDraft()
         draft = unsavedDrafts[next.id] ?: next
+    }
+    fun showSettings(profile: ServerProfile) {
+        showDraft(profile)
+        editorVisible = true
     }
     fun showNewDraft() {
         focusManager.clearFocus(force = true)
-        if (state.profiles.none { it.id == draft.id }) return
         val pending = unsavedDrafts.values.firstOrNull { candidate ->
             state.profiles.none { it.id == candidate.id }
         }
-        showDraft(pending ?: onNewProfile())
+        val currentNewDraft = draft.takeIf {
+            newDraftStarted && state.profiles.none { profile -> profile.id == it.id }
+        }
+        showDraft(currentNewDraft ?: pending ?: onNewProfile())
+        newDraftStarted = true
+        editorVisible = true
+    }
+    fun closeEditor() {
+        focusManager.clearFocus(force = true)
+        cacheCurrentDraft()
+        editorVisible = false
     }
     val savedProfile = state.profiles.firstOrNull { it.id == draft.id }
     val savedDraft = savedProfile != null
@@ -215,7 +241,7 @@ fun ServerScreen(
             }
         }
     }
-    val pendingNewDraft = if (!savedDraft) {
+    val pendingNewDraft = if (newDraftStarted && !savedDraft) {
         draft
     } else {
         unsavedDrafts.values.firstOrNull { candidate ->
@@ -227,6 +253,8 @@ fun ServerScreen(
     val connectedCount = state.connectionStates.values.count { it.phase == ConnectionPhase.Connected }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
+    BackHandler(enabled = editorVisible, onBack = ::closeEditor)
     val keyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         // ContentResolver providers may perform blocking I/O. Keep the picker callback on the
@@ -270,6 +298,13 @@ fun ServerScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (editorVisible) {
+                        IconButton(onClick = ::closeEditor) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回服务器列表")
+                        }
+                    }
+                },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
@@ -296,7 +331,11 @@ fun ServerScreen(
                         Column {
                             Text("Codex", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "服务器登录",
+                                if (editorVisible) {
+                                    if (savedDraft) "服务器设置" else "添加服务器"
+                                } else {
+                                    "服务器列表"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -315,43 +354,70 @@ fun ServerScreen(
             )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier.padding(padding).navigationBarsPadding().fillMaxSize()
-                .imePadding().verticalScroll(rememberScrollState()),
-        ) {
-            ServerSessionPanel(
-                profiles = state.profiles,
-                draft = draft,
-                savedDraft = savedDraft,
-                pendingNewDraft = pendingNewDraft,
-                connectedCount = connectedCount,
-                connectionFor = { profile ->
-                    state.connectionStates[profile.id]
-                        ?: if (profile.id == state.selectedProfileId) state.connection else ConnectionState()
-                },
-                onSelect = ::showDraft,
-                onAdd = ::showNewDraft,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            )
-
-            if (state.debugModeEnabled) {
-                DebugLogBar(
-                    onOpen = { showDebugLogs = true },
-                    onShare = { shareDiagnosticLog(context) },
-                )
-                HorizontalDivider(color = CodexBorder)
-            }
-
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
-                    .border(1.dp, CodexBorder, RoundedCornerShape(10.dp)),
-            ) {
+        AnimatedContent(
+            targetState = editorVisible,
+            modifier = Modifier.padding(padding).navigationBarsPadding().fillMaxSize(),
+            transitionSpec = {
+                if (targetState) {
+                    (slideInHorizontally { it / 5 } + fadeIn()) togetherWith
+                        (slideOutHorizontally { -it / 8 } + fadeOut())
+                } else {
+                    (slideInHorizontally { -it / 5 } + fadeIn()) togetherWith
+                        (slideOutHorizontally { it / 8 } + fadeOut())
+                }
+            },
+            label = "server-detail-transition",
+        ) { showingEditor ->
+            if (!showingEditor) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().animateContentSize().padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(13.dp),
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 ) {
+                    ServerSessionPanel(
+                        profiles = state.profiles,
+                        pendingNewDraft = pendingNewDraft,
+                        connectedCount = connectedCount,
+                        connectionFor = { profile ->
+                            state.connectionStates[profile.id]
+                                ?: if (profile.id == state.selectedProfileId) state.connection else ConnectionState()
+                        },
+                        onSettings = ::showSettings,
+                        onConnect = { profile, connection ->
+                            if (connection.phase == ConnectionPhase.Connected) {
+                                onDisconnectProfile(profile.id)
+                            } else {
+                                onConnect(profile.copy(port = profile.port.takeIf { it in 1..65535 } ?: 22))
+                            }
+                        },
+                        onAdd = ::showNewDraft,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    )
+
+                    if (state.debugModeEnabled) {
+                        DebugLogBar(
+                            onOpen = { showDebugLogs = true },
+                            onShare = { shareDiagnosticLog(context) },
+                        )
+                        HorizontalDivider(color = CodexBorder)
+                    }
+                    if (state.profiles.isEmpty() && pendingNewDraft == null) {
+                        EmptyServerState(onAdd = ::showNewDraft)
+                    }
+                    Spacer(Modifier.height(14.dp))
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()),
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)
+                            .border(1.dp, CodexBorder, RoundedCornerShape(10.dp)),
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().animateContentSize().padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(13.dp),
+                        ) {
                     SectionHeading(
                         title = if (savedDraft) "连接设置" else "新建服务器",
                         detail = if (savedDraft) draft.name else "填写 SSH 登录信息",
@@ -537,7 +603,11 @@ fun ServerScreen(
                             onClick = {
                                 focusManager.clearFocus(force = true)
                                 unsavedDrafts.remove(draft.id)
-                                onSave(draft.copy(port = draft.port.takeIf { it in 1..65535 } ?: 22))
+                                val normalized = draft.copy(port = draft.port.takeIf { it in 1..65535 } ?: 22)
+                                draft = normalized
+                                newDraftStarted = false
+                                onSave(normalized)
+                                editorVisible = false
                             },
                             shape = FieldShape,
                             modifier = Modifier.weight(1f).height(50.dp),
@@ -553,7 +623,9 @@ fun ServerScreen(
                                     onSelectProfile(draft.id)
                                 } else {
                                     unsavedDrafts.remove(draft.id)
+                                    newDraftStarted = false
                                     onConnect(draft.copy(port = draft.port.takeIf { it in 1..65535 } ?: 22))
+                                    editorVisible = false
                                 }
                             },
                             enabled = draft.host.isNotBlank() && draft.username.isNotBlank() &&
@@ -623,9 +695,11 @@ fun ServerScreen(
                         }
                     }
                     Spacer(Modifier.height(6.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
                 }
             }
-            Spacer(Modifier.height(14.dp))
         }
     }
 
@@ -681,6 +755,8 @@ fun ServerScreen(
                     onDelete(draft.id)
                     unsavedDrafts.remove(draft.id)
                     draft = onNewProfile()
+                    newDraftStarted = false
+                    editorVisible = false
                     deleteRequested = false
                 }) { Text("删除", color = MaterialTheme.colorScheme.error) }
             },
@@ -833,12 +909,11 @@ private fun formatLogSize(bytes: Long): String = when {
 @Composable
 private fun ServerSessionPanel(
     profiles: List<ServerProfile>,
-    draft: ServerProfile,
-    savedDraft: Boolean,
     pendingNewDraft: ServerProfile?,
     connectedCount: Int,
     connectionFor: (ServerProfile) -> ConnectionState,
-    onSelect: (ServerProfile) -> Unit,
+    onSettings: (ServerProfile) -> Unit,
+    onConnect: (ServerProfile, ConnectionState) -> Unit,
     onAdd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -884,12 +959,13 @@ private fun ServerSessionPanel(
             }
             HorizontalDivider(color = CodexBorder)
             profiles.forEachIndexed { index, profile ->
+                val connection = connectionFor(profile)
                 ServerSessionRow(
                     profile = profile,
-                    connection = connectionFor(profile),
-                    selected = savedDraft && profile.id == draft.id,
+                    connection = connection,
                     unsaved = false,
-                    onClick = { onSelect(profile) },
+                    onSettings = { onSettings(profile) },
+                    onConnect = { onConnect(profile, connection) },
                 )
                 if (index != profiles.lastIndex || pendingNewDraft != null) {
                     HorizontalDivider(color = CodexBorder.copy(alpha = 0.72f), modifier = Modifier.padding(start = 52.dp))
@@ -899,9 +975,9 @@ private fun ServerSessionPanel(
                 ServerSessionRow(
                     profile = pending,
                     connection = ConnectionState(),
-                    selected = !savedDraft && pending.id == draft.id,
                     unsaved = true,
-                    onClick = { onSelect(pending) },
+                    onSettings = { onSettings(pending) },
+                    onConnect = null,
                 )
             }
         }
@@ -912,22 +988,15 @@ private fun ServerSessionPanel(
 private fun ServerSessionRow(
     profile: ServerProfile,
     connection: ConnectionState,
-    selected: Boolean,
     unsaved: Boolean,
-    onClick: () -> Unit,
+    onSettings: () -> Unit,
+    onConnect: (() -> Unit)?,
 ) {
-    val host = profile.host.ifBlank { "待填写地址" }
     val name = profile.name.trim()
-    val title = when {
-        profile.host.isBlank() && unsaved -> name.ifBlank { "新服务器" }
-        name.isBlank() || name == profile.host -> host
-        else -> "$host（$name）"
-    }
+    val title = name.ifBlank { if (unsaved) "新服务器" else "未命名服务器" }
     Row(
         modifier = Modifier.fillMaxWidth()
-            .background(if (selected) CodexSurfaceRaised else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 11.dp, vertical = 8.dp)
+            .padding(horizontal = 11.dp, vertical = 10.dp)
             .semantics {
                 contentDescription = buildString {
                     append(if (unsaved) "未保存服务器" else "服务器")
@@ -939,13 +1008,8 @@ private fun ServerSessionRow(
             },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier.width(3.dp).height(30.dp).clip(RoundedCornerShape(2.dp))
-                .background(if (selected) CodexAmber else Color.Transparent),
-        )
-        Spacer(Modifier.width(8.dp))
         Surface(
-            color = if (selected) CodexAmber.copy(alpha = 0.16f) else CodexSurfaceRaised,
+            color = CodexSurfaceRaised,
             contentColor = CodexAmber,
             shape = RoundedCornerShape(5.dp),
             modifier = Modifier.size(28.dp),
@@ -955,35 +1019,108 @@ private fun ServerSessionRow(
             }
         }
         Spacer(Modifier.width(9.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (unsaved) {
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        "未保存",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CodexAmber,
-                    )
-                }
-            }
-            Text(
-                "${profile.username.ifBlank { "root" }} · ${connection.message}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (onConnect != null) {
+            Spacer(Modifier.width(6.dp))
+            ServerRowActionButton(
+                label = if (connection.phase == ConnectionPhase.Connected) "断开" else "连接",
+                enabled = connection.phase !in setOf(
+                    ConnectionPhase.Probing,
+                    ConnectionPhase.Connecting,
+                    ConnectionPhase.Installing,
+                ),
+                loading = connection.phase in setOf(
+                    ConnectionPhase.Probing,
+                    ConnectionPhase.Connecting,
+                    ConnectionPhase.Installing,
+                ),
+                icon = if (connection.phase == ConnectionPhase.Connected) {
+                    Icons.Default.WifiOff
+                } else {
+                    Icons.Default.Wifi
+                },
+                onClick = onConnect,
             )
         }
-        Spacer(Modifier.width(8.dp))
-        ConnectionDot(connection.phase, loadingSize = 15.dp)
+        Spacer(Modifier.width(6.dp))
+        ServerSettingsButton(onClick = onSettings)
+    }
+}
+
+@Composable
+private fun ServerSettingsButton(onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.size(width = 42.dp, height = 40.dp).border(1.dp, CodexBorder, FieldShape),
+    ) {
+        Icon(
+            Icons.Default.Settings,
+            contentDescription = "服务器设置",
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+@Composable
+private fun ServerRowActionButton(
+    label: String,
+    icon: ImageVector,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = FieldShape,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
+        modifier = Modifier.height(40.dp),
+    ) {
+        if (loading) {
+            CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.5.dp)
+        } else {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+        }
+        Spacer(Modifier.width(5.dp))
+        Text(label, maxLines = 1)
+    }
+}
+
+@Composable
+private fun EmptyServerState(onAdd: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Surface(
+            color = CodexSurfaceRaised,
+            contentColor = CodexAmber,
+            shape = CircleShape,
+            modifier = Modifier.size(54.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(26.dp))
+            }
+        }
+        Text("还没有服务器", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "添加 SSH 服务器后，可在这里直接连接、断开或进入设置。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onAdd, shape = FieldShape) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("添加服务器")
+        }
     }
 }
 
