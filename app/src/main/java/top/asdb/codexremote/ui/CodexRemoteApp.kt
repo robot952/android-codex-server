@@ -220,23 +220,45 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     }
 
     state.pendingFingerprint?.let { fingerprint ->
+        val fingerprintProfile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
         AlertDialog(
             onDismissRequest = viewModel::rejectFingerprint,
             icon = { Icon(Icons.Default.Fingerprint, contentDescription = null) },
             title = { Text("核对 SSH 主机指纹") },
             text = {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    SelectionContainer {
-                        Text(
-                            fingerprint,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(12.dp),
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    fingerprintProfile?.let { profile ->
+                        Column {
+                            Text(
+                                profile.name.ifBlank { profile.host },
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                "${profile.username}@${profile.host}:${profile.port.takeIf { it in 1..65535 } ?: 22}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
                     }
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        SelectionContainer {
+                            Text(
+                                fingerprint,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        "请与服务器端显示的指纹核对一致后再信任。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             },
             confirmButton = { TextButton(onClick = viewModel::trustFingerprint) { Text("信任并连接") } },
