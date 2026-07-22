@@ -68,7 +68,6 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -1019,14 +1018,22 @@ private fun ServerSessionRow(
             }
         }
         Spacer(Modifier.width(9.dp))
-        Text(
-            title,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "${profile.username.ifBlank { "root" }} · ${connection.shortLabel()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         if (onConnect != null) {
             Spacer(Modifier.width(6.dp))
             ServerRowActionButton(
@@ -1041,17 +1048,21 @@ private fun ServerSessionRow(
                     ConnectionPhase.Connecting,
                     ConnectionPhase.Installing,
                 ),
-                icon = if (connection.phase == ConnectionPhase.Connected) {
-                    Icons.Default.WifiOff
-                } else {
-                    Icons.Default.Wifi
-                },
                 onClick = onConnect,
             )
         }
         Spacer(Modifier.width(6.dp))
         ServerSettingsButton(onClick = onSettings)
     }
+}
+
+private fun ConnectionState.shortLabel(): String = when (phase) {
+    ConnectionPhase.Disconnected -> "未连接"
+    ConnectionPhase.Probing -> "读取指纹"
+    ConnectionPhase.Connecting -> "连接中"
+    ConnectionPhase.Installing -> "安装中"
+    ConnectionPhase.Connected -> "已连接"
+    ConnectionPhase.Failed -> "连接失败"
 }
 
 @Composable
@@ -1071,7 +1082,6 @@ private fun ServerSettingsButton(onClick: () -> Unit) {
 @Composable
 private fun ServerRowActionButton(
     label: String,
-    icon: ImageVector,
     enabled: Boolean = true,
     loading: Boolean = false,
     onClick: () -> Unit,
@@ -1086,10 +1096,8 @@ private fun ServerRowActionButton(
         if (loading) {
             CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 1.5.dp)
         } else {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+            Text(label, maxLines = 1)
         }
-        Spacer(Modifier.width(5.dp))
-        Text(label, maxLines = 1)
     }
 }
 
