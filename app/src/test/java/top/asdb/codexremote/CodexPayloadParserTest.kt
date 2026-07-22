@@ -242,6 +242,92 @@ class CodexPayloadParserTest {
     }
 
     @Test
+    fun lateActivityNotificationDoesNotResurrectCompletedSubAgent() {
+        val startedItem = json.parseToJsonElement(
+            """
+            {
+              "threadId":"thread-1","turnId":"turn-1",
+              "item":{
+                "id":"agent-1","type":"subAgentActivity",
+                "agentPath":"root/researcher","agentThreadId":"sub-thread-1","kind":"started"
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+        var state = CodexEventReducer.reduce(AppUiState(), "item/started", startedItem)
+        state = CodexEventReducer.reduce(
+            state,
+            "item/completed",
+            json.parseToJsonElement(
+                """
+                {
+                  "threadId":"thread-1","turnId":"turn-1",
+                  "item":{
+                    "id":"wait-1","type":"collabAgentToolCall","tool":"wait","status":"completed",
+                    "senderThreadId":"thread-1","receiverThreadIds":["sub-thread-1"],
+                    "agentsStates":{"sub-thread-1":{"status":"completed"}}
+                  }
+                }
+                """.trimIndent(),
+            ).jsonObject,
+        )
+        val lateActivity = CodexEventReducer.reduce(
+            state,
+            "item/completed",
+            startedItem,
+        )
+
+        assertEquals("completed", lateActivity.timeline.single { it.kind == TimelineKind.SubAgent }.status)
+    }
+
+    @Test
+    fun collabAgentStatesOnlyUpdateSubAgentsInTheSameTurn() {
+        val old = json.parseToJsonElement(
+            """
+            {
+              "threadId":"thread-1","turnId":"turn-old",
+              "item":{
+                "id":"old-agent","type":"subAgentActivity",
+                "agentPath":"root/researcher","agentThreadId":"sub-thread-1","kind":"started"
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+        val current = json.parseToJsonElement(
+            """
+            {
+              "threadId":"thread-1","turnId":"turn-current",
+              "item":{
+                "id":"current-agent","type":"subAgentActivity",
+                "agentPath":"root/researcher","agentThreadId":"sub-thread-1","kind":"started"
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+        var state = CodexEventReducer.reduce(AppUiState(), "item/started", old)
+        state = CodexEventReducer.reduce(state, "item/started", current)
+        state = CodexEventReducer.reduce(
+            state,
+            "item/completed",
+            json.parseToJsonElement(
+                """
+                {
+                  "threadId":"thread-1","turnId":"turn-current",
+                  "item":{
+                    "id":"wait-current","type":"collabAgentToolCall","tool":"wait","status":"completed",
+                    "senderThreadId":"thread-1","receiverThreadIds":["sub-thread-1"],
+                    "agentsStates":{"sub-thread-1":{"status":"completed"}}
+                  }
+                }
+                """.trimIndent(),
+            ).jsonObject,
+        )
+
+        assertEquals("running", state.timeline.first { it.id == "old-agent" }.status)
+        assertEquals("completed", state.timeline.first { it.id == "current-agent" }.status)
+    }
+
+    @Test
     fun parentTurnCompletionStopsUnresolvedSubAgentSpinner() {
         val started = CodexEventReducer.reduce(
             AppUiState(),
@@ -280,6 +366,41 @@ class CodexPayloadParserTest {
     }
 
     @Test
+    fun parentInterruptedTurnMarksUnresolvedSubAgentInterrupted() {
+        val started = CodexEventReducer.reduce(
+            AppUiState(),
+            "item/started",
+            json.parseToJsonElement(
+                """
+                {
+                  "threadId":"thread-1","turnId":"turn-1",
+                  "item":{
+                    "id":"agent-1","type":"subAgentActivity",
+                    "agentPath":"root/researcher","agentThreadId":"sub-thread-1","kind":"started"
+                  }
+                }
+                """.trimIndent(),
+            ).jsonObject,
+        )
+        val interrupted = CodexEventReducer.reduce(
+            started.copy(
+                activeThread = top.asdb.codexremote.data.CodexThread(
+                    id = "thread-1", title = "", preview = "", cwd = "", source = "", status = "active",
+                    createdAt = 0, updatedAt = 0, cliVersion = "",
+                ),
+                activeTurnId = "turn-1",
+                running = true,
+            ),
+            "turn/completed",
+            json.parseToJsonElement(
+                """{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted"}}""",
+            ).jsonObject,
+        )
+
+        assertEquals("interrupted", interrupted.timeline.single().status)
+    }
+
+    @Test
     fun marksSubAgentActivityFromCompletedTurnAsFinished() {
         val payload = json.parseToJsonElement(
             """
@@ -305,6 +426,30 @@ class CodexPayloadParserTest {
         val (_, timeline) = CodexPayloadParser.parseThreadPayload(payload)
         assertEquals("completed", timeline.single().status)
         assertEquals(TimelineKind.SubAgent, timeline.single().kind)
+    }
+
+    @Test
+    fun marksSubAgentActivityFromFailedTurnAsErrored() {
+        val payload = json.parseToJsonElement(
+            """
+            {
+              "thread": {
+                "id":"thread-1",
+                "turns":[{
+                  "id":"turn-1",
+                  "status":"failed",
+                  "items":[{
+                    "id":"agent-1","type":"subAgentActivity",
+                    "agentPath":"root/researcher","agentThreadId":"sub-thread-1","kind":"started"
+                  }]
+                }]
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val (_, timeline) = CodexPayloadParser.parseThreadPayload(payload)
+        assertEquals("errored", timeline.single().status)
     }
 
     @Test

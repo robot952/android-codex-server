@@ -125,27 +125,37 @@ object CodexPayloadParser {
 
     fun parseTimeline(thread: JsonObject): List<TimelineEntry> {
         val entries = ArrayList<TimelineEntry>()
-        val historicalTurnIds = HashSet<String>()
+        val historicalTurnStatuses = HashMap<String, String>()
         thread.array("turns").orEmpty().forEach turnLoop@{ turnElement ->
             val turn = turnElement as? JsonObject ?: return@turnLoop
             val turnId = turn.string("id")
             val turnStatus = turn["status"].wireType()
-            if (turnStatus.isNotBlank() && turnStatus != "inProgress") historicalTurnIds += turnId
+            if (turnId.isNotBlank() && turnStatus.isNotBlank() && turnStatus != "inProgress") {
+                historicalTurnStatuses[turnId] = turnStatus
+            }
+            val collabItems = ArrayList<JsonObject>()
             turn.array("items").orEmpty().forEach itemLoop@{ itemElement ->
                 val item = itemElement as? JsonObject ?: return@itemLoop
                 parseItem(item, turnId)?.let { entries += it }
                 if (item.string("type") == "collabAgentToolCall") {
-                    val updated = applySubAgentStates(entries, item)
-                    entries.clear()
-                    entries += updated
+                    collabItems += item
                 }
+            }
+            collabItems.forEach { collabItem ->
+                val updated = applySubAgentStates(entries, collabItem, turnId)
+                entries.clear()
+                entries += updated
             }
         }
         return entries.map { entry ->
-            if (entry.kind == TimelineKind.SubAgent && entry.turnId in historicalTurnIds &&
-                entry.status in ACTIVE_SUB_AGENT_STATES
-            ) {
-                entry.copy(status = "completed")
+            if (entry.kind == TimelineKind.SubAgent) {
+                val terminalStatus = historicalTurnStatuses[entry.turnId]
+                    ?.let(::subAgentStatusForTurn)
+                if (terminalStatus != null && entry.status.isSubAgentActive()) {
+                    entry.copy(status = terminalStatus)
+                } else {
+                    entry
+                }
             } else {
                 entry
             }
@@ -423,7 +433,8 @@ object CodexPayloadParser {
     }
 }
 
-private val ACTIVE_SUB_AGENT_STATES = setOf("pendingInit", "running", "inProgress", "started", "interacted")
+private val ACTIVE_SUB_AGENT_STATES = setOf("pendingInit", "running", "inProgress", "started", "interacted", "unknown")
+private val TERMINAL_SUB_AGENT_STATES = setOf("completed", "interrupted", "errored", "failed", "shutdown", "notFound")
 
 private fun subAgentStatusForActivity(activity: String): String = when (activity) {
     "started", "interacted" -> "running"
@@ -431,27 +442,64 @@ private fun subAgentStatusForActivity(activity: String): String = when (activity
     else -> "unknown"
 }
 
+private fun subAgentStatusForTurn(turnStatus: String): String = when (turnStatus) {
+    "interrupted" -> "interrupted"
+    "failed", "systemError" -> "errored"
+    else -> "completed"
+}
+
+private fun String.isSubAgentActive(): Boolean = this in ACTIVE_SUB_AGENT_STATES
+
+private fun mergeSubAgentStatus(old: String, next: String): String {
+    if (next.isBlank()) return old
+    if (old.isBlank()) return next
+    // A late item/completed notification can repeat the original activity after a collab
+    // state has already reached a terminal status. Do not resurrect a finished spinner.
+    if (old in TERMINAL_SUB_AGENT_STATES && next.isSubAgentActive()) return old
+    return next
+}
+
 private fun JsonObject.agentStates(): Map<String, String> {
     val states = obj("agentsStates") ?: obj("agents_states") ?: return emptyMap()
     return states.mapNotNull { (threadId, value) ->
-        val status = (value as? JsonObject)?.string("status").orEmpty()
+        val status = (value as? JsonObject)?.string("status")
+            ?.takeIf { it in SUB_AGENT_STATUS_VALUES }
+            .orEmpty()
         threadId.takeIf { it.isNotBlank() }?.let { it to status }
     }.toMap()
 }
 
+private val SUB_AGENT_STATUS_VALUES = setOf(
+    "pendingInit", "running", "interrupted", "completed", "errored", "shutdown", "notFound",
+)
+
 private fun applySubAgentStates(
     entries: List<TimelineEntry>,
     collabItem: JsonObject,
+    turnId: String,
 ): List<TimelineEntry> {
     val states = collabItem.agentStates()
     if (states.isEmpty()) return entries
     return entries.map { entry ->
-        if (entry.kind != TimelineKind.SubAgent) {
+        if (entry.kind != TimelineKind.SubAgent ||
+            (turnId.isNotBlank() && entry.turnId != turnId)
+        ) {
             entry
         } else {
-            states[entry.subAgentThreadId]?.takeIf { it.isNotBlank() }
-                ?.let { entry.copy(status = it) }
-                ?: entry
+            val state = states[entry.subAgentThreadId].orEmpty()
+            if (state.isBlank()) {
+                entry
+            } else if (state.isSubAgentActive()) {
+                // A fresh resume/spawn can legitimately make a previously terminal Agent
+                // active again. Only current activity cards should reflect that transition.
+                if (entry.status.isSubAgentActive()) entry.copy(status = state) else entry
+            } else if (entry.status.isSubAgentActive()) {
+                // Apply terminal state to every active activity in this turn so an earlier
+                // `started` card cannot leave a spinner behind after a later `wait` completes.
+                entry.copy(status = state)
+            } else {
+                entry
+            }
         }
     }
 }
@@ -459,12 +507,13 @@ private fun applySubAgentStates(
 private fun completeSubAgentsForTurn(
     entries: List<TimelineEntry>,
     turnId: String,
+    terminalStatus: String,
 ): List<TimelineEntry> = entries.map { entry ->
     if (entry.kind == TimelineKind.SubAgent &&
-        (turnId.isBlank() || entry.turnId.isBlank() || entry.turnId == turnId) &&
-        entry.status in ACTIVE_SUB_AGENT_STATES
+        turnId.isNotBlank() && entry.turnId == turnId &&
+        entry.status.isSubAgentActive()
     ) {
-        entry.copy(status = "completed")
+        entry.copy(status = terminalStatus)
     } else {
         entry
     }
@@ -506,12 +555,14 @@ object CodexEventReducer {
                 state
             } else {
                 val error = turn?.obj("error")?.string("message")
+                val resolvedTurnId = completedTurnId.ifBlank { state.activeTurnId.orEmpty() }
+                val terminalStatus = subAgentStatusForTurn(turn?.string("status").orEmpty())
                 state.copy(
                     activeTurnId = null,
                     running = false,
                     activeThread = state.activeThread?.copy(status = "idle"),
                     error = error?.takeIf { it.isNotBlank() } ?: state.error,
-                    timeline = completeSubAgentsForTurn(state.timeline, completedTurnId),
+                    timeline = completeSubAgentsForTurn(state.timeline, resolvedTurnId, terminalStatus),
                 ).updateThreadRuntime(threadId.ifBlank { state.activeThread?.id.orEmpty() }, "idle", null)
             }
         }
@@ -563,7 +614,7 @@ object CodexEventReducer {
             if (entry == null) state else {
                 var timeline = upsert(state.timeline, entry)
                 if (item?.string("type") == "collabAgentToolCall") {
-                    timeline = applySubAgentStates(timeline, item)
+                    timeline = applySubAgentStates(timeline, item, params.string("turnId"))
                 }
                 state.copy(timeline = timeline)
             }
@@ -738,7 +789,11 @@ object CodexEventReducer {
         val merged = value.copy(
             title = value.title.ifBlank { old.title },
             text = value.text.ifBlank { old.text },
-            status = value.status.ifBlank { old.status },
+            status = if (value.kind == TimelineKind.SubAgent) {
+                mergeSubAgentStatus(old.status, value.status)
+            } else {
+                value.status.ifBlank { old.status }
+            },
             command = value.command.ifBlank { old.command },
             cwd = value.cwd.ifBlank { old.cwd },
             output = value.output.ifBlank { old.output },
