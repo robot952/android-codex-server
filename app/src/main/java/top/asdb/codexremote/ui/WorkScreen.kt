@@ -81,6 +81,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -94,6 +96,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -101,6 +104,7 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -154,6 +158,12 @@ fun WorkScreen(
     onLoadOlder: () -> Unit = {},
 ) {
     val listState = remember(state.activeThread?.id) { LazyListState() }
+    val canLoadOlder by rememberUpdatedState(
+        state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading,
+    )
+    val pullToRefreshState = rememberPullToRefreshState {
+        canLoadOlder
+    }
     val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     val focusManager = LocalFocusManager.current
@@ -186,9 +196,27 @@ fun WorkScreen(
     val latestFileChangeId = state.timeline.lastOrNull { it.kind == TimelineKind.FileChange }?.id
     var followOutput by remember(state.activeThread?.id) { mutableStateOf(true) }
     val trailingItemIndex = state.timeline.size +
-        (if (state.olderTurnsCursor != null || state.olderTurnsLoading) 1 else 0) +
         (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
         (if (state.running) 1 else 0)
+
+    LaunchedEffect(pullToRefreshState.isRefreshing) {
+        if (pullToRefreshState.isRefreshing) {
+            followOutput = false
+            if (state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading) {
+                onLoadOlder()
+            } else if (state.olderTurnsCursor == null || state.loading) {
+                pullToRefreshState.endRefresh()
+            }
+        }
+    }
+
+    LaunchedEffect(state.olderTurnsLoading) {
+        if (state.olderTurnsLoading) {
+            pullToRefreshState.startRefresh()
+        } else if (pullToRefreshState.isRefreshing) {
+            pullToRefreshState.endRefresh()
+        }
+    }
 
     // Track whether the reader is at the end before a streaming update arrives.
     // New deltas should not pull a user away from an earlier part of the transcript.
@@ -212,8 +240,6 @@ fun WorkScreen(
         lastEntry?.output?.length,
         lastEntry?.changes?.size,
         state.aggregateDiff.length,
-        state.olderTurnsCursor,
-        state.olderTurnsLoading,
     ) {
         if (followOutput && trailingItemIndex > 0) {
             // Scroll to the fixed spacer after the timeline, aggregate diff, and running indicator.
@@ -308,37 +334,12 @@ fun WorkScreen(
         Box(Modifier.padding(padding).fillMaxSize()) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().nestedScroll(pullToRefreshState.nestedScrollConnection),
                 // Scaffold's content padding already keeps the transcript above the dynamically
                 // sized composer. Only retain the normal visual spacing at the end of the list.
                 contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (state.olderTurnsCursor != null || state.olderTurnsLoading) {
-                    item(key = "older-history-loader") {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().height(42.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            TextButton(
-                                onClick = onLoadOlder,
-                                enabled = !state.loading && !state.olderTurnsLoading,
-                            ) {
-                                if (state.olderTurnsLoading) {
-                                    CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
-                                } else {
-                                    Icon(
-                                        Icons.Default.ArrowUpward,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                }
-                                Spacer(Modifier.width(7.dp))
-                                Text(if (state.olderTurnsLoading) "正在加载" else "加载更早记录")
-                            }
-                        }
-                    }
-                }
                 items(
                     items = state.timeline,
                     key = { entry ->
@@ -384,6 +385,10 @@ fun WorkScreen(
                 }
                 item { Spacer(Modifier.height(6.dp)) }
             }
+            PullToRefreshContainer(
+                state = pullToRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
             if (state.timeline.isEmpty() && !state.loading) {
                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.Terminal, contentDescription = null,
