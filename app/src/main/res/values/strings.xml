@@ -4,4 +4,6 @@
     <string name="connection_notification_channel_description">在后台保持 SSH 和 Codex 通道</string>
     <string name="connection_notification_title">Codex 连接保护已开启</string>
     <string name="connection_notification_text">返回应用可继续当前远程会话</string>
+    <string name="turn_completion_notification_channel">会话完成提醒</string>
+    <string name="turn_completion_notification_channel_description">Codex 会话在后台完成时发出提醒</string>
 </resources>

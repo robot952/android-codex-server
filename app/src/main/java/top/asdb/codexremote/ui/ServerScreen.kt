@@ -128,6 +128,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.asdb.codexremote.BuildConfig
+import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.ConnectionPhase
@@ -259,12 +260,25 @@ fun ServerScreen(
         state.connectionStates[profile.id]
             ?: if (profile.id == state.selectedProfileId) state.connection else ConnectionState()
     }
-    val blockingProfile = state.profiles.firstOrNull { profile ->
+    val busyProfile = state.profiles.firstOrNull { profile ->
         connectionForProfile(profile).phase in setOf(
             ConnectionPhase.Probing,
             ConnectionPhase.Connecting,
         )
     }
+    var connectionHandoffProfileId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(busyProfile?.id, state.screen) {
+        when {
+            busyProfile != null -> connectionHandoffProfileId = busyProfile.id
+            state.screen != AppScreen.Threads -> connectionHandoffProfileId = null
+        }
+    }
+    val connectedHandoffProfile = state.profiles.firstOrNull { profile ->
+        state.screen == AppScreen.Threads && profile.id == connectionHandoffProfileId &&
+            profile.id == state.selectedProfileId &&
+            connectionForProfile(profile).phase == ConnectionPhase.Connected
+    }
+    val blockingProfile = busyProfile ?: connectedHandoffProfile
     val blockingConnection = blockingProfile?.let { connectionForProfile(it) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -755,7 +769,11 @@ fun ServerScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        blockingConnection.message.ifBlank { blockingConnection.shortLabel() },
+                        if (connectedHandoffProfile != null && blockingProfile.id == connectedHandoffProfile.id) {
+                            "正在打开会话列表"
+                        } else {
+                            blockingConnection.message.ifBlank { blockingConnection.shortLabel() }
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,

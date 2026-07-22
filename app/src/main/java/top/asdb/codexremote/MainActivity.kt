@@ -1,6 +1,7 @@
 package top.asdb.codexremote
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -23,18 +24,27 @@ import top.asdb.codexremote.ui.theme.CodexRemoteTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<AppViewModel>()
+    private var resumed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         DiagnosticLogger.info("Activity", "created restored=${savedInstanceState != null}")
         observeConnectionProtection()
         observeDiagnosticState()
+        observeTurnCompletions()
         enableEdgeToEdge()
         setContent {
             CodexRemoteTheme {
                 CodexRemoteApp(viewModel)
             }
         }
+        if (savedInstanceState == null) handleNavigationIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNavigationIntent(intent)
     }
 
     override fun onDestroy() {
@@ -52,10 +62,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         DiagnosticLogger.info("Activity", "resumed")
     }
 
     override fun onPause() {
+        resumed = false
         DiagnosticLogger.info("Activity", "paused")
         super.onPause()
     }
@@ -114,6 +126,26 @@ class MainActivity : ComponentActivity() {
                     )
                 }
         }
+    }
+
+    private fun observeTurnCompletions() {
+        lifecycleScope.launch {
+            viewModel.turnCompletions.collect { completion ->
+                if (!resumed) TurnCompletionNotifier.show(this@MainActivity, completion)
+            }
+        }
+    }
+
+    private fun handleNavigationIntent(intent: Intent?) {
+        if (intent?.action != TurnCompletionNotifier.ACTION_OPEN_COMPLETED_THREAD) return
+        val profileId = intent.getStringExtra(TurnCompletionNotifier.EXTRA_PROFILE_ID).orEmpty()
+        val threadId = intent.getStringExtra(TurnCompletionNotifier.EXTRA_THREAD_ID).orEmpty()
+        intent.action = null
+        intent.removeExtra(TurnCompletionNotifier.EXTRA_PROFILE_ID)
+        intent.removeExtra(TurnCompletionNotifier.EXTRA_THREAD_ID)
+        if (profileId.isBlank() || threadId.isBlank()) return
+        TurnCompletionNotifier.cancel(this, profileId, threadId)
+        viewModel.openCompletedThread(profileId, threadId)
     }
 
     private fun requestNotificationPermission() {

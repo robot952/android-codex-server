@@ -11,8 +11,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -26,6 +29,7 @@ import top.asdb.codexremote.codex.ProfileOperationTracker
 import top.asdb.codexremote.codex.ProfiledCodexApproval
 import top.asdb.codexremote.codex.ProfiledCodexConnectionEvent
 import top.asdb.codexremote.codex.ProfiledCodexNotification
+import top.asdb.codexremote.codex.string
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalMode
@@ -106,6 +110,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
+    private val _turnCompletions = MutableSharedFlow<TurnCompletion>(extraBufferCapacity = 16)
+    val turnCompletions: SharedFlow<TurnCompletion> = _turnCompletions.asSharedFlow()
     internal val terminalState = terminals.state
     internal val terminalOutputSignals = terminals.outputSignals
 
@@ -126,7 +132,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     ConnectionPhase.Probing,
                                     ConnectionPhase.Connecting,
                                     ConnectionPhase.Installing,
-                                ))
+                                )) ||
+                            shouldHoldConnectedUntilSessionReady(
+                                local = localState,
+                                remote = remoteState,
+                                preparingActiveConnection = connectionJobs[profileId]?.isActive == true &&
+                                    current.selectedProfileId == profileId,
+                            )
                         if (!keepLocalOperation) merged[profileId] = remoteState
                     }
                     current.copy(
@@ -282,6 +294,39 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         persistProfiles()
         if (_state.value.connection.phase == ConnectionPhase.Connected) refreshThreads(silent = true)
+    }
+
+    fun openCompletedThread(profileId: String, threadId: String) {
+        if (profileId.isBlank() || threadId.isBlank()) return
+        val before = _state.value
+        val profile = before.profiles.firstOrNull { it.id == profileId } ?: return
+        if (before.selectedProfileId == profileId && before.screen == AppScreen.Work &&
+            before.activeThread?.id == threadId
+        ) return
+        val connection = connections.states.value[profileId]
+            ?: before.connectionStates[profileId]
+            ?: ConnectionState()
+        selectProfile(profileId)
+        if (connection.phase != ConnectionPhase.Connected) {
+            showError(IllegalStateException("服务器连接已断开，请重新连接后打开会话"), profileId)
+            return
+        }
+        val current = _state.value
+        val thread = current.threads.firstOrNull { it.id == threadId }
+            ?: current.activeThread?.takeIf { it.id == threadId }
+            ?: connections.client(profileId)?.cachedThread(threadId)?.thread
+            ?: top.asdb.codexremote.data.CodexThread(
+                id = threadId,
+                title = "已完成的会话",
+                preview = "",
+                cwd = profile.workspace,
+                source = "appServer",
+                status = "idle",
+                createdAt = 0L,
+                updatedAt = 0L,
+                cliVersion = connection.cliVersion.orEmpty(),
+            )
+        openThread(thread)
     }
 
     fun deleteProfile(id: String) {
@@ -1870,6 +1915,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val client = connections.client(profileId) ?: return
         val notification = event.value
         if (!client.isGenerationActive(notification.generation)) return
+        if (notification.method == "turn/completed") {
+            publishTurnCompletion(profileId, notification.params.string("threadId"))
+        }
         resumeNotificationBuffers[profileId]?.let { buffer ->
             if (buffer.offer(notification)) return
         }
@@ -1883,6 +1931,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (isActiveProfile(profileId)) refreshThreads(silent = true)
         }
+    }
+
+    private fun publishTurnCompletion(profileId: String, reportedThreadId: String) {
+        val current = _state.value
+        val snapshot = sessionSnapshots[profileId]
+        val activeThread = if (current.selectedProfileId == profileId) current.activeThread else snapshot?.activeThread
+        val threadId = reportedThreadId.ifBlank { activeThread?.id.orEmpty() }
+        if (threadId.isBlank()) return
+        val thread = if (current.selectedProfileId == profileId) {
+            current.threads.firstOrNull { it.id == threadId }
+        } else {
+            snapshot?.threads?.firstOrNull { it.id == threadId }
+        } ?: activeThread?.takeIf { it.id == threadId }
+        val profile = current.profiles.firstOrNull { it.id == profileId } ?: return
+        _turnCompletions.tryEmit(
+            TurnCompletion(
+                profileId = profileId,
+                profileName = profile.name.ifBlank { profile.host },
+                threadId = threadId,
+                threadTitle = thread?.title.orEmpty(),
+                threadPreview = thread?.preview.orEmpty(),
+            ),
+        )
     }
 
     private fun releaseResumeNotifications(
@@ -2065,6 +2136,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             "已连接 · ${connected.version}"
         }
+        val connectedState = ConnectionState(ConnectionPhase.Connected, versionMessage, connected.version)
         setupStates.remove(profile.id)
         setupProfiles.remove(profile.id)
         pendingFingerprints.remove(profile.id)
@@ -2095,7 +2167,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 profiles = profiles,
                 screen = AppScreen.Threads,
-                connection = ConnectionState(ConnectionPhase.Connected, versionMessage, connected.version),
+                connection = connectedState,
+                connectionStates = it.connectionStates + (profile.id to connectedState),
                 threads = connected.threads,
                 models = connected.models,
                 selectedModel = preferredSelection.model ?: defaultModel?.model,
@@ -2269,6 +2342,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 }
 
 private fun profileRef(value: String): String = value.take(8).ifBlank { "unknown" }
+
+internal fun shouldHoldConnectedUntilSessionReady(
+    local: ConnectionState?,
+    remote: ConnectionState,
+    preparingActiveConnection: Boolean,
+): Boolean = preparingActiveConnection &&
+    local?.phase == ConnectionPhase.Connecting &&
+    remote.phase == ConnectionPhase.Connected
 
 private data class ConnectedSession(
     val version: String,
