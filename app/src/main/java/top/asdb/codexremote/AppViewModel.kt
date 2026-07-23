@@ -43,6 +43,8 @@ import top.asdb.codexremote.data.RemoteSetupPrompt
 import top.asdb.codexremote.data.SandboxChoice
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.StoredProfiles
+import top.asdb.codexremote.data.ThreadGoal
+import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.ThreadModelPreference
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
@@ -82,6 +84,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
     private val pendingApprovalsByProfile = mutableMapOf<String, List<ApprovalPrompt>>()
     private val resumeNotificationBuffers = mutableMapOf<String, ResumeNotificationBuffer>()
+    private val unsupportedGoalProfiles = mutableSetOf<String>()
+    private val goalNotificationVersions = LinkedHashMap<String, Long>()
     private val setupStates = ConcurrentHashMap<String, SetupUiState>()
     private val composerDrafts = LinkedHashMap<String, String>().apply {
         loaded.composerDrafts.entries.toList().takeLast(MAX_COMPOSER_DRAFTS).forEach { (key, value) ->
@@ -823,6 +827,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                         screen = AppScreen.Work,
                         activeThread = thread,
+                        activeGoal = null,
                         timeline = timeline,
                         olderTurnsCursor = null,
                         olderTurnsLoading = false,
@@ -874,6 +879,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     screen = AppScreen.Work,
                     activeThread = cachedThread,
+                    activeGoal = null,
                     composerDraft = composerDraft(profileId, cachedThread.id),
                     selectedModel = threadSelection.model,
                     selectedEffort = threadSelection.effort,
@@ -928,6 +934,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             screen = AppScreen.Work,
                             activeThread = loaded,
+                            activeGoal = null,
                             composerDraft = composerDraft(profileId, loaded.id),
                             selectedModel = latestThreadSelection.model,
                             selectedEffort = latestThreadSelection.effort,
@@ -958,6 +965,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
                         }
                     }
+                    // Goal hydration is deliberately outside the resume path. A slow or older
+                    // app-server must not delay the transcript or hold its notification buffer.
+                    loadActiveGoalAfterResume(profileId, loaded.id, client, operation)
                 } else {
                     releaseResumeNotifications(profileId, resumeBuffer, timeline, replay = false)
                 }
@@ -1234,6 +1244,87 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threadMutationJobs[profileId] = job
     }
 
+    fun setActiveGoal(objective: String) {
+        val clean = objective.trim().take(MAX_GOAL_OBJECTIVE_CHARS)
+        if (clean.isBlank()) {
+            clearActiveGoal()
+            return
+        }
+        val currentStatus = _state.value.activeGoal?.status
+        val status = currentStatus.takeIf {
+            it == ThreadGoalStatus.Active || it == ThreadGoalStatus.Paused
+        } ?: ThreadGoalStatus.Active
+        mutateActiveGoal { client, threadId ->
+            client.setThreadGoal(threadId = threadId, objective = clean, status = status)
+        }
+    }
+
+    fun toggleActiveGoalPause() {
+        val nextStatus = when (_state.value.activeGoal?.status) {
+            ThreadGoalStatus.Active -> ThreadGoalStatus.Paused
+            ThreadGoalStatus.Paused -> ThreadGoalStatus.Active
+            else -> return
+        }
+        mutateActiveGoal { client, threadId ->
+            client.setThreadGoal(threadId = threadId, status = nextStatus)
+        }
+    }
+
+    fun clearActiveGoal() {
+        if (_state.value.activeGoal == null) return
+        mutateActiveGoal { client, threadId ->
+            client.clearThreadGoal(threadId)
+            null
+        }
+    }
+
+    private fun mutateActiveGoal(
+        mutation: suspend (CodexAppServerClient, String) -> ThreadGoal?,
+    ) {
+        val current = _state.value
+        val profileId = current.selectedProfileId ?: return
+        val thread = current.activeThread ?: return
+        val client = activeClient() ?: return
+        if (current.loading || current.submitting || threadMutationJobs[profileId]?.isActive == true) return
+        invalidateLane(profileId, "session-navigation")
+        val operation = beginClientOperation(profileId, "thread-mutation", client) ?: return
+        applySessionState(profileId) { it.copy(submitting = true, error = null) }
+        val job = viewModelScope.launch {
+            try {
+                val goal = mutation(client, thread.id)
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) {
+                        if (it.activeThread?.id == thread.id) {
+                            it.copy(activeGoal = goal, submitting = false)
+                        } else {
+                            it
+                        }
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) {
+                    val displayError = if (error.message?.contains("method not found", ignoreCase = true) == true) {
+                        IllegalStateException("远程 Codex 版本不支持目标模式，请升级 Codex CLI 后重试", error)
+                    } else {
+                        error
+                    }
+                    showError(displayError, profileId)
+                }
+            } finally {
+                if (isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(submitting = false) }
+                }
+                finishClientOperation(operation)
+                if (threadMutationJobs[profileId] === currentCoroutineContext()[Job]) {
+                    threadMutationJobs.remove(profileId)
+                }
+            }
+        }
+        threadMutationJobs[profileId] = job
+    }
+
     fun reviewChanges() {
         val current = _state.value
         if (current.loading || current.running || current.submitting) return
@@ -1352,6 +1443,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             screen = AppScreen.Threads,
                             activeThread = null,
+                            activeGoal = null,
                             timeline = emptyList(),
                             olderTurnsCursor = null,
                             olderTurnsLoading = false,
@@ -1681,6 +1773,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threadHistoryJobs.remove(profileId)?.cancel()
         threadMutationJobs.remove(profileId)?.cancel()
         resumeNotificationBuffers.remove(profileId)
+        unsupportedGoalProfiles.remove(profileId)
+        removeGoalNotificationVersions(profileId)
     }
 
     private fun invalidateLane(profileId: String, lane: String) {
@@ -1791,6 +1885,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threads = emptyList(),
         threadSearch = "",
         activeThread = null,
+        activeGoal = null,
         timeline = emptyList(),
         olderTurnsCursor = null,
         olderTurnsLoading = false,
@@ -1910,11 +2005,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun loadActiveGoalAfterResume(
+        profileId: String,
+        threadId: String,
+        client: CodexAppServerClient,
+        operation: ClientOperation,
+    ) {
+        if (profileId in unsupportedGoalProfiles) return
+        val key = threadStorageKey(profileId, threadId)
+        val notificationVersion = goalNotificationVersions[key] ?: 0L
+        val goal = try {
+            client.getThreadGoal(threadId)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (isUnsupportedGoalMethod(error)) unsupportedGoalProfiles += profileId
+            DiagnosticLogger.warn(
+                "Goal",
+                "read_failed profile=${profileRef(profileId)} thread=${profileRef(threadId)} ${error.message.orEmpty()}",
+            )
+            return
+        }
+        if (!isOperationCurrent(operation) || goalNotificationVersions[key] != notificationVersion) return
+        applySessionState(profileId) { current ->
+            if (current.activeThread?.id == threadId) current.copy(activeGoal = goal) else current
+        }
+    }
+
+    private fun markGoalNotification(profileId: String, threadId: String) {
+        if (threadId.isBlank()) return
+        val key = threadStorageKey(profileId, threadId)
+        goalNotificationVersions[key] = (goalNotificationVersions[key] ?: 0L) + 1L
+        while (goalNotificationVersions.size > MAX_GOAL_NOTIFICATION_VERSIONS) {
+            goalNotificationVersions.remove(goalNotificationVersions.keys.first())
+        }
+    }
+
+    private fun removeGoalNotificationVersions(profileId: String) {
+        val prefix = "$profileId\u0000"
+        goalNotificationVersions.keys.removeAll { it.startsWith(prefix) }
+    }
+
+    private fun isUnsupportedGoalMethod(error: Throwable): Boolean {
+        val message = error.message.orEmpty()
+        return message.contains("method not found", ignoreCase = true) ||
+            message.contains("unknown method", ignoreCase = true)
+    }
+
     private fun reduceProfileNotification(event: ProfiledCodexNotification) {
         val profileId = event.profileId
         val client = connections.client(profileId) ?: return
         val notification = event.value
         if (!client.isGenerationActive(notification.generation)) return
+        if (notification.method == "thread/goal/updated" || notification.method == "thread/goal/cleared") {
+            markGoalNotification(profileId, notification.params.string("threadId"))
+        }
         if (notification.method == "turn/completed") {
             publishTurnCompletion(profileId, notification.params.string("threadId"))
         }
@@ -2183,6 +2328,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceDirectories = connected.workspace?.directories.orEmpty(),
                 workspaceError = connected.workspaceError,
                 activeThread = null,
+                activeGoal = null,
                 timeline = emptyList(),
                 olderTurnsCursor = null,
                 olderTurnsLoading = false,
@@ -2338,6 +2484,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_COMPOSER_DRAFTS = 64
         private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
         private const val MAX_THREAD_MODEL_PREFERENCES = 512
+        private const val MAX_GOAL_OBJECTIVE_CHARS = 4_000
     }
 }
 
@@ -2538,6 +2685,7 @@ private fun mergeSummaryTimeline(
 
 private const val MAX_ACTIVE_TIMELINE_WEIGHT_CHARS = 8 * 1024 * 1024
 private const val MAX_ACTIVE_TIMELINE_ENTRIES = 1_024
+private const val MAX_GOAL_NOTIFICATION_VERSIONS = 512
 
 private data class SessionSnapshot(
     val threads: List<top.asdb.codexremote.data.CodexThread> = emptyList(),
@@ -2546,6 +2694,7 @@ private data class SessionSnapshot(
     val selectedModel: String? = null,
     val selectedEffort: String? = null,
     val activeThread: top.asdb.codexremote.data.CodexThread? = null,
+    val activeGoal: ThreadGoal? = null,
     val timeline: List<top.asdb.codexremote.data.TimelineEntry> = emptyList(),
     val olderTurnsCursor: String? = null,
     val olderTurnsLoading: Boolean = false,
@@ -2572,6 +2721,7 @@ private data class SessionSnapshot(
         selectedModel = selectedModel,
         selectedEffort = selectedEffort,
         activeThread = activeThread,
+        activeGoal = activeGoal,
         timeline = timeline,
         olderTurnsCursor = olderTurnsCursor,
         // Loading is tied to a live request and cannot safely survive a profile/session restore.
@@ -2607,6 +2757,7 @@ private data class SessionSnapshot(
                 selectedModel = state.selectedModel,
                 selectedEffort = state.selectedEffort,
                 activeThread = state.activeThread,
+                activeGoal = state.activeGoal,
                 timeline = bounded.timeline,
                 olderTurnsCursor = state.olderTurnsCursor.takeUnless { bounded.truncated },
                 // Do not cache transient request state. A restored loading flag would leave the

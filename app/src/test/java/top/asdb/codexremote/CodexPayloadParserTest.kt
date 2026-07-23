@@ -15,6 +15,7 @@ import top.asdb.codexremote.codex.MAX_TIMELINE_TEXT_CHARS
 import top.asdb.codexremote.codex.OUTPUT_TRUNCATION_MARKER
 import top.asdb.codexremote.codex.TEXT_TRUNCATION_MARKER
 import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineKind
 
 class CodexPayloadParserTest {
@@ -64,6 +65,60 @@ class CodexPayloadParserTest {
         ).jsonObject
         val withoutWindow = CodexEventReducer.reduce(active, "thread/tokenUsage/updated", unknownWindow)
         assertEquals(0L, withoutWindow.tokenUsage?.modelContextWindow)
+    }
+
+    @Test
+    fun parsesAndReducesNativeThreadGoalNotifications() {
+        val active = AppUiState(activeThread = top.asdb.codexremote.data.CodexThread(
+            id = "thr-1", title = "", preview = "", cwd = "", source = "", status = "idle",
+            createdAt = 0, updatedAt = 0, cliVersion = "",
+        ))
+        val updated = json.parseToJsonElement(
+            """{
+              "threadId":"thr-1",
+              "goal":{
+                "threadId":"thr-1",
+                "objective":"完成迁移并保持测试通过",
+                "status":"active",
+                "createdAt":1000,
+                "updatedAt":2000,
+                "timeUsedSeconds":24,
+                "tokensUsed":1234,
+                "tokenBudget":4000
+              }
+            }""",
+        ).jsonObject
+
+        val reduced = CodexEventReducer.reduce(active, "thread/goal/updated", updated)
+        assertEquals("完成迁移并保持测试通过", reduced.activeGoal?.objective)
+        assertEquals(ThreadGoalStatus.Active, reduced.activeGoal?.status)
+        assertEquals(24L, reduced.activeGoal?.timeUsedSeconds)
+        assertEquals(4_000L, reduced.activeGoal?.tokenBudget)
+
+        val paused = CodexEventReducer.reduce(
+            reduced,
+            "thread/goal/updated",
+            json.parseToJsonElement(
+                updated.toString().replace("\"active\"", "\"paused\""),
+            ).jsonObject,
+        )
+        assertEquals(ThreadGoalStatus.Paused, paused.activeGoal?.status)
+
+        val untouched = CodexEventReducer.reduce(
+            paused,
+            "thread/goal/updated",
+            json.parseToJsonElement(
+                updated.toString().replace("\"thr-1\"", "\"other\""),
+            ).jsonObject,
+        )
+        assertEquals(ThreadGoalStatus.Paused, untouched.activeGoal?.status)
+
+        val cleared = CodexEventReducer.reduce(
+            paused,
+            "thread/goal/cleared",
+            json.parseToJsonElement("""{"threadId":"thr-1"}""").jsonObject,
+        )
+        assertEquals(null, cleared.activeGoal)
     }
 
     @Test

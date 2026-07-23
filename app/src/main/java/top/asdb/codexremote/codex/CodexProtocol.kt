@@ -19,6 +19,8 @@ import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.FileChange
 import top.asdb.codexremote.data.InputOption
 import top.asdb.codexremote.data.InputQuestion
+import top.asdb.codexremote.data.ThreadGoal
+import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.TokenUsage
@@ -89,6 +91,17 @@ object CodexPayloadParser {
             modelContextWindow = usage.long("modelContextWindow"),
         )
     }
+
+    fun parseThreadGoal(value: JsonObject): ThreadGoal = ThreadGoal(
+        threadId = value.string("threadId"),
+        objective = value.string("objective"),
+        status = ThreadGoalStatus.fromWire(value.string("status")),
+        createdAt = value.long("createdAt"),
+        updatedAt = value.long("updatedAt"),
+        timeUsedSeconds = value.long("timeUsedSeconds"),
+        tokensUsed = value.long("tokensUsed"),
+        tokenBudget = (value["tokenBudget"] as? JsonPrimitive)?.longOrNull,
+    )
 
     fun parseThreadPayload(result: JsonObject): Pair<CodexThread, List<TimelineEntry>> {
         val thread = result.obj("thread") ?: result
@@ -598,6 +611,25 @@ object CodexEventReducer {
         "thread/tokenUsage/updated" -> state.copy(
             tokenUsage = CodexPayloadParser.parseTokenUsage(params),
         )
+
+        "thread/goal/updated" -> {
+            val threadId = params.string("threadId")
+            val goal = params.obj("goal")?.let(CodexPayloadParser::parseThreadGoal)
+            if (goal == null || (threadId.isNotBlank() && threadId != state.activeThread?.id)) {
+                state
+            } else {
+                state.copy(activeGoal = goal)
+            }
+        }
+
+        "thread/goal/cleared" -> {
+            val threadId = params.string("threadId")
+            if (threadId.isBlank() || threadId == state.activeThread?.id) {
+                state.copy(activeGoal = null)
+            } else {
+                state
+            }
+        }
 
         "item/started", "item/completed" -> {
             val item = params.obj("item")

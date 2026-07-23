@@ -78,6 +78,34 @@ data class CodexModel(
     val efforts: List<String>,
 )
 
+/** A durable objective owned by the remote Codex thread. */
+data class ThreadGoal(
+    val threadId: String,
+    val objective: String,
+    val status: ThreadGoalStatus,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val timeUsedSeconds: Long,
+    val tokensUsed: Long,
+    val tokenBudget: Long? = null,
+)
+
+enum class ThreadGoalStatus(val wireValue: String) {
+    Active("active"),
+    Paused("paused"),
+    Blocked("blocked"),
+    UsageLimited("usageLimited"),
+    BudgetLimited("budgetLimited"),
+    Complete("complete"),
+    Unknown("unknown"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): ThreadGoalStatus =
+            entries.firstOrNull { it.wireValue == value } ?: Unknown
+    }
+}
+
 data class TokenUsage(
     val last: TokenUsageBreakdown = TokenUsageBreakdown(),
     val total: TokenUsageBreakdown = TokenUsageBreakdown(),
@@ -241,6 +269,8 @@ data class AppUiState(
     val threads: List<CodexThread> = emptyList(),
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,
+    /** Native durable objective fetched from and mutated through the active remote thread. */
+    val activeGoal: ThreadGoal? = null,
     val timeline: List<TimelineEntry> = emptyList(),
     val olderTurnsCursor: String? = null,
     val olderTurnsLoading: Boolean = false,

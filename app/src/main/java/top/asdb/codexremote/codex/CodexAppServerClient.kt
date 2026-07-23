@@ -28,6 +28,8 @@ import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.PendingAttachment
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.ServerProfile
+import top.asdb.codexremote.data.ThreadGoal
+import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.ssh.SshCodexTransport
 import top.asdb.codexremote.ssh.RemoteEnvironment
@@ -477,6 +479,47 @@ class CodexAppServerClient(
         )
     }
 
+    /** Reads the app-server's durable, thread-scoped goal state. */
+    suspend fun getThreadGoal(threadId: String): ThreadGoal? {
+        val result = request(
+            "thread/goal/get",
+            buildJsonObject { put("threadId", threadId) },
+            // Goal hydration is optional UI enrichment. It must not keep a resumed thread in a
+            // loading state behind the long timeout used for large thread-history requests.
+            timeoutMs = DEFAULT_GOAL_READ_TIMEOUT_MS,
+        ).jsonObject
+        return result.obj("goal")?.let(CodexPayloadParser::parseThreadGoal)
+    }
+
+    /** Creates or updates the app-server's durable, thread-scoped goal. */
+    suspend fun setThreadGoal(
+        threadId: String,
+        objective: String? = null,
+        status: ThreadGoalStatus? = null,
+        tokenBudget: Long? = null,
+    ): ThreadGoal {
+        val result = request(
+            "thread/goal/set",
+            buildJsonObject {
+                put("threadId", threadId)
+                objective?.let { put("objective", it) }
+                status?.let { put("status", it.wireValue) }
+                tokenBudget?.let { put("tokenBudget", it) }
+            },
+            timeoutMs = threadRequestTimeoutMs,
+        ).jsonObject
+        return result.obj("goal")?.let(CodexPayloadParser::parseThreadGoal)
+            ?: throw CodexRpcException("Codex thread/goal/set 响应缺少 goal")
+    }
+
+    suspend fun clearThreadGoal(threadId: String) {
+        request(
+            "thread/goal/clear",
+            buildJsonObject { put("threadId", threadId) },
+            timeoutMs = threadRequestTimeoutMs,
+        )
+    }
+
     suspend fun listDirectories(path: String?): RemoteDirectoryListing = transport.listDirectories(path)
 
     suspend fun archiveThread(threadId: String) {
@@ -796,6 +839,7 @@ class CodexAppServerClient(
         private const val NO_GENERATION = -1L
         const val DEFAULT_REQUEST_TIMEOUT_MS = 120_000L
         const val DEFAULT_THREAD_REQUEST_TIMEOUT_MS = 180_000L
+        private const val DEFAULT_GOAL_READ_TIMEOUT_MS = 6_000L
     }
 }
 

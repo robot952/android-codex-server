@@ -169,6 +169,9 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onSelectModel = viewModel::selectModel,
                 onSelectEffort = viewModel::selectEffort,
                 onSelectApprovalMode = viewModel::selectApprovalMode,
+                onSetGoal = viewModel::setActiveGoal,
+                onToggleGoalPause = viewModel::toggleActiveGoalPause,
+                onClearGoal = viewModel::clearActiveGoal,
                 onCompact = viewModel::compactActiveThread,
                 onLoadOlder = viewModel::loadOlderThreadHistory,
             )

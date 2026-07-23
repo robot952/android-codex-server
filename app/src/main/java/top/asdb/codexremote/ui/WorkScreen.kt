@@ -60,12 +60,15 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pending
 import androidx.compose.material.icons.filled.PanTool
+import androidx.compose.material.icons.filled.PauseCircleOutline
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -129,6 +132,8 @@ import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.FileChange
+import top.asdb.codexremote.data.ThreadGoal
+import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.ui.components.MarkdownText
@@ -159,6 +164,9 @@ fun WorkScreen(
     onSelectModel: (String, String?) -> Unit,
     onSelectEffort: (String) -> Unit,
     onSelectApprovalMode: (ApprovalMode) -> Unit,
+    onSetGoal: (String) -> Unit,
+    onToggleGoalPause: () -> Unit,
+    onClearGoal: () -> Unit,
     onCompact: () -> Unit = {},
     onLoadOlder: () -> Unit = {},
 ) {
@@ -189,6 +197,8 @@ fun WorkScreen(
     var archiveRequested by remember { mutableStateOf(false) }
     var fullAccessRequested by remember { mutableStateOf(false) }
     var compactRequested by remember { mutableStateOf(false) }
+    var goalEditorVisible by remember { mutableStateOf(false) }
+    var goalDeleteRequested by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { onUpload(context, it) }
@@ -328,6 +338,12 @@ fun WorkScreen(
                                 enabled = !state.loading && !state.submitting && !state.running,
                                 onClick = { showMenu = false; archiveRequested = true },
                             )
+                            DropdownMenuItem(
+                                text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
+                                leadingIcon = { Icon(Icons.Default.TrackChanges, contentDescription = null) },
+                                enabled = !state.loading && !state.submitting,
+                                onClick = { showMenu = false; goalEditorVisible = true },
+                            )
                         }
                     }
                 },
@@ -346,6 +362,9 @@ fun WorkScreen(
                 onShowModels = { showModels = true },
                 onShowPermissions = { showPermissions = true },
                 onCompact = { compactRequested = true },
+                onEditGoal = { goalEditorVisible = true },
+                onToggleGoalPause = onToggleGoalPause,
+                onClearGoal = { goalDeleteRequested = true },
             )
         },
     ) { padding ->
@@ -571,6 +590,62 @@ fun WorkScreen(
             },
             dismissButton = {
                 TextButton(onClick = { compactRequested = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (goalEditorVisible) {
+        var objective by remember(state.activeThread?.id, state.activeGoal?.objective) {
+            mutableStateOf(state.activeGoal?.objective.orEmpty())
+        }
+        AlertDialog(
+            modifier = Modifier.imePadding(),
+            onDismissRequest = { goalEditorVisible = false },
+            icon = { Icon(Icons.Default.TrackChanges, contentDescription = null) },
+            title = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
+            text = {
+                OutlinedTextField(
+                    value = objective,
+                    onValueChange = { objective = it.take(4_000) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 6,
+                    label = { Text("目标") },
+                    placeholder = { Text("设置要持续追逐的目标") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = objective.trim().isNotBlank() && !state.submitting,
+                    onClick = {
+                        onSetGoal(objective)
+                        goalEditorVisible = false
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { goalEditorVisible = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (goalDeleteRequested) {
+        AlertDialog(
+            onDismissRequest = { goalDeleteRequested = false },
+            icon = { Icon(Icons.Default.DeleteOutline, contentDescription = null) },
+            title = { Text("删除目标") },
+            text = { Text("删除当前会话的目标？") },
+            confirmButton = {
+                TextButton(
+                    enabled = !state.submitting,
+                    onClick = {
+                        onClearGoal()
+                        goalDeleteRequested = false
+                    },
+                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { goalDeleteRequested = false }) { Text("取消") }
             },
         )
     }
@@ -1085,8 +1160,12 @@ private fun WorkComposer(
     onShowModels: () -> Unit,
     onShowPermissions: () -> Unit,
     onCompact: () -> Unit,
+    onEditGoal: () -> Unit,
+    onToggleGoalPause: () -> Unit,
+    onClearGoal: () -> Unit,
 ) {
     val composerScroll = rememberScrollState()
+    var actionMenuVisible by remember { mutableStateOf(false) }
     val modelName = state.models.firstOrNull { it.model == state.selectedModel }?.displayName
         ?: state.selectedModel ?: "模型"
     val effortName = when (state.selectedEffort) {
@@ -1119,6 +1198,16 @@ private fun WorkComposer(
                         )
                     }
                 }
+                Spacer(Modifier.height(6.dp))
+            }
+            state.activeGoal?.let { goal ->
+                ThreadGoalBar(
+                    goal = goal,
+                    mutationInProgress = state.submitting,
+                    onEdit = onEditGoal,
+                    onTogglePause = onToggleGoalPause,
+                    onDelete = onClearGoal,
+                )
                 Spacer(Modifier.height(6.dp))
             }
             Surface(
@@ -1154,6 +1243,100 @@ private fun WorkComposer(
                         IconButton(onClick = onAttach, enabled = !state.loading,
                             modifier = Modifier.size(36.dp)) {
                             Icon(Icons.Default.Add, contentDescription = "添加附件", modifier = Modifier.size(20.dp))
+                        }
+                        Box {
+                            IconButton(
+                                onClick = { actionMenuVisible = true },
+                                enabled = !state.loading,
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "会话操作",
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = actionMenuVisible,
+                                onDismissRequest = { actionMenuVisible = false },
+                            ) {
+                                val canMutateGoal = !state.loading && !state.submitting
+                                DropdownMenuItem(
+                                    text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.TrackChanges, contentDescription = null)
+                                    },
+                                    enabled = canMutateGoal,
+                                    onClick = {
+                                        actionMenuVisible = false
+                                        onEditGoal()
+                                    },
+                                )
+                                state.activeGoal?.let { goal ->
+                                    if (goal.status == ThreadGoalStatus.Active ||
+                                        goal.status == ThreadGoalStatus.Paused
+                                    ) {
+                                        val paused = goal.status == ThreadGoalStatus.Paused
+                                        DropdownMenuItem(
+                                            text = { Text(if (paused) "继续目标" else "暂停目标") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    if (paused) {
+                                                        Icons.Default.PlayCircleOutline
+                                                    } else {
+                                                        Icons.Default.PauseCircleOutline
+                                                    },
+                                                    contentDescription = null,
+                                                )
+                                            },
+                                            enabled = canMutateGoal,
+                                            onClick = {
+                                                actionMenuVisible = false
+                                                onToggleGoalPause()
+                                            },
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text("删除目标") },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.DeleteOutline, contentDescription = null)
+                                        },
+                                        enabled = canMutateGoal,
+                                        onClick = {
+                                            actionMenuVisible = false
+                                            onClearGoal()
+                                        },
+                                    )
+                                }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("压缩会话") },
+                                    leadingIcon = { Icon(Icons.Default.Pending, contentDescription = null) },
+                                    enabled = !state.loading && !state.submitting && !state.running,
+                                    onClick = {
+                                        actionMenuVisible = false
+                                        onCompact()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("选择模型") },
+                                    leadingIcon = { Icon(Icons.Default.SmartToy, contentDescription = null) },
+                                    enabled = !state.loading,
+                                    onClick = {
+                                        actionMenuVisible = false
+                                        onShowModels()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("权限") },
+                                    leadingIcon = { Icon(Icons.Default.Shield, contentDescription = null) },
+                                    enabled = !state.loading,
+                                    onClick = {
+                                        actionMenuVisible = false
+                                        onShowPermissions()
+                                    },
+                                )
+                            }
                         }
                         TextButton(
                             onClick = onShowPermissions,
@@ -1202,7 +1385,9 @@ private fun WorkComposer(
                             !state.loading && !state.submitting
                         val actionEnabled = if (state.running) !state.loading else canSend
                         IconButton(
-                            onClick = if (state.running) onStop else onSend,
+                            onClick = {
+                                if (state.running) onStop() else onSend()
+                            },
                             enabled = actionEnabled,
                             modifier = Modifier.size(36.dp).clip(RoundedCornerShape(18.dp))
                                 .background(
@@ -1224,6 +1409,131 @@ private fun WorkComposer(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ThreadGoalBar(
+    goal: ThreadGoal,
+    mutationInProgress: Boolean,
+    onEdit: () -> Unit,
+    onTogglePause: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var nowMillis by remember(goal.threadId, goal.updatedAt, goal.timeUsedSeconds) {
+        mutableStateOf(System.currentTimeMillis())
+    }
+    LaunchedEffect(goal.threadId, goal.status, goal.updatedAt, goal.timeUsedSeconds) {
+        nowMillis = System.currentTimeMillis()
+        if (goal.status == ThreadGoalStatus.Active) {
+            while (true) {
+                delay(1_000)
+                nowMillis = System.currentTimeMillis()
+            }
+        }
+    }
+    val pausable = goal.status == ThreadGoalStatus.Active || goal.status == ThreadGoalStatus.Paused
+    val accent = when (goal.status) {
+        ThreadGoalStatus.Active -> MaterialTheme.colorScheme.primary
+        ThreadGoalStatus.Paused -> CodexAmber
+        ThreadGoalStatus.Complete -> CodexGreen
+        ThreadGoalStatus.Blocked, ThreadGoalStatus.UsageLimited, ThreadGoalStatus.BudgetLimited -> CodexRed
+        ThreadGoalStatus.Unknown -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xFF202020),
+        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(8.dp)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 3.dp, top = 5.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.TrackChanges,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        goalStatusLabel(goal.status),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        formatGoalElapsed(goal, nowMillis),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                Text(
+                    goal.objective,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (mutationInProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp).padding(2.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "编辑目标", modifier = Modifier.size(18.dp))
+                }
+                if (pausable) {
+                    IconButton(onClick = onTogglePause, modifier = Modifier.size(34.dp)) {
+                        val paused = goal.status == ThreadGoalStatus.Paused
+                        Icon(
+                            if (paused) Icons.Default.PlayCircleOutline else Icons.Default.PauseCircleOutline,
+                            contentDescription = if (paused) "继续目标" else "暂停目标",
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+                }
+                IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "删除目标", modifier = Modifier.size(19.dp))
+                }
+            }
+        }
+    }
+}
+
+private fun goalStatusLabel(status: ThreadGoalStatus): String = when (status) {
+    ThreadGoalStatus.Active -> "进行中的目标"
+    ThreadGoalStatus.Paused -> "已暂停的目标"
+    ThreadGoalStatus.Blocked -> "已阻塞的目标"
+    ThreadGoalStatus.UsageLimited -> "已达用量限制"
+    ThreadGoalStatus.BudgetLimited -> "已达预算限制"
+    ThreadGoalStatus.Complete -> "已完成目标"
+    ThreadGoalStatus.Unknown -> "目标"
+}
+
+private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
+    val updatedAtMillis = when {
+        goal.updatedAt <= 0L -> nowMillis
+        goal.updatedAt < 100_000_000_000L -> goal.updatedAt * 1_000L
+        else -> goal.updatedAt
+    }
+    val secondsSinceUpdate = if (goal.status == ThreadGoalStatus.Active) {
+        ((nowMillis - updatedAtMillis).coerceAtLeast(0L) / 1_000L)
+    } else {
+        0L
+    }
+    val seconds = (goal.timeUsedSeconds.coerceAtLeast(0L) + secondsSinceUpdate)
+    return when {
+        seconds < 60L -> "${seconds}s"
+        seconds < 3_600L -> "${seconds / 60}m ${seconds % 60}s"
+        else -> "${seconds / 3_600}h ${(seconds % 3_600) / 60}m"
     }
 }
 
