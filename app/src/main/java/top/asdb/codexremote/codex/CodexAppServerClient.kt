@@ -31,6 +31,7 @@ import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.ssh.SshCodexTransport
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshTransportEvent
@@ -406,8 +407,13 @@ class CodexAppServerClient(
     /** Returns an expired snapshot for a UI fast path while a remote refresh is running. */
     fun cachedThreadStale(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.getStale(threadId)
 
-    fun cacheThread(thread: CodexThread, timeline: List<TimelineEntry>, nextTurnsCursor: String? = null) {
-        activeThreadCache.put(thread, timeline, nextTurnsCursor)
+    fun cacheThread(
+        thread: CodexThread,
+        timeline: List<TimelineEntry>,
+        nextTurnsCursor: String? = null,
+        tokenUsage: TokenUsage? = null,
+    ) {
+        activeThreadCache.put(thread, timeline, nextTurnsCursor, tokenUsage)
     }
 
     suspend fun startThread(
@@ -559,6 +565,7 @@ class CodexAppServerClient(
                 cached.thread.copy(title = name),
                 cached.timeline,
                 cached.nextTurnsCursor,
+                cached.tokenUsage,
             )
         }
     }

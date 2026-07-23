@@ -2,6 +2,7 @@ package top.asdb.codexremote.codex
 
 import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.data.TokenUsage
 import java.util.LinkedHashMap
 
 /** In-memory, per-server LRU cache used as a fast UI/timeout fallback for opened threads. */
@@ -22,6 +23,8 @@ class ThreadSessionCache(
         val timeline: List<TimelineEntry>,
         val savedAtMs: Long,
         val nextTurnsCursor: String? = null,
+        /** Latest server-reported usage for this thread's current context window. */
+        val tokenUsage: TokenUsage? = null,
     )
 
     private data class WeightedSnapshot(val value: Snapshot, val weightChars: Int)
@@ -44,11 +47,16 @@ class ThreadSessionCache(
     fun getStale(threadId: String): Snapshot? = entries[threadId]?.value
 
     @Synchronized
-    fun put(thread: CodexThread, timeline: List<TimelineEntry>, nextTurnsCursor: String? = null) {
+    fun put(
+        thread: CodexThread,
+        timeline: List<TimelineEntry>,
+        nextTurnsCursor: String? = null,
+        tokenUsage: TokenUsage? = null,
+    ) {
         val weight = snapshotWeight(thread, timeline, nextTurnsCursor)
         if (weight > maxWeightChars) return
         removeLocked(thread.id)
-        val snapshot = Snapshot(thread, timeline.toList(), nowMs(), nextTurnsCursor)
+        val snapshot = Snapshot(thread, timeline.toList(), nowMs(), nextTurnsCursor, tokenUsage)
         entries[thread.id] = WeightedSnapshot(snapshot, weight)
         currentWeightChars += weight
         while (entries.size > maxEntries || currentWeightChars > maxWeightChars) {

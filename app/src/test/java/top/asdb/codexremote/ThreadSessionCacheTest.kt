@@ -7,6 +7,8 @@ import top.asdb.codexremote.codex.ThreadSessionCache
 import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
+import top.asdb.codexremote.data.TokenUsage
+import top.asdb.codexremote.data.TokenUsageBreakdown
 
 class ThreadSessionCacheTest {
     private fun thread(id: String) = CodexThread(
@@ -52,6 +54,25 @@ class ThreadSessionCacheTest {
         cache.put(thread("a"), emptyList(), nextTurnsCursor = "cursor-2")
 
         assertEquals("cursor-2", cache.get("a")?.nextTurnsCursor)
+    }
+
+    @Test
+    fun snapshotKeepsThreadSpecificContextUsage() {
+        val cache = ThreadSessionCache(maxEntries = 2, ttlMs = 60_000, nowMs = { 1_000 })
+        val firstUsage = TokenUsage(
+            last = TokenUsageBreakdown(totalTokens = 129_000),
+            modelContextWindow = 353_000,
+        )
+        val secondUsage = TokenUsage(
+            last = TokenUsageBreakdown(totalTokens = 48_000),
+            modelContextWindow = 128_000,
+        )
+
+        cache.put(thread("first"), emptyList(), tokenUsage = firstUsage)
+        cache.put(thread("second"), emptyList(), tokenUsage = secondUsage)
+
+        assertEquals(firstUsage, cache.get("first")?.tokenUsage)
+        assertEquals(secondUsage, cache.get("second")?.tokenUsage)
     }
 
     @Test

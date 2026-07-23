@@ -680,7 +680,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             invalidateLane(id, "thread-list")
             invalidateLane(id, "workspace")
             _state.value.activeThread?.let { thread ->
-                activeClient()?.cacheThread(thread, _state.value.timeline, _state.value.olderTurnsCursor)
+                activeClient()?.cacheThread(
+                    thread,
+                    _state.value.timeline,
+                    _state.value.olderTurnsCursor,
+                    _state.value.tokenUsage,
+                )
             }
             sessionSnapshots[id] = SessionSnapshot.capture(_state.value)
         }
@@ -791,7 +796,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     sessionSnapshots[profileId]?.let { snapshot ->
                         snapshot.activeThread?.let { active ->
-                            client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
+                            client.cacheThread(
+                                active,
+                                snapshot.timeline,
+                                snapshot.olderTurnsCursor,
+                                snapshot.tokenUsage,
+                            )
                         }
                     }
                 }
@@ -884,6 +894,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val approvalMode = _state.value.approvalMode
         val threadSelection = resolveThreadModelSelection(profileId, thread.id, _state.value.models)
         val cached = client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id)
+        val rememberedTokenUsage = cached?.tokenUsage ?: sessionSnapshots[profileId]
+            ?.takeIf { it.activeThread?.id == thread.id }
+            ?.tokenUsage
         cached?.takeIf { isOperationVisible(operation) }?.let { snapshot ->
             val cachedThread = snapshot.thread
             val timeline = snapshot.timeline
@@ -902,7 +915,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     activeTurnId = cachedThread.activeTurnId ?: activeTurn,
                     running = cachedThread.activeTurnId != null || activeTurn != null || cachedThread.status == "active",
                     aggregateDiff = "",
-                    tokenUsage = null,
+                    tokenUsage = rememberedTokenUsage,
                     // The snapshot is display-only until thread/resume confirms the remote context.
                     loading = true,
                 )
@@ -957,7 +970,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             activeTurnId = loaded.activeTurnId ?: activeTurn,
                             running = loaded.activeTurnId != null || activeTurn != null || loaded.status == "active",
                             aggregateDiff = "",
-                            tokenUsage = null,
+                            tokenUsage = rememberedTokenUsage,
                             loading = false,
                             diagnostic = if (resumed.itemsView == "notLoaded") {
                                 "最近一个回合内容过大，已跳过详情；会话仍可继续使用"
@@ -975,7 +988,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     sessionSnapshots[profileId]?.let { snapshot ->
                         snapshot.activeThread?.let { active ->
-                            client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
+                            client.cacheThread(
+                                active,
+                                snapshot.timeline,
+                                snapshot.olderTurnsCursor,
+                                snapshot.tokenUsage,
+                            )
                         }
                     }
                     // Goal hydration is deliberately outside the resume path. A slow or older
@@ -1062,7 +1080,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 sessionSnapshots[profileId]?.let { snapshot ->
                     snapshot.activeThread?.let { thread ->
-                        client.cacheThread(thread, snapshot.timeline, snapshot.olderTurnsCursor)
+                        client.cacheThread(
+                            thread,
+                            snapshot.timeline,
+                            snapshot.olderTurnsCursor,
+                            snapshot.tokenUsage,
+                        )
                     }
                 }
             } catch (error: CancellationException) {
@@ -1111,7 +1134,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             invalidateLane(it, "thread-history")
         }
         _state.value.activeThread?.let { thread ->
-            activeClient()?.cacheThread(thread, _state.value.timeline, _state.value.olderTurnsCursor)
+            activeClient()?.cacheThread(
+                thread,
+                _state.value.timeline,
+                _state.value.olderTurnsCursor,
+                _state.value.tokenUsage,
+            )
         }
         _state.update {
             it.copy(
@@ -1409,7 +1437,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     sessionSnapshots[profileId]?.let { snapshot ->
                         snapshot.activeThread?.let { active ->
-                            client.cacheThread(active, snapshot.timeline, snapshot.olderTurnsCursor)
+                            client.cacheThread(
+                                active,
+                                snapshot.timeline,
+                                snapshot.olderTurnsCursor,
+                                snapshot.tokenUsage,
+                            )
                         }
                     }
                 }
@@ -2098,11 +2131,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         applySessionState(profileId) { current ->
             CodexEventReducer.reduce(current, notification.method, notification.params)
         }
-        if (notification.method == "turn/completed") {
+        if (notification.method == "turn/completed" || notification.method == "thread/tokenUsage/updated") {
             sessionSnapshots[profileId]?.activeThread?.let { thread ->
                 val snapshot = sessionSnapshots[profileId]
-                client.cacheThread(thread, snapshot?.timeline.orEmpty(), snapshot?.olderTurnsCursor)
+                client.cacheThread(
+                    thread,
+                    snapshot?.timeline.orEmpty(),
+                    snapshot?.olderTurnsCursor,
+                    snapshot?.tokenUsage,
+                )
             }
+        }
+        if (notification.method == "turn/completed") {
             if (isActiveProfile(profileId)) refreshThreads(silent = true)
         }
     }
@@ -2152,15 +2192,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }.also { reducedState = it }
             }
         }
-        if (notifications.any { it.method == "turn/completed" }) {
+        if (notifications.any {
+            it.method == "turn/completed" || it.method == "thread/tokenUsage/updated"
+        }) {
             val snapshotState = reducedState ?: if (isActiveProfile(profileId)) {
                 _state.value
             } else {
                 sessionSnapshots[profileId]?.restore(AppUiState(selectedProfileId = profileId))
             }
             snapshotState?.activeThread?.let { thread ->
-                client.cacheThread(thread, snapshotState.timeline, snapshotState.olderTurnsCursor)
+                client.cacheThread(
+                    thread,
+                    snapshotState.timeline,
+                    snapshotState.olderTurnsCursor,
+                    snapshotState.tokenUsage,
+                )
             }
+        }
+        if (notifications.any { it.method == "turn/completed" }) {
             if (isActiveProfile(profileId)) refreshThreads(silent = true)
         }
         if (buffer.overflowed && isActiveProfile(profileId)) {

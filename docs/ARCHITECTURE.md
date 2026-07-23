@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.9（versionCode 31）
+- Android 应用版本：1.7.10（versionCode 32）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -174,7 +174,9 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
 - 支持目标的显示、编辑、暂停/继续和删除，目标是远程线程持久状态，不是本地假状态。
 
 DiffViewer.kt 负责全屏 unified diff；ContextUsage.kt 负责上下文占用计算；components/
-MarkdownText.kt 负责 Markwon 渲染。页面级修改不要把这些逻辑复制回 WorkScreen。
+MarkdownText.kt 负责 Markwon 渲染。页面级修改不要把这些逻辑复制回 WorkScreen。ThreadSessionCache
+还会按服务器和会话保留最近一次 `TokenUsage`，会话重进时先恢复该值，等远端 `thread/tokenUsage/updated`
+覆盖；它是内存缓存，不在本地长期持久化。
 
 ### 5.4 TerminalScreen
 
