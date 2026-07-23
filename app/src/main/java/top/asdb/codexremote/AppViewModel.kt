@@ -102,6 +102,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Resolved executable for a managed profile; keeps later saves from replacing its client. */
     private val effectiveProfiles = mutableMapOf<String, ServerProfile>()
     private val operations = ProfileOperationTracker()
+    private val surfacedDiagnostics = LinkedHashMap<String, Long>()
     private var fingerprintDialogProfileId: String? = null
 
     private val _state = MutableStateFlow(
@@ -171,7 +172,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (isActiveProfile(event.profileId)) {
                     val diagnostic = sanitizeCodexDiagnostic(event.value.message)
                     if (shouldSurfaceCodexDiagnostic(diagnostic)) {
-                        _state.update { it.copy(diagnostic = diagnostic) }
+                        val phase = _state.value.connectionStates[event.profileId]?.phase
+                            ?: _state.value.connection.phase
+                        val userMessage = presentCodexDiagnostic(diagnostic, phase)
+                        if (userMessage.isNotBlank() &&
+                            shouldPublishDiagnostic(event.profileId, userMessage)
+                        ) {
+                            _state.update { it.copy(diagnostic = userMessage) }
+                        }
                     }
                 }
             }
@@ -791,7 +799,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 throw error
             } catch (error: Throwable) {
                 if (isOperationVisible(operation)) {
-                    if (!silent) showError(error, profileId) else _state.update { it.copy(diagnostic = error.message) }
+                    if (!silent) {
+                        showError(error, profileId)
+                    } else {
+                        val message = userFacingErrorMessage(error, profileId, "刷新会话失败")
+                        _state.update { it.copy(diagnostic = message) }
+                    }
                 }
             } finally {
                 finishClientOperation(operation)
@@ -1729,6 +1742,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(diagnostic = null) }
     }
 
+    private fun shouldPublishDiagnostic(profileId: String, message: String): Boolean {
+        val now = System.currentTimeMillis()
+        val key = "$profileId\u0000$message"
+        synchronized(surfacedDiagnostics) {
+            surfacedDiagnostics.entries.removeIf {
+                now - it.value >= DIAGNOSTIC_REPEAT_WINDOW_MS
+            }
+            if (surfacedDiagnostics.containsKey(key)) return false
+            surfacedDiagnostics[key] = now
+            while (surfacedDiagnostics.size > MAX_SURFACED_DIAGNOSTICS) {
+                surfacedDiagnostics.remove(surfacedDiagnostics.keys.first())
+            }
+            return true
+        }
+    }
+
     fun enableDebugMode() {
         DiagnosticLogger.setEnabled(true)
         _state.update { it.copy(debugModeEnabled = true, diagnostic = "Debug 模式已启用") }
@@ -2166,6 +2195,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleProfileClosed(event: ProfiledCodexConnectionEvent) {
         val profileId = event.profileId
         invalidateProfile(profileId)
+        val failureMessage = presentCodexDiagnostic(
+            event.value.message,
+            ConnectionPhase.Failed,
+        ).ifBlank { "Codex SSH 通道已关闭" }
         val snapshot = sessionSnapshots[profileId]
         if (snapshot != null) {
             sessionSnapshots[profileId] = snapshot.copy(
@@ -2181,8 +2214,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!isActiveProfile(profileId)) return
         _state.update {
             it.copy(
-                connectionStates = it.connectionStates + (profileId to ConnectionState(ConnectionPhase.Failed, event.value.message)),
-                connection = ConnectionState(ConnectionPhase.Failed, event.value.message),
+                connectionStates = it.connectionStates + (
+                    profileId to ConnectionState(ConnectionPhase.Failed, failureMessage)
+                ),
+                connection = ConnectionState(ConnectionPhase.Failed, failureMessage),
                 running = false,
                 loading = false,
                 submitting = false,
@@ -2450,27 +2485,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showConnectionError(error: Throwable, profileId: String? = _state.value.selectedProfileId) {
         profileId ?: return
+        val message = presentCodexDiagnostic(error.message.orEmpty(), ConnectionPhase.Failed)
+            .ifBlank { "连接失败" }
         DiagnosticLogger.error(
             "Connection",
             "connect_failed profile=${profileRef(profileId)}",
             error,
         )
-        updateProfileConnection(profileId, ConnectionState(ConnectionPhase.Failed, error.message ?: "连接失败"))
+        updateProfileConnection(profileId, ConnectionState(ConnectionPhase.Failed, message))
         applySessionState(profileId) {
             it.copy(
-                connection = ConnectionState(ConnectionPhase.Failed, error.message ?: "连接失败"),
+                connection = ConnectionState(ConnectionPhase.Failed, message),
                 loading = false,
-                error = error.message ?: "连接失败",
+                error = message,
             )
         }
     }
 
     private fun showError(error: Throwable, profileId: String? = _state.value.selectedProfileId) {
         profileId ?: return
+        val message = userFacingErrorMessage(error, profileId, "操作失败")
         DiagnosticLogger.error("Operation", "failed profile=${profileRef(profileId)}", error)
         applySessionState(profileId) {
-            it.copy(loading = false, submitting = false, error = error.message ?: "操作失败")
+            it.copy(loading = false, submitting = false, error = message)
         }
+    }
+
+    private fun userFacingErrorMessage(
+        error: Throwable,
+        profileId: String,
+        fallback: String,
+    ): String {
+        val phase = _state.value.connectionStates[profileId]?.phase
+            ?: _state.value.connection.phase.takeIf { isActiveProfile(profileId) }
+        return presentCodexDiagnostic(error.message.orEmpty(), phase).ifBlank { fallback }
     }
 
     private fun isPinnedVersion(userAgent: String): Boolean {
@@ -2485,6 +2533,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
         private const val MAX_THREAD_MODEL_PREFERENCES = 512
         private const val MAX_GOAL_OBJECTIVE_CHARS = 4_000
+        private const val DIAGNOSTIC_REPEAT_WINDOW_MS = 30_000L
+        private const val MAX_SURFACED_DIAGNOSTICS = 64
     }
 }
 
@@ -2559,6 +2609,53 @@ internal fun shouldSurfaceCodexDiagnostic(message: String): Boolean {
         !message.contains("will use the bun", ignoreCase = true)
 }
 
+/**
+ * Converts remote stderr into a short message suitable for a transient UI surface.
+ *
+ * Codex can keep its app-server session alive while an optional MCP/rmcp worker is rejected by an
+ * upstream gateway. The raw worker line is useful for diagnostics, but showing its nested JSON in a
+ * Snackbar makes a healthy session look broken.
+ */
+internal fun presentCodexDiagnostic(
+    message: String,
+    connectionPhase: ConnectionPhase? = null,
+): String {
+    val cleaned = sanitizeCodexDiagnostic(message)
+    if (cleaned.isBlank()) return ""
+    val normalized = cleaned
+        .replace(CODEX_ESCAPED_QUOTE_REGEX, "\"")
+        .replace(CODEX_ESCAPED_NEWLINE_REGEX, " ")
+        .replace(CODEX_DIAGNOSTIC_WHITESPACE_REGEX, " ")
+        .replaceFirst(CODEX_LOG_PREFIX_REGEX, "")
+        .trim()
+    val isForbidden = normalized.contains("HTTP 403", ignoreCase = true) ||
+        normalized.contains("Forbidden", ignoreCase = true)
+    val isRmcpWorker = normalized.contains("rmcp::transport::worker", ignoreCase = true)
+    if (isForbidden && isRmcpWorker) {
+        return if (connectionPhase == ConnectionPhase.Connected) {
+            "远端工具服务返回 403，但当前会话仍正常；相关工具可能暂时不可用"
+        } else {
+            "远端工具服务返回 403，请检查服务器登录、代理或权限"
+        }
+    }
+    if (isForbidden) {
+        return if (connectionPhase == ConnectionPhase.Connected) {
+            "远端服务返回 403，但当前会话仍正常；可能是权限或代理限制"
+        } else {
+            "远端服务返回 403，请检查登录状态、权限或代理设置"
+        }
+    }
+    if (normalized.contains("HTTP 503", ignoreCase = true)) {
+        return "远端服务暂时不可用（503），当前连接仍在工作；请稍后重试"
+    }
+    if (normalized.contains("transport channel closed", ignoreCase = true) &&
+        connectionPhase == ConnectionPhase.Connected
+    ) {
+        return "远端工具通道已关闭，但当前会话仍连接；相关工具可能暂时不可用"
+    }
+    return normalized.take(MAX_SURFACED_DIAGNOSTIC_CHARS)
+}
+
 private fun composerDraftKey(profileId: String, threadId: String): String =
     "$profileId\u0000$threadId"
 
@@ -2566,6 +2663,11 @@ private fun threadStorageKey(profileId: String, threadId: String): String =
     "$profileId\u0000$threadId"
 
 private val ANSI_ESCAPE_REGEX = Regex("\\u001B\\[[0-9;]*[A-Za-z]")
+private val CODEX_ESCAPED_QUOTE_REGEX = Regex("\\\\\"")
+private val CODEX_ESCAPED_NEWLINE_REGEX = Regex("\\\\r?\\\\n")
+private val CODEX_DIAGNOSTIC_WHITESPACE_REGEX = Regex("\\s+")
+private val CODEX_LOG_PREFIX_REGEX = Regex("^\\S+\\s+(?:ERROR|WARN|WARNING|INFO)\\s+")
+private const val MAX_SURFACED_DIAGNOSTIC_CHARS = 180
 
 internal data class OlderTimelineMerge(
     val timeline: List<TimelineEntry>,

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.ThreadModelPreference
 
@@ -59,6 +60,32 @@ class PersistedUiPreferenceTest {
         assertEquals("ERROR Codex could not find bubblewrap on PATH", cleaned)
         assertFalse(shouldSurfaceCodexDiagnostic(cleaned))
         assertTrue(shouldSurfaceCodexDiagnostic("会话记录加载失败"))
+    }
+
+    @Test
+    fun summarizesNonfatalRmcpForbiddenResponse() {
+        val raw = """
+            2026-07-23T10:55:53.865340Z ERROR rmcp::transport::worker:
+            worker quit with fatal: Transport channel closed, when
+            UnexpectedServerResponse("HTTP 403: {\"error\":{\"code\":\"403\",
+            \"message\":\"Forbidden\",\"id\":\"gateway-id\"}}")
+        """.trimIndent()
+
+        assertEquals(
+            "远端工具服务返回 403，但当前会话仍正常；相关工具可能暂时不可用",
+            presentCodexDiagnostic(raw, ConnectionPhase.Connected),
+        )
+    }
+
+    @Test
+    fun keepsForbiddenResponseActionableAfterConnectionFailure() {
+        assertEquals(
+            "远端工具服务返回 403，请检查服务器登录、代理或权限",
+            presentCodexDiagnostic(
+                "rmcp::transport::worker UnexpectedServerResponse(\"HTTP 403: Forbidden\")",
+                ConnectionPhase.Failed,
+            ),
+        )
     }
 
     private fun model(

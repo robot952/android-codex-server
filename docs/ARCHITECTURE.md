@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.6（versionCode 28）
+- Android 应用版本：1.7.8（versionCode 30）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -402,6 +402,9 @@ DiagnosticLogger：
 - 对主机、路径、URL、Bearer/API key 等内容进行脱敏。
 - 文件有大小上限和轮转；分享时通过 FileProvider 导出文本并调起系统分享面板。
 - 正常 UI 先显示简短中文错误，详细技术信息进入可导出的诊断日志。
+- 远端 stderr 不是一律致命：rmcp/MCP 辅助工具的 HTTP 403 可能只关闭该工具 worker，主
+  app-server 会话仍可继续。页面使用简短说明和紧凑深色 Snackbar，不显示嵌套 JSON、request id
+  或原始 Rust 日志；连接真正关闭时仍明确显示失败状态。
 
 修改日志格式或新增埋点时，必须补 DiagnosticLoggerTest 并人工检查导出文件无敏感信息。
 
@@ -751,6 +754,8 @@ Serializable data class（必须给默认值）
 17. 本机构建需要下载时优先使用 7890 代理；已经缓存时保持离线增量构建。
 18. 每次修改要自己测试，不能只以“编译通过”代替模拟器和真实流程验证。
 19. Git 提交信息使用中文，并同步到配置好的 Gitee 仓库。
+20. 远端工具/MCP 的非致命 stderr 必须转成简短中文提示，不能用原始 HTTP/JSON/Rust 日志遮挡
+    会话；真正断线、认证失败和不可恢复错误仍需明确提示。
 
 若实现与上述约束冲突，先修实现；如确需改变产品契约，必须得到用户明确确认并同步更新本文。
 
@@ -768,7 +773,9 @@ Serializable data class（必须给默认值）
 - 错误时间和 request id 对应的网关日志。
 
 App 应把原始技术细节写入脱敏日志，普通页面只显示简短说明。不要把 403 错误误诊为 SSH
-指纹失败，也不要在没有证据时自动重装 Codex。
+指纹失败，也不要在没有证据时自动重装 Codex。若来源是 rmcp/MCP 辅助 worker 且主连接仍为
+Connected，提示“远端工具服务返回 403，但当前会话仍正常；相关工具可能暂时不可用”；不要把
+嵌套 JSON、网关 request id 或 Rust transport 原文展示给用户。
 
 ### 17.2 HTTP 503、超时和会话空白
 

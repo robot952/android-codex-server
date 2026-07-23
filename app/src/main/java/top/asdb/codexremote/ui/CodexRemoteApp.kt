@@ -51,6 +51,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -179,6 +180,16 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         }
         SnackbarHost(
             hostState = snackbar,
+            snackbar = { data ->
+                Snackbar(
+                    snackbarData = data,
+                    modifier = Modifier.widthIn(max = 420.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    containerColor = CodexSurfaceRaised,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    actionColor = CodexGreen,
+                )
+            },
             // The composer can grow to several rows, so place work-screen messages
             // below the app bar instead of guessing its current height.
             modifier = if (state.screen == AppScreen.Work) {
