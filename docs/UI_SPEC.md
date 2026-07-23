@@ -25,7 +25,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Review is a direct action associated with file changes
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions
 - Adjacent collaborator events from one turn render as compact icon chips followed by a visible
-  status (`已开始工作`、`已更新`、`已完成` etc.), instead of repeating bulky transcript cards.
+  status (`已开始工作`、`已更新`、`已完成` etc.), instead of repeating bulky transcript cards. An
+  individual collaborator keeps a stable avatar color across all statuses; status color is not an
+  identity signal.
 - When collaborators exist, the composer has a collapsible `N 个后台智能体` panel. Every row
   shows its icon, name, visible current status, and a navigation affordance; tapping a chip or
   row opens that collaborator's own work page.

@@ -29,6 +29,19 @@ internal data class SubAgentPresentation(
     val timelineIndex: Int,
 ) {
     val isOpenable: Boolean get() = threadId.isNotBlank()
+
+    /**
+     * A stable identity for the avatar. Status and timeline position are deliberately excluded so
+     * a collaborator keeps the same visual identity throughout its lifetime.
+     */
+    val avatarIdentityKey: String
+        get() = threadId.ifBlank { path.ifBlank { name } }
+
+    /** Returns a deterministic palette index without relying on [Int.absoluteValue]. */
+    fun avatarColorIndex(paletteSize: Int): Int {
+        require(paletteSize > 0) { "paletteSize must be positive" }
+        return Math.floorMod(avatarIdentityKey.hashCode(), paletteSize)
+    }
 }
 
 internal data class SubAgentActivityGroupPresentation(

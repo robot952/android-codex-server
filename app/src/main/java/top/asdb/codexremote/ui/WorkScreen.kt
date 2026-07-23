@@ -43,6 +43,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -57,7 +58,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pending
 import androidx.compose.material.icons.filled.PanTool
@@ -108,6 +108,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -1127,7 +1128,6 @@ private fun SubAgentActivityGroupBlock(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             group.agents.forEach { agent ->
-                val color = subAgentStatusColor(agent.status)
                 AssistChip(
                     onClick = {
                         if (agent.isOpenable) onOpenSubAgent(agent.threadId, agent.name)
@@ -1141,12 +1141,7 @@ private fun SubAgentActivityGroupBlock(
                         )
                     },
                     leadingIcon = {
-                        Icon(
-                            Icons.Default.SmartToy,
-                            contentDescription = null,
-                            tint = color,
-                            modifier = Modifier.size(15.dp),
-                        )
+                        SubAgentAvatar(agent = agent, size = 18.dp)
                     },
                     modifier = Modifier.semantics {
                         contentDescription = if (agent.path.isNotBlank()) {
@@ -1165,6 +1160,39 @@ private fun SubAgentActivityGroupBlock(
             color = statusColor,
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
+        )
+    }
+}
+
+private val subAgentAvatarPalette = listOf(
+    Color(0xFF71A7F7),
+    Color(0xFF9A8CFF),
+    Color(0xFF51C7C7),
+    Color(0xFFE38CC4),
+    Color(0xFFE5A65E),
+    Color(0xFF78C98A),
+    Color(0xFFA78BFA),
+)
+
+@Composable
+private fun SubAgentAvatar(
+    agent: SubAgentPresentation,
+    size: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val color = subAgentAvatarPalette[agent.avatarColorIndex(subAgentAvatarPalette.size)]
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(color.copy(alpha = 0.2f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Default.SmartToy,
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(size * 0.62f),
         )
     }
 }
@@ -1233,7 +1261,7 @@ private fun BackgroundAgentsPanel(
                 Icon(
                     Icons.Default.SmartToy,
                     contentDescription = null,
-                    tint = if (activeCount > 0) CodexAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(17.dp),
                 )
                 Spacer(Modifier.width(8.dp))
@@ -1285,12 +1313,7 @@ private fun BackgroundAgentsPanel(
                                 },
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Icon(
-                                    Icons.Default.SmartToy,
-                                    contentDescription = null,
-                                    tint = color,
-                                    modifier = Modifier.size(17.dp),
-                                )
+                                SubAgentAvatar(agent = agent, size = 25.dp)
                                 Spacer(Modifier.width(9.dp))
                                 Text(
                                     agent.name,
@@ -1308,7 +1331,7 @@ private fun BackgroundAgentsPanel(
                                 if (agent.isOpenable) {
                                     Spacer(Modifier.width(5.dp))
                                     Icon(
-                                        Icons.Default.KeyboardArrowRight,
+                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(15.dp),

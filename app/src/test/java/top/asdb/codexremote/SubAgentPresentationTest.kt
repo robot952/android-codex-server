@@ -89,6 +89,41 @@ class SubAgentPresentationTest {
         assertFalse(group.isActive)
     }
 
+    @Test
+    fun avatarColorStaysStableWhenAgentStatusChanges() {
+        val running = listOf(agent("running", "shared-thread", "turn", "running"))
+            .toSubAgentPresentations().single()
+        val completed = listOf(agent("completed", "shared-thread", "turn", "completed"))
+            .toSubAgentPresentations().single()
+
+        assertEquals("shared-thread", running.avatarIdentityKey)
+        assertEquals(running.avatarColorIndex(7), completed.avatarColorIndex(7))
+    }
+
+    @Test
+    fun avatarFallsBackToPathWhenThreadIdIsUnavailable() {
+        val running = listOf(
+            agent("review", "", "turn", "running", path = "team/review-agent"),
+        ).toSubAgentPresentations().single()
+        val completed = listOf(
+            agent("review-completed", "", "turn", "completed", path = "team/review-agent"),
+        ).toSubAgentPresentations().single()
+
+        assertEquals("team/review-agent", running.avatarIdentityKey)
+        assertEquals(running.avatarColorIndex(7), completed.avatarColorIndex(7))
+    }
+
+    @Test
+    fun avatarPaletteSpreadsSequentialThreadIdsAcrossPalette() {
+        val colorIndexes = ('a'..'g').map { suffix ->
+            listOf(agent("agent-$suffix", "thread-$suffix", "turn", "running"))
+                .toSubAgentPresentations().single()
+                .avatarColorIndex(7)
+        }
+
+        assertEquals(7, colorIndexes.toSet().size)
+    }
+
     private fun agent(
         id: String,
         threadId: String,
