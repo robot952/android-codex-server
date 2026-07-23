@@ -1135,8 +1135,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         loaded.id,
                         _state.value.models,
                     )
-                    applySessionState(profileId) {
-                        it.copy(
+                    applySessionState(profileId) { current ->
+                        // A usage notification without a thread id can be delivered while the
+                        // resume RPC is still in flight. Do not let this older resume snapshot
+                        // replace that newer value with the empty value captured at request time.
+                        val latestTokenUsage = current.tokenUsage?.takeIf {
+                            current.activeThread?.id == loaded.id && it.hasKnownContextWindow()
+                        } ?: client.cachedContextUsage(loaded.id)
+                            ?: contextUsageFallbacks.get(profileId, loaded.id)
+                            ?: rememberedTokenUsage
+                        current.copy(
                             screen = targetScreen,
                             activeThread = loaded,
                             activeAgentName = agentName,
@@ -1150,7 +1158,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             activeTurnId = loaded.activeTurnId ?: activeTurn,
                             running = loaded.activeTurnId != null || activeTurn != null || loaded.status == "active",
                             aggregateDiff = "",
-                            tokenUsage = rememberedTokenUsage,
+                            tokenUsage = latestTokenUsage,
                             attachments = if (initialSnapshot?.activeThread?.id == loaded.id) {
                                 initialSnapshot.attachments
                             } else {
@@ -1160,7 +1168,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             diagnostic = if (resumed.itemsView == "notLoaded") {
                                 "最近一个回合内容过大，已跳过详情；会话仍可继续使用"
                             } else {
-                                it.diagnostic
+                                current.diagnostic
                             },
                         )
                     }

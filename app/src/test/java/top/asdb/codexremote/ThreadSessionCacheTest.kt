@@ -88,6 +88,12 @@ class ThreadSessionCacheTest {
 
         assertEquals(knownUsage, cache.contextUsage("thread"))
         assertEquals(knownUsage, cache.get("thread")?.tokenUsage)
+
+        val refreshedUsage = knownUsage.copy(last = TokenUsageBreakdown(totalTokens = 164_000))
+        cache.put(thread("thread"), emptyList(), tokenUsage = refreshedUsage)
+
+        assertEquals(refreshedUsage, cache.contextUsage("thread"))
+        assertEquals(refreshedUsage, cache.get("thread")?.tokenUsage)
     }
 
     @Test
