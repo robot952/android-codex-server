@@ -31,6 +31,7 @@ import top.asdb.codexremote.codex.ProfiledCodexConnectionEvent
 import top.asdb.codexremote.codex.ProfiledCodexNotification
 import top.asdb.codexremote.codex.string
 import top.asdb.codexremote.data.AppScreen
+import top.asdb.codexremote.data.AppServerTransportMode
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.ApprovalPrompt
@@ -239,8 +240,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         // Registering a changed identity intentionally replaces the old client. The local state is
         // reset below so the UI cannot continue presenting a closed SSH session as connected.
-        val connectionProfile = if (!identityChanged && normalized.remoteCommand == RemoteBootstrap.MANAGED_REMOTE_COMMAND) {
-            effectiveProfiles[normalized.id]?.let { normalized.copy(remoteCommand = it.remoteCommand) } ?: normalized
+        val connectionProfile = if (!identityChanged && RemoteBootstrap.isManagedRemoteCommand(normalized.remoteCommand)) {
+            effectiveProfiles[normalized.id]?.let {
+                normalized.copy(
+                    remoteCommand = it.remoteCommand,
+                    appServerTransport = it.appServerTransport,
+                )
+            } ?: normalized
         } else {
             normalized
         }
@@ -483,8 +489,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (makeActive) {
             saveProfile(normalized)
         } else {
-            val connectionProfile = if (normalized.remoteCommand == RemoteBootstrap.MANAGED_REMOTE_COMMAND) {
-                effectiveProfiles[normalized.id]?.let { normalized.copy(remoteCommand = it.remoteCommand) } ?: normalized
+            val connectionProfile = if (RemoteBootstrap.isManagedRemoteCommand(normalized.remoteCommand)) {
+                effectiveProfiles[normalized.id]?.let {
+                    normalized.copy(
+                        remoteCommand = it.remoteCommand,
+                        appServerTransport = it.appServerTransport,
+                    )
+                } ?: normalized
             } else normalized
             connections.register(connectionProfile)
         }
@@ -1893,7 +1904,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             left.privateKeyPem == right.privateKeyPem &&
             left.privateKeyPassphrase == right.privateKeyPassphrase &&
             left.hostFingerprint == right.hostFingerprint &&
-            left.remoteCommand == right.remoteCommand
+            left.remoteCommand == right.remoteCommand &&
+            left.appServerTransport == right.appServerTransport
 
     private fun activeClient(): CodexAppServerClient? =
         _state.value.selectedProfileId?.let(connections::client)
@@ -2056,10 +2068,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun prepareRemote(profile: ServerProfile): ServerProfile? {
-        if (profile.remoteCommand != RemoteBootstrap.MANAGED_REMOTE_COMMAND) return profile
+        if (!RemoteBootstrap.isManagedRemoteCommand(profile.remoteCommand)) return profile
         val environment = connections.inspectRemote(profile)
-        environment.compatibleCommand(BuildConfig.PINNED_CODEX_VERSION)?.let { command ->
-            return profile.copy(remoteCommand = command)
+        environment.compatibleCommand(BuildConfig.PINNED_CODEX_VERSION)?.let { directCommand ->
+            val endpoint = environment.durableEndpoint(BuildConfig.PINNED_CODEX_VERSION)
+            if (endpoint == null) {
+                DiagnosticLogger.warn(
+                    "Connection",
+                    "durable transport unavailable profile=${profileRef(profile.id)}; using direct stdio",
+                )
+                return profile.copy(remoteCommand = directCommand)
+            }
+            if (isActiveProfile(profile.id)) {
+                _state.update {
+                    it.copy(connection = ConnectionState(ConnectionPhase.Connecting, "正在启动后台 Codex"))
+                }
+            }
+            connections.ensureDurableAppServer(profile, endpoint)
+            return profile.copy(
+                remoteCommand = endpoint.proxyCommand(),
+                appServerTransport = AppServerTransportMode.WebSocketOverProxy,
+            )
         }
         environment.installationProblem()?.let { problem ->
             throw IllegalStateException(problem)

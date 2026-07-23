@@ -19,7 +19,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
+import top.asdb.codexremote.data.AppServerTransportMode
 import top.asdb.codexremote.data.ServerProfile
+import top.asdb.codexremote.ssh.RemoteAppServerEndpoint
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.RemoteInstallProgress
 
@@ -106,6 +108,10 @@ class CodexConnectionManager(
     suspend fun probeFingerprint(profile: ServerProfile): String = ensureEntry(profile).client.probeFingerprint(profile)
 
     suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment = ensureEntry(profile).client.inspectRemote(profile)
+
+    suspend fun ensureDurableAppServer(profile: ServerProfile, endpoint: RemoteAppServerEndpoint) {
+        ensureEntry(profile).client.ensureDurableAppServer(profile, endpoint)
+    }
 
     suspend fun installRemote(
         profile: ServerProfile,
@@ -283,6 +289,7 @@ class CodexConnectionManager(
         val privateKeyPassphrase: String,
         val hostFingerprint: String,
         val remoteCommand: String,
+        val appServerTransport: AppServerTransportMode,
     )
 
     private fun connectionIdentity(profile: ServerProfile) = ConnectionIdentity(
@@ -295,5 +302,6 @@ class CodexConnectionManager(
         privateKeyPassphrase = profile.privateKeyPassphrase,
         hostFingerprint = profile.hostFingerprint,
         remoteCommand = profile.remoteCommand,
+        appServerTransport = profile.appServerTransport,
     )
 }

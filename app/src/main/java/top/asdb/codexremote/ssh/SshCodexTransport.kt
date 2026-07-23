@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
@@ -25,6 +26,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
+import top.asdb.codexremote.data.AppServerTransportMode
 import top.asdb.codexremote.data.ServerProfile
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
@@ -66,6 +68,7 @@ class SshCodexTransport {
     private var session: Session? = null
     private var channel: ChannelExec? = null
     private var writer: OutputStream? = null
+    private var webSocketTunnel: WebSocketJsonTunnel? = null
     private var readerJob: Job? = null
     private var connectingSession: Session? = null
     private var connectingChannel: ChannelExec? = null
@@ -125,6 +128,7 @@ class SshCodexTransport {
             val attemptScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             var sshSession: Session? = null
             var exec: ChannelExec? = null
+            var tunnel: WebSocketJsonTunnel? = null
             try {
                 sshSession = createPinnedSshSession(profile)
                 check(registerConnectingSession(generation, sshSession)) { "SSH 连接已取消" }
@@ -147,43 +151,71 @@ class SshCodexTransport {
                     connect = { exec.connect(SSH_CHANNEL_TIMEOUT_MS) },
                     disconnect = exec::disconnect,
                 )
-                check(publishConnection(generation, attemptScope, sshSession, exec, stdin)) {
+                if (profile.appServerTransport == AppServerTransportMode.WebSocketOverProxy) {
+                    val newTunnel = WebSocketJsonTunnel(stdout, stdin)
+                    tunnel = newTunnel
+                    try {
+                        withTimeout(WEBSOCKET_HANDSHAKE_TIMEOUT_MS) {
+                            runCancellableConnect(
+                                connect = newTunnel::performHandshake,
+                                disconnect = exec::disconnect,
+                            )
+                        }
+                    } catch (error: TimeoutCancellationException) {
+                        throw IllegalStateException("远程 Codex WebSocket 握手超时", error)
+                    }
+                }
+                val connectedTunnel = tunnel
+                check(publishConnection(generation, attemptScope, sshSession, exec, stdin, connectedTunnel)) {
                     "SSH 连接已取消"
                 }
 
                 val stdoutJob = attemptScope.launch {
                     runCatching {
-                        readBoundedJsonLines(
-                            reader = InputStreamReader(stdout, Charsets.UTF_8),
-                            maxLineChars = MAX_APP_SERVER_LINE_CHARS,
-                            onLine = { _lines.emit(SshTransportEvent(generation, it)) },
-                            onOversizedLine = { prefix ->
-                                val envelope = inspectJsonRpcEnvelopePrefix(prefix)
-                                val message = when {
-                                    envelope.id != null && !envelope.hasMethod ->
-                                        "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已改用精简响应"
-                                    envelope.id != null ->
-                                        "Codex 服务端请求过大，已拒绝该请求以避免回合卡住"
-                                    else ->
-                                        "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已丢弃该条通知"
-                                }
-                                _oversizedLines.emit(
-                                    SshOversizedLineEvent(
-                                        generation,
-                                        envelope.id,
-                                        envelope.idIsString,
-                                        envelope.hasMethod,
-                                        message,
-                                    ),
-                                )
-                                _diagnostics.emit(
-                                    SshTransportEvent(
-                                        generation,
-                                        message,
-                                    ),
-                                )
-                            },
-                        )
+                        if (connectedTunnel != null) {
+                            val close = connectedTunnel.readMessages { value ->
+                                _lines.emit(SshTransportEvent(generation, value))
+                            }
+                            _diagnostics.emit(
+                                SshTransportEvent(
+                                    generation,
+                                    "Codex WebSocket 已关闭" + close.code?.let { code -> ": $code" }.orEmpty() +
+                                        close.reason.takeIf(String::isNotBlank)?.let { reason -> " $reason" }.orEmpty(),
+                                ),
+                            )
+                        } else {
+                            readBoundedJsonLines(
+                                reader = InputStreamReader(stdout, Charsets.UTF_8),
+                                maxLineChars = MAX_APP_SERVER_LINE_CHARS,
+                                onLine = { _lines.emit(SshTransportEvent(generation, it)) },
+                                onOversizedLine = { prefix ->
+                                    val envelope = inspectJsonRpcEnvelopePrefix(prefix)
+                                    val message = when {
+                                        envelope.id != null && !envelope.hasMethod ->
+                                            "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已改用精简响应"
+                                        envelope.id != null ->
+                                            "Codex 服务端请求过大，已拒绝该请求以避免回合卡住"
+                                        else ->
+                                            "Codex JSONL 单行超过 $MAX_APP_SERVER_LINE_CHARS 个字符，已丢弃该条通知"
+                                    }
+                                    _oversizedLines.emit(
+                                        SshOversizedLineEvent(
+                                            generation,
+                                            envelope.id,
+                                            envelope.idIsString,
+                                            envelope.hasMethod,
+                                            message,
+                                        ),
+                                    )
+                                    _diagnostics.emit(
+                                        SshTransportEvent(
+                                            generation,
+                                            message,
+                                        ),
+                                    )
+                                },
+                            )
+                        }
                     }.onFailure {
                         if (isConnectionCurrent(generation)) {
                             _diagnostics.emit(SshTransportEvent(generation, it.message ?: "SSH 输出流异常"))
@@ -222,6 +254,16 @@ class SshCodexTransport {
     suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment {
         val result = executeScript(profile, RemoteBootstrap.probeScript, PROBE_TIMEOUT_MS)
         return RemoteBootstrap.parseProbe(result)
+    }
+
+    /** Starts the detached private app-server before the interactive SSH proxy attaches to it. */
+    suspend fun ensureDurableAppServer(profile: ServerProfile, endpoint: RemoteAppServerEndpoint) {
+        executeScript(
+            profile = profile,
+            script = RemoteBootstrap.durableServerScript(endpoint),
+            timeoutMs = DURABLE_START_TIMEOUT_MS,
+            operationName = "启动后台 Codex",
+        )
     }
 
     suspend fun installRemote(
@@ -264,14 +306,16 @@ class SshCodexTransport {
 
     suspend fun sendLine(line: String, expectedGeneration: Long) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
-            val output = synchronized(connectionStateLock) {
+            val destination = synchronized(connectionStateLock) {
                 check(connectionGeneration == expectedGeneration) { "SSH 连接已经更改" }
-                writer
+                WritableConnection(writer, webSocketTunnel)
             }
-                ?: throw IllegalStateException("SSH 通道尚未连接")
-            output.write(line.toByteArray(Charsets.UTF_8))
-            output.write('\n'.code)
-            output.flush()
+            val output = destination.writer ?: throw IllegalStateException("SSH 通道尚未连接")
+            destination.webSocketTunnel?.sendText(line) ?: run {
+                output.write(line.toByteArray(Charsets.UTF_8))
+                output.write('\n'.code)
+                output.flush()
+            }
         }
     }
 
@@ -482,10 +526,16 @@ class SshCodexTransport {
         val scope: CoroutineScope?,
         val readerJob: Job?,
         val writer: OutputStream?,
+        val webSocketTunnel: WebSocketJsonTunnel?,
         val channel: ChannelExec?,
         val session: Session?,
         val connectingChannel: ChannelExec?,
         val connectingSession: Session?,
+    )
+
+    private data class WritableConnection(
+        val writer: OutputStream?,
+        val webSocketTunnel: WebSocketJsonTunnel?,
     )
 
     private data class ConnectionAttempt(
@@ -508,6 +558,7 @@ class SshCodexTransport {
             scope = scope,
             readerJob = readerJob,
             writer = writer,
+            webSocketTunnel = webSocketTunnel,
             channel = channel,
             session = session,
             connectingChannel = connectingChannel,
@@ -516,6 +567,7 @@ class SshCodexTransport {
         scope = null
         readerJob = null
         writer = null
+        webSocketTunnel = null
         channel = null
         session = null
         connectingChannel = null
@@ -555,6 +607,7 @@ class SshCodexTransport {
         valueSession: Session,
         valueChannel: ChannelExec,
         valueWriter: OutputStream,
+        valueWebSocketTunnel: WebSocketJsonTunnel?,
     ): Boolean = synchronized(connectionStateLock) {
         if (
             connectionGeneration != generation ||
@@ -567,6 +620,7 @@ class SshCodexTransport {
         session = valueSession
         channel = valueChannel
         writer = valueWriter
+        webSocketTunnel = valueWebSocketTunnel
         connectingSession = null
         connectingChannel = null
         true
@@ -609,8 +663,10 @@ class SshCodexTransport {
 
     companion object {
         private const val PROBE_TIMEOUT_MS = 30_000L
+        private const val DURABLE_START_TIMEOUT_MS = 30_000L
         private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
         private const val UNINSTALL_TIMEOUT_MS = 60_000L
+        private const val WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 15_000L
         internal const val INSTALL_SHELL_COMMAND = "CODEX_REMOTE_SSH_PID=\$PPID setsid --wait sh -s"
         private const val PROGRESS_PREFIX = "::progress::"
         private const val MAX_CAPTURED_LINES = 64

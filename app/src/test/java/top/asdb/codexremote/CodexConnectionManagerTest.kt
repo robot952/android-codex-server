@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Test
 import top.asdb.codexremote.codex.CodexConnectionManager
+import top.asdb.codexremote.data.AppServerTransportMode
 import top.asdb.codexremote.data.ServerProfile
 
 class CodexConnectionManagerTest {
@@ -40,6 +41,21 @@ class CodexConnectionManagerTest {
         assertNotSame(firstClient, replaced)
         assertSame(replaced, manager.select(first.id))
         assertSame(secondClient, manager.client(second.id))
+        manager.close()
+    }
+
+    @Test
+    fun `changing app server transport replaces the client for the same profile`() = runTest {
+        val manager = CodexConnectionManager(this)
+        val profile = ServerProfile(id = "server", host = "host-a")
+        val jsonLinesClient = manager.register(profile)
+
+        val webSocketClient = manager.register(
+            profile.copy(appServerTransport = AppServerTransportMode.WebSocketOverProxy),
+        )
+
+        assertNotSame(jsonLinesClient, webSocketClient)
+        assertSame(webSocketClient, manager.client(profile.id))
         manager.close()
     }
 }
