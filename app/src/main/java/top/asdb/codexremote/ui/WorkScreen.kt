@@ -108,6 +108,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -168,6 +169,12 @@ fun WorkScreen(
     val olderTurnsLoading by rememberUpdatedState(state.olderTurnsLoading)
     val pullToRefreshState = rememberPullToRefreshState {
         canLoadOlder
+    }
+    val pullIndicatorVisible = pullToRefreshState.verticalOffset > 0f || state.olderTurnsLoading
+    val pullContentTopPadding = if (pullIndicatorVisible) {
+        with(LocalDensity.current) { pullToRefreshState.verticalOffset.toDp() } + 28.dp
+    } else {
+        0.dp
     }
     val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -346,9 +353,14 @@ fun WorkScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().nestedScroll(pullToRefreshState.nestedScrollConnection),
-                // Scaffold's content padding already keeps the transcript above the dynamically
-                // sized composer. Only retain the normal visual spacing at the end of the list.
-                contentPadding = PaddingValues(start = 9.dp, top = 10.dp, end = 9.dp, bottom = 10.dp),
+                // Reserve pull distance plus a label row above the transcript. The indicator and
+                // its hint therefore never overlap the first message while the user is pulling.
+                contentPadding = PaddingValues(
+                    start = 9.dp,
+                    top = 10.dp + pullContentTopPadding,
+                    end = 9.dp,
+                    bottom = 10.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(
@@ -396,7 +408,7 @@ fun WorkScreen(
                 }
                 item { Spacer(Modifier.height(6.dp)) }
             }
-            if (pullToRefreshState.verticalOffset > 0f || state.olderTurnsLoading) {
+            if (pullIndicatorVisible) {
                 PullToRefreshContainer(
                     state = pullToRefreshState,
                     modifier = Modifier.align(Alignment.TopCenter),
