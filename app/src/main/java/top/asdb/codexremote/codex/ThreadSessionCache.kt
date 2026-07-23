@@ -3,6 +3,7 @@ package top.asdb.codexremote.codex
 import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TokenUsage
+import top.asdb.codexremote.data.hasKnownContextWindow
 import java.util.LinkedHashMap
 
 /** In-memory, per-server LRU cache used as a fast UI/timeout fallback for opened threads. */
@@ -30,21 +31,27 @@ class ThreadSessionCache(
     private data class WeightedSnapshot(val value: Snapshot, val weightChars: Int)
 
     private val entries = object : LinkedHashMap<String, WeightedSnapshot>(maxEntries, 0.75f, true) {}
+    // Context usage is tiny and must survive an oversized transcript being rejected from the
+    // display cache. It remains session-scoped; a fresh server notification is authoritative.
+    private val contextUsages = object : LinkedHashMap<String, TokenUsage>(maxEntries, 0.75f, true) {}
     private var currentWeightChars = 0
 
     @Synchronized
     fun get(threadId: String): Snapshot? {
-        val value = entries.entries.firstOrNull { it.key == threadId }?.value?.value ?: return null
-        if (nowMs() - value.savedAtMs > ttlMs) {
+        val snapshot = entries[threadId]?.value ?: return null
+        if (nowMs() - snapshot.savedAtMs > ttlMs) {
             return null
         }
-        entries[threadId] // Promote only a fresh entry in access order.
-        return value
+        return snapshot.withLatestContextUsage(threadId)
     }
 
     /** Returns an expired snapshot too, for a last-resort timeout fallback. */
     @Synchronized
-    fun getStale(threadId: String): Snapshot? = entries[threadId]?.value
+    fun getStale(threadId: String): Snapshot? = entries[threadId]?.value?.withLatestContextUsage(threadId)
+
+    /** Returns the latest usable context value even when no transcript snapshot was retained. */
+    @Synchronized
+    fun contextUsage(threadId: String): TokenUsage? = contextUsages[threadId]
 
     @Synchronized
     fun put(
@@ -53,10 +60,17 @@ class ThreadSessionCache(
         nextTurnsCursor: String? = null,
         tokenUsage: TokenUsage? = null,
     ) {
+        tokenUsage?.takeIf { it.hasKnownContextWindow() }?.let { usage ->
+            contextUsages[thread.id] = usage
+            while (contextUsages.size > maxContextUsageEntries) {
+                contextUsages.remove(contextUsages.entries.first().key)
+            }
+        }
+        val rememberedUsage = contextUsages[thread.id]
         val weight = snapshotWeight(thread, timeline, nextTurnsCursor)
         if (weight > maxWeightChars) return
         removeLocked(thread.id)
-        val snapshot = Snapshot(thread, timeline.toList(), nowMs(), nextTurnsCursor, tokenUsage)
+        val snapshot = Snapshot(thread, timeline.toList(), nowMs(), nextTurnsCursor, rememberedUsage)
         entries[thread.id] = WeightedSnapshot(snapshot, weight)
         currentWeightChars += weight
         while (entries.size > maxEntries || currentWeightChars > maxWeightChars) {
@@ -67,11 +81,13 @@ class ThreadSessionCache(
     @Synchronized
     fun remove(threadId: String) {
         removeLocked(threadId)
+        contextUsages.remove(threadId)
     }
 
     @Synchronized
     fun clear() {
         entries.clear()
+        contextUsages.clear()
         currentWeightChars = 0
     }
 
@@ -81,6 +97,10 @@ class ThreadSessionCache(
     private fun removeLocked(threadId: String) {
         entries.remove(threadId)?.let { currentWeightChars -= it.weightChars }
     }
+
+    private fun Snapshot.withLatestContextUsage(threadId: String): Snapshot = copy(
+        tokenUsage = contextUsages[threadId] ?: tokenUsage,
+    )
 
     private fun snapshotWeight(
         thread: CodexThread,
@@ -100,7 +120,12 @@ class ThreadSessionCache(
         const val DEFAULT_MAX_ENTRIES = 8
         const val DEFAULT_TTL_MS = 30 * 60 * 1000L
         const val DEFAULT_MAX_WEIGHT_CHARS = 2 * 1024 * 1024
+        private const val CONTEXT_USAGE_ENTRIES_PER_TRANSCRIPT = 4
     }
+
+    private val maxContextUsageEntries: Int =
+        maxEntries.coerceAtMost(Int.MAX_VALUE / CONTEXT_USAGE_ENTRIES_PER_TRANSCRIPT) *
+            CONTEXT_USAGE_ENTRIES_PER_TRANSCRIPT
 }
 
 internal fun estimateTimelineWeightChars(timeline: List<TimelineEntry>): Int {

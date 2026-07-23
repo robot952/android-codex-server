@@ -76,6 +76,32 @@ class ThreadSessionCacheTest {
     }
 
     @Test
+    fun contextUsageSurvivesAnOversizedTranscript() {
+        val cache = ThreadSessionCache(
+            maxEntries = 2,
+            ttlMs = 60_000,
+            nowMs = { 1_000 },
+            maxWeightChars = 100,
+        )
+        val usage = TokenUsage(
+            last = TokenUsageBreakdown(totalTokens = 129_000),
+            modelContextWindow = 353_000,
+        )
+        val oversized = TimelineEntry(
+            "large",
+            TimelineKind.AgentMessage,
+            text = "x".repeat(200),
+            turnId = "turn-1",
+        )
+
+        cache.put(thread("a"), listOf(oversized), tokenUsage = usage)
+        cache.put(thread("a"), emptyList())
+
+        assertEquals(usage, cache.contextUsage("a"))
+        assertEquals(usage, cache.get("a")?.tokenUsage)
+    }
+
+    @Test
     fun oversizedReplacementKeepsExistingUsableSnapshot() {
         val cache = ThreadSessionCache(
             maxEntries = 2,

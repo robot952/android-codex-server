@@ -47,6 +47,7 @@ import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.ThreadModelPreference
 import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.data.hasKnownContextWindow
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteEnvironment
@@ -894,9 +895,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val approvalMode = _state.value.approvalMode
         val threadSelection = resolveThreadModelSelection(profileId, thread.id, _state.value.models)
         val cached = client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id)
-        val rememberedTokenUsage = cached?.tokenUsage ?: sessionSnapshots[profileId]
-            ?.takeIf { it.activeThread?.id == thread.id }
-            ?.tokenUsage
+        val rememberedTokenUsage = client.cachedContextUsage(thread.id)
+            ?: cached?.tokenUsage?.takeIf { it.hasKnownContextWindow() }
+            ?: sessionSnapshots[profileId]
+                ?.takeIf { it.activeThread?.id == thread.id }
+                ?.tokenUsage
+                ?.takeIf { it.hasKnownContextWindow() }
         cached?.takeIf { isOperationVisible(operation) }?.let { snapshot ->
             val cachedThread = snapshot.thread
             val timeline = snapshot.timeline

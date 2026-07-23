@@ -175,8 +175,9 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
 
 DiffViewer.kt 负责全屏 unified diff；ContextUsage.kt 负责上下文占用计算；components/
 MarkdownText.kt 负责 Markwon 渲染。页面级修改不要把这些逻辑复制回 WorkScreen。ThreadSessionCache
-还会按服务器和会话保留最近一次 `TokenUsage`，会话重进时先恢复该值，等远端 `thread/tokenUsage/updated`
-覆盖；它是内存缓存，不在本地长期持久化。
+会按服务器和会话独立保留最近一次**有效** `TokenUsage`，并与受大小限制的时间线缓存分开：即使长会话
+时间线超过缓存上限，重进时圆环仍先恢复上次比例，等待远端 `thread/tokenUsage/updated` 覆盖。缺少
+`modelContextWindow` 的不完整通知不得抹掉已有值；这些都是内存缓存，不在本地长期持久化。
 
 ### 5.4 TerminalScreen
 
@@ -324,7 +325,7 @@ ThreadSessionCache 负责快速重进会话。openThread 的策略是：
 2. 同时请求 thread/resume 获取权威快照。
 3. ResumeNotificationBuffer 暂存 resume 期间属于同一 thread/generation 的流式通知。
 4. 合并快照与缓冲事件，防止“旧响应覆盖连接期间新消息”。
-5. 缓存更新时间线、turn ids、itemsView 和 older cursor。
+5. 缓存更新时间线、turn ids、itemsView、older cursor，以及独立于时间线大小限制的最后有效上下文用量。
 
 历史只按 turn 分页。首次 resume 使用倒序小页并排除完整 turns 主体；更早历史使用
 thread/turns/list，遇到响应过大时降低 page limit/itemsView 后重试。UI 将新页 prepend，
@@ -649,7 +650,7 @@ testDebugUnitTest。
 | 会话菜单 | 打开操作菜单 | 目标、压缩、模型、权限均可用，不依赖斜杠 |
 | 目标 | 新建、编辑、暂停、重连、删除 | 与远程 thread 同步，重连后不被陈旧读取覆盖 |
 | 子 Agent | 启动、工作、完成/失败 | 只显示图标，状态跟随事件和父 turn 收敛 |
-| 上下文 | 长会话点击圆环 | 小圆环稳定、不挤压模型和发送/停止按钮；显示本轮真实已用/总标记和百分比，不弹压缩确认 |
+| 上下文 | 长会话点击圆环、返回列表后重进 | 小圆环稳定、不挤压模型和发送/停止按钮；立即恢复最近有效的本轮已用/总标记和百分比，不弹压缩确认 |
 | 后台 | turn 运行时 Home/锁屏 | 尽量继续；完成后通知，点击跳到正确服务器和会话 |
 | 进程重建 | force-stop/系统回收后重开 | 无闪退；持久状态恢复，连接状态不伪装成已连接 |
 | 旋转/大字体 | 横竖屏和放大字体 | 无重叠、截断或不可达按钮，表单可滚动 |

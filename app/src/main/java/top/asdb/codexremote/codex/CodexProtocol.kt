@@ -25,6 +25,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.TokenUsageBreakdown
+import top.asdb.codexremote.data.hasKnownContextWindow
 
 internal const val MAX_TIMELINE_TEXT_CHARS = 256 * 1024
 internal const val MAX_COMMAND_OUTPUT_CHARS = 512 * 1024
@@ -608,9 +609,16 @@ object CodexEventReducer {
             }
         }
 
-        "thread/tokenUsage/updated" -> state.copy(
-            tokenUsage = CodexPayloadParser.parseTokenUsage(params),
-        )
+        "thread/tokenUsage/updated" -> {
+            val usage = CodexPayloadParser.parseTokenUsage(params)
+            // Some resume paths emit an incomplete usage notification. Keep the last complete
+            // value until the server sends a replacement with an actual context window.
+            if (usage.hasKnownContextWindow() || state.tokenUsage?.hasKnownContextWindow() != true) {
+                state.copy(tokenUsage = usage)
+            } else {
+                state
+            }
+        }
 
         "thread/goal/updated" -> {
             val threadId = params.string("threadId")

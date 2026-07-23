@@ -17,6 +17,8 @@ import top.asdb.codexremote.codex.TEXT_TRUNCATION_MARKER
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineKind
+import top.asdb.codexremote.data.TokenUsage
+import top.asdb.codexremote.data.TokenUsageBreakdown
 
 class CodexPayloadParserTest {
     private val json = Json { ignoreUnknownKeys = true }
@@ -65,6 +67,35 @@ class CodexPayloadParserTest {
         ).jsonObject
         val withoutWindow = CodexEventReducer.reduce(active, "thread/tokenUsage/updated", unknownWindow)
         assertEquals(0L, withoutWindow.tokenUsage?.modelContextWindow)
+    }
+
+    @Test
+    fun incompleteTokenUsageUpdateDoesNotClearKnownContextWindow() {
+        val knownUsage = TokenUsage(
+            last = TokenUsageBreakdown(totalTokens = 129_000),
+            modelContextWindow = 353_000,
+        )
+        val active = AppUiState(
+            activeThread = top.asdb.codexremote.data.CodexThread(
+                id = "thr-1", title = "", preview = "", cwd = "", source = "", status = "idle",
+                createdAt = 0, updatedAt = 0, cliVersion = "",
+            ),
+            tokenUsage = knownUsage,
+        )
+
+        val reduced = CodexEventReducer.reduce(
+            active,
+            "thread/tokenUsage/updated",
+            buildJsonObject {
+                put("threadId", "thr-1")
+                put("tokenUsage", buildJsonObject {
+                    put("last", buildJsonObject { put("totalTokens", 1) })
+                    put("total", buildJsonObject { put("totalTokens", 1) })
+                })
+            },
+        )
+
+        assertEquals(knownUsage, reduced.tokenUsage)
     }
 
     @Test

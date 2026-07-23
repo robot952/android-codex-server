@@ -112,6 +112,9 @@ data class TokenUsage(
     val modelContextWindow: Long = 0,
 )
 
+/** A context ring is meaningful only after the server has supplied its window size. */
+fun TokenUsage.hasKnownContextWindow(): Boolean = modelContextWindow > 0L
+
 data class TokenUsageBreakdown(
     val cachedInputTokens: Long = 0,
     val inputTokens: Long = 0,

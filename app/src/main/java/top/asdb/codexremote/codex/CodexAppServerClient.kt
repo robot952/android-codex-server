@@ -407,6 +407,9 @@ class CodexAppServerClient(
     /** Returns an expired snapshot for a UI fast path while a remote refresh is running. */
     fun cachedThreadStale(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.getStale(threadId)
 
+    /** Latest usable context value is retained independently from the bounded transcript cache. */
+    fun cachedContextUsage(threadId: String): TokenUsage? = activeThreadCache.contextUsage(threadId)
+
     fun cacheThread(
         thread: CodexThread,
         timeline: List<TimelineEntry>,
