@@ -177,6 +177,7 @@ fun WorkScreen(
 ) {
     val timelineRows = remember(state.timeline) { state.timeline.toTimelineRenderRows() }
     val backgroundAgents = remember(state.timeline) { state.timeline.toSubAgentPresentations() }
+    val canOpenSubAgents = !state.loading && !state.submitting && state.approvalQueue.isEmpty()
     val listState = remember(state.activeThread?.id) { LazyListState() }
     val canLoadOlder by rememberUpdatedState(
         state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading,
@@ -376,6 +377,7 @@ fun WorkScreen(
                 onClearGoal = { goalDeleteRequested = true },
                 agents = backgroundAgents,
                 onOpenSubAgent = onOpenSubAgent,
+                canOpenSubAgents = canOpenSubAgents,
             )
         },
     ) { padding ->
@@ -414,12 +416,14 @@ fun WorkScreen(
                                     !state.running && entry.id == latestFileChangeId,
                                 onRollback = { rollbackRequested = true },
                                 onOpenSubAgent = onOpenSubAgent,
+                                canOpenSubAgents = canOpenSubAgents,
                             )
                         }
 
                         is TimelineRenderRow.SubAgents -> SubAgentActivityGroupBlock(
                             entries = row.entries,
                             onOpenSubAgent = onOpenSubAgent,
+                            enabled = canOpenSubAgents,
                         )
                     }
                 }
@@ -741,6 +745,7 @@ private fun TimelineItem(
     canRollback: Boolean,
     onRollback: () -> Unit,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+    canOpenSubAgents: Boolean,
 ) {
     when (entry.kind) {
         TimelineKind.UserMessage -> Surface(
@@ -761,6 +766,7 @@ private fun TimelineItem(
         TimelineKind.SubAgent -> SubAgentActivityGroupBlock(
             entries = listOf(entry),
             onOpenSubAgent = onOpenSubAgent,
+            enabled = canOpenSubAgents,
         )
         TimelineKind.Review -> Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -1114,6 +1120,7 @@ private fun ToolBlock(entry: TimelineEntry) {
 private fun SubAgentActivityGroupBlock(
     entries: List<TimelineEntry>,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+    enabled: Boolean,
 ) {
     val group = remember(entries) { entries.toSubAgentActivityGroupPresentation() }
     if (group.agents.isEmpty()) return
@@ -1132,7 +1139,7 @@ private fun SubAgentActivityGroupBlock(
                     onClick = {
                         if (agent.isOpenable) onOpenSubAgent(agent.threadId, agent.name)
                     },
-                    enabled = agent.isOpenable,
+                    enabled = agent.isOpenable && enabled,
                     label = {
                         Text(
                             agent.name,
@@ -1240,6 +1247,7 @@ private fun BackgroundAgentsPanel(
     sessionId: String,
     agents: List<SubAgentPresentation>,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+    enabled: Boolean,
 ) {
     var expanded by remember(sessionId) { mutableStateOf(false) }
     val activeCount = agents.count { it.status.isActive }
@@ -1296,7 +1304,7 @@ private fun BackgroundAgentsPanel(
                             val color = subAgentStatusColor(agent.status)
                             Row(
                                 modifier = Modifier.fillMaxWidth().then(
-                                    if (agent.isOpenable) {
+                                    if (agent.isOpenable && enabled) {
                                         Modifier.clickable {
                                             onOpenSubAgent(agent.threadId, agent.name)
                                         }
@@ -1304,7 +1312,7 @@ private fun BackgroundAgentsPanel(
                                         Modifier
                                     },
                                 ).padding(horizontal = 11.dp, vertical = 7.dp).semantics {
-                                    contentDescription = if (agent.isOpenable) {
+                                    contentDescription = if (agent.isOpenable && enabled) {
                                         "打开 ${agent.name} 的工作页面"
                                     } else {
                                         agent.name
@@ -1364,6 +1372,7 @@ private fun WorkComposer(
     onClearGoal: () -> Unit,
     agents: List<SubAgentPresentation>,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+    canOpenSubAgents: Boolean,
 ) {
     val composerScroll = rememberScrollState()
     var actionMenuVisible by remember { mutableStateOf(false) }
@@ -1416,6 +1425,7 @@ private fun WorkComposer(
                     sessionId = state.activeThread?.id.orEmpty(),
                     agents = agents,
                     onOpenSubAgent = onOpenSubAgent,
+                    enabled = canOpenSubAgents,
                 )
                 Spacer(Modifier.height(6.dp))
             }

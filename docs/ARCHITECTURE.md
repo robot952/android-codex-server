@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.13（versionCode 35）
+- Android 应用版本：1.7.14（versionCode 36）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -174,7 +174,9 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
   运行、完成或失败状态改变；状态色只用于状态文字和运行指示。
 - 同一 turn 的相邻子 Agent 活动在时间线收敛为紧凑标签组，标签和输入区上方的“后台智能体”展开列表
   都必须直接显示名称和状态。点击任一项进入该智能体自己的工作页；返回时先恢复父页面快照，再通过
-  `thread/resume` 恢复远端父线程上下文。导航栈按 profile 隔离，旧的异步恢复不得弹出较新的栈帧。
+  `thread/resume` 恢复远端父线程上下文。加载中的子页也必须允许首次返回；同一层返回只能有一个
+  pending resume，重复返回不得跳层或重复请求。导航栈按 profile 隔离，旧的异步恢复不得弹出较新的栈帧。
+  远端恢复失败时留在子页以便重试；已经断线时恢复父快照并提示重连。提交或审批期间不得切入子页。
 - 支持目标的显示、编辑、暂停/继续和删除，目标是远程线程持久状态，不是本地假状态。
 
 DiffViewer.kt 负责全屏 unified diff；ContextUsage.kt 负责上下文占用计算；components/
@@ -615,7 +617,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
 | ContextUsageTest | 上下文圆环占用计算 |
 | ProfileScopedContextUsageCacheTest | 客户端重建后的上下文圆环回退、LRU 与 profile 隔离 |
-| ProfileScopedBackStackTest | 子智能体嵌套导航、profile 隔离和过期回调保护 |
+| ProfileScopedBackStackTest | 子智能体嵌套逐层返回、pending 返回幂等、失败重试、profile 隔离和过期回调保护 |
 | PersistedUiPreferenceTest | 草稿、模型、推理强度持久化和键空间 |
 | ProfileOperationTrackerTest | 并发 lane、失效和竞态 |
 | RemoteBootstrapTest | 探测、安装脚本、固定版本和清理 |
@@ -660,6 +662,7 @@ testDebugUnitTest。
 | 目标 | 新建、编辑、暂停、重连、删除 | 与远程 thread 同步，重连后不被陈旧读取覆盖 |
 | 子 Agent | 启动、工作、完成/失败 | 图标身份色稳定，状态跟随事件和父 turn 收敛 |
 | 子 Agent 导航 | 点击时间线标签、输入区展开列表，随后返回/系统 Back | 进入对应子会话；先恢复父页面快照，再恢复远端父线程，草稿、模型、权限和上下文不串台 |
+| 子 Agent 返回边界 | 加载中返回、连续返回、P→A→B 逐层返回、恢复失败、断线、切换服务器 | 首次返回立即切换到父快照且只请求一次；不跳层、不串状态；失败回子页可重试，断线返回父快照并提示重连，旧回调不能覆盖新页面 |
 | 上下文 | 长会话点击圆环、返回列表后重进 | 小圆环稳定、不挤压模型和发送/停止按钮；立即恢复最近有效的本轮已用/总标记和百分比，不弹压缩确认 |
 | 后台 | turn 运行时 Home/锁屏 | 尽量继续；完成后通知，点击跳到正确服务器和会话 |
 | 进程重建 | force-stop/系统回收后重开 | 无闪退；持久状态恢复，连接状态不伪装成已连接 |
@@ -756,7 +759,7 @@ Serializable data class（必须给默认值）
 6. 会话重进优先用缓存，较大历史允许更长的后台恢复，不让页面长期空白。
 7. 更早历史通过顶部下拉释放加载，提示和顶部留白跟随手势。
 8. 会话运行中显示停止图标，列表显示运行转圈；上下文用小圆环，不挤占动作区，点击只查看当前上下文占用。
-9. 子 Agent 用稳定身份色的图标表达，状态必须准确，不显示多余“子agent”文字；点击其标签或列表项必须能进入独立工作页并安全返回父会话。
+9. 子 Agent 用稳定身份色的图标表达，状态必须准确，不显示多余“子agent”文字；点击其标签或列表项必须能进入独立工作页并安全返回父会话。加载中允许首次返回、重复返回不跳层，提交或审批期间禁止切换会话。
 10. 会话目标和操作菜单使用原生 app-server 能力，不依赖难维护的斜杠解析。
 11. App 后台时 turn 完成要发通知，点击进入正确的服务器和会话。
 12. Debug 通过 Codex 图标连点 10 次开启，日志可用系统分享并且必须脱敏。

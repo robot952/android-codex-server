@@ -259,6 +259,8 @@ data class RemoteSetupPrompt(
 
 data class AppUiState(
     val screen: AppScreen = AppScreen.Servers,
+    /** Lets nested collaborator pages animate B -> A as a back navigation. */
+    val subAgentBackNavigation: Boolean = false,
     val debugModeEnabled: Boolean = false,
     val profiles: List<ServerProfile> = emptyList(),
     val selectedProfileId: String? = null,

@@ -92,7 +92,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     val terminalState by viewModel.terminalState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var serverSwitcherVisible by remember { mutableStateOf(false) }
-    val navigationTarget = ScreenAnimationTarget(state.screen, state.activeThread?.id)
+    val navigationTarget = ScreenAnimationTarget(
+        screen = state.screen,
+        threadId = state.activeThread?.id,
+        subAgentBackNavigation = state.subAgentBackNavigation,
+    )
 
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -121,8 +125,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             targetState = navigationTarget,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                val movesForward = targetState.screen.ordinal > initialState.screen.ordinal ||
-                    (targetState.screen == initialState.screen && targetState.threadId != initialState.threadId)
+                val movesForward = when {
+                    targetState.screen == initialState.screen &&
+                        targetState.threadId != initialState.threadId -> !targetState.subAgentBackNavigation
+                    else -> targetState.screen.ordinal > initialState.screen.ordinal
+                }
                 if (movesForward) {
                     (slideInHorizontally { it / 5 } + fadeIn()) togetherWith
                         (slideOutHorizontally { -it / 8 } + fadeOut())
@@ -416,6 +423,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
 private data class ScreenAnimationTarget(
     val screen: AppScreen,
     val threadId: String?,
+    val subAgentBackNavigation: Boolean,
 )
 
 @Composable

@@ -33,6 +33,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   row opens that collaborator's own work page.
 - Backing out of a collaborator page resumes the parent thread remotely as well as restoring its
   cached UI, so later input always targets the parent thread rather than the last collaborator.
+  A loading child still accepts one back action; repeat presses do not skip a parent or issue a
+  second resume. A failed resume returns to the child for retry, while a disconnected profile
+  returns its cached parent view with a reconnect notice.
 - The context ring opens a compact popover with server-reported current-context usage: used/remaining
   percentage and used/window token counts. It is informational; manual compaction remains an explicit
   command in the composer action menu. Reopening a cached thread retains its last known usage until

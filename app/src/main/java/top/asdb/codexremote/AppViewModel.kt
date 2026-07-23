@@ -905,6 +905,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         val profileId = current.selectedProfileId ?: return
         if (threadId.isBlank() || current.loading || threadId == current.activeThread?.id) return
+        if (current.submitting) {
+            showError(IllegalStateException("当前操作尚未完成，请稍后打开智能体"))
+            return
+        }
+        if (current.approvalQueue.isNotEmpty()) {
+            showError(IllegalStateException("请先处理当前审批请求"))
+            return
+        }
+        if (current.screen !in setOf(AppScreen.Work, AppScreen.AgentWork)) return
         if (subAgentNavigationStacks.size(profileId) >= MAX_SUB_AGENT_NAVIGATION_DEPTH) {
             showError(IllegalStateException("智能体嵌套层级过深，请先返回上一级"))
             return
@@ -949,17 +958,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun backFromSubAgentThread() {
         val current = _state.value
         val profileId = current.selectedProfileId ?: return
-        if (current.loading || current.submitting) return
+        if (current.submitting) {
+            showError(IllegalStateException("当前操作尚未完成，请稍后返回"))
+            return
+        }
         if (current.approvalQueue.isNotEmpty()) {
             showError(IllegalStateException("请先处理当前审批请求"))
             return
         }
-        val frame = subAgentNavigationStacks.peek(profileId) ?: run {
+        // A child can still be loading when the user decides to leave it. Do not block that
+        // first back action, but never start two parent resumes for the same stack frame.
+        if (subAgentNavigationStacks.isPopPending(profileId)) return
+        val frame = subAgentNavigationStacks.beginPendingPop(profileId) ?: run {
             backToThreads()
             return
         }
         val parentThread = frame.snapshot.activeThread ?: run {
-            subAgentNavigationStacks.pop(profileId)
+            subAgentNavigationStacks.completePendingPop(profileId, frame)
             backToThreads()
             return
         }
@@ -975,18 +990,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 rememberContextUsage(profileId, child.id, current.tokenUsage)
             }
         }
-        openThreadInternal(
+        val accepted = openThreadInternal(
             thread = parentThread,
             targetScreen = frame.screen,
             agentName = frame.snapshot.activeAgentName,
             initialSnapshot = frame.snapshot,
-            onResumed = { subAgentNavigationStacks.popIfTop(profileId, frame) },
+            subAgentBackNavigation = true,
+            onResumed = { subAgentNavigationStacks.completePendingPop(profileId, frame) },
             onResumeFailure = { error ->
                 // A newer navigation owns the screen and stack. Do not let an older failed
                 // resume replace it with a stale child snapshot.
-                if (subAgentNavigationStacks.isTop(profileId, frame)) {
+                if (subAgentNavigationStacks.cancelPendingPop(profileId, frame)) {
                     applySessionState(profileId) { childSnapshot.restore(it).copy(
                         screen = AppScreen.AgentWork,
+                        subAgentBackNavigation = false,
                         loading = false,
                         submitting = false,
                         error = error.message ?: "无法返回上级智能体",
@@ -995,6 +1012,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 true
             },
         )
+        if (!accepted && subAgentNavigationStacks.completePendingPop(profileId, frame) != null) {
+            // The server cannot receive a new `thread/resume` while disconnected, but navigation
+            // must not trap the user on a child page. Remote actions will report the disconnected
+            // state until the profile reconnects and the user resumes the parent again.
+            applySessionState(profileId) {
+                frame.snapshot.restore(it).copy(
+                    screen = frame.screen,
+                    subAgentBackNavigation = true,
+                    loading = false,
+                    submitting = false,
+                    error = "服务器连接已断开，已返回上级会话；重连后请重新打开会话",
+                )
+            }
+        }
     }
 
     private fun openThreadInternal(
@@ -1002,6 +1033,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         targetScreen: AppScreen,
         agentName: String?,
         initialSnapshot: SessionSnapshot? = null,
+        subAgentBackNavigation: Boolean = false,
         onResumed: () -> Unit = {},
         onResumeFailure: (Throwable) -> Boolean = { false },
     ): Boolean {
@@ -1034,6 +1066,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             applySessionState(profileId) {
                 it.copy(
                     screen = targetScreen,
+                    subAgentBackNavigation = subAgentBackNavigation,
                     activeThread = cachedThread,
                     activeAgentName = agentName,
                     activeGoal = null,
@@ -1064,6 +1097,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 applySessionState(profileId) { state ->
                     snapshot.restore(state).copy(
                         screen = targetScreen,
+                        subAgentBackNavigation = subAgentBackNavigation,
                         activeThread = snapshotThread,
                         activeAgentName = agentName,
                         activeGoal = snapshot.activeGoal,
@@ -1081,6 +1115,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } ?: applySessionState(profileId) {
                 it.copy(
                     screen = targetScreen,
+                    subAgentBackNavigation = subAgentBackNavigation,
                     activeThread = thread,
                     activeAgentName = agentName,
                     activeGoal = null,
@@ -1146,6 +1181,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             ?: rememberedTokenUsage
                         current.copy(
                             screen = targetScreen,
+                            subAgentBackNavigation = subAgentBackNavigation,
                             activeThread = loaded,
                             activeAgentName = agentName,
                             activeGoal = null,
@@ -1399,15 +1435,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         "send_accepted profile=${profileRef(profileId)} thread=${profileRef(thread.id)}",
                     )
                     composerDrafts.remove(composerDraftKey(profileId, thread.id))
-                    applySessionState(profileId) {
-                        it.copy(
-                        activeTurnId = turnId.ifBlank { it.activeTurnId },
-                        running = true,
-                        submitting = false,
-                        attachments = emptyList(),
-                        composerClearNonce = it.composerClearNonce + 1,
-                        composerDraft = "",
-                        )
+                    applySessionState(profileId) { state ->
+                        // Session navigation can race with a sent request. Never attach this
+                        // thread's turn state or draft cleanup to whichever thread is now visible.
+                        if (state.activeThread?.id != thread.id) {
+                            state
+                        } else {
+                            state.copy(
+                                activeTurnId = turnId.ifBlank { state.activeTurnId },
+                                running = true,
+                                submitting = false,
+                                attachments = emptyList(),
+                                composerClearNonce = state.composerClearNonce + 1,
+                                composerDraft = "",
+                            )
+                        }
                     }
                     persistProfiles()
                 }
@@ -2449,6 +2491,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleProfileClosed(event: ProfiledCodexConnectionEvent) {
         val profileId = event.profileId
         invalidateProfile(profileId)
+        subAgentNavigationStacks.clear(profileId)
         val failureMessage = presentCodexDiagnostic(
             event.value.message,
             ConnectionPhase.Failed,
