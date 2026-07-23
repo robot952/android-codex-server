@@ -140,6 +140,10 @@ account/container when the app-server `cwd` must be confined.
 
 ## Architecture
 
+维护者和 AI 修改代码前，请先阅读完整的
+[架构与协作手册](docs/ARCHITECTURE.md)。其中记录了模块职责、运行时数据流、多服务器隔离、
+本地模拟器环境、回归用例、固定签名和发布约束。
+
 ```text
 Jetpack Compose UI
         |
