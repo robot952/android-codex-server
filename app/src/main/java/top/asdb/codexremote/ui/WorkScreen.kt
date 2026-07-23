@@ -106,6 +106,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -844,40 +845,74 @@ private fun CommandBlock(entry: TimelineEntry) {
     }
 }
 
-/**
- * Context usage is based on the latest request, which represents the current
- * context. The cumulative total grows across turns and must not drive the ring.
- */
-private data class ContextUsageDisplay(val fraction: Float, val available: Boolean)
-
 @Composable
 private fun ContextUsageRing(
-    usage: ContextUsageDisplay,
-    onClick: () -> Unit,
+    usage: ContextUsageSummary?,
     modifier: Modifier = Modifier,
 ) {
+    var detailsVisible by remember { mutableStateOf(false) }
     Box(
-        modifier = modifier.size(32.dp).clip(CircleShape).clickable(onClick = onClick).semantics {
-            contentDescription = "上下文用量，点击压缩会话"
-            stateDescription = if (usage.available) "已获取" else "等待用量数据"
-        },
+        modifier = modifier.size(32.dp),
         contentAlignment = Alignment.Center,
     ) {
-        CircularProgressIndicator(
-            progress = { usage.fraction },
-            modifier = Modifier.size(18.dp),
-            strokeWidth = 2.dp,
-            color = Color.White.copy(alpha = 0.94f),
-            trackColor = Color(0xFF555555),
-        )
+        Box(
+            modifier = Modifier.fillMaxSize().clip(CircleShape).clickable {
+                detailsVisible = !detailsVisible
+            }.semantics {
+                contentDescription = "上下文用量，点击查看详情"
+                stateDescription = usage?.let {
+                    "${it.usedPercent}% 已用，剩余 ${it.remainingPercent}%"
+                } ?: "等待服务器用量数据"
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(
+                progress = { usage?.fraction ?: 0f },
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = Color.White.copy(alpha = 0.94f),
+                trackColor = Color(0xFF555555),
+            )
+        }
+        DropdownMenu(
+            expanded = detailsVisible,
+            onDismissRequest = { detailsVisible = false },
+            offset = DpOffset(x = (-200).dp, y = 0.dp),
+            modifier = Modifier
+                .widthIn(min = 210.dp, max = 260.dp)
+                .background(CodexSurfaceRaised, RoundedCornerShape(8.dp)),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    "背景信息窗口：",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (usage == null) {
+                    Text(
+                        "等待服务器返回上下文用量",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "${usage.usedPercent}% 已用（剩余 ${usage.remainingPercent}%）",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "已用 ${formatContextTokenCount(usage.usedTokens)} 标记，共 " +
+                            "${formatContextTokenCount(usage.windowTokens)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
-}
-
-private fun contextUsageDisplay(state: AppUiState): ContextUsageDisplay {
-    contextUsageFraction(state.tokenUsage)?.let { fraction ->
-        return ContextUsageDisplay(fraction = fraction, available = true)
-    }
-    return ContextUsageDisplay(fraction = 0f, available = false)
 }
 
 @Composable
@@ -1363,8 +1398,7 @@ private fun WorkComposer(
                         }
                         Spacer(Modifier.weight(1f))
                         ContextUsageRing(
-                            usage = contextUsageDisplay(state),
-                            onClick = onCompact,
+                            usage = contextUsageSummary(state.tokenUsage),
                         )
                         Spacer(Modifier.width(2.dp))
                         TextButton(

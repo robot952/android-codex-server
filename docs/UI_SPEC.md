@@ -24,6 +24,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions
+- The context ring opens a compact popover with server-reported current-context usage: used/remaining
+  percentage and used/window token counts. It is informational; manual compaction remains an explicit
+  command in the composer action menu.
 - Model and reasoning effort use a bottom sheet; sandbox choice uses a dedicated mode sheet
 - Approvals are blocking dialogs tied to the exact JSON-RPC request id
 - Transient remote diagnostics use a compact, dark, width-bounded Snackbar. Raw stderr, nested JSON,

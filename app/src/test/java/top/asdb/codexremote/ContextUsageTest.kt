@@ -6,6 +6,8 @@ import org.junit.Test
 import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.TokenUsageBreakdown
 import top.asdb.codexremote.ui.contextUsageFraction
+import top.asdb.codexremote.ui.contextUsageSummary
+import top.asdb.codexremote.ui.formatContextTokenCount
 
 class ContextUsageTest {
     @Test
@@ -44,5 +46,29 @@ class ContextUsageTest {
                 TokenUsage(last = TokenUsageBreakdown(totalTokens = 1), modelContextWindow = 0),
             ),
         )
+    }
+
+    @Test
+    fun `reports current context values instead of cumulative thread totals`() {
+        val summary = contextUsageSummary(
+            TokenUsage(
+                last = TokenUsageBreakdown(totalTokens = 129_000),
+                total = TokenUsageBreakdown(totalTokens = 999_999),
+                modelContextWindow = 353_000,
+            ),
+        )!!
+
+        assertEquals(129_000, summary.usedTokens)
+        assertEquals(353_000, summary.windowTokens)
+        assertEquals(36, summary.usedPercent)
+        assertEquals(64, summary.remainingPercent)
+    }
+
+    @Test
+    fun `formats context token counts for the compact detail popover`() {
+        assertEquals("999", formatContextTokenCount(999))
+        assertEquals("1.2k", formatContextTokenCount(1_299))
+        assertEquals("129k", formatContextTokenCount(129_000))
+        assertEquals("1.2m", formatContextTokenCount(1_200_000))
     }
 }
