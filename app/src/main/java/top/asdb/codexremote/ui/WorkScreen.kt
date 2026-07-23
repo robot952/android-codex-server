@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -102,6 +103,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -118,8 +120,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.CodexModel
@@ -161,6 +165,7 @@ fun WorkScreen(
     val canLoadOlder by rememberUpdatedState(
         state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading,
     )
+    val olderTurnsLoading by rememberUpdatedState(state.olderTurnsLoading)
     val pullToRefreshState = rememberPullToRefreshState {
         canLoadOlder
     }
@@ -204,6 +209,12 @@ fun WorkScreen(
             followOutput = false
             if (state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading) {
                 onLoadOlder()
+                // The ViewModel marks the request as loading synchronously. If it cannot start
+                // (for example after a disconnect), restore the resting pull state instead.
+                delay(500)
+                if (!olderTurnsLoading && pullToRefreshState.isRefreshing) {
+                    pullToRefreshState.endRefresh()
+                }
             } else if (state.olderTurnsCursor == null || state.loading) {
                 pullToRefreshState.endRefresh()
             }
@@ -385,10 +396,29 @@ fun WorkScreen(
                 }
                 item { Spacer(Modifier.height(6.dp)) }
             }
-            PullToRefreshContainer(
-                state = pullToRefreshState,
-                modifier = Modifier.align(Alignment.TopCenter),
-            )
+            if (pullToRefreshState.verticalOffset > 0f || state.olderTurnsLoading) {
+                PullToRefreshContainer(
+                    state = pullToRefreshState,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+                val pullHint = when {
+                    state.olderTurnsLoading -> "加载更多..."
+                    pullToRefreshState.progress >= 1f -> "松开加载更多"
+                    else -> "下拉加载更多"
+                }
+                Text(
+                    text = pullHint,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        // The built-in indicator ends at verticalOffset; keep its hint directly
+                        // beneath it so both follow the user's drag together.
+                        .offset { IntOffset(0, pullToRefreshState.verticalOffset.roundToInt()) }
+                        .semantics { stateDescription = pullHint }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
             if (state.timeline.isEmpty() && !state.loading) {
                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.Terminal, contentDescription = null,

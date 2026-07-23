@@ -2574,7 +2574,8 @@ private data class SessionSnapshot(
         activeThread = activeThread,
         timeline = timeline,
         olderTurnsCursor = olderTurnsCursor,
-        olderTurnsLoading = olderTurnsLoading,
+        // Loading is tied to a live request and cannot safely survive a profile/session restore.
+        olderTurnsLoading = false,
         activeTurnId = activeTurnId,
         running = running,
         submitting = submitting,
@@ -2608,7 +2609,9 @@ private data class SessionSnapshot(
                 activeThread = state.activeThread,
                 timeline = bounded.timeline,
                 olderTurnsCursor = state.olderTurnsCursor.takeUnless { bounded.truncated },
-                olderTurnsLoading = state.olderTurnsLoading,
+                // Do not cache transient request state. A restored loading flag would leave the
+                // pull indicator visible even though its original request no longer exists.
+                olderTurnsLoading = false,
                 activeTurnId = state.activeTurnId,
                 running = state.running,
                 submitting = state.submitting,
