@@ -24,6 +24,13 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions
+- Adjacent collaborator events from one turn render as compact icon chips followed by a visible
+  status (`已开始工作`、`已更新`、`已完成` etc.), instead of repeating bulky transcript cards.
+- When collaborators exist, the composer has a collapsible `N 个后台智能体` panel. Every row
+  shows its icon, name, visible current status, and a navigation affordance; tapping a chip or
+  row opens that collaborator's own work page.
+- Backing out of a collaborator page resumes the parent thread remotely as well as restoring its
+  cached UI, so later input always targets the parent thread rather than the last collaborator.
 - The context ring opens a compact popover with server-reported current-context usage: used/remaining
   percentage and used/window token counts. It is informational; manual compaction remains an explicit
   command in the composer action menu. Reopening a cached thread retains its last known usage until

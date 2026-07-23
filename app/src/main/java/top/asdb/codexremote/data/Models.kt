@@ -198,7 +198,7 @@ data class PendingAttachment(
     val mimeType: String,
 )
 
-enum class AppScreen { Servers, Threads, Work }
+enum class AppScreen { Servers, Threads, Work, AgentWork }
 
 enum class SandboxChoice(val wireValue: String, val policyType: String, val label: String) {
     ReadOnly("read-only", "readOnly", "只读"),
@@ -272,6 +272,8 @@ data class AppUiState(
     val threads: List<CodexThread> = emptyList(),
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,
+    /** Human-readable name supplied by the parent thread while viewing a collaborator thread. */
+    val activeAgentName: String? = null,
     /** Native durable objective fetched from and mutated through the active remote thread. */
     val activeGoal: ThreadGoal? = null,
     val timeline: List<TimelineEntry> = emptyList(),

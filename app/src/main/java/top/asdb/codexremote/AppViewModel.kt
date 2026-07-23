@@ -47,6 +47,7 @@ import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.ThreadModelPreference
 import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.hasKnownContextWindow
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
@@ -83,6 +84,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SessionSnapshot>?): Boolean =
             size > MAX_PROFILE_SESSION_SNAPSHOTS
     }
+    private val contextUsageFallbacks = ProfileScopedContextUsageCache()
+    private val subAgentNavigationStacks = ProfileScopedBackStack<SubAgentNavigationFrame>()
     private val pendingApprovalsByProfile = mutableMapOf<String, List<ApprovalPrompt>>()
     private val resumeNotificationBuffers = mutableMapOf<String, ResumeNotificationBuffer>()
     private val unsupportedGoalProfiles = mutableSetOf<String>()
@@ -294,7 +297,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val profile = _state.value.profiles.firstOrNull { it.id == id } ?: return
         DiagnosticLogger.info("Profile", "select profile=${profileRef(id)}")
         val previousId = _state.value.selectedProfileId
-        if (previousId != id) previousId?.let { sessionSnapshots[it] = SessionSnapshot.capture(_state.value) }
+        if (previousId != id) previousId?.let {
+            // A stale resume can otherwise complete after A -> B -> A and mutate A's
+            // sub-agent stack after the user has started a new navigation there.
+            invalidateLane(it, "session-navigation")
+            sessionSnapshots[it] = SessionSnapshot.capture(_state.value)
+            subAgentNavigationStacks.clear(it)
+        }
         // loadConnectedSession may have resolved the managed command to a concrete executable.
         // Select the already-connected entry by id; re-registering the original managed command
         // here would replace and close that client immediately after a successful connection.
@@ -313,8 +322,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (profileId.isBlank() || threadId.isBlank()) return
         val before = _state.value
         val profile = before.profiles.firstOrNull { it.id == profileId } ?: return
-        if (before.selectedProfileId == profileId && before.screen == AppScreen.Work &&
-            before.activeThread?.id == threadId
+        if (before.selectedProfileId == profileId && before.activeThread?.id == threadId &&
+            (before.screen == AppScreen.Work || before.screen == AppScreen.AgentWork)
         ) return
         val connection = connections.states.value[profileId]
             ?: before.connectionStates[profileId]
@@ -348,6 +357,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val wasSelected = _state.value.selectedProfileId == id
         invalidateProfile(id)
         sessionSnapshots.remove(id)
+        contextUsageFallbacks.clear(id)
+        subAgentNavigationStacks.clear(id)
         pendingApprovalsByProfile.remove(id)
         setupStates.remove(id)
         setupProfiles.remove(id)
@@ -681,6 +692,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             invalidateLane(id, "thread-list")
             invalidateLane(id, "workspace")
             _state.value.activeThread?.let { thread ->
+                rememberContextUsage(id, thread.id, _state.value.tokenUsage)
                 activeClient()?.cacheThread(
                     thread,
                     _state.value.timeline,
@@ -689,6 +701,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             sessionSnapshots[id] = SessionSnapshot.capture(_state.value)
+            subAgentNavigationStacks.clear(id)
         }
         _state.update {
             it.copy(
@@ -825,6 +838,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createThread() {
         val profile = currentProfile() ?: return
+        subAgentNavigationStacks.clear(profile.id)
         DiagnosticLogger.info("Thread", "create_start profile=${profileRef(profile.id)}")
         val client = connections.client(profile.id)?.takeIf { it.isConnected() } ?: return
         invalidateLane(profile.id, "session-navigation")
@@ -851,6 +865,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                         screen = AppScreen.Work,
                         activeThread = thread,
+                        activeAgentName = null,
                         activeGoal = null,
                         timeline = timeline,
                         olderTurnsCursor = null,
@@ -882,21 +897,132 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openThread(thread: top.asdb.codexremote.data.CodexThread) {
         val profileId = _state.value.selectedProfileId ?: return
+        subAgentNavigationStacks.clear(profileId)
+        openThreadInternal(thread, AppScreen.Work, agentName = null)
+    }
+
+    fun openSubAgentThread(threadId: String, agentName: String) {
+        val current = _state.value
+        val profileId = current.selectedProfileId ?: return
+        if (threadId.isBlank() || current.loading || threadId == current.activeThread?.id) return
+        if (subAgentNavigationStacks.size(profileId) >= MAX_SUB_AGENT_NAVIGATION_DEPTH) {
+            showError(IllegalStateException("智能体嵌套层级过深，请先返回上一级"))
+            return
+        }
+        val parentThread = current.activeThread ?: return
+        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
+
+        // Returning must resume this parent remotely, but presenting its cached snapshot first
+        // keeps navigation immediate even for a large transcript.
+        client.cacheThread(
+            parentThread,
+            current.timeline,
+            current.olderTurnsCursor,
+            current.tokenUsage,
+        )
+        rememberContextUsage(profileId, parentThread.id, current.tokenUsage)
+        subAgentNavigationStacks.push(
+            profileId,
+            SubAgentNavigationFrame(
+                snapshot = SessionSnapshot.capture(current),
+                screen = current.screen,
+            ),
+        )
+        val child = client.cachedThread(threadId)?.thread
+            ?: client.cachedThreadStale(threadId)?.thread
+            ?: top.asdb.codexremote.data.CodexThread(
+                id = threadId,
+                title = agentName.ifBlank { "智能体" },
+                preview = "",
+                cwd = parentThread.cwd,
+                source = "appServer",
+                status = "idle",
+                createdAt = 0L,
+                updatedAt = 0L,
+                cliVersion = current.connection.cliVersion.orEmpty(),
+            )
+        if (!openThreadInternal(child, AppScreen.AgentWork, agentName.ifBlank { null })) {
+            subAgentNavigationStacks.pop(profileId)
+        }
+    }
+
+    fun backFromSubAgentThread() {
+        val current = _state.value
+        val profileId = current.selectedProfileId ?: return
+        if (current.loading || current.submitting) return
+        if (current.approvalQueue.isNotEmpty()) {
+            showError(IllegalStateException("请先处理当前审批请求"))
+            return
+        }
+        val frame = subAgentNavigationStacks.peek(profileId) ?: run {
+            backToThreads()
+            return
+        }
+        val parentThread = frame.snapshot.activeThread ?: run {
+            subAgentNavigationStacks.pop(profileId)
+            backToThreads()
+            return
+        }
+        val childSnapshot = SessionSnapshot.capture(current)
+        connections.client(profileId)?.takeIf { it.isConnected() }?.let { client ->
+            current.activeThread?.let { child ->
+                client.cacheThread(
+                    child,
+                    current.timeline,
+                    current.olderTurnsCursor,
+                    current.tokenUsage,
+                )
+                rememberContextUsage(profileId, child.id, current.tokenUsage)
+            }
+        }
+        openThreadInternal(
+            thread = parentThread,
+            targetScreen = frame.screen,
+            agentName = frame.snapshot.activeAgentName,
+            initialSnapshot = frame.snapshot,
+            onResumed = { subAgentNavigationStacks.popIfTop(profileId, frame) },
+            onResumeFailure = { error ->
+                // A newer navigation owns the screen and stack. Do not let an older failed
+                // resume replace it with a stale child snapshot.
+                if (subAgentNavigationStacks.isTop(profileId, frame)) {
+                    applySessionState(profileId) { childSnapshot.restore(it).copy(
+                        screen = AppScreen.AgentWork,
+                        loading = false,
+                        submitting = false,
+                        error = error.message ?: "无法返回上级智能体",
+                    ) }
+                }
+                true
+            },
+        )
+    }
+
+    private fun openThreadInternal(
+        thread: top.asdb.codexremote.data.CodexThread,
+        targetScreen: AppScreen,
+        agentName: String?,
+        initialSnapshot: SessionSnapshot? = null,
+        onResumed: () -> Unit = {},
+        onResumeFailure: (Throwable) -> Boolean = { false },
+    ): Boolean {
+        val profileId = _state.value.selectedProfileId ?: return false
         DiagnosticLogger.info(
             "Thread",
             "open_start profile=${profileRef(profileId)} thread=${profileRef(thread.id)}",
         )
-        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
+        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return false
         invalidateLane(profileId, "session-navigation")
         invalidateLane(profileId, "thread-history")
-        val operation = beginClientOperation(profileId, "session-navigation", client) ?: return
+        val operation = beginClientOperation(profileId, "session-navigation", client) ?: return false
         val resumeBuffer = ResumeNotificationBuffer(thread.id, operation.generation)
         resumeNotificationBuffers[profileId] = resumeBuffer
         val approvalMode = _state.value.approvalMode
         val threadSelection = resolveThreadModelSelection(profileId, thread.id, _state.value.models)
         val cached = client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id)
         val rememberedTokenUsage = client.cachedContextUsage(thread.id)
+            ?: contextUsageFallbacks.get(profileId, thread.id)
             ?: cached?.tokenUsage?.takeIf { it.hasKnownContextWindow() }
+            ?: initialSnapshot?.tokenUsage?.takeIf { it.hasKnownContextWindow() }
             ?: sessionSnapshots[profileId]
                 ?.takeIf { it.activeThread?.id == thread.id }
                 ?.tokenUsage
@@ -907,8 +1033,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
             applySessionState(profileId) {
                 it.copy(
-                    screen = AppScreen.Work,
+                    screen = targetScreen,
                     activeThread = cachedThread,
+                    activeAgentName = agentName,
                     activeGoal = null,
                     composerDraft = composerDraft(profileId, cachedThread.id),
                     selectedModel = threadSelection.model,
@@ -920,8 +1047,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     running = cachedThread.activeTurnId != null || activeTurn != null || cachedThread.status == "active",
                     aggregateDiff = "",
                     tokenUsage = rememberedTokenUsage,
+                    attachments = if (initialSnapshot?.activeThread?.id == cachedThread.id) {
+                        initialSnapshot.attachments
+                    } else {
+                        emptyList()
+                    },
                     // The snapshot is display-only until thread/resume confirms the remote context.
                     loading = true,
+                )
+            }
+        }
+        if (cached == null) {
+            initialSnapshot?.takeIf { isOperationVisible(operation) }?.let { snapshot ->
+                val snapshotThread = snapshot.activeThread ?: thread
+                val activeTurn = snapshot.timeline.lastOrNull { it.status == "inProgress" }?.turnId
+                applySessionState(profileId) { state ->
+                    snapshot.restore(state).copy(
+                        screen = targetScreen,
+                        activeThread = snapshotThread,
+                        activeAgentName = agentName,
+                        activeGoal = snapshot.activeGoal,
+                        composerDraft = composerDraft(profileId, snapshotThread.id),
+                        selectedModel = threadSelection.model,
+                        selectedEffort = threadSelection.effort,
+                        activeTurnId = snapshotThread.activeTurnId ?: activeTurn,
+                        running = snapshotThread.activeTurnId != null || activeTurn != null ||
+                            snapshotThread.status == "active",
+                        tokenUsage = rememberedTokenUsage,
+                        loading = true,
+                        error = null,
+                    )
+                }
+            } ?: applySessionState(profileId) {
+                it.copy(
+                    screen = targetScreen,
+                    activeThread = thread,
+                    activeAgentName = agentName,
+                    activeGoal = null,
+                    timeline = emptyList(),
+                    olderTurnsCursor = null,
+                    olderTurnsLoading = false,
+                    activeTurnId = thread.activeTurnId,
+                    running = thread.activeTurnId != null || thread.status == "active",
+                    aggregateDiff = "",
+                    tokenUsage = rememberedTokenUsage,
+                    attachments = emptyList(),
+                    composerDraft = composerDraft(profileId, thread.id),
+                    selectedModel = threadSelection.model,
+                    selectedEffort = threadSelection.effort,
+                    loading = true,
+                    error = null,
                 )
             }
         }
@@ -962,8 +1137,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     applySessionState(profileId) {
                         it.copy(
-                            screen = AppScreen.Work,
+                            screen = targetScreen,
                             activeThread = loaded,
+                            activeAgentName = agentName,
                             activeGoal = null,
                             composerDraft = composerDraft(profileId, loaded.id),
                             selectedModel = latestThreadSelection.model,
@@ -975,6 +1151,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             running = loaded.activeTurnId != null || activeTurn != null || loaded.status == "active",
                             aggregateDiff = "",
                             tokenUsage = rememberedTokenUsage,
+                            attachments = if (initialSnapshot?.activeThread?.id == loaded.id) {
+                                initialSnapshot.attachments
+                            } else {
+                                emptyList()
+                            },
                             loading = false,
                             diagnostic = if (resumed.itemsView == "notLoaded") {
                                 "最近一个回合内容过大，已跳过详情；会话仍可继续使用"
@@ -1000,6 +1181,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                     }
+                    onResumed()
                     // Goal hydration is deliberately outside the resume path. A slow or older
                     // app-server must not delay the transcript or hold its notification buffer.
                     loadActiveGoalAfterResume(profileId, loaded.id, client, operation)
@@ -1022,8 +1204,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         replay = true,
                         snapshotSequence = Long.MIN_VALUE,
                     )
-                    applySessionState(profileId) {
-                        it.copy(loading = false, submitting = false, error = error.message ?: "无法恢复会话")
+                    if (!onResumeFailure(error)) {
+                        applySessionState(profileId) {
+                            it.copy(loading = false, submitting = false, error = error.message ?: "无法恢复会话")
+                        }
                     }
                 } else {
                     releaseResumeNotifications(profileId, resumeBuffer, emptyList(), replay = false)
@@ -1037,6 +1221,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         sessionNavigationJobs[profileId] = job
+        return true
     }
 
     /** Fetches one bounded page on demand so opening a large thread remains fast. */
@@ -1132,12 +1317,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val profileId = _state.value.selectedProfileId
+        profileId?.let(subAgentNavigationStacks::clear)
         profileId?.let {
             invalidateLane(it, "session-navigation")
             invalidateLane(it, "thread-mutation")
             invalidateLane(it, "thread-history")
         }
         _state.value.activeThread?.let { thread ->
+            profileId?.let { rememberContextUsage(it, thread.id, _state.value.tokenUsage) }
             activeClient()?.cacheThread(
                 thread,
                 _state.value.timeline,
@@ -1488,6 +1675,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (isOperationCurrent(operation)) {
                     composerDrafts.remove(composerDraftKey(profileId, threadId))
                     threadModelPreferences.remove(threadStorageKey(profileId, threadId))
+                    contextUsageFallbacks.remove(profileId, threadId)
                     pendingApprovalsByProfile[profileId] = emptyList()
                     applySessionState(profileId) {
                         it.copy(
@@ -1951,6 +2139,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threads = emptyList(),
         threadSearch = "",
         activeThread = null,
+        activeAgentName = null,
         activeGoal = null,
         timeline = emptyList(),
         olderTurnsCursor = null,
@@ -1988,6 +2177,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         connectionJobs[profileId]?.cancel()
         setupJobs[profileId]?.cancel()
         sessionSnapshots.remove(profileId)
+        contextUsageFallbacks.clear(profileId)
+        subAgentNavigationStacks.clear(profileId)
         effectiveProfiles.remove(profileId)
         pendingApprovalsByProfile.remove(profileId)
         setupProfiles.remove(profileId)
@@ -2138,6 +2329,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (notification.method == "turn/completed" || notification.method == "thread/tokenUsage/updated") {
             sessionSnapshots[profileId]?.activeThread?.let { thread ->
                 val snapshot = sessionSnapshots[profileId]
+                rememberContextUsage(profileId, thread.id, snapshot?.tokenUsage)
                 client.cacheThread(
                     thread,
                     snapshot?.timeline.orEmpty(),
@@ -2205,6 +2397,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 sessionSnapshots[profileId]?.restore(AppUiState(selectedProfileId = profileId))
             }
             snapshotState?.activeThread?.let { thread ->
+                rememberContextUsage(profileId, thread.id, snapshotState.tokenUsage)
                 client.cacheThread(
                     thread,
                     snapshotState.timeline,
@@ -2374,6 +2567,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         setupProfiles.remove(profile.id)
         pendingFingerprints.remove(profile.id)
         fingerprintProfiles.remove(profile.id)
+        subAgentNavigationStacks.clear(profile.id)
         if (!isActiveProfile(profile.id)) {
             sessionSnapshots[profile.id] = SessionSnapshot(
                 threads = connected.threads,
@@ -2416,6 +2610,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceDirectories = connected.workspace?.directories.orEmpty(),
                 workspaceError = connected.workspaceError,
                 activeThread = null,
+                activeAgentName = null,
                 activeGoal = null,
                 timeline = emptyList(),
                 olderTurnsCursor = null,
@@ -2522,6 +2717,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun removeThreadModelPreferences(profileId: String) {
         val prefix = "$profileId\u0000"
         threadModelPreferences.keys.removeAll { it.startsWith(prefix) }
+    }
+
+    private fun rememberContextUsage(profileId: String, threadId: String, usage: TokenUsage?) {
+        usage?.let { contextUsageFallbacks.remember(profileId, threadId, it) }
     }
 
     private fun trimComposerDrafts() {
@@ -2841,6 +3040,12 @@ private fun mergeSummaryTimeline(
 private const val MAX_ACTIVE_TIMELINE_WEIGHT_CHARS = 8 * 1024 * 1024
 private const val MAX_ACTIVE_TIMELINE_ENTRIES = 1_024
 private const val MAX_GOAL_NOTIFICATION_VERSIONS = 512
+private const val MAX_SUB_AGENT_NAVIGATION_DEPTH = 8
+
+private data class SubAgentNavigationFrame(
+    val snapshot: SessionSnapshot,
+    val screen: AppScreen,
+)
 
 private data class SessionSnapshot(
     val threads: List<top.asdb.codexremote.data.CodexThread> = emptyList(),
@@ -2849,6 +3054,7 @@ private data class SessionSnapshot(
     val selectedModel: String? = null,
     val selectedEffort: String? = null,
     val activeThread: top.asdb.codexremote.data.CodexThread? = null,
+    val activeAgentName: String? = null,
     val activeGoal: ThreadGoal? = null,
     val timeline: List<top.asdb.codexremote.data.TimelineEntry> = emptyList(),
     val olderTurnsCursor: String? = null,
@@ -2876,6 +3082,7 @@ private data class SessionSnapshot(
         selectedModel = selectedModel,
         selectedEffort = selectedEffort,
         activeThread = activeThread,
+        activeAgentName = activeAgentName,
         activeGoal = activeGoal,
         timeline = timeline,
         olderTurnsCursor = olderTurnsCursor,
@@ -2912,6 +3119,7 @@ private data class SessionSnapshot(
                 selectedModel = state.selectedModel,
                 selectedEffort = state.selectedEffort,
                 activeThread = state.activeThread,
+                activeAgentName = state.activeAgentName,
                 activeGoal = state.activeGoal,
                 timeline = bounded.timeline,
                 olderTurnsCursor = state.olderTurnsCursor.takeUnless { bounded.truncated },

@@ -171,12 +171,16 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
 - 用户阅读旧消息时显示回到最新位置的箭头，不应强制抢回滚动位置。
 - 子 Agent 只使用图标和状态表达，不额外显示“子agent”标签；状态由协议事件和父 turn
   终态共同收敛。
+- 同一 turn 的相邻子 Agent 活动在时间线收敛为紧凑标签组，标签和输入区上方的“后台智能体”展开列表
+  都必须直接显示名称和状态。点击任一项进入该智能体自己的工作页；返回时先恢复父页面快照，再通过
+  `thread/resume` 恢复远端父线程上下文。导航栈按 profile 隔离，旧的异步恢复不得弹出较新的栈帧。
 - 支持目标的显示、编辑、暂停/继续和删除，目标是远程线程持久状态，不是本地假状态。
 
 DiffViewer.kt 负责全屏 unified diff；ContextUsage.kt 负责上下文占用计算；components/
 MarkdownText.kt 负责 Markwon 渲染。页面级修改不要把这些逻辑复制回 WorkScreen。ThreadSessionCache
 会按服务器和会话独立保留最近一次**有效** `TokenUsage`，并与受大小限制的时间线缓存分开：即使长会话
-时间线超过缓存上限，重进时圆环仍先恢复上次比例，等待远端 `thread/tokenUsage/updated` 覆盖。缺少
+时间线超过缓存上限，重进时圆环仍先恢复上次比例，等待远端 `thread/tokenUsage/updated` 覆盖。AppViewModel
+还保留一层按服务器、会话隔离的轻量回退，用于 SSH 客户端重建后仍可立即恢复圆环。缺少
 `modelContextWindow` 的不完整通知不得抹掉已有值；这些都是内存缓存，不在本地长期持久化。
 
 ### 5.4 TerminalScreen
@@ -217,6 +221,7 @@ data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 | 输入草稿 | profileId + threadId | composerDrafts |
 | 模型/推理强度 | profileId + threadId | threadModelPreferences |
 | 线程缓存 | profileId + threadId | CodexAppServerClient/ThreadSessionCache |
+| 上下文用量回退 | profileId + threadId | ProfileScopedContextUsageCache |
 | 终端会话 | profileId | SshTerminalManager |
 
 任何新增会话设置都不能只做成全局字段。用户已明确要求不同服务器、不同会话互不串用。
@@ -608,6 +613,8 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析 |
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
 | ContextUsageTest | 上下文圆环占用计算 |
+| ProfileScopedContextUsageCacheTest | 客户端重建后的上下文圆环回退、LRU 与 profile 隔离 |
+| ProfileScopedBackStackTest | 子智能体嵌套导航、profile 隔离和过期回调保护 |
 | PersistedUiPreferenceTest | 草稿、模型、推理强度持久化和键空间 |
 | ProfileOperationTrackerTest | 并发 lane、失效和竞态 |
 | RemoteBootstrapTest | 探测、安装脚本、固定版本和清理 |
@@ -618,6 +625,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | ssh/SshCodexTransportTest | JSONL 边界、超大响应、取消和进度 |
 | ThreadPagingTest | cursor、分页、去重、顺序和降级重试 |
 | ThreadSessionCacheTest | 缓存有效期、LRU 和 profile 隔离 |
+| SubAgentPresentationTest | 子智能体标签聚合、状态收敛、显示文案和可打开性 |
 | TurnCompletionNotifierTest | 后台完成判定和通知去重 |
 | diagnostics/DiagnosticLoggerTest | 脱敏、轮转、点击计数 |
 

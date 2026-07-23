@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pending
 import androidx.compose.material.icons.filled.PanTool
@@ -130,6 +131,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.FileChange
@@ -170,7 +172,10 @@ fun WorkScreen(
     onClearGoal: () -> Unit,
     onCompact: () -> Unit = {},
     onLoadOlder: () -> Unit = {},
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit = { _, _ -> },
 ) {
+    val timelineRows = remember(state.timeline) { state.timeline.toTimelineRenderRows() }
+    val backgroundAgents = remember(state.timeline) { state.timeline.toSubAgentPresentations() }
     val listState = remember(state.activeThread?.id) { LazyListState() }
     val canLoadOlder by rememberUpdatedState(
         state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading,
@@ -218,7 +223,7 @@ fun WorkScreen(
     val lastEntry = state.timeline.lastOrNull()
     val latestFileChangeId = state.timeline.lastOrNull { it.kind == TimelineKind.FileChange }?.id
     var followOutput by remember(state.activeThread?.id) { mutableStateOf(true) }
-    val trailingItemIndex = state.timeline.size +
+    val trailingItemIndex = timelineRows.size +
         (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
         (if (state.running) 1 else 0)
 
@@ -302,7 +307,7 @@ fun WorkScreen(
                 title = {
                     Column {
                         Text(
-                            state.activeThread?.title ?: "新任务",
+                            state.activeAgentName ?: state.activeThread?.title ?: "新任务",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             fontWeight = FontWeight.SemiBold,
@@ -333,12 +338,14 @@ fun WorkScreen(
                                 enabled = !state.loading && !state.submitting,
                                 onClick = { showMenu = false; renameRequested = true },
                             )
-                            DropdownMenuItem(
-                                text = { Text("归档") },
-                                leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
-                                enabled = !state.loading && !state.submitting && !state.running,
-                                onClick = { showMenu = false; archiveRequested = true },
-                            )
+                            if (state.screen != AppScreen.AgentWork) {
+                                DropdownMenuItem(
+                                    text = { Text("归档") },
+                                    leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                                    enabled = !state.loading && !state.submitting && !state.running,
+                                    onClick = { showMenu = false; archiveRequested = true },
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
                                 leadingIcon = { Icon(Icons.Default.TrackChanges, contentDescription = null) },
@@ -366,6 +373,8 @@ fun WorkScreen(
                 onEditGoal = { goalEditorVisible = true },
                 onToggleGoalPause = onToggleGoalPause,
                 onClearGoal = { goalDeleteRequested = true },
+                agents = backgroundAgents,
+                onOpenSubAgent = onOpenSubAgent,
             )
         },
     ) { padding ->
@@ -384,21 +393,34 @@ fun WorkScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(
-                    items = state.timeline,
-                    key = { entry ->
-                        "${state.activeThread?.id}:${entry.turnId}:${entry.kind}:${entry.id}"
+                    items = timelineRows,
+                    key = { row ->
+                        "${state.activeThread?.id}:${row.stableKey}"
                     },
-                    contentType = { entry -> entry.kind },
-                ) { entry ->
-                    TimelineItem(
-                        entry = entry,
-                        onOpenDiff = { selectedDiff = it },
-                        onReview = onReview,
-                        canMutate = !state.loading && !state.submitting && !state.running,
-                        canRollback = !state.loading && !state.submitting &&
-                            !state.running && entry.id == latestFileChangeId,
-                        onRollback = { rollbackRequested = true },
-                    )
+                    contentType = { row ->
+                        if (row is TimelineRenderRow.Entry) row.entry.kind else TimelineKind.SubAgent
+                    },
+                ) { row ->
+                    when (row) {
+                        is TimelineRenderRow.Entry -> {
+                            val entry = row.entry
+                            TimelineItem(
+                                entry = entry,
+                                onOpenDiff = { selectedDiff = it },
+                                onReview = onReview,
+                                canMutate = !state.loading && !state.submitting && !state.running,
+                                canRollback = !state.loading && !state.submitting &&
+                                    !state.running && entry.id == latestFileChangeId,
+                                onRollback = { rollbackRequested = true },
+                                onOpenSubAgent = onOpenSubAgent,
+                            )
+                        }
+
+                        is TimelineRenderRow.SubAgents -> SubAgentActivityGroupBlock(
+                            entries = row.entries,
+                            onOpenSubAgent = onOpenSubAgent,
+                        )
+                    }
                 }
                 if (state.aggregateDiff.isNotBlank()) {
                     item(key = "aggregate-diff") {
@@ -717,6 +739,7 @@ private fun TimelineItem(
     canMutate: Boolean,
     canRollback: Boolean,
     onRollback: () -> Unit,
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
 ) {
     when (entry.kind) {
         TimelineKind.UserMessage -> Surface(
@@ -734,7 +757,10 @@ private fun TimelineItem(
         TimelineKind.Command -> CommandBlock(entry)
         TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canMutate, canRollback, onRollback)
         TimelineKind.Tool -> ToolBlock(entry)
-        TimelineKind.SubAgent -> SubAgentBlock(entry)
+        TimelineKind.SubAgent -> SubAgentActivityGroupBlock(
+            entries = listOf(entry),
+            onOpenSubAgent = onOpenSubAgent,
+        )
         TimelineKind.Review -> Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(6.dp),
@@ -1082,81 +1108,80 @@ private fun ToolBlock(entry: TimelineEntry) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SubAgentBlock(entry: TimelineEntry) {
-    val status = entry.status.ifBlank { subAgentStatusForDisplay(entry.subAgentActivity) }
-    val active = status == "pendingInit" || status == "running" || status == "inProgress"
-    val statusColor = when (status) {
-        "pendingInit", "running", "inProgress" -> CodexAmber
-        "completed" -> CodexGreen
-        "interrupted", "errored", "failed", "notFound" -> CodexRed
-        "shutdown" -> MaterialTheme.colorScheme.onSurfaceVariant
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val statusLabel = when (status) {
-        "pendingInit" -> "准备中"
-        "running", "inProgress" -> "运行中"
-        "completed" -> "完成"
-        "interrupted" -> "已中断"
-        "errored", "failed" -> "失败"
-        "shutdown" -> "已停止"
-        "notFound" -> "未找到"
-        "unknown" -> ""
-        else -> status
-    }
-    Surface(
-        color = CodexSurfaceRaised,
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(6.dp)),
+private fun SubAgentActivityGroupBlock(
+    entries: List<TimelineEntry>,
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+) {
+    val group = remember(entries) { entries.toSubAgentActivityGroupPresentation() }
+    if (group.agents.isEmpty()) return
+    val statusColor = subAgentStatusColor(group.status)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 3.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        FlowRow(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Icon(
-                Icons.Default.SmartToy,
-                contentDescription = null,
-                modifier = Modifier.size(19.dp),
-                tint = statusColor,
-            )
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f)) {
-                val path = entry.subAgentPath.ifBlank { entry.subAgentThreadId }
-                if (path.isNotBlank()) {
-                    Text(
-                        path,
-                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = FontFamily.Monospace),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (entry.text.isNotBlank()) {
-                    Text(
-                        entry.text,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            if (active) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = statusColor,
+            group.agents.forEach { agent ->
+                val color = subAgentStatusColor(agent.status)
+                AssistChip(
+                    onClick = {
+                        if (agent.isOpenable) onOpenSubAgent(agent.threadId, agent.name)
+                    },
+                    enabled = agent.isOpenable,
+                    label = {
+                        Text(
+                            agent.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.SmartToy,
+                            contentDescription = null,
+                            tint = color,
+                            modifier = Modifier.size(15.dp),
+                        )
+                    },
+                    modifier = Modifier.semantics {
+                        contentDescription = if (agent.path.isNotBlank()) {
+                            "${agent.name}，${agent.path}"
+                        } else {
+                            agent.name
+                        }
+                        stateDescription = agent.status.label
+                    },
                 )
-            } else {
-                Text(statusLabel, color = statusColor, style = MaterialTheme.typography.bodySmall)
             }
         }
+        Spacer(Modifier.width(7.dp))
+        Text(
+            group.statusLabel,
+            color = statusColor,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+        )
     }
 }
 
-private fun subAgentStatusForDisplay(activity: String): String = when (activity) {
-    "started", "interacted" -> "running"
-    "interrupted" -> "interrupted"
-    else -> activity
+@Composable
+private fun subAgentStatusColor(status: SubAgentDisplayStatus): Color = when (status) {
+    SubAgentDisplayStatus.Preparing,
+    SubAgentDisplayStatus.Started,
+    SubAgentDisplayStatus.Updated,
+    SubAgentDisplayStatus.Working -> CodexAmber
+
+    SubAgentDisplayStatus.Completed -> CodexGreen
+    SubAgentDisplayStatus.Interrupted,
+    SubAgentDisplayStatus.Failed,
+    SubAgentDisplayStatus.Unavailable -> CodexRed
+
+    SubAgentDisplayStatus.Stopped -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @Composable
@@ -1182,6 +1207,122 @@ private fun StatusText(status: String) {
     )
 }
 
+@Composable
+private fun BackgroundAgentsPanel(
+    sessionId: String,
+    agents: List<SubAgentPresentation>,
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+) {
+    var expanded by remember(sessionId) { mutableStateOf(false) }
+    val activeCount = agents.count { it.status.isActive }
+    val headerLabel = "${agents.size} 个后台智能体"
+    Surface(
+        color = CodexSurfaceRaised,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, CodexBorder, RoundedCornerShape(8.dp)),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                    .padding(horizontal = 11.dp, vertical = 9.dp).semantics {
+                        contentDescription = headerLabel
+                        stateDescription = if (expanded) "已展开" else "已折叠"
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.SmartToy,
+                    contentDescription = null,
+                    tint = if (activeCount > 0) CodexAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(17.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    headerLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                if (activeCount > 0) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = CodexAmber,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "收起后台智能体" else "展开后台智能体",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    HorizontalDivider(color = CodexBorder)
+                    Column(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 176.dp)
+                            .verticalScroll(rememberScrollState()).padding(vertical = 3.dp),
+                    ) {
+                        agents.forEach { agent ->
+                            val color = subAgentStatusColor(agent.status)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().then(
+                                    if (agent.isOpenable) {
+                                        Modifier.clickable {
+                                            onOpenSubAgent(agent.threadId, agent.name)
+                                        }
+                                    } else {
+                                        Modifier
+                                    },
+                                ).padding(horizontal = 11.dp, vertical = 7.dp).semantics {
+                                    contentDescription = if (agent.isOpenable) {
+                                        "打开 ${agent.name} 的工作页面"
+                                    } else {
+                                        agent.name
+                                    }
+                                    stateDescription = agent.status.label
+                                },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Default.SmartToy,
+                                    contentDescription = null,
+                                    tint = color,
+                                    modifier = Modifier.size(17.dp),
+                                )
+                                Spacer(Modifier.width(9.dp))
+                                Text(
+                                    agent.name,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    agent.status.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = color,
+                                    maxLines = 1,
+                                )
+                                if (agent.isOpenable) {
+                                    Spacer(Modifier.width(5.dp))
+                                    Icon(
+                                        Icons.Default.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorkComposer(
@@ -1198,6 +1339,8 @@ private fun WorkComposer(
     onEditGoal: () -> Unit,
     onToggleGoalPause: () -> Unit,
     onClearGoal: () -> Unit,
+    agents: List<SubAgentPresentation>,
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
 ) {
     val composerScroll = rememberScrollState()
     var actionMenuVisible by remember { mutableStateOf(false) }
@@ -1242,6 +1385,14 @@ private fun WorkComposer(
                     onEdit = onEditGoal,
                     onTogglePause = onToggleGoalPause,
                     onDelete = onClearGoal,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            if (agents.isNotEmpty()) {
+                BackgroundAgentsPanel(
+                    sessionId = state.activeThread?.id.orEmpty(),
+                    agents = agents,
+                    onOpenSubAgent = onOpenSubAgent,
                 )
                 Spacer(Modifier.height(6.dp))
             }

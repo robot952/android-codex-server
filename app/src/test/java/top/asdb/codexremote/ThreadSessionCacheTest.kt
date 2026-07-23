@@ -76,6 +76,21 @@ class ThreadSessionCacheTest {
     }
 
     @Test
+    fun incompleteUsageDoesNotReplaceTheLastKnownContextWindow() {
+        val cache = ThreadSessionCache(maxEntries = 2, ttlMs = 60_000, nowMs = { 1_000 })
+        val knownUsage = TokenUsage(
+            last = TokenUsageBreakdown(totalTokens = 129_000),
+            modelContextWindow = 353_000,
+        )
+
+        cache.put(thread("thread"), emptyList(), tokenUsage = knownUsage)
+        cache.put(thread("thread"), emptyList(), tokenUsage = TokenUsage())
+
+        assertEquals(knownUsage, cache.contextUsage("thread"))
+        assertEquals(knownUsage, cache.get("thread")?.tokenUsage)
+    }
+
+    @Test
     fun contextUsageSurvivesAnOversizedTranscript() {
         val cache = ThreadSessionCache(
             maxEntries = 2,

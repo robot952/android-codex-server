@@ -60,6 +60,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -91,6 +92,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     val terminalState by viewModel.terminalState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var serverSwitcherVisible by remember { mutableStateOf(false) }
+    val navigationTarget = ScreenAnimationTarget(state.screen, state.activeThread?.id)
 
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -108,6 +110,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     BackHandler(enabled = state.screen != AppScreen.Servers) {
         when (state.screen) {
             AppScreen.Work -> viewModel.backToThreads()
+            AppScreen.AgentWork -> viewModel.backFromSubAgentThread()
             AppScreen.Threads -> viewModel.showServers()
             AppScreen.Servers -> Unit
         }
@@ -115,10 +118,12 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
 
     Box(Modifier.fillMaxSize()) {
         AnimatedContent(
-            targetState = state.screen,
+            targetState = navigationTarget,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                if (targetState.ordinal > initialState.ordinal) {
+                val movesForward = targetState.screen.ordinal > initialState.screen.ordinal ||
+                    (targetState.screen == initialState.screen && targetState.threadId != initialState.threadId)
+                if (movesForward) {
                     (slideInHorizontally { it / 5 } + fadeIn()) togetherWith
                         (slideOutHorizontally { -it / 8 } + fadeOut())
                 } else {
@@ -127,7 +132,8 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 }
             },
             label = "screen-transition",
-        ) { screen ->
+        ) { target ->
+            val screen = target.screen
             when (screen) {
             AppScreen.Servers -> ServerScreen(
                 state = state,
@@ -155,27 +161,36 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onOpenTerminal = viewModel::openTerminal,
             )
 
-            AppScreen.Work -> WorkScreen(
-                state = state,
-                onBack = viewModel::backToThreads,
-                onSend = viewModel::send,
-                onStop = viewModel::stopTurn,
-                onReview = viewModel::reviewChanges,
-                onArchive = viewModel::archiveActiveThread,
-                onRollback = viewModel::rollbackActiveThread,
-                onRename = viewModel::renameActiveThread,
-                onUpload = viewModel::uploadAttachment,
-                onRemoveAttachment = viewModel::removeAttachment,
-                onComposerChange = viewModel::updateComposerDraft,
-                onSelectModel = viewModel::selectModel,
-                onSelectEffort = viewModel::selectEffort,
-                onSelectApprovalMode = viewModel::selectApprovalMode,
-                onSetGoal = viewModel::setActiveGoal,
-                onToggleGoalPause = viewModel::toggleActiveGoalPause,
-                onClearGoal = viewModel::clearActiveGoal,
-                onCompact = viewModel::compactActiveThread,
-                onLoadOlder = viewModel::loadOlderThreadHistory,
-            )
+            AppScreen.Work, AppScreen.AgentWork -> key(target.threadId) {
+                WorkScreen(
+                    state = state,
+                    onBack = {
+                        if (screen == AppScreen.AgentWork) {
+                            viewModel.backFromSubAgentThread()
+                        } else {
+                            viewModel.backToThreads()
+                        }
+                    },
+                    onSend = viewModel::send,
+                    onStop = viewModel::stopTurn,
+                    onReview = viewModel::reviewChanges,
+                    onArchive = viewModel::archiveActiveThread,
+                    onRollback = viewModel::rollbackActiveThread,
+                    onRename = viewModel::renameActiveThread,
+                    onUpload = viewModel::uploadAttachment,
+                    onRemoveAttachment = viewModel::removeAttachment,
+                    onComposerChange = viewModel::updateComposerDraft,
+                    onSelectModel = viewModel::selectModel,
+                    onSelectEffort = viewModel::selectEffort,
+                    onSelectApprovalMode = viewModel::selectApprovalMode,
+                    onSetGoal = viewModel::setActiveGoal,
+                    onToggleGoalPause = viewModel::toggleActiveGoalPause,
+                    onClearGoal = viewModel::clearActiveGoal,
+                    onCompact = viewModel::compactActiveThread,
+                    onLoadOlder = viewModel::loadOlderThreadHistory,
+                    onOpenSubAgent = viewModel::openSubAgentThread,
+                )
+            }
             }
         }
         SnackbarHost(
@@ -192,7 +207,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             },
             // The composer can grow to several rows, so place work-screen messages
             // below the app bar instead of guessing its current height.
-            modifier = if (state.screen == AppScreen.Work) {
+            modifier = if (state.screen == AppScreen.Work || state.screen == AppScreen.AgentWork) {
                 Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(
                     start = 12.dp,
                     end = 12.dp,
@@ -397,6 +412,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         )
     }
 }
+
+private data class ScreenAnimationTarget(
+    val screen: AppScreen,
+    val threadId: String?,
+)
 
 @Composable
 private fun ServerSwitcherDialog(
