@@ -1,14 +1,10 @@
 package top.asdb.codexremote.data
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
 import java.util.UUID
 
 @Serializable
 enum class AuthMode { Password, PrivateKey }
-
-/** Runtime-only wire protocol used by the SSH command for the Codex app-server. */
-enum class AppServerTransportMode { JsonLines, WebSocketOverProxy }
 
 @Serializable
 data class ServerProfile(
@@ -27,9 +23,6 @@ data class ServerProfile(
     val proxyUrl: String = "",
     val approvalMode: ApprovalMode = ApprovalMode.RequestApproval,
     val remoteCommand: String = "~/.local/bin/codex-remote app-server --listen stdio://",
-    /** Resolved at connection time and intentionally excluded from the saved server profile. */
-    @Transient
-    val appServerTransport: AppServerTransportMode = AppServerTransportMode.JsonLines,
     /** Whether the automatic first-connection workspace prompt has already been presented. */
     val workspacePromptShown: Boolean = false,
     /** Per-server model preferences restored after reconnecting or restarting the app. */

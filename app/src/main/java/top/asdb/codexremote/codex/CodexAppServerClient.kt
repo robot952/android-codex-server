@@ -29,9 +29,8 @@ import top.asdb.codexremote.data.PendingAttachment
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.TimelineEntry
-import top.asdb.codexremote.ssh.RemoteAppServerEndpoint
-import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshCodexTransport
+import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshTransportEvent
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -265,10 +264,6 @@ class CodexAppServerClient(
     suspend fun disconnect() {
         invalidateGeneration("连接已关闭")
         transport.disconnect()
-    }
-
-    suspend fun ensureDurableAppServer(profile: ServerProfile, endpoint: RemoteAppServerEndpoint) {
-        transport.ensureDurableAppServer(profile, endpoint)
     }
 
     fun close() {

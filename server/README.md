@@ -11,54 +11,23 @@ Run these commands as the Unix user whose Codex threads and credentials should b
 ./install-codex-pinned.sh
 ~/.local/bin/codex-remote login status
 CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./smoke-test.mjs
-CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./durable-socket-smoke-test.mjs
 ```
 
-The Android profile keeps this managed command:
+The app's remote command for direct mode is:
 
 ```text
 ~/.local/bin/codex-remote app-server --listen stdio://
 ```
 
-The app resolves this command to a private Unix socket plus SSH proxy when the server has the
-required tools. The proxy only relays bytes; the Android app performs the HTTP WebSocket upgrade and
-RFC 6455 framing around its JSON-RPC messages. The second smoke test opens two independent proxies,
-sends a masked WebSocket `initialize` request through each one, and confirms that closing the first
-proxy does not stop the app-server.
+Direct mode is the simplest end-to-end test. The app-server exits when SSH disconnects, while its
+persisted threads remain available on the next connection.
 
 ## Connection modes
 
-### Managed private Unix socket + SSH proxy (the pinned npm install)
+### Direct stdio (the pinned npm install)
 
 `install-codex-pinned.sh` installs the exact version from `protocol/codex-version.txt` into a
-versioned npm prefix. With the default managed Android command, a normal SSH account starts or
-reuses this private listener:
-
-```text
-~/.local/share/codex-remote/durable/app-server.sock
-```
-
-The Android client starts the pinned executable with `app-server --listen unix://...`, then opens
-its interactive SSH exec channel with `app-server proxy --sock ...`. This proxy does not translate
-JSONL: it forwards the private endpoint's raw WebSocket bytes. Android sends the HTTP upgrade and
-masked RFC 6455 frames itself. The socket directory is mode `0700`; `umask 077` is applied; the
-WebSocket endpoint is Unix-domain only, with no public TCP or WebSocket listener. The app-server
-stays alive after the SSH proxy disconnects, preserving an active autonomous turn while the phone app
-is closed. A turn paused on a command/file approval or user-input request naturally remains paused
-until a client reconnects and responds.
-
-The startup state is inside `~/.local/share/codex-remote/durable/` and is protected by the same
-per-user install lock. A stale socket is repaired, and a server is restarted after the pinned CLI
-version changes. This does not invoke the official standalone daemon or its auto-updater.
-
-This managed mode needs a normal SSH exec account with `sh`, `flock`, and `setsid --wait`. If those
-tools are unavailable, the Android app falls back to direct stdio below. Custom remote commands are
-also left unchanged.
-
-### Direct stdio (manual or custom command)
-
-Use this command when testing manually, when a profile deliberately has a custom remote command, or
-when the target host cannot support the private socket startup:
+versioned npm prefix. Use this mode for the reproducible setup in this repository:
 
 ```text
 ~/.local/bin/codex-remote app-server --listen stdio://
@@ -70,9 +39,10 @@ connection.
 ### Durable daemon (optional, standalone installer only)
 
 The current Codex daemon command only accepts the official standalone installation managed under
-`$CODEX_HOME/packages/standalone/current/codex`. It is not needed for the pinned private Unix socket
-mode above. `bootstrap-daemon.sh` requires an explicit auto-update opt-in, then checks the standalone
-path and the pinned version before invoking the daemon command.
+`$CODEX_HOME/packages/standalone/current/codex`. It does not accept the npm installation produced by
+`install-codex-pinned.sh`; that installation is intentionally supported in direct stdio mode only.
+`bootstrap-daemon.sh` requires an explicit auto-update opt-in, then checks the standalone path and
+the pinned version before invoking the daemon command.
 
 If you separately install the official standalone CLI, verify that its exact version matches
 `protocol/codex-version.txt`, then run:
@@ -89,8 +59,8 @@ in direct mode.
 The daemon/proxy path is optional and is not part of the npm pin workflow. Important: the
 `daemon bootstrap` command launches Codex's detached updater, which periodically fetches the latest standalone
 installer and may replace the managed binary. The bootstrap-time version check does not make this a
-strict fixed-version mode. Use the managed private Unix socket mode for a strict pin; use daemon
-mode only when its automatic update behavior is acceptable and monitor the reported version.
+strict fixed-version mode. Use direct stdio mode for a strict pin; use daemon mode only when its
+automatic update behavior is acceptable and monitor the reported version.
 
 ## Restricted SSH account
 
@@ -107,10 +77,8 @@ SSH account's passwd home and ignores `CODEX_REMOTE_*` overrides. It therefore l
 account's home by default. This is not a path sandbox: an authenticated app-server client can still
 request a `cwd` in `thread/start` or `turn/start` anywhere the Unix account can access. Use a
 dedicated account, filesystem permissions, or a container/chroot as the actual workspace boundary.
-The sample also fixes the mode to direct. It intentionally denies the shell command needed to start
-or inspect the private Unix socket, so it cannot use the Android managed durable mode. Keep its
-Android profile on a custom/direct command, or deploy a separately reviewed root-owned service
-wrapper; do not weaken the forced command to accept arbitrary shell input.
+The sample also fixes the mode to direct; daemon/proxy mode requires a separately reviewed
+root-owned wrapper and is not enabled by the sample forced-command configuration.
 
 Each phone must have its own key in `authorized_keys`. Pin the SSH host fingerprint in the Android
 profile. Do not enable password login, PTY, port forwarding, agent forwarding, root login, or a
@@ -158,10 +126,10 @@ after checking whether other Codex users on the host should inherit the same res
    `BuildConfig.PINNED_CODEX_VERSION`.
 2. Run `install-codex-pinned.sh` with the new exact version.
 3. Diff the generated schemas against the previous release.
-4. Run unit tests, both smoke tests, lint, and both APK builds.
+4. Run unit tests, the smoke test, lint, and both APK builds.
 5. Test thread history, an active turn, command approval, file approval, diff rendering, reconnect,
    and cancellation before switching the stable symlink.
 
 The app-server transport is still experimental. Pinning and schema validation are mandatory. The
-version pin applies directly to the npm install, private Unix socket mode, and direct stdio mode;
-standalone daemon mode has its own auto-updating installer and must be version-checked before use.
+version pin applies directly to the npm install and direct stdio mode; standalone daemon mode has
+its own auto-updating installer and must be version-checked before use.

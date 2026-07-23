@@ -1,8 +1,8 @@
 # Codex Remote for Android
 
-An Android client for a remote Codex CLI host. The app uses a pinned Codex app-server without a PTY
-and renders its structured JSON-RPC events as a native Jetpack Compose interface modeled after the
-VS Code Codex task and work views.
+An Android client for a remote Codex CLI host. The app opens an SSH exec channel, starts the pinned
+Codex app-server without a PTY, and renders its structured JSON-RPC events as a native Jetpack
+Compose interface modeled after the VS Code Codex task and work views.
 
 The project is isolated in `/home/yan/ygy/codex-remote-android`. It does not modify the existing
 `ssh-client`, `lobe-android`, or `mihomo-web` workspaces.
@@ -11,8 +11,7 @@ The project is isolated in `/home/yan/ygy/codex-remote-android`. It does not mod
 
 - Multiple encrypted server profiles with password or imported private-key authentication
 - SHA-256 SSH host-key fingerprint probing, explicit trust, and strict pinning
-- Pinned Codex app-server over a non-PTY JSON-RPC channel, with a private Unix WebSocket socket that
-  survives an Android/SSH disconnect when the managed command is used
+- Fixed Codex app-server command over a non-PTY JSON-RPC channel
 - Independent SSH terminal with a local xterm renderer, hide/resume history, and explicit disconnect
 - Codex `initialize` handshake and model catalog
 - Task list, search, refresh, new task, resume, rename, and archive
@@ -98,7 +97,6 @@ cd server
 ./install-codex-pinned.sh
 ~/.local/bin/codex-remote login
 CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./smoke-test.mjs
-CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./durable-socket-smoke-test.mjs
 ```
 
 Create an Android server profile with:
@@ -131,30 +129,14 @@ and outbound HTTPS access to nodejs.org and the npm registry. The host also need
 `setsid --wait` (normally provided by `util-linux`) so concurrent installs are serialized and an
 install is terminated if its SSH connection disappears.
 
-For a compatible managed install, the app also starts or reuses a private server at:
-
-```text
-~/.local/share/codex-remote/durable/app-server.sock
-```
-
-It is owned by the SSH user, protected by a `0700` directory and `umask 077`, and reached only by
-`codex-remote app-server proxy --sock ...` through SSH. The proxy is a raw byte tunnel: Android
-performs the HTTP WebSocket upgrade and RFC 6455 framing before sending JSON-RPC messages. The
-WebSocket listener exists only on that Unix socket; no public TCP or WebSocket listener is opened.
-Closing or swiping away the Android app closes its SSH proxy but leaves this pinned server running,
-so an already-running turn is not tied to the app process. A turn that needs an interactive approval
-or answer still waits for the user. On the next connection, the app attaches to the same service and
-reloads the persisted thread state. Hosts without the required shell, `flock`, or `setsid --wait`
-keep the existing direct-stdio behavior instead.
-
 Installation does not create an OpenAI login. The CLI and IDE extension reuse the same login cache
 under the Unix user's `CODEX_HOME` (normally `~/.codex`). On a new headless account, run
 `~/.local/bin/codex-remote login --device-auth` after installation.
 
-For a hardened forced-command account and its direct-mode limitation, see
-[server/README.md](server/README.md). The sample forced entrypoint intentionally fixes direct mode,
-CLI paths, and its launch directory rather than trusting SSH environment overrides. It is not a
-filesystem boundary; use a dedicated account/container when the app-server `cwd` must be confined.
+For a hardened forced-command account and daemon/proxy mode, see [server/README.md](server/README.md).
+The sample forced entrypoint intentionally fixes direct mode, CLI paths, and its launch directory
+rather than trusting SSH environment overrides. It is not a filesystem boundary; use a dedicated
+account/container when the app-server `cwd` must be confined.
 
 ## Architecture
 
@@ -163,13 +145,11 @@ Jetpack Compose UI
         |
 AppViewModel + event reducer
         |
-Codex JSON-RPC client + RFC 6455 WebSocket codec
+Codex JSON-RPC client
         |
-SSH exec channel (raw byte tunnel, no PTY)
+SSH exec channel (JSONL stdin/stdout, no PTY)
         |
-codex app-server proxy --sock private Unix socket
-        |
-codex app-server --listen unix://... (private WebSocket endpoint, pinned, detached)
+codex app-server --listen stdio://
         |
 Pinned Codex CLI + server CODEX_HOME + workspace
 ```
@@ -201,11 +181,11 @@ filesystem confinement is needed.
 
 ## Protocol version
 
-The managed private-socket transport pins `codex-cli 0.144.6`. The optional standalone daemon
-bootstrap starts an updater and can move to a newer CLI, so it is not used for the fixed-version
-path. The app-server interface remains experimental. Upgrade only by changing
-`protocol/codex-version.txt` (the Android build reads this as its single version source), regenerating
-the schema, reviewing its diff, and running the full validation checklist in `server/README.md`.
+The direct transport pins `codex-cli 0.144.6`. The optional standalone daemon bootstrap starts an
+updater and can move to a newer CLI, so use direct mode when a strict version pin is required. The
+app-server interface remains experimental. Upgrade only by changing `protocol/codex-version.txt`
+(the Android build reads this as its single version source), regenerating the schema, reviewing its
+diff, and running the full validation checklist in `server/README.md`.
 
 Official references:
 

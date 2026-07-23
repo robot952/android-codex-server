@@ -2,15 +2,6 @@ package top.asdb.codexremote.ssh
 
 import java.util.Locale
 
-data class RemoteAppServerEndpoint(
-    val executable: String,
-    val socketPath: String,
-    val expectedCliVersion: String,
-) {
-    fun proxyCommand(): String =
-        "${shellQuote(executable)} app-server proxy --sock ${shellQuote(socketPath)}"
-}
-
 data class RemoteEnvironment(
     val os: String,
     val architecture: String,
@@ -27,32 +18,15 @@ data class RemoteEnvironment(
     val hasSetsidWait: Boolean,
     val downloader: String?,
 ) {
-    fun compatibleCommand(expectedVersion: String): String? =
-        compatibleExecutable(expectedVersion)?.let { executable ->
-            "${shellQuote(executable)} app-server --listen stdio://"
-        }
-
-    /**
-     * A private Unix socket keeps the pinned app-server alive when an SSH proxy disconnects.
-     * Hosts missing the required local coordination tools retain the direct stdio fallback.
-     */
-    fun durableEndpoint(expectedVersion: String): RemoteAppServerEndpoint? {
-        val executable = compatibleExecutable(expectedVersion) ?: return null
-        if (!hasShell || !hasFlock || !hasSetsidWait || !home.startsWith('/')) return null
-        return RemoteAppServerEndpoint(
-            executable = executable,
-            socketPath = "$home/.local/share/codex-remote/durable/app-server.sock",
-            expectedCliVersion = expectedVersion,
-        )
+    fun compatibleCommand(expectedVersion: String): String? = when {
+        managedVersion == "codex-cli $expectedVersion" && !managedPath.isNullOrBlank() ->
+            "${shellQuote(managedPath)} app-server --listen stdio://"
+        systemVersion == "codex-cli $expectedVersion" && !systemPath.isNullOrBlank() ->
+            "${shellQuote(systemPath)} app-server --listen stdio://"
+        else -> null
     }
 
     fun detectedVersion(): String? = managedVersion ?: systemVersion
-
-    private fun compatibleExecutable(expectedVersion: String): String? = when {
-        managedVersion == "codex-cli $expectedVersion" && !managedPath.isNullOrBlank() -> managedPath
-        systemVersion == "codex-cli $expectedVersion" && !systemPath.isNullOrBlank() -> systemPath
-        else -> null
-    }
 
     fun installationProblem(): String? = when {
         os != "Linux" -> "暂不支持在 $os 上自动安装"
@@ -139,127 +113,6 @@ object RemoteBootstrap {
             hasSetsidWait = values["HAS_SETSID_WAIT"] == "1",
             downloader = values["DOWNLOADER"]?.takeUnless { it == "none" || it.isBlank() },
         )
-    }
-
-    fun isManagedRemoteCommand(command: String): Boolean =
-        command.trim() == MANAGED_REMOTE_COMMAND
-
-    /** Starts or reuses a private, detached pinned app-server for [endpoint]. */
-    fun durableServerScript(endpoint: RemoteAppServerEndpoint): String {
-        val stateDirectory = endpoint.socketPath.substringBeforeLast('/')
-        return """
-        set -eu
-        umask 077
-        CODEX_BIN=${shellQuote(endpoint.executable)}
-        ROOT=${shellQuote(stateDirectory.substringBeforeLast('/'))}
-        STATE_DIR=${shellQuote(stateDirectory)}
-        SOCKET=${shellQuote(endpoint.socketPath)}
-        PID_FILE="${'$'}STATE_DIR/app-server.pid"
-        VERSION_FILE="${'$'}STATE_DIR/app-server.version"
-        LOCK_FILE="${'$'}ROOT/.install.lock"
-        LOG_FILE="${'$'}STATE_DIR/app-server.log"
-
-        EXPECTED_VERSION=${shellQuote("codex-cli ${endpoint.expectedCliVersion}")}
-        [ ! -L "${'$'}ROOT" ] || {
-          printf 'Codex Remote 运行目录不能是符号链接\n' >&2
-          exit 70
-        }
-        [ ! -L "${'$'}STATE_DIR" ] || {
-          printf 'Codex 后台运行目录不能是符号链接\n' >&2
-          exit 70
-        }
-        mkdir -p "${'$'}ROOT" "${'$'}STATE_DIR"
-        chmod 700 "${'$'}ROOT" "${'$'}STATE_DIR"
-        exec 9>>"${'$'}LOCK_FILE"
-        flock -w 15 9 || {
-          printf '等待 Codex 后台服务锁超时\n' >&2
-          exit 75
-        }
-        ACTUAL_VERSION="${'$'}("${'$'}CODEX_BIN" --version 2>/dev/null || true)"
-        [ "${'$'}ACTUAL_VERSION" = "${'$'}EXPECTED_VERSION" ] || {
-          printf 'Codex 版本不匹配: 需要 %s，实际 %s\n' "${'$'}EXPECTED_VERSION" "${'$'}{ACTUAL_VERSION:-未检测到}" >&2
-          exit 65
-        }
-
-        pid_is_managed_server() {
-          [ -r "${'$'}PID_FILE" ] || return 1
-          IFS= read -r PID < "${'$'}PID_FILE" || return 1
-          case "${'$'}PID" in ''|*[!0-9]*) return 1 ;; esac
-          kill -0 "${'$'}PID" 2>/dev/null || return 1
-          [ -r "/proc/${'$'}PID/cmdline" ] || return 1
-          COMMAND_LINE="${'$'}(tr '\000' ' ' < "/proc/${'$'}PID/cmdline" 2>/dev/null || true)"
-          case "${'$'}COMMAND_LINE" in
-            *app-server*"unix://${'$'}SOCKET"*) return 0 ;;
-          esac
-          return 1
-        }
-
-        daemon_is_ready() {
-          pid_is_managed_server || return 1
-          [ -S "${'$'}SOCKET" ] || return 1
-          [ -r "${'$'}VERSION_FILE" ] || return 1
-          IFS= read -r RECORDED_VERSION < "${'$'}VERSION_FILE" || return 1
-          [ "${'$'}RECORDED_VERSION" = "${'$'}EXPECTED_VERSION" ]
-        }
-
-        stop_managed_server() {
-          pid_is_managed_server || return 0
-          IFS= read -r PID < "${'$'}PID_FILE"
-          # The npm launcher spawns the native Codex binary. The server starts in its own
-          # session, so signal its entire process group rather than leaving that child alive.
-          kill -TERM -"${'$'}PID" 2>/dev/null || kill -TERM "${'$'}PID" 2>/dev/null || true
-          ATTEMPT=0
-          while (kill -0 -"${'$'}PID" 2>/dev/null || kill -0 "${'$'}PID" 2>/dev/null) && \
-            [ "${'$'}ATTEMPT" -lt 5 ]; do
-            ATTEMPT="${'$'}((ATTEMPT + 1))"
-            sleep 1
-          done
-          kill -KILL -"${'$'}PID" 2>/dev/null || kill -KILL "${'$'}PID" 2>/dev/null || true
-          ATTEMPT=0
-          while (kill -0 -"${'$'}PID" 2>/dev/null || kill -0 "${'$'}PID" 2>/dev/null) && \
-            [ "${'$'}ATTEMPT" -lt 2 ]; do
-            ATTEMPT="${'$'}((ATTEMPT + 1))"
-            sleep 1
-          done
-          if kill -0 -"${'$'}PID" 2>/dev/null || kill -0 "${'$'}PID" 2>/dev/null; then
-            printf '无法停止已有 Codex 后台服务: %s\n' "${'$'}PID" >&2
-            return 70
-          fi
-        }
-
-        if ! daemon_is_ready; then
-          if [ -e "${'$'}SOCKET" ] && ! pid_is_managed_server; then
-            if [ -S "${'$'}SOCKET" ]; then
-              rm -f -- "${'$'}SOCKET"
-            else
-              printf 'Codex 后台 socket 状态异常，请先删除: %s\n' "${'$'}SOCKET" >&2
-              exit 70
-            fi
-          fi
-          stop_managed_server
-          rm -f -- "${'$'}SOCKET" "${'$'}PID_FILE" "${'$'}VERSION_FILE"
-          # The detached shell records its own PID. `setsid` may fork before executing it.
-          setsid sh -c '
-            printf "%s\n" "${'$'}${'$'}" > "${'$'}1"
-            exec "${'$'}2" app-server --listen "${'$'}3"
-          ' codex-remote-app-server "${'$'}PID_FILE" "${'$'}CODEX_BIN" "unix://${'$'}SOCKET" \
-            </dev/null >"${'$'}LOG_FILE" 2>&1 &
-          LAUNCHER_PID="${'$'}!"
-          ATTEMPT=0
-          while ! pid_is_managed_server || [ ! -S "${'$'}SOCKET" ]; do
-            ATTEMPT="${'$'}((ATTEMPT + 1))"
-            if [ "${'$'}ATTEMPT" -ge 10 ]; then
-              printf 'Codex 后台服务启动失败，日志: %s\n' "${'$'}LOG_FILE" >&2
-              stop_managed_server
-              kill -TERM "${'$'}LAUNCHER_PID" 2>/dev/null || true
-              exit 70
-            fi
-            sleep 1
-          done
-          printf '%s\n' "${'$'}EXPECTED_VERSION" > "${'$'}VERSION_FILE"
-        fi
-        printf '${PREFIX}DURABLE_READY=%s\n' "${'$'}SOCKET"
-        """.trimIndent()
     }
 
     fun installScript(

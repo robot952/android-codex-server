@@ -33,14 +33,6 @@ class RemoteBootstrapTest {
             "'/home/dev/.local/bin/codex-remote' app-server --listen stdio://",
             environment.compatibleCommand("0.144.6"),
         )
-        val endpoint = requireNotNull(environment.durableEndpoint("0.144.6"))
-        assertEquals("/home/dev/.local/share/codex-remote/durable/app-server.sock", endpoint.socketPath)
-        assertEquals("0.144.6", endpoint.expectedCliVersion)
-        assertEquals(
-            "'/home/dev/.local/bin/codex-remote' app-server proxy --sock " +
-                "'/home/dev/.local/share/codex-remote/durable/app-server.sock'",
-            endpoint.proxyCommand(),
-        )
         assertNull(environment.installationProblem())
     }
 
@@ -138,76 +130,6 @@ class RemoteBootstrapTest {
         )
 
         assertTrue(environment.installationProblem().orEmpty().contains("setsid"))
-        assertNull(environment.durableEndpoint("0.144.6"))
-    }
-
-    @Test
-    fun `durable server script stays private and has valid posix syntax`() {
-        val endpoint = top.asdb.codexremote.ssh.RemoteAppServerEndpoint(
-            executable = "/home/dev/.local/bin/codex-remote",
-            socketPath = "/home/dev/.local/share/codex-remote/durable/app-server.sock",
-            expectedCliVersion = "0.144.6",
-        )
-        val script = RemoteBootstrap.durableServerScript(endpoint)
-
-        assertTrue(script.contains("umask 077"))
-        assertTrue(script.contains("flock -w 15 9"))
-        assertTrue(script.contains("EXPECTED_VERSION='codex-cli 0.144.6'"))
-        assertTrue(script.contains("Codex 版本不匹配"))
-        assertTrue(script.contains("setsid sh -c"))
-        assertTrue(script.contains("exec \"\$2\" app-server --listen \"\$3\""))
-        assertTrue(script.contains("app-server.pid"))
-        assertTrue(script.contains("app-server.version"))
-        assertTrue(script.contains("后台运行目录不能是符号链接"))
-        assertFalse(script.contains("ws://"))
-        assertFalse(script.contains("sudo"))
-
-        val process = ProcessBuilder("sh", "-n").start()
-        process.outputStream.bufferedWriter().use { it.write(script) }
-
-        assertTrue(process.waitFor(5, TimeUnit.SECONDS))
-        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
-    }
-
-    @Test
-    fun `durable server refuses an executable whose version no longer matches the pin`() {
-        val home = Files.createTempDirectory("codex-remote-durable-version").toFile()
-        try {
-            val executable = home.resolve("codex-remote")
-            executable.writeText(
-                """
-                #!/bin/sh
-                if [ "${'$'}{1:-}" = "--version" ]; then
-                  printf '%s' 'codex-cli 0.145.0'
-                  exit 0
-                fi
-                exit 1
-                """.trimIndent(),
-            )
-            assertTrue(executable.setExecutable(true))
-            val endpoint = top.asdb.codexremote.ssh.RemoteAppServerEndpoint(
-                executable = executable.absolutePath,
-                socketPath = home.resolve(".local/share/codex-remote/durable/app-server.sock").absolutePath,
-                expectedCliVersion = "0.144.6",
-            )
-            val process = ProcessBuilder("sh", "-s").start()
-            process.outputStream.bufferedWriter().use {
-                it.write(RemoteBootstrap.durableServerScript(endpoint))
-            }
-
-            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
-            assertEquals(65, process.exitValue())
-            assertTrue(process.errorStream.bufferedReader().readText().contains("Codex 版本不匹配"))
-        } finally {
-            home.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `managed command comparison permits form whitespace only`() {
-        assertTrue(RemoteBootstrap.isManagedRemoteCommand(RemoteBootstrap.MANAGED_REMOTE_COMMAND))
-        assertTrue(RemoteBootstrap.isManagedRemoteCommand("  ${RemoteBootstrap.MANAGED_REMOTE_COMMAND}  "))
-        assertFalse(RemoteBootstrap.isManagedRemoteCommand("codex app-server --listen stdio://"))
     }
 
     @Test
