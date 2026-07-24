@@ -1302,8 +1302,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         if (current.loading) return
         val profileId = current.selectedProfileId ?: return
-        val threadId = current.activeThread?.id ?: return
+        val activeThread = current.activeThread ?: return
+        val threadId = activeThread.id
         val cursor = current.olderTurnsCursor ?: return
+        val subAgentCreatedAt = activeThread
+            .takeIf { it.source == "subAgent" }
+            ?.createdAt
+            ?.takeIf { it > 0L }
         if (current.olderTurnsLoading) return
         val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
         val operation = beginClientOperation(profileId, "thread-history", client) ?: return
@@ -1314,7 +1319,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val job = viewModelScope.launch {
             try {
-                val page = client.listThreadTurnsPage(threadId, cursor)
+                val page = client.listThreadTurnsPage(
+                    threadId = threadId,
+                    cursor = cursor,
+                    subAgentCreatedAt = subAgentCreatedAt,
+                )
                 if (!isOperationCurrent(operation)) return@launch
                 applySessionState(profileId) { state ->
                     if (state.activeThread?.id != threadId || state.olderTurnsCursor != cursor) {

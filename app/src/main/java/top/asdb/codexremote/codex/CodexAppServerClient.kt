@@ -333,7 +333,11 @@ class CodexAppServerClient(
         return parseResumedThreadPayload(response.result.jsonObject, response.sequence).copy(itemsView = itemsView)
     }
 
-    suspend fun listThreadTurnsPage(threadId: String, cursor: String): ThreadTurnsPage {
+    suspend fun listThreadTurnsPage(
+        threadId: String,
+        cursor: String,
+        subAgentCreatedAt: Long? = null,
+    ): ThreadTurnsPage {
         val (result, itemsView) = try {
             requestThreadTurnsPage(threadId, cursor, itemsView = "full") to "full"
         } catch (_: CodexResponseTooLargeException) {
@@ -362,7 +366,10 @@ class CodexAppServerClient(
                 }
             }
         }
-        return parseThreadTurnsPagePayload(result.jsonObject).copy(itemsView = itemsView)
+        return parseThreadTurnsPagePayload(
+            result = result.jsonObject,
+            subAgentCreatedAt = subAgentCreatedAt,
+        ).copy(itemsView = itemsView)
     }
 
     private suspend fun requestThreadResume(
@@ -853,15 +860,23 @@ class CodexAppServerClient(
     }
 }
 
-internal fun parseThreadTurnsPagePayload(result: JsonObject): ThreadTurnsPage {
-    val turns = result.array("data").orEmpty().mapNotNull { it as? JsonObject }.asReversed()
+internal fun parseThreadTurnsPagePayload(
+    result: JsonObject,
+    subAgentCreatedAt: Long? = null,
+): ThreadTurnsPage {
+    val pageTurns = result.array("data").orEmpty().mapNotNull { it as? JsonObject }.asReversed()
+    val visibleTurns = pageTurns.withoutInheritedSubAgentTurns(subAgentCreatedAt)
+    val reachedInheritedHistory = visibleTurns.size != pageTurns.size
     val timeline = CodexPayloadParser.parseTimeline(
-        JsonObject(mapOf("turns" to JsonArray(turns))),
+        JsonObject(mapOf("turns" to JsonArray(visibleTurns))),
     )
     return ThreadTurnsPage(
         timeline = timeline,
-        nextCursor = result.string("nextCursor").takeIf { it.isNotBlank() },
-        turnIds = turns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },
+        // A child Agent's older records are the parent's inherited history. Continuing to page
+        // after the first filtered page would make the child screen show the parent transcript.
+        nextCursor = result.string("nextCursor").takeIf { it.isNotBlank() }
+            ?.takeUnless { reachedInheritedHistory },
+        turnIds = visibleTurns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },
     )
 }
 
@@ -875,15 +890,39 @@ internal fun parseResumedThreadPayload(result: JsonObject, responseSequence: Lon
     } else {
         thread.array("turns").orEmpty().mapNotNull { it as? JsonObject }
     }
-    val hydratedThread = JsonObject(thread + ("turns" to JsonArray(chronologicalTurns)))
+    val visibleTurns = chronologicalTurns.withoutInheritedSubAgentTurns(
+        thread.subAgentCreatedAtOrNull(),
+    )
+    val reachedInheritedHistory = visibleTurns.size != chronologicalTurns.size
+    val hydratedThread = JsonObject(thread + ("turns" to JsonArray(visibleTurns)))
     val snapshot = CodexPayloadParser.parseThreadPayload(hydratedThread)
     return ResumedThread(
         thread = snapshot.first,
         timeline = snapshot.second,
         responseSequence = responseSequence,
-        nextTurnsCursor = initialPage?.string("nextCursor")?.takeIf { it.isNotBlank() },
-        turnIds = chronologicalTurns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },
+        nextTurnsCursor = initialPage?.string("nextCursor")?.takeIf { it.isNotBlank() }
+            ?.takeUnless { reachedInheritedHistory },
+        turnIds = visibleTurns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },
     )
+}
+
+private fun JsonObject.subAgentCreatedAtOrNull(): Long? {
+    val source = this["source"]
+    val isSubAgent = string("threadSource").equals("subagent", ignoreCase = true) ||
+        ((source as? JsonPrimitive)?.content ?: "").equals("subAgent", ignoreCase = true) ||
+        (source as? JsonObject)?.containsKey("subAgent") == true
+    return long("createdAt").takeIf { isSubAgent && it > 0L }
+}
+
+private fun List<JsonObject>.withoutInheritedSubAgentTurns(
+    subAgentCreatedAt: Long?,
+): List<JsonObject> {
+    val cutoff = subAgentCreatedAt?.takeIf { it > 0L } ?: return this
+    return filter { turn ->
+        // Older app-server variants can omit startedAt. Keep that turn rather than discarding
+        // potentially valid child work; current servers provide a timestamp for every turn.
+        turn.long("startedAt").let { it == 0L || it >= cutoff }
+    }
 }
 
 class CodexRequestTimeoutException(

@@ -68,6 +68,61 @@ class ThreadPagingTest {
     }
 
     @Test
+    fun subAgentResumeHidesInheritedParentTurnsAndStopsPaging() {
+        val response = json.parseToJsonElement(
+            """
+            {
+              "thread": {
+                "id": "child-thread",
+                "threadSource": "subagent",
+                "createdAt": 100,
+                "source": {"subAgent": {}}
+              },
+              "initialTurnsPage": {
+                "nextCursor": "parent-history",
+                "data": [
+                  {"id":"child-turn","status":"completed","startedAt":120,
+                   "items":[{"id":"child-message","type":"agentMessage","text":"child only"}]},
+                  {"id":"parent-turn","status":"completed","startedAt":90,
+                   "items":[{"id":"parent-message","type":"agentMessage","text":"parent history"}]}
+                ]
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val parsed = parseResumedThreadPayload(response, responseSequence = 1)
+
+        assertEquals("child-thread", parsed.thread.id)
+        assertEquals(listOf("child only"), parsed.timeline.map { it.text })
+        assertEquals(listOf("child-turn"), parsed.turnIds)
+        assertEquals(null, parsed.nextTurnsCursor)
+    }
+
+    @Test
+    fun subAgentOlderPageStopsAtInheritedParentHistory() {
+        val page = json.parseToJsonElement(
+            """
+            {
+              "nextCursor": "even-older-parent-history",
+              "data": [
+                {"id":"recent-child-turn","status":"completed","startedAt":130,
+                 "items":[{"id":"child-message","type":"agentMessage","text":"child"}]},
+                {"id":"parent-turn","status":"completed","startedAt":90,
+                 "items":[{"id":"parent-message","type":"agentMessage","text":"parent"}]}
+              ]
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val parsed = parseThreadTurnsPagePayload(page, subAgentCreatedAt = 100)
+
+        assertEquals(listOf("child"), parsed.timeline.map { it.text })
+        assertEquals(listOf("recent-child-turn"), parsed.turnIds)
+        assertEquals(null, parsed.nextCursor)
+    }
+
+    @Test
     fun olderTimelineIsPrependedInOrderWithoutDuplicates() {
         fun entry(turn: String, id: String, text: String) = TimelineEntry(
             id = id,

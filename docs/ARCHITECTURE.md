@@ -5,12 +5,12 @@
 
 文档基线：
 
-- Android 应用版本：1.7.17（versionCode 39）
+- Android 应用版本：1.7.18（versionCode 40）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
 - 主要技术：Kotlin、Jetpack Compose、Coroutines/Flow、JSch、kotlinx.serialization
-- 最后核对日期：2026-07-23
+- 最后核对日期：2026-07-24
 
 版本会变化。发布前必须以 app/build.gradle.kts、protocol/codex-version.txt 和
 protocol/node-version.txt 为准，不要只相信本文顶部的快照。
@@ -180,6 +180,9 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
   pending resume，重复返回不得跳层或重复请求。导航栈按 profile 隔离，旧的异步恢复不得弹出较新的栈帧。
   恢复响应的 `thread.id` 必须等于请求的子 Agent id；不一致时仅重试一次，仍不一致则拒绝该响应，
   绝不能在子 Agent 标题下显示父会话。子 Agent 页也只接收有匹配 `threadId` 的流式项目。
+  部分 app-server 会在子 Agent 的历史页中返回 fork 前继承的父回合；对 `threadSource=subagent`，必须以
+  子线程 `createdAt` 为边界丢弃更早的 turn，并在首次遇到该边界后停止更早分页，不能只检查响应的
+  `thread.id`。
   远端恢复失败时留在子页以便重试；已经断线时恢复父快照并提示重连。提交或审批期间不得切入子页。
 - 支持目标的显示、编辑、暂停/继续和删除，目标是远程线程持久状态，不是本地假状态。
 
@@ -342,6 +345,11 @@ ThreadSessionCache 负责快速重进会话。openThread 的策略是：
 历史只按 turn 分页。首次 resume 使用倒序小页并排除完整 turns 主体；更早历史使用
 thread/turns/list，遇到响应过大时降低 page limit/itemsView 后重试。UI 将新页 prepend，
 必须去重并维持时间顺序。
+
+子 Agent 是 fork 的独立线程，但某些 app-server 版本会把 fork 前的父 turn 一并放入它的
+`initialTurnsPage` 或 `thread/turns/list`。解析 resume 时根据 `threadSource=subagent` 与子线程
+`createdAt` 过滤 `startedAt` 更早的 turn；分页使用同一 cutoff，任何一页跨过该边界都必须将
+`nextCursor` 置空。缺失 `startedAt` 的 turn 暂时保留以兼容旧服务器，当前固定版本会提供时间戳。
 
 ProfileOperationTracker 把异步任务按 profile、lane、generation 标记。连接、会话导航、
 历史、会话修改等 lane 的旧结果不能落到新选择的服务器或会话。
@@ -630,7 +638,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | SshFingerprintTest | SHA-256 指纹和严格匹配 |
 | SshTerminalHelpersTest | 终端队列、resize、输出和 shell quote |
 | ssh/SshCodexTransportTest | JSONL 边界、超大响应、取消和进度 |
-| ThreadPagingTest | cursor、分页、去重、顺序和降级重试 |
+| ThreadPagingTest | cursor、分页、去重、顺序、降级重试，以及子 Agent 继承父历史的边界过滤 |
 | ThreadSessionCacheTest | 缓存有效期、LRU 和 profile 隔离 |
 | SubAgentPresentationTest | 子智能体标签聚合、状态收敛、显示文案、可打开性和稳定身份色 |
 | TurnCompletionNotifierTest | 后台完成判定和通知去重 |
