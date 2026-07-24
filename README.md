@@ -88,6 +88,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 certificate. Keep an encrypted backup of the signing key; losing it makes future in-place updates
 impossible.
 
+## Automated release
+
+Local debug builds stay local. A protected `v<versionName>` tag can trigger a self-hosted Gitee Runner
+to build, verify, archive, and deploy the signed release APK without committing the APK to Git. See
+[Gitee tag automated release](docs/GITEE_RELEASE.md) for the one-time Runner setup and daily release
+commands.
+
 ## Server quickstart
 
 Run as the Unix user whose Codex login, threads, workspace, and config should be available:

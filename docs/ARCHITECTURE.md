@@ -70,7 +70,7 @@ codex app-server，并把 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插
 | app/src/test | JVM 单元测试 | 与改动模块对应的 Test 文件 |
 | protocol | 固定版本和 app-server 契约 | codex-version.txt、node-version.txt |
 | server | 独立服务器安装、限制入口和 smoke test | README.md、install-codex-pinned.sh |
-| scripts | 本机统一构建入口 | build-android.sh |
+| scripts | 本机构建和 tag 发布入口 | build-android.sh、publish-tag-release.sh |
 | docs | UI 契约、本文、模拟器截图和 XML 证据 | UI_SPEC.md、runtime-* |
 | e2e | 由 App 内 Codex 完成的 WebUI 端到端样例 | webui-app-test-20260719 |
 | keystore | 固定 APK 签名身份 | 严禁更换或重新生成 |
@@ -539,6 +539,18 @@ ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
 
 外网 FRP 端口曾被误写为 108080，正确记录是 18080。地址是部署环境，不是代码常量；报告前需
 绕过不合适的代理实际验证。不得在文档或提交中写 FRP token。
+
+### 13.1 Gitee tag 自动发布
+
+正式发布可由自建 Gitee Runner 在受保护的 `v<versionName>` 标签触发。Runner 使用外置 keystore 路径
+`CODEX_SIGNING_KEYSTORE`，不能把 key 放进 Git；Gradle 还支持受保护变量
+`CODEX_SIGNING_STORE_PASSWORD`、`CODEX_SIGNING_KEY_ALIAS` 和 `CODEX_SIGNING_KEY_PASSWORD`。本地未设置
+这些变量时继续使用 `keystore/codex-remote-stable.keystore` 和既有签名身份。
+
+流水线执行 `scripts/publish-tag-release.sh`：仅当标签正好指向当前检出提交时才运行 `all` 门禁，随后验签、生成
+`dist/` 构件，并在配置 `CODEX_RELEASE_PUBLISH_DIR` 时原子替换 `codex.apk`。可选的
+`CODEX_RELEASE_VERIFY_URLS` 是逗号分隔的下载地址；发布后逐一以 `curl --noproxy '*'` 验证。完整的 Runner
+初始化、Gitee Go 页面设置和 tag 发布步骤见 [GITEE_RELEASE.md](GITEE_RELEASE.md)。
 
 Git 流程：
 

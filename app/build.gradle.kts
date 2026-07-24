@@ -12,10 +12,25 @@ val pinnedNodeVersion = rootProject.file("protocol/node-version.txt").readText()
 require(Regex("\\d+\\.\\d+\\.\\d+").matches(pinnedNodeVersion)) {
     "protocol/node-version.txt must contain a semantic version"
 }
-val stableSigningFile = rootProject.file("keystore/codex-remote-stable.keystore")
+val configuredSigningPath = providers.gradleProperty("codexSigningKeystore")
+    .orElse(providers.environmentVariable("CODEX_SIGNING_KEYSTORE"))
+    .orNull
+    ?.takeIf { it.isNotBlank() }
+val stableSigningFile = configuredSigningPath?.let { rootProject.file(it) }
+    ?: rootProject.file("keystore/codex-remote-stable.keystore")
 require(stableSigningFile.isFile) {
-    "Stable APK signing key is missing: ${stableSigningFile.absolutePath}"
+    "Stable APK signing key is missing: ${stableSigningFile.absolutePath}. " +
+        "Set CODEX_SIGNING_KEYSTORE for a CI runner."
 }
+val stableStorePassword = providers.gradleProperty("codexSigningStorePassword")
+    .orElse(providers.environmentVariable("CODEX_SIGNING_STORE_PASSWORD"))
+    .getOrElse("android")
+val stableKeyAlias = providers.gradleProperty("codexSigningKeyAlias")
+    .orElse(providers.environmentVariable("CODEX_SIGNING_KEY_ALIAS"))
+    .getOrElse("androiddebugkey")
+val stableKeyPassword = providers.gradleProperty("codexSigningKeyPassword")
+    .orElse(providers.environmentVariable("CODEX_SIGNING_KEY_PASSWORD"))
+    .getOrElse("android")
 
 android {
     namespace = "top.asdb.codexremote"
@@ -37,9 +52,9 @@ android {
     signingConfigs {
         create("stable") {
             storeFile = stableSigningFile
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            storePassword = stableStorePassword
+            keyAlias = stableKeyAlias
+            keyPassword = stableKeyPassword
         }
     }
 
