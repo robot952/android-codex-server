@@ -43,7 +43,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -1115,59 +1114,119 @@ private fun ToolBlock(entry: TimelineEntry) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SubAgentActivityGroupBlock(
     entries: List<TimelineEntry>,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
     enabled: Boolean,
 ) {
-    val group = remember(entries) { entries.toSubAgentActivityGroupPresentation() }
-    if (group.agents.isEmpty()) return
-    val statusColor = subAgentStatusColor(group.status)
-    Row(
+    val agents = remember(entries) { entries.toSubAgentPresentations() }
+    if (agents.isEmpty()) return
+    Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 3.dp, vertical = 1.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        agents.forEach { agent ->
+            SubAgentStatusRow(
+                agent = agent,
+                onOpenSubAgent = onOpenSubAgent,
+                enabled = enabled,
+                framed = true,
+                avatarSize = 22.dp,
+                horizontalPadding = 10.dp,
+                verticalPadding = 7.dp,
+            )
+        }
+    }
+}
+
+/** Keeps each collaborator's state in its own row instead of deriving a misleading group state. */
+@Composable
+private fun SubAgentStatusRow(
+    agent: SubAgentPresentation,
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+    enabled: Boolean,
+    framed: Boolean,
+    avatarSize: Dp,
+    horizontalPadding: Dp,
+    verticalPadding: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val canOpen = agent.isOpenable && enabled
+    val rowModifier = Modifier
+        .fillMaxWidth()
+        .then(
+            if (canOpen) {
+                Modifier.clickable { onOpenSubAgent(agent.threadId, agent.name) }
+            } else {
+                Modifier
+            },
+        )
+        .padding(horizontal = horizontalPadding, vertical = verticalPadding)
+        .semantics {
+            contentDescription = if (canOpen) {
+                "打开 ${agent.name} 的工作页面"
+            } else if (agent.path.isNotBlank()) {
+                "${agent.name}，${agent.path}"
+            } else {
+                agent.name
+            }
+            stateDescription = agent.status.label
+        }
+
+    if (framed) {
+        val shape = RoundedCornerShape(8.dp)
+        Surface(
+            color = CodexSurfaceRaised,
+            shape = shape,
+            modifier = modifier.fillMaxWidth().border(1.dp, CodexBorder, shape),
+        ) {
+            SubAgentStatusRowContent(agent = agent, avatarSize = avatarSize, modifier = rowModifier)
+        }
+    } else {
+        SubAgentStatusRowContent(
+            agent = agent,
+            avatarSize = avatarSize,
+            modifier = modifier.then(rowModifier),
+        )
+    }
+}
+
+@Composable
+private fun SubAgentStatusRowContent(
+    agent: SubAgentPresentation,
+    avatarSize: Dp,
+    modifier: Modifier,
+) {
+    val statusColor = subAgentStatusColor(agent.status)
+    Row(
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FlowRow(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            group.agents.forEach { agent ->
-                AssistChip(
-                    onClick = {
-                        if (agent.isOpenable) onOpenSubAgent(agent.threadId, agent.name)
-                    },
-                    enabled = agent.isOpenable && enabled,
-                    label = {
-                        Text(
-                            agent.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    leadingIcon = {
-                        SubAgentAvatar(agent = agent, size = 18.dp)
-                    },
-                    modifier = Modifier.semantics {
-                        contentDescription = if (agent.path.isNotBlank()) {
-                            "${agent.name}，${agent.path}"
-                        } else {
-                            agent.name
-                        }
-                        stateDescription = agent.status.label
-                    },
-                )
-            }
-        }
-        Spacer(Modifier.width(7.dp))
+        SubAgentAvatar(agent = agent, size = avatarSize)
+        Spacer(Modifier.width(9.dp))
         Text(
-            group.statusLabel,
-            color = statusColor,
-            style = MaterialTheme.typography.bodySmall,
+            agent.name,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
+        Spacer(Modifier.width(10.dp))
+        if (agent.status.isActive) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = statusColor,
+            )
+        } else {
+            Text(
+                agent.status.label,
+                style = MaterialTheme.typography.bodySmall,
+                color = statusColor,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -1250,7 +1309,6 @@ private fun BackgroundAgentsPanel(
     enabled: Boolean,
 ) {
     var expanded by remember(sessionId) { mutableStateOf(false) }
-    val activeCount = agents.count { it.status.isActive }
     val headerLabel = "${agents.size} 个后台智能体"
     Surface(
         color = CodexSurfaceRaised,
@@ -1278,14 +1336,6 @@ private fun BackgroundAgentsPanel(
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.weight(1f),
                 )
-                if (activeCount > 0) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = CodexAmber,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
                 Icon(
                     if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = if (expanded) "收起后台智能体" else "展开后台智能体",
@@ -1301,51 +1351,15 @@ private fun BackgroundAgentsPanel(
                             .verticalScroll(rememberScrollState()).padding(vertical = 3.dp),
                     ) {
                         agents.forEach { agent ->
-                            val color = subAgentStatusColor(agent.status)
-                            Row(
-                                modifier = Modifier.fillMaxWidth().then(
-                                    if (agent.isOpenable && enabled) {
-                                        Modifier.clickable {
-                                            onOpenSubAgent(agent.threadId, agent.name)
-                                        }
-                                    } else {
-                                        Modifier
-                                    },
-                                ).padding(horizontal = 11.dp, vertical = 7.dp).semantics {
-                                    contentDescription = if (agent.isOpenable && enabled) {
-                                        "打开 ${agent.name} 的工作页面"
-                                    } else {
-                                        agent.name
-                                    }
-                                    stateDescription = agent.status.label
-                                },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                SubAgentAvatar(agent = agent, size = 25.dp)
-                                Spacer(Modifier.width(9.dp))
-                                Text(
-                                    agent.name,
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    agent.status.label,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = color,
-                                    maxLines = 1,
-                                )
-                                if (agent.isOpenable) {
-                                    Spacer(Modifier.width(5.dp))
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(15.dp),
-                                    )
-                                }
-                            }
+                            SubAgentStatusRow(
+                                agent = agent,
+                                onOpenSubAgent = onOpenSubAgent,
+                                enabled = enabled,
+                                framed = false,
+                                avatarSize = 25.dp,
+                                horizontalPadding = 11.dp,
+                                verticalPadding = 7.dp,
+                            )
                         }
                     }
                 }

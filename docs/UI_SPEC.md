@@ -24,13 +24,15 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions
-- Adjacent collaborator events from one turn render as compact icon chips followed by a visible
-  status (`已开始工作`、`已更新`、`已完成` etc.), instead of repeating bulky transcript cards. An
+- Adjacent collaborator events from one turn render as compact, individually outlined Agent rows
+  instead of repeating bulky transcript cards. Each row keeps its own status at the far right:
+  active states use a fixed-size rotating indicator, while terminal states show their own visible
+  label (`已完成`、`失败` etc.). No group-level status may stand in for multiple collaborators. An
   individual collaborator keeps a stable avatar color across all statuses; status color is not an
   identity signal.
 - When collaborators exist, the composer has a collapsible `N 个后台智能体` panel. Every row
-  shows its icon, name, visible current status, and a navigation affordance; tapping a chip or
-  row opens that collaborator's own work page.
+  shows its icon, name, and independent current status using the same active/terminal treatment;
+  tapping a row opens that collaborator's own work page.
 - Backing out of a collaborator page resumes the parent thread remotely as well as restoring its
   cached UI, so later input always targets the parent thread rather than the last collaborator.
   A loading child still accepts one back action; repeat presses do not skip a parent or issue a
