@@ -106,7 +106,6 @@ fun ThreadListScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        ServerMetricsText(state.serverMetrics[state.selectedProfileId])
                     }
                 },
                 actions = {
@@ -145,6 +144,10 @@ fun ThreadListScreen(
         Column(
             Modifier.padding(padding).navigationBarsPadding().imePadding().fillMaxSize(),
         ) {
+            ServerMetricsText(
+                state.serverMetrics[state.selectedProfileId],
+                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 1.dp),
+            )
             SearchBox(
                 value = state.threadSearch,
                 onValueChange = onSearchChange,

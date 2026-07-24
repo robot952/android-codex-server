@@ -9,7 +9,7 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
 - Search field followed by an unframed, divider-separated task list
 - Each row renders runtime status, title, preview, source, working directory, and relative update time
 - Active work uses a fixed-size progress indicator so row layout does not shift
-- The active server header shows one compact text line for `CPU`、`内存`、`磁盘`; it is sampled read-only over SSH and does not repeat inside task rows
+- The active server header shows compact speedometer, memory, and storage icons with percentages; accessibility descriptions retain the metric names, while visible task rows stay unchanged
 - Tapping the `CODEX` title returns to the server list without disconnecting the selected server
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
