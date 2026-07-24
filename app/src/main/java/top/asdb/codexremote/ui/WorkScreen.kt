@@ -1114,6 +1114,7 @@ private fun ToolBlock(entry: TimelineEntry) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SubAgentActivityGroupBlock(
     entries: List<TimelineEntry>,
@@ -1122,22 +1123,55 @@ private fun SubAgentActivityGroupBlock(
 ) {
     val agents = remember(entries) { entries.toSubAgentPresentations() }
     if (agents.isEmpty()) return
-    Column(
+    FlowRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 3.dp, vertical = 1.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         agents.forEach { agent ->
-            SubAgentStatusRow(
+            SubAgentStatusChip(
                 agent = agent,
                 onOpenSubAgent = onOpenSubAgent,
                 enabled = enabled,
-                framed = true,
-                avatarSize = 22.dp,
-                horizontalPadding = 10.dp,
-                verticalPadding = 7.dp,
             )
         }
     }
+}
+
+@Composable
+private fun SubAgentStatusChip(
+    agent: SubAgentPresentation,
+    onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
+    enabled: Boolean,
+) {
+    val canOpen = agent.isOpenable && enabled
+    AssistChip(
+        onClick = {
+            if (agent.isOpenable) onOpenSubAgent(agent.threadId, agent.name)
+        },
+        enabled = canOpen,
+        leadingIcon = { SubAgentAvatar(agent = agent, size = 18.dp) },
+        label = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    agent.name,
+                    modifier = Modifier.widthIn(max = 160.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(7.dp))
+                SubAgentStatusVisual(agent = agent, spinnerSize = 14.dp)
+            }
+        },
+        modifier = Modifier.semantics {
+            contentDescription = if (agent.path.isNotBlank()) {
+                "${agent.name}，${agent.path}"
+            } else {
+                agent.name
+            }
+            stateDescription = agent.status.label
+        },
+    )
 }
 
 /** Keeps each collaborator's state in its own row instead of deriving a misleading group state. */
@@ -1198,7 +1232,6 @@ private fun SubAgentStatusRowContent(
     avatarSize: Dp,
     modifier: Modifier,
 ) {
-    val statusColor = subAgentStatusColor(agent.status)
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -1213,20 +1246,29 @@ private fun SubAgentStatusRowContent(
             overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.width(10.dp))
-        if (agent.status.isActive) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(16.dp),
-                strokeWidth = 2.dp,
-                color = statusColor,
-            )
-        } else {
-            Text(
-                agent.status.label,
-                style = MaterialTheme.typography.bodySmall,
-                color = statusColor,
-                maxLines = 1,
-            )
-        }
+        SubAgentStatusVisual(agent = agent, spinnerSize = 16.dp)
+    }
+}
+
+@Composable
+private fun SubAgentStatusVisual(
+    agent: SubAgentPresentation,
+    spinnerSize: Dp,
+) {
+    val statusColor = subAgentStatusColor(agent.status)
+    if (agent.status.isActive) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(spinnerSize),
+            strokeWidth = 2.dp,
+            color = statusColor,
+        )
+    } else {
+        Text(
+            agent.status.label,
+            style = MaterialTheme.typography.bodySmall,
+            color = statusColor,
+            maxLines = 1,
+        )
     }
 }
 

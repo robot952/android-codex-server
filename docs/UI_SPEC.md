@@ -24,10 +24,11 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions
-- Adjacent collaborator events from one turn render as compact, individually outlined Agent rows
-  instead of repeating bulky transcript cards. Each row keeps its own status at the far right:
-  active states use a fixed-size rotating indicator, while terminal states show their own visible
-  label (`已完成`、`失败` etc.). No group-level status may stand in for multiple collaborators. An
+- Adjacent collaborator events from one turn retain the compact, horizontally wrapping Agent chip
+  layout instead of repeating bulky transcript cards. Each chip grows only enough to place its own
+  status after the name: active states use a fixed-size rotating indicator, while terminal states
+  show their own visible label (`已完成`、`失败` etc.). No group-level status may stand in for multiple
+  collaborators. An
   individual collaborator keeps a stable avatar color across all statuses; status color is not an
   identity signal.
 - When collaborators exist, the composer has a collapsible `N 个后台智能体` panel. Every row
