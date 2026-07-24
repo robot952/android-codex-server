@@ -1257,19 +1257,18 @@ private fun ServerSessionRow(
             )
         }
         Spacer(Modifier.width(6.dp))
-        Box(modifier = Modifier.width(72.dp).height(40.dp)) {
+        Box(modifier = Modifier.size(40.dp)) {
             if (connection.phase == ConnectionPhase.Connected && onDisconnect != null) {
-                OutlinedButton(
+                IconButton(
                     onClick = onDisconnect,
-                    shape = FieldShape,
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize()
+                        .border(1.dp, MaterialTheme.colorScheme.error, CircleShape),
                 ) {
-                    Text("断开", maxLines = 1)
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "断开服务器",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
