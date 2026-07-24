@@ -41,6 +41,7 @@ internal fun ServerMetricsText(
     metrics: ServerMetrics?,
     modifier: Modifier = Modifier,
     showResourceDetails: Boolean = false,
+    compactForServerList: Boolean = false,
 ) {
     val cpu = metrics?.cpuPercent
     val memory = metrics?.memoryPercent
@@ -55,7 +56,7 @@ internal fun ServerMetricsText(
             .semantics {
                 contentDescription = "CPU ${formatMetric(cpu)}，内存 ${formatMetric(memory)}，磁盘 ${formatMetric(disk)}，网络下载 ${formatNetworkRate(networkDownload, false)}，上传 ${formatNetworkRate(networkUpload, false)}"
             },
-        horizontalArrangement = Arrangement.spacedBy(11.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compactForServerList) 7.dp else 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MetricValue(
@@ -86,7 +87,7 @@ internal fun ServerMetricsText(
             onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Disk) },
         )
         MetricValue(
-            icon = Icons.Default.NetworkCheck,
+            icon = if (compactForServerList) null else Icons.Default.NetworkCheck,
             label = "网络",
             value = null,
             displayValue = "↓${formatNetworkRate(networkDownload, true)} ↑${formatNetworkRate(networkUpload, true)}",
@@ -100,7 +101,7 @@ internal fun ServerMetricsText(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MetricValue(
-    icon: ImageVector,
+    icon: ImageVector?,
     label: String,
     value: Int?,
     displayValue: String,
@@ -169,7 +170,7 @@ private fun MetricValue(
 
 @Composable
 private fun MetricValueContent(
-    icon: ImageVector,
+    icon: ImageVector?,
     label: String,
     value: Int?,
     displayValue: String,
@@ -177,12 +178,14 @@ private fun MetricValueContent(
 ) {
     val color = metricColor(value)
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            modifier = Modifier.size(15.dp),
-            tint = color,
-        )
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(15.dp),
+                tint = color,
+            )
+        }
         Text(
             text = displayValue,
             modifier = Modifier,

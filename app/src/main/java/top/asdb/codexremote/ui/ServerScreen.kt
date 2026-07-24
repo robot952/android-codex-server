@@ -110,6 +110,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1247,7 +1248,7 @@ private fun ServerSessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
             if (!unsaved) {
-                ServerMetricsText(metrics)
+                ServerMetricsText(metrics, compactForServerList = true)
             }
             Text(
                 "${profile.username.ifBlank { "root" }} · ${connection.shortLabel()}",
@@ -1265,16 +1266,31 @@ private fun ServerSessionRow(
             if (connection.phase == ConnectionPhase.Connected && onDisconnect != null) {
                 IconButton(
                     onClick = onDisconnect,
-                    modifier = Modifier.size(32.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.14f)),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PowerSettingsNew,
-                        contentDescription = "断开服务器",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(17.dp),
-                    )
+                    Box(
+                        modifier = Modifier.size(34.dp)
+                            .shadow(5.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.28f))
+                            .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.58f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier.size(28.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.error.copy(alpha = 0.13f))
+                                .border(1.dp, Color.White.copy(alpha = 0.11f), CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PowerSettingsNew,
+                                contentDescription = "断开服务器",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
