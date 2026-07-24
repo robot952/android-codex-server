@@ -257,9 +257,9 @@ private fun formatNetworkRate(bytesPerSecond: Long?, compact: Boolean): String {
 private fun formatNetworkTotalRate(bytesPerSecond: Long?): String {
     val bytes = bytesPerSecond ?: return "--"
     return when {
-        bytes >= 1024L * 1024L -> "%.1fMB/s".format(bytes.toDouble() / 1024.0 / 1024.0)
-        bytes >= 1024L -> "%.0fKB/s".format(bytes.toDouble() / 1024.0)
-        else -> "${bytes}B/s"
+        bytes >= 1024L * 1024L -> "%.1fMB".format(bytes.toDouble() / 1024.0 / 1024.0)
+        bytes >= 1024L -> "%.0fKB".format(bytes.toDouble() / 1024.0)
+        else -> "${bytes}B"
     }
 }
 

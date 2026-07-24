@@ -221,6 +221,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                     onClearGoal = viewModel::clearActiveGoal,
                     onCompact = viewModel::compactActiveThread,
                     onLoadOlder = viewModel::loadOlderThreadHistory,
+                    onLoadRemoteImage = viewModel::loadImagePreview,
                     onOpenSubAgent = viewModel::openSubAgentThread,
                 )
             }

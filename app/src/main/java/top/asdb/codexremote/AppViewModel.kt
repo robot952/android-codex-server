@@ -2001,6 +2001,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun loadImagePreview(path: String): ByteArray {
+        currentProfile() ?: throw IllegalStateException("未选择服务器")
+        val client = activeClient() ?: throw IllegalStateException("服务器尚未连接")
+        check(client.isConnected()) { "服务器尚未连接" }
+        return client.downloadImage(path)
+    }
+
     fun removeAttachment(path: String) {
         _state.update { it.copy(attachments = it.attachments.filterNot { file -> file.remotePath == path }) }
     }

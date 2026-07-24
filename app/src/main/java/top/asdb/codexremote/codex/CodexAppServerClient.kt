@@ -592,6 +592,8 @@ class CodexAppServerClient(
 
     suspend fun upload(name: String, bytes: ByteArray): String = transport.upload(name, bytes)
 
+    suspend fun downloadImage(path: String): ByteArray = transport.downloadImage(path)
+
     suspend fun answerApproval(
         prompt: ApprovalPrompt,
         accept: Boolean,

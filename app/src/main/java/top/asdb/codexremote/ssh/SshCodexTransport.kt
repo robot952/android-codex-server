@@ -342,6 +342,29 @@ class SshCodexTransport {
             }
         }
 
+    /** Reads a user-requested image through the already authenticated SSH session. */
+    suspend fun downloadImage(path: String): ByteArray = withContext(Dispatchers.IO) {
+        val remotePath = path.trim()
+        require(remotePath.startsWith('/')) { "图片路径必须是绝对路径" }
+        require(remotePath.length <= MAX_REMOTE_PATH_CHARS) { "图片路径过长" }
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            val declaredSize = sftp.stat(remotePath).size
+            require(declaredSize in 1..MAX_IMAGE_PREVIEW_BYTES) { "图片不能超过 20 MB" }
+            val output = BoundedImageOutputStream(MAX_IMAGE_PREVIEW_BYTES.toInt())
+            sftp.get(remotePath, output)
+            output.toByteArray()
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
     fun isConnected(): Boolean = synchronized(connectionStateLock) {
         session?.isConnected == true && channel?.isConnected == true
     }
@@ -630,6 +653,28 @@ class SshCodexTransport {
         private const val MAX_LINE_CHARS = 8 * 1024
         private const val MAX_STDERR_BYTES = 8 * 1024
         private const val MAX_APP_SERVER_LINE_CHARS = 8 * 1024 * 1024
+        private const val MAX_IMAGE_PREVIEW_BYTES = 20L * 1024 * 1024
+        private const val MAX_REMOTE_PATH_CHARS = 4_096
+    }
+}
+
+private class BoundedImageOutputStream(private val maximumBytes: Int) : OutputStream() {
+    private val output = ByteArrayOutputStream()
+
+    override fun write(value: Int) {
+        checkCapacity(1)
+        output.write(value)
+    }
+
+    override fun write(buffer: ByteArray, offset: Int, length: Int) {
+        checkCapacity(length)
+        output.write(buffer, offset, length)
+    }
+
+    fun toByteArray(): ByteArray = output.toByteArray()
+
+    private fun checkCapacity(nextBytes: Int) {
+        require(nextBytes >= 0 && output.size() <= maximumBytes - nextBytes) { "图片不能超过 20 MB" }
     }
 }
 

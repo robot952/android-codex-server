@@ -1,6 +1,8 @@
 package top.asdb.codexremote.ui
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,6 +72,7 @@ import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -111,7 +115,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -126,9 +132,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.AppScreen
@@ -172,6 +182,7 @@ fun WorkScreen(
     onClearGoal: () -> Unit,
     onCompact: () -> Unit = {},
     onLoadOlder: () -> Unit = {},
+    onLoadRemoteImage: suspend (String) -> ByteArray = { error("图片预览不可用") },
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit = { _, _ -> },
 ) {
     val timelineRows = remember(state.timeline) { state.timeline.toTimelineRenderRows() }
@@ -206,9 +217,30 @@ fun WorkScreen(
     var compactRequested by remember { mutableStateOf(false) }
     var goalEditorVisible by remember { mutableStateOf(false) }
     var goalDeleteRequested by remember { mutableStateOf(false) }
+    var imagePreview by remember { mutableStateOf<RemoteImagePreview?>(null) }
+    var imageLoadingPath by remember { mutableStateOf<String?>(null) }
+    var imagePreviewError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { onUpload(context, it) }
+    }
+    fun openImagePreview(path: String) {
+        if (imageLoadingPath != null) return
+        imagePreviewError = null
+        imageLoadingPath = path
+        coroutineScope.launch {
+            try {
+                val bytes = onLoadRemoteImage(path)
+                val bitmap = withContext(Dispatchers.Default) { decodeImagePreview(bytes) }
+                imagePreview = RemoteImagePreview(path, bitmap)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                imagePreviewError = error.message ?: "无法加载图片"
+            } finally {
+                imageLoadingPath = null
+            }
+        }
     }
 
     DisposableEffect(lifecycleOwner, focusManager, keyboardController) {
@@ -414,6 +446,8 @@ fun WorkScreen(
                                 canRollback = !state.loading && !state.submitting &&
                                     !state.running && entry.id == latestFileChangeId,
                                 onRollback = { rollbackRequested = true },
+                                onOpenImage = ::openImagePreview,
+                                imageLoadingPath = imageLoadingPath,
                                 onOpenSubAgent = onOpenSubAgent,
                                 canOpenSubAgents = canOpenSubAgents,
                             )
@@ -516,6 +550,34 @@ fun WorkScreen(
 
     selectedDiff?.let { change ->
         DiffViewer(change = change, onDismiss = { selectedDiff = null })
+    }
+
+    imagePreview?.let { preview ->
+        RemoteImagePreviewDialog(preview = preview, onDismiss = { imagePreview = null })
+    }
+
+    imageLoadingPath?.let { path ->
+        Dialog(onDismissRequest = {}) {
+            Surface(shape = RoundedCornerShape(8.dp), color = CodexSurfaceRaised) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("正在加载 ${path.substringAfterLast('/').ifBlank { "图片" }}")
+                }
+            }
+        }
+    }
+
+    imagePreviewError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { imagePreviewError = null },
+            title = { Text("无法查看图片") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = { imagePreviewError = null }) { Text("关闭") } },
+        )
     }
 
     if (showModels) {
@@ -743,6 +805,8 @@ private fun TimelineItem(
     canMutate: Boolean,
     canRollback: Boolean,
     onRollback: () -> Unit,
+    onOpenImage: (String) -> Unit,
+    imageLoadingPath: String?,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
     canOpenSubAgents: Boolean,
 ) {
@@ -761,7 +825,7 @@ private fun TimelineItem(
         TimelineKind.Reasoning, TimelineKind.Plan -> CollapsibleText(entry)
         TimelineKind.Command -> CommandBlock(entry)
         TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canMutate, canRollback, onRollback)
-        TimelineKind.Tool -> ToolBlock(entry)
+        TimelineKind.Tool -> ToolBlock(entry, onOpenImage, imageLoadingPath)
         TimelineKind.SubAgent -> SubAgentActivityGroupBlock(
             entries = listOf(entry),
             onOpenSubAgent = onOpenSubAgent,
@@ -1083,23 +1147,43 @@ private fun AggregateDiffBlock(change: FileChange, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun ToolBlock(entry: TimelineEntry) {
+private fun ToolBlock(
+    entry: TimelineEntry,
+    onOpenImage: (String) -> Unit,
+    imageLoadingPath: String?,
+) {
+    val imagePath = imagePreviewPath(entry)
+    val loadingImage = imagePath != null && imagePath == imageLoadingPath
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().let { modifier ->
+            if (imagePath != null) modifier.clickable { onOpenImage(imagePath) } else modifier
+        },
     ) {
         Column(Modifier.padding(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(17.dp))
+                Icon(
+                    if (imagePath != null) Icons.Default.Visibility else Icons.Default.Code,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(entry.title.ifBlank { "工具" }, modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelLarge)
-                StatusText(entry.status)
+                if (imagePath == null) {
+                    StatusText(entry.status)
+                } else if (loadingImage) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    IconButton(onClick = { onOpenImage(imagePath) }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.Visibility, contentDescription = "查看图片", modifier = Modifier.size(18.dp))
+                    }
+                }
             }
             if (entry.text.isNotBlank()) {
                 Spacer(Modifier.height(7.dp))
-                SelectionContainer {
+                if (imagePath != null) {
                     Text(
                         entry.text,
                         style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 0.sp),
@@ -1107,6 +1191,93 @@ private fun ToolBlock(entry: TimelineEntry) {
                         modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
                             .verticalScroll(rememberScrollState())
                             .horizontalScroll(rememberScrollState()),
+                    )
+                } else {
+                    SelectionContainer {
+                        Text(
+                            entry.text,
+                            style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 0.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
+                                .verticalScroll(rememberScrollState())
+                                .horizontalScroll(rememberScrollState()),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+internal fun imagePreviewPath(entry: TimelineEntry): String? {
+    if (entry.kind != TimelineKind.Tool) return null
+    val toolName = entry.title.trim().lowercase()
+    if (toolName !in setOf("imageview", "view_image")) return null
+    listOf(entry.text, entry.output).forEach { content ->
+        content.lineSequence().forEach { line ->
+            val path = line.trim().removePrefix("file://").removeSurrounding("\"")
+            if (path.startsWith('/') && IMAGE_EXTENSIONS.any { path.endsWith(it, ignoreCase = true) }) {
+                return path
+            }
+        }
+    }
+    return null
+}
+
+private val IMAGE_EXTENSIONS = setOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+
+private data class RemoteImagePreview(val path: String, val bitmap: Bitmap)
+
+private fun decodeImagePreview(bytes: ByteArray): Bitmap {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    require(bounds.outWidth > 0 && bounds.outHeight > 0) { "文件不是可显示的图片" }
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = previewSampleSize(bounds.outWidth, bounds.outHeight)
+    }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        ?: throw IllegalArgumentException("文件不是可显示的图片")
+}
+
+private fun previewSampleSize(width: Int, height: Int): Int {
+    var sample = 1
+    while (width / sample > 2_048 || height / sample > 2_048) sample *= 2
+    return sample
+}
+
+@Composable
+private fun RemoteImagePreviewDialog(preview: RemoteImagePreview, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = Color.Black,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxSize().padding(10.dp),
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        preview.path.substringAfterLast('/').ifBlank { "图片" },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = Color.White,
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭图片", tint = Color.White)
+                    }
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        bitmap = preview.bitmap.asImageBitmap(),
+                        contentDescription = preview.path,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().padding(8.dp),
                     )
                 }
             }
