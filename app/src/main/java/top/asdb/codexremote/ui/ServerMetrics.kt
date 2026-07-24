@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.rememberTooltipState
@@ -105,10 +106,27 @@ private fun MetricValue(
         tooltip = {
             PlainTooltip {
                 Column {
-                    Text("服务器资源占用", style = MaterialTheme.typography.labelLarge)
-                    Text(detail.cpu, style = MaterialTheme.typography.bodySmall)
-                    Text(detail.memory, style = MaterialTheme.typography.bodySmall)
-                    Text(detail.disk, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        detail.cpu,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                    )
+                    Text(
+                        detail.memory,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                    )
+                    Text(
+                        detail.disk,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                    )
                 }
             }
         },
@@ -170,13 +188,17 @@ private fun resourceDetails(metrics: ServerMetrics?): ResourceDetails = Resource
 )
 
 private fun usageText(percent: Int?, totalKiB: Long?, usedKiB: Long?): String = when {
-    totalKiB != null && usedKiB != null -> "已用 ${formatSize(usedKiB)} / ${formatSize(totalKiB)} (${formatMetric(percent)})"
-    else -> "已用 -- / -- (${formatMetric(percent)})"
+    totalKiB != null && usedKiB != null -> "${formatSize(usedKiB)}/${formatSize(totalKiB)} · ${formatMetric(percent)}"
+    else -> "--/-- · ${formatMetric(percent)}"
 }
 
 private fun formatSize(kib: Long): String {
     val gib = kib.toDouble() / 1024.0 / 1024.0
-    return if (gib >= 1.0) "%.1f GB".format(gib) else "%.0f MB".format(kib / 1024.0)
+    return when {
+        gib >= 1024.0 -> "%.1f TB".format(gib / 1024.0)
+        gib >= 1.0 -> "%.1f GB".format(gib)
+        else -> "%.0f MB".format(kib / 1024.0)
+    }
 }
 
 @Composable
