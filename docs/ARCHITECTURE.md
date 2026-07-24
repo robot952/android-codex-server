@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.16（versionCode 38）
+- Android 应用版本：1.7.17（versionCode 39）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -178,6 +178,8 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
   点击任一项进入该智能体自己的工作页；返回时先恢复父页面快照，再通过
   `thread/resume` 恢复远端父线程上下文。加载中的子页也必须允许首次返回；同一层返回只能有一个
   pending resume，重复返回不得跳层或重复请求。导航栈按 profile 隔离，旧的异步恢复不得弹出较新的栈帧。
+  恢复响应的 `thread.id` 必须等于请求的子 Agent id；不一致时仅重试一次，仍不一致则拒绝该响应，
+  绝不能在子 Agent 标题下显示父会话。子 Agent 页也只接收有匹配 `threadId` 的流式项目。
   远端恢复失败时留在子页以便重试；已经断线时恢复父快照并提示重连。提交或审批期间不得切入子页。
 - 支持目标的显示、编辑、暂停/继续和删除，目标是远程线程持久状态，不是本地假状态。
 
@@ -615,7 +617,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | --- | --- |
 | ApprovalModeTest | 权限模式到 approvalPolicy/sandbox 的映射 |
 | CodexConnectionManagerTest | 多 profile 客户端和状态隔离 |
-| CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析 |
+| CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析，以及父子会话事件隔离 |
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
 | ContextUsageTest | 上下文圆环占用计算 |
 | ProfileScopedContextUsageCacheTest | 客户端重建后的上下文圆环回退、LRU 与 profile 隔离 |
@@ -761,7 +763,7 @@ Serializable data class（必须给默认值）
 6. 会话重进优先用缓存，较大历史允许更长的后台恢复，不让页面长期空白。
 7. 更早历史通过顶部下拉释放加载，提示和顶部留白跟随手势。
 8. 会话运行中显示停止图标，列表显示运行转圈；上下文用小圆环，不挤占动作区，点击只查看当前上下文占用。
-9. 子 Agent 用稳定身份色的图标表达，状态必须准确且逐个独立显示：保留横向自动换行的紧凑 Agent 框，只在名称右侧增加活动态旋转指示器或终态文字，不显示多余“子agent”标签；点击其 Agent 框或列表项必须能进入独立工作页并安全返回父会话。加载中允许首次返回、重复返回不跳层，提交或审批期间禁止切换会话。
+9. 子 Agent 用稳定身份色的图标表达，状态必须准确且逐个独立显示：保留横向自动换行的紧凑 Agent 框，只在名称右侧增加活动态旋转指示器或终态文字，不显示多余“子agent”标签；点击其 Agent 框或列表项必须进入其真实独立会话，绝不显示父会话内容，并能安全返回父会话。加载中允许首次返回、重复返回不跳层，提交或审批期间禁止切换会话。
 10. 会话目标和操作菜单使用原生 app-server 能力，不依赖难维护的斜杠解析。
 11. App 后台时 turn 完成要发通知，点击进入正确的服务器和会话。
 12. Debug 通过 Codex 图标连点 10 次开启，日志可用系统分享并且必须脱敏。

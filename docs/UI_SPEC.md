@@ -38,7 +38,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   cached UI, so later input always targets the parent thread rather than the last collaborator.
   A loading child still accepts one back action; repeat presses do not skip a parent or issue a
   second resume. A failed resume returns to the child for retry, while a disconnected profile
-  returns its cached parent view with a reconnect notice.
+  returns its cached parent view with a reconnect notice. A child resume must return the requested
+  thread id; a mismatched response is retried once and then rejected, never rendered under the
+  child Agent name. Unscoped streaming items are also rejected while viewing a child.
 - The context ring opens a compact popover with server-reported current-context usage: used/remaining
   percentage and used/window token counts. It is informational; manual compaction remains an explicit
   command in the composer action menu. Reopening a cached thread retains its last known usage until

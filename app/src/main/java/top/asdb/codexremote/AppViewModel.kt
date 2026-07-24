@@ -937,8 +937,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 screen = current.screen,
             ),
         )
-        val child = client.cachedThread(threadId)?.thread
-            ?: client.cachedThreadStale(threadId)?.thread
+        val childSnapshot = client.cachedThread(threadId)?.takeIf { it.thread.id == threadId }
+            ?: client.cachedThreadStale(threadId)?.takeIf { it.thread.id == threadId }
+        val child = childSnapshot?.thread
             ?: top.asdb.codexremote.data.CodexThread(
                 id = threadId,
                 title = agentName.ifBlank { "智能体" },
@@ -1050,7 +1051,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         resumeNotificationBuffers[profileId] = resumeBuffer
         val approvalMode = _state.value.approvalMode
         val threadSelection = resolveThreadModelSelection(profileId, thread.id, _state.value.models)
-        val cached = client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id)
+        val cached = (client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id))
+            ?.takeIf { it.thread.id == thread.id }
         val rememberedTokenUsage = client.cachedContextUsage(thread.id)
             ?: contextUsageFallbacks.get(profileId, thread.id)
             ?: cached?.tokenUsage?.takeIf { it.hasKnownContextWindow() }
@@ -1143,7 +1145,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // replace it with `thread/read`, which is a read-only payload and cannot safely accept
             // subsequent turns or steering.
             try {
-                val resumed = client.openThread(thread.id, approvalMode)
+                val resumed = resumeExpectedThread(client, profileId, thread.id, approvalMode)
                 val loaded = resumed.thread
                 val reconciled = reconcileResumedTimeline(
                     cachedTimeline = cached?.timeline,
@@ -1266,6 +1268,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         sessionNavigationJobs[profileId] = job
         return true
+    }
+
+    private suspend fun resumeExpectedThread(
+        client: CodexAppServerClient,
+        profileId: String,
+        threadId: String,
+        approvalMode: ApprovalMode,
+    ): top.asdb.codexremote.codex.ResumedThread {
+        val first = client.openThread(threadId, approvalMode)
+        if (first.thread.id == threadId) return first
+
+        // A late resume response for the parent can otherwise make a child page display the
+        // parent's transcript while retaining the child's display name in the app bar.
+        DiagnosticLogger.warn(
+            "Thread",
+            "resume_mismatch profile=${profileRef(profileId)} requested=${profileRef(threadId)} " +
+                "returned=${profileRef(first.thread.id)} retrying",
+        )
+        val retried = client.openThread(threadId, approvalMode)
+        if (retried.thread.id == threadId) return retried
+
+        DiagnosticLogger.warn(
+            "Thread",
+            "resume_mismatch_final profile=${profileRef(profileId)} requested=${profileRef(threadId)} " +
+                "returned=${profileRef(retried.thread.id)}",
+        )
+        throw IllegalStateException("服务器返回了其他会话，已阻止显示父会话内容")
     }
 
     /** Fetches one bounded page on demand so opening a large thread remains fast. */

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalPrompt
 import top.asdb.codexremote.data.CodexModel
@@ -809,11 +810,17 @@ object CodexEventReducer {
         }
 
     private fun AppUiState.acceptsThreadEvent(method: String, params: JsonObject): Boolean {
+        val eventThreadId = params.string("threadId")
+        val activeId = activeThread?.id.orEmpty()
+        // A background parent can still emit a late unscoped notification after the app has
+        // resumed a child. There is no safe way to attribute that payload, so never let it
+        // mutate an AgentWork timeline. Proper app-server item notifications carry threadId.
+        if (eventThreadId.isBlank() && activeId.isNotBlank() && screen == AppScreen.AgentWork) {
+            return false
+        }
         if (method == "turn/started" || method == "turn/completed" || method == "thread/status/changed") {
             return true
         }
-        val eventThreadId = params.string("threadId")
-        val activeId = activeThread?.id.orEmpty()
         return eventThreadId.isBlank() || activeId.isBlank() || eventThreadId == activeId
     }
 

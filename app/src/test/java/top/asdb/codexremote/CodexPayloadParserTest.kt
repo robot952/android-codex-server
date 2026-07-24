@@ -14,6 +14,7 @@ import top.asdb.codexremote.codex.MAX_COMMAND_OUTPUT_CHARS
 import top.asdb.codexremote.codex.MAX_TIMELINE_TEXT_CHARS
 import top.asdb.codexremote.codex.OUTPUT_TRUNCATION_MARKER
 import top.asdb.codexremote.codex.TEXT_TRUNCATION_MARKER
+import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineKind
@@ -22,6 +23,29 @@ import top.asdb.codexremote.data.TokenUsageBreakdown
 
 class CodexPayloadParserTest {
     private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun `does not apply unscoped parent item events to an agent page`() {
+        val child = AppUiState(
+            screen = AppScreen.AgentWork,
+            activeThread = top.asdb.codexremote.data.CodexThread(
+                id = "child-thread", title = "child", preview = "", cwd = "", source = "",
+                status = "idle", createdAt = 0, updatedAt = 0, cliVersion = "",
+            ),
+        )
+        val unscopedParentItem = json.parseToJsonElement(
+            """{"turnId":"parent-turn","item":{"id":"parent-message","type":"agentMessage","text":"父会话内容"}}""",
+        ).jsonObject
+        val scopedChildItem = json.parseToJsonElement(
+            """{"threadId":"child-thread","turnId":"child-turn","item":{"id":"child-message","type":"agentMessage","text":"子会话内容"}}""",
+        ).jsonObject
+
+        val ignored = CodexEventReducer.reduce(child, "item/completed", unscopedParentItem)
+        assertTrue(ignored.timeline.isEmpty())
+
+        val accepted = CodexEventReducer.reduce(ignored, "item/completed", scopedChildItem)
+        assertEquals("子会话内容", accepted.timeline.single().text)
+    }
 
     @Test
     fun parsesAndReducesTokenUsageOnlyForActiveThread() {
