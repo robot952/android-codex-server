@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Speed
@@ -17,16 +18,18 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.rememberTooltipState
-import kotlinx.coroutines.launch
 import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.ui.theme.CodexAmber
 
@@ -35,11 +38,13 @@ import top.asdb.codexremote.ui.theme.CodexAmber
 internal fun ServerMetricsText(
     metrics: ServerMetrics?,
     modifier: Modifier = Modifier,
-    showMemoryDetails: Boolean = false,
+    showResourceDetails: Boolean = false,
 ) {
     val cpu = metrics?.cpuPercent
     val memory = metrics?.memoryPercent
     val disk = metrics?.diskPercent
+    var selectedDetail by remember { mutableStateOf<ResourceMetric?>(null) }
+    val details = resourceDetails(metrics)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -49,64 +54,79 @@ internal fun ServerMetricsText(
         horizontalArrangement = Arrangement.spacedBy(11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MetricValue(Icons.Default.Speed, "CPU", cpu, Modifier)
-        MemoryMetricValue(
-            value = memory,
-            totalKiB = metrics?.memoryTotalKiB,
-            usedKiB = metrics?.memoryUsedKiB,
-            showDetails = showMemoryDetails,
+        MetricValue(
+            icon = Icons.Default.Speed,
+            label = "CPU",
+            value = cpu,
+            detail = if (showResourceDetails) details else null,
+            selected = selectedDetail == ResourceMetric.Cpu,
+            onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Cpu) },
         )
-        MetricValue(Icons.Default.Storage, "磁盘", disk, Modifier)
+        MetricValue(
+            icon = Icons.Default.Memory,
+            label = "内存",
+            value = memory,
+            detail = if (showResourceDetails) details else null,
+            selected = selectedDetail == ResourceMetric.Memory,
+            onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Memory) },
+        )
+        MetricValue(
+            icon = Icons.Default.Storage,
+            label = "磁盘",
+            value = disk,
+            detail = if (showResourceDetails) details else null,
+            selected = selectedDetail == ResourceMetric.Disk,
+            onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Disk) },
+        )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MemoryMetricValue(
+private fun MetricValue(
+    icon: ImageVector,
+    label: String,
     value: Int?,
-    totalKiB: Long?,
-    usedKiB: Long?,
-    showDetails: Boolean,
+    detail: ResourceDetails?,
+    selected: Boolean,
+    onDetailClick: () -> Unit,
 ) {
-    if (!showDetails) {
-        MetricValue(Icons.Default.Memory, "内存", value, Modifier)
+    if (detail == null) {
+        MetricValueContent(icon, label, value, Modifier)
         return
     }
 
     val tooltipState = rememberTooltipState(isPersistent = true)
-    val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(selected) {
+        if (selected) tooltipState.show() else tooltipState.dismiss()
+    }
     TooltipBox(
         positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
         tooltip = {
             PlainTooltip {
                 Column {
-                    Text("内存占用", style = MaterialTheme.typography.labelLarge)
-                    Text(
-                        memoryUsageText(value, totalKiB, usedKiB),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Text("服务器资源占用", style = MaterialTheme.typography.labelLarge)
+                    Text(detail.cpu, style = MaterialTheme.typography.bodySmall)
+                    Text(detail.memory, style = MaterialTheme.typography.bodySmall)
+                    Text(detail.disk, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
         state = tooltipState,
+        focusable = false,
+        enableUserInput = false,
     ) {
-        MetricValue(
-            icon = Icons.Default.Memory,
-            label = "内存，查看用量",
+        MetricValueContent(
+            icon = icon,
+            label = "$label，查看服务器资源详情",
             value = value,
-            modifier = Modifier.clickable {
-                if (tooltipState.isVisible) {
-                    tooltipState.dismiss()
-                } else {
-                    coroutineScope.launch { tooltipState.show() }
-                }
-            },
+            modifier = Modifier.clickable(onClick = onDetailClick),
         )
     }
 }
 
 @Composable
-private fun MetricValue(
+private fun MetricValueContent(
     icon: ImageVector,
     label: String,
     value: Int?,
@@ -132,12 +152,29 @@ private fun MetricValue(
 
 private fun formatMetric(value: Int?): String = value?.let { "$it%" } ?: "--"
 
-private fun memoryUsageText(value: Int?, totalKiB: Long?, usedKiB: Long?): String = when {
-    totalKiB != null && usedKiB != null -> "已用 ${formatMemorySize(usedKiB)} / ${formatMemorySize(totalKiB)} (${formatMetric(value)})"
-    else -> "等待服务器返回内存容量 (${formatMetric(value)})"
+private enum class ResourceMetric { Cpu, Memory, Disk }
+
+private data class ResourceDetails(
+    val cpu: String,
+    val memory: String,
+    val disk: String,
+)
+
+private fun ResourceMetric?.toggle(metric: ResourceMetric): ResourceMetric? =
+    if (this == metric) null else metric
+
+private fun resourceDetails(metrics: ServerMetrics?): ResourceDetails = ResourceDetails(
+    cpu = "CPU ${formatMetric(metrics?.cpuPercent)} · ${metrics?.cpuCoreCount?.let { "$it 核" } ?: "-- 核"}",
+    memory = "内存 ${usageText(metrics?.memoryPercent, metrics?.memoryTotalKiB, metrics?.memoryUsedKiB)}",
+    disk = "硬盘 ${usageText(metrics?.diskPercent, metrics?.diskTotalKiB, metrics?.diskUsedKiB)}",
+)
+
+private fun usageText(percent: Int?, totalKiB: Long?, usedKiB: Long?): String = when {
+    totalKiB != null && usedKiB != null -> "已用 ${formatSize(usedKiB)} / ${formatSize(totalKiB)} (${formatMetric(percent)})"
+    else -> "已用 -- / -- (${formatMetric(percent)})"
 }
 
-private fun formatMemorySize(kib: Long): String {
+private fun formatSize(kib: Long): String {
     val gib = kib.toDouble() / 1024.0 / 1024.0
     return if (gib >= 1.0) "%.1f GB".format(gib) else "%.0f MB".format(kib / 1024.0)
 }

@@ -660,6 +660,8 @@ if [ "${'$'}{total_b:-0}" -gt "${'$'}{total_a:-0}" ]; then
   cpu=${'$'}(( (total_delta - idle_delta) * 100 / total_delta ))
 fi
 
+cpu_cores=${'$'}(awk '/^processor[[:space:]]*:/ { count++ } END { if (count > 0) print count; else print "--" }' /proc/cpuinfo 2>/dev/null)
+
 memory=${'$'}(awk '
 /^MemTotal:/ { total=${'$'}2 }
 /^MemAvailable:/ { available=${'$'}2 }
@@ -675,14 +677,19 @@ END {
   } else print "-1|--|--"
 }' /proc/meminfo 2>/dev/null)
 
-disk=${'$'}(df -P -k / 2>/dev/null | awk 'NR == 2 { gsub("%", "", ${'$'}5); print ${'$'}5; exit }')
+disk=${'$'}(df -P -k / 2>/dev/null | awk 'NR == 2 { gsub("%", "", ${'$'}5); printf "%s|%s|%s", ${'$'}5, ${'$'}2, ${'$'}3; exit }')
 memory_percent=${'$'}{memory%%|*}
 memory_sizes=${'$'}{memory#*|}
 memory_total=${'$'}{memory_sizes%%|*}
 memory_used=${'$'}{memory_sizes#*|}
-printf "CODEX_METRICS|%s|%s|%s|%s|%s\n" \
-  "${'$'}cpu" "${'$'}{memory_percent:---}" "${'$'}{disk:--}" \
-  "${'$'}{memory_total:---}" "${'$'}{memory_used:---}"
+disk_percent=${'$'}{disk%%|*}
+disk_sizes=${'$'}{disk#*|}
+disk_total=${'$'}{disk_sizes%%|*}
+disk_used=${'$'}{disk_sizes#*|}
+printf "CODEX_METRICS|%s|%s|%s|%s|%s|%s|%s|%s\n" \
+  "${'$'}cpu" "${'$'}{memory_percent:---}" "${'$'}{disk_percent:---}" \
+  "${'$'}{memory_total:---}" "${'$'}{memory_used:---}" "${'$'}{cpu_cores:---}" \
+  "${'$'}{disk_total:---}" "${'$'}{disk_used:---}"
 """.trimIndent()
 
 internal fun parseServerMetrics(
@@ -700,18 +707,25 @@ internal fun parseServerMetrics(
     fun parsePercent(value: String): Int? = value.toIntOrNull()
         ?.takeIf { it >= 0 }
         ?.coerceIn(0, 100)
+    fun parseCoreCount(value: String): Int? = value.toIntOrNull()?.takeIf { it > 0 }
     fun parseKiB(value: String): Long? = value.toLongOrNull()?.takeIf { it >= 0L }
 
     val memoryTotalKiB = fields.getOrNull(4)?.let(::parseKiB)
     val memoryUsedKiB = fields.getOrNull(5)?.let(::parseKiB)
         ?.takeIf { used -> memoryTotalKiB == null || used <= memoryTotalKiB }
+    val diskTotalKiB = fields.getOrNull(7)?.let(::parseKiB)
+    val diskUsedKiB = fields.getOrNull(8)?.let(::parseKiB)
+        ?.takeIf { used -> diskTotalKiB == null || used <= diskTotalKiB }
 
     return ServerMetrics(
         cpuPercent = parsePercent(fields[1]),
+        cpuCoreCount = fields.getOrNull(6)?.let(::parseCoreCount),
         memoryPercent = parsePercent(fields[2]),
         diskPercent = parsePercent(fields[3]),
         memoryTotalKiB = memoryTotalKiB,
         memoryUsedKiB = memoryUsedKiB,
+        diskTotalKiB = diskTotalKiB,
+        diskUsedKiB = diskUsedKiB,
         sampledAtEpochMillis = sampledAtEpochMillis,
     )
 }

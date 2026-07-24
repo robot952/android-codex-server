@@ -57,11 +57,14 @@ data class ConnectionState(
 /** Lightweight read-only resource usage sampled over the active SSH connection. */
 data class ServerMetrics(
     val cpuPercent: Int? = null,
+    val cpuCoreCount: Int? = null,
     val memoryPercent: Int? = null,
     /** Values come from /proc/meminfo, whose kB unit is 1024 bytes. */
     val memoryTotalKiB: Long? = null,
     val memoryUsedKiB: Long? = null,
     val diskPercent: Int? = null,
+    val diskTotalKiB: Long? = null,
+    val diskUsedKiB: Long? = null,
     val sampledAtEpochMillis: Long = 0L,
     val error: String? = null,
 )
