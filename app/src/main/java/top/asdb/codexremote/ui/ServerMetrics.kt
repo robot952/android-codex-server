@@ -48,6 +48,10 @@ internal fun ServerMetricsText(
     val disk = metrics?.diskPercent
     val networkDownload = metrics?.networkDownloadBytesPerSecond
     val networkUpload = metrics?.networkUploadBytesPerSecond
+    val totalNetworkRate = when {
+        networkDownload == null && networkUpload == null -> null
+        else -> (networkDownload ?: 0L) + (networkUpload ?: 0L)
+    }
     var selectedDetail by remember { mutableStateOf<ResourceMetric?>(null) }
     val details = resourceDetails(metrics)
     Row(
@@ -87,10 +91,14 @@ internal fun ServerMetricsText(
             onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Disk) },
         )
         MetricValue(
-            icon = if (compactForServerList) null else Icons.Default.NetworkCheck,
-            label = "网络",
+            icon = Icons.Default.NetworkCheck,
+            label = if (compactForServerList) "网络总速率" else "网络",
             value = null,
-            displayValue = "↓${formatNetworkRate(networkDownload, true)} ↑${formatNetworkRate(networkUpload, true)}",
+            displayValue = if (compactForServerList) {
+                formatNetworkRate(totalNetworkRate, true)
+            } else {
+                "↓${formatNetworkRate(networkDownload, true)} ↑${formatNetworkRate(networkUpload, true)}"
+            },
             detail = if (showResourceDetails) details else null,
             selected = selectedDetail == ResourceMetric.Network,
             onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Network) },
