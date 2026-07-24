@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
@@ -1257,17 +1258,22 @@ private fun ServerSessionRow(
             )
         }
         Spacer(Modifier.width(6.dp))
-        Box(modifier = Modifier.size(40.dp)) {
+        Box(
+            modifier = Modifier.size(40.dp),
+            contentAlignment = Alignment.Center,
+        ) {
             if (connection.phase == ConnectionPhase.Connected && onDisconnect != null) {
                 IconButton(
                     onClick = onDisconnect,
-                    modifier = Modifier.fillMaxSize()
-                        .border(1.dp, MaterialTheme.colorScheme.error, CircleShape),
+                    modifier = Modifier.size(32.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.14f)),
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Close,
+                        imageVector = Icons.Default.PowerSettingsNew,
                         contentDescription = "断开服务器",
                         tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(17.dp),
                     )
                 }
             }
