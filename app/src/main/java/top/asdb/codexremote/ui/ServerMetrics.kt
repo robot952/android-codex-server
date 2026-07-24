@@ -60,7 +60,7 @@ internal fun ServerMetricsText(
             .semantics {
                 contentDescription = "CPU ${formatMetric(cpu)}，内存 ${formatMetric(memory)}，磁盘 ${formatMetric(disk)}，网络下载 ${formatNetworkRate(networkDownload, false)}，上传 ${formatNetworkRate(networkUpload, false)}"
             },
-        horizontalArrangement = Arrangement.spacedBy(if (compactForServerList) 7.dp else 11.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compactForServerList) 4.dp else 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MetricValue(
@@ -95,7 +95,7 @@ internal fun ServerMetricsText(
             label = if (compactForServerList) "网络总速率" else "网络",
             value = null,
             displayValue = if (compactForServerList) {
-                formatNetworkRate(totalNetworkRate, true)
+                formatNetworkTotalRate(totalNetworkRate)
             } else {
                 "↓${formatNetworkRate(networkDownload, true)} ↑${formatNetworkRate(networkUpload, true)}"
             },
@@ -251,6 +251,15 @@ private fun formatNetworkRate(bytesPerSecond: Long?, compact: Boolean): String {
             if (compact) "K" else " KB/s",
         )
         else -> if (compact) "${bytes}B" else "${bytes} B/s"
+    }
+}
+
+private fun formatNetworkTotalRate(bytesPerSecond: Long?): String {
+    val bytes = bytesPerSecond ?: return "--"
+    return when {
+        bytes >= 1024L * 1024L -> "%.1fMB/s".format(bytes.toDouble() / 1024.0 / 1024.0)
+        bytes >= 1024L -> "%.0fKB/s".format(bytes.toDouble() / 1024.0)
+        else -> "${bytes}B/s"
     }
 }
 
