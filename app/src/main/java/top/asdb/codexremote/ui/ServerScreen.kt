@@ -1256,19 +1256,21 @@ private fun ServerSessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (connection.phase == ConnectionPhase.Connected && onDisconnect != null) {
-            Spacer(Modifier.width(6.dp))
-            OutlinedButton(
-                onClick = onDisconnect,
-                shape = FieldShape,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
-                modifier = Modifier.height(40.dp),
-            ) {
-                Text("断开", maxLines = 1)
+        Spacer(Modifier.width(6.dp))
+        Box(modifier = Modifier.width(72.dp).height(40.dp)) {
+            if (connection.phase == ConnectionPhase.Connected && onDisconnect != null) {
+                OutlinedButton(
+                    onClick = onDisconnect,
+                    shape = FieldShape,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Text("断开", maxLines = 1)
+                }
             }
         }
         Spacer(Modifier.width(6.dp))

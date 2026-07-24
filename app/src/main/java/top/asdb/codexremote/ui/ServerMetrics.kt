@@ -35,12 +35,12 @@ internal fun ServerMetricsText(
             .semantics {
                 contentDescription = "CPU ${formatMetric(cpu)}，内存 ${formatMetric(memory)}，磁盘 ${formatMetric(disk)}"
             },
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        MetricValue(Icons.Default.Speed, "CPU", cpu, Modifier.weight(1f))
-        MetricValue(Icons.Default.Memory, "内存", memory, Modifier.weight(1f))
-        MetricValue(Icons.Default.Storage, "磁盘", disk, Modifier.weight(1f))
+        MetricValue(Icons.Default.Speed, "CPU", cpu, Modifier)
+        MetricValue(Icons.Default.Memory, "内存", memory, Modifier)
+        MetricValue(Icons.Default.Storage, "磁盘", disk, Modifier)
     }
 }
 
