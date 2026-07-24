@@ -25,6 +25,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
+import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.data.ServerProfile
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
@@ -82,6 +83,17 @@ class SshCodexTransport {
 
     private val _closed = MutableSharedFlow<SshTransportEvent>()
     internal val closed: SharedFlow<SshTransportEvent> = _closed.asSharedFlow()
+
+    /** Samples only procfs and the root filesystem; no remote package or daemon is installed. */
+    suspend fun readServerMetrics(profile: ServerProfile): ServerMetrics {
+        val lines = executeScript(
+            profile = profile,
+            script = SERVER_METRICS_SCRIPT,
+            timeoutMs = METRICS_TIMEOUT_MS,
+            operationName = "读取服务器资源占用",
+        )
+        return parseServerMetrics(lines, System.currentTimeMillis())
+    }
 
     suspend fun probeFingerprint(profile: ServerProfile): String = withContext(Dispatchers.IO) {
         require(profile.host.isNotBlank()) { "请输入服务器地址" }
@@ -609,6 +621,7 @@ class SshCodexTransport {
 
     companion object {
         private const val PROBE_TIMEOUT_MS = 30_000L
+        private const val METRICS_TIMEOUT_MS = 15_000L
         private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
         private const val UNINSTALL_TIMEOUT_MS = 60_000L
         internal const val INSTALL_SHELL_COMMAND = "CODEX_REMOTE_SSH_PID=\$PPID setsid --wait sh -s"
@@ -618,6 +631,73 @@ class SshCodexTransport {
         private const val MAX_STDERR_BYTES = 8 * 1024
         private const val MAX_APP_SERVER_LINE_CHARS = 8 * 1024 * 1024
     }
+}
+
+private val SERVER_METRICS_SCRIPT = """
+set -u
+
+sample_cpu() {
+  awk '/^cpu / {
+    total=${'$'}2+${'$'}3+${'$'}4+${'$'}5+${'$'}6+${'$'}7+${'$'}8+${'$'}9
+    idle=${'$'}5+${'$'}6
+    printf "%.0f %.0f\n", total, idle
+    exit
+  }' /proc/stat 2>/dev/null
+}
+
+read total_a idle_a <<EOF
+${'$'}(sample_cpu)
+EOF
+sleep 1
+read total_b idle_b <<EOF
+${'$'}(sample_cpu)
+EOF
+
+cpu=-1
+if [ "${'$'}{total_b:-0}" -gt "${'$'}{total_a:-0}" ]; then
+  total_delta=${'$'}((total_b - total_a))
+  idle_delta=${'$'}((idle_b - idle_a))
+  cpu=${'$'}(( (total_delta - idle_delta) * 100 / total_delta ))
+fi
+
+memory=${'$'}(awk '
+/^MemTotal:/ { total=${'$'}2 }
+/^MemAvailable:/ { available=${'$'}2 }
+/^MemFree:/ { free=${'$'}2 }
+/^Buffers:/ { buffers=${'$'}2 }
+/^Cached:/ { cached=${'$'}2 }
+END {
+  if (available == 0) available=free+buffers+cached
+  if (total > 0) printf "%.0f", ((total-available)*100)/total
+  else print -1
+}' /proc/meminfo 2>/dev/null)
+
+disk=${'$'}(df -P -k / 2>/dev/null | awk 'NR == 2 { gsub("%", "", ${'$'}5); print ${'$'}5; exit }')
+printf "CODEX_METRICS|%s|%s|%s\n" "${'$'}cpu" "${'$'}{memory:--}" "${'$'}{disk:--}"
+""".trimIndent()
+
+internal fun parseServerMetrics(
+    lines: List<String>,
+    sampledAtEpochMillis: Long = System.currentTimeMillis(),
+): ServerMetrics {
+    val fields = lines.asReversed()
+        .firstOrNull { it.trim().startsWith("CODEX_METRICS|") }
+        ?.trim()
+        ?.split('|')
+    if (fields == null || fields.size < 4) {
+        return ServerMetrics(sampledAtEpochMillis = sampledAtEpochMillis, error = "远端未返回资源数据")
+    }
+
+    fun parsePercent(value: String): Int? = value.toIntOrNull()
+        ?.takeIf { it >= 0 }
+        ?.coerceIn(0, 100)
+
+    return ServerMetrics(
+        cpuPercent = parsePercent(fields[1]),
+        memoryPercent = parsePercent(fields[2]),
+        diskPercent = parsePercent(fields[3]),
+        sampledAtEpochMillis = sampledAtEpochMillis,
+    )
 }
 
 internal fun parseInstallProgress(value: String): RemoteInstallProgress {

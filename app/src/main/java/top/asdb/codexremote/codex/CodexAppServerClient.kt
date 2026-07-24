@@ -538,6 +538,8 @@ class CodexAppServerClient(
 
     suspend fun listDirectories(path: String?): RemoteDirectoryListing = transport.listDirectories(path)
 
+    suspend fun readServerMetrics(profile: ServerProfile) = transport.readServerMetrics(profile)
+
     suspend fun archiveThread(threadId: String) {
         request("thread/archive", buildJsonObject { put("threadId", threadId) })
         activeThreadCache.remove(threadId)

@@ -136,6 +136,7 @@ import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.ServerProfile
+import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.diagnostics.DebugTapCounter
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.theme.CodexAmber
@@ -412,6 +413,7 @@ fun ServerScreen(
                 ) {
                     ServerSessionPanel(
                         profiles = state.profiles,
+                        serverMetrics = state.serverMetrics,
                         pendingNewDraft = pendingNewDraft,
                         connectedCount = connectedCount,
                         connectionFor = connectionForProfile,
@@ -1088,6 +1090,7 @@ private fun formatLogSize(bytes: Long): String = when {
 @Composable
 private fun ServerSessionPanel(
     profiles: List<ServerProfile>,
+    serverMetrics: Map<String, ServerMetrics>,
     pendingNewDraft: ServerProfile?,
     connectedCount: Int,
     connectionFor: (ServerProfile) -> ConnectionState,
@@ -1143,6 +1146,7 @@ private fun ServerSessionPanel(
                 ServerSessionRow(
                     profile = profile,
                     connection = connection,
+                    metrics = serverMetrics[profile.id],
                     unsaved = false,
                     onSettings = { onSettings(profile) },
                     onOpen = { onOpen(profile, connection) },
@@ -1156,6 +1160,7 @@ private fun ServerSessionPanel(
                 ServerSessionRow(
                     profile = pending,
                     connection = ConnectionState(),
+                    metrics = null,
                     unsaved = true,
                     onSettings = { onSettings(pending) },
                     onOpen = null,
@@ -1170,6 +1175,7 @@ private fun ServerSessionPanel(
 private fun ServerSessionRow(
     profile: ServerProfile,
     connection: ConnectionState,
+    metrics: ServerMetrics?,
     unsaved: Boolean,
     onSettings: () -> Unit,
     onOpen: (() -> Unit)?,
@@ -1239,6 +1245,9 @@ private fun ServerSessionRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (!unsaved) {
+                ServerMetricsText(metrics)
+            }
             Text(
                 "${profile.username.ifBlank { "root" }} · ${connection.shortLabel()}",
                 style = MaterialTheme.typography.bodySmall,

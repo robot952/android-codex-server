@@ -41,6 +41,7 @@ import top.asdb.codexremote.data.ProfileStore
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.RemoteSetupPrompt
 import top.asdb.codexremote.data.SandboxChoice
+import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.StoredProfiles
 import top.asdb.codexremote.data.ThreadGoal
@@ -76,6 +77,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val setupJobs = mutableMapOf<String, Job>()
     private val disconnectJobs = mutableMapOf<String, Job>()
     private val uninstallJobs = mutableMapOf<String, Job>()
+    private val serverMetricsJobs = mutableMapOf<String, Job>()
     private val sessionNavigationJobs = mutableMapOf<String, Job>()
     private val threadHistoryJobs = mutableMapOf<String, Job>()
     private val threadMutationJobs = mutableMapOf<String, Job>()
@@ -133,6 +135,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             connections.states.collect { states ->
                 _state.update { current ->
                     val merged = current.connectionStates.toMutableMap()
+                    val metrics = current.serverMetrics.toMutableMap()
                     states.forEach { (profileId, remoteState) ->
                         val localState = merged[profileId]
                         val keepLocalOperation = disconnectJobs[profileId]?.isActive == true ||
@@ -149,9 +152,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     current.selectedProfileId == profileId,
                             )
                         if (!keepLocalOperation) merged[profileId] = remoteState
+                        if (remoteState.phase != ConnectionPhase.Connected) metrics.remove(profileId)
                     }
                     current.copy(
                         connectionStates = merged,
+                        serverMetrics = metrics,
                         connection = merged[current.selectedProfileId] ?: current.connection,
                     )
                 }
@@ -207,6 +212,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         setupJobs.values.forEach(Job::cancel)
         disconnectJobs.values.forEach(Job::cancel)
         uninstallJobs.values.forEach(Job::cancel)
+        serverMetricsJobs.values.forEach(Job::cancel)
         sessionNavigationJobs.values.forEach(Job::cancel)
         threadHistoryJobs.values.forEach(Job::cancel)
         threadMutationJobs.values.forEach(Job::cancel)
@@ -241,6 +247,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             connectionJobs.remove(normalized.id)?.cancel()
             setupJobs.remove(normalized.id)?.cancel()
             uninstallJobs.remove(normalized.id)?.cancel()
+            serverMetricsJobs.remove(normalized.id)?.cancel()
             setupStates.remove(normalized.id)
             pendingFingerprints.remove(normalized.id)
             fingerprintProfiles.remove(normalized.id)
@@ -273,7 +280,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     ?: connections.states.value[normalized.id]
                     ?: ConnectionState()
             }
-            val base = current.copy(profiles = profiles, selectedProfileId = normalized.id)
+            val base = current.copy(
+                profiles = profiles,
+                selectedProfileId = normalized.id,
+                serverMetrics = if (identityChanged) current.serverMetrics - normalized.id else current.serverMetrics,
+            )
             if (switching || identityChanged) {
                 restoreProfileState(base, normalized, connection)
             } else {
@@ -372,6 +383,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         connectionJobs.remove(id)?.cancel()
         setupJobs.remove(id)?.cancel()
         uninstallJobs.remove(id)?.cancel()
+        serverMetricsJobs.remove(id)?.cancel()
         disconnectJobs.remove(id)?.cancel()
         _state.update { current ->
             val profiles = current.profiles.filterNot { it.id == id }
@@ -379,6 +391,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (!wasSelected) return@update current.copy(
                 profiles = profiles,
                 connectionStates = current.connectionStates - id,
+                serverMetrics = current.serverMetrics - id,
             )
             val nextProfile = profiles.firstOrNull { it.id == selected }
             if (nextProfile == null) {
@@ -386,6 +399,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     profiles = profiles,
                     selectedProfileId = null,
                     connectionStates = current.connectionStates - id,
+                    serverMetrics = current.serverMetrics - id,
                 ))
             } else {
                 val connection = connections.states.value[selected]
@@ -396,6 +410,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         profiles = profiles,
                         selectedProfileId = selected,
                         connectionStates = current.connectionStates - id,
+                        serverMetrics = current.serverMetrics - id,
                     ),
                     nextProfile,
                     connection,
@@ -785,6 +800,62 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setThreadSearch(value: String) {
         _state.update { it.copy(threadSearch = value) }
+    }
+
+    /** Refreshes one connected server without surfacing transient metrics errors as app errors. */
+    fun refreshServerMetrics(profileId: String) {
+        if (serverMetricsJobs[profileId]?.isActive == true) return
+        val current = _state.value
+        val profile = current.profiles.firstOrNull { it.id == profileId } ?: return
+        val connection = current.connectionStates[profileId]
+            ?: if (current.selectedProfileId == profileId) current.connection else ConnectionState()
+        if (connection.phase != ConnectionPhase.Connected) return
+        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
+        val job = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val effectiveProfile = connections.profile(profileId) ?: profile
+                val metrics = client.readServerMetrics(effectiveProfile)
+                _state.update { state ->
+                    val stateConnection = state.connectionStates[profileId]
+                        ?: if (state.selectedProfileId == profileId) state.connection else ConnectionState()
+                    if (connections.client(profileId) !== client ||
+                        stateConnection.phase != ConnectionPhase.Connected
+                    ) {
+                        state
+                    } else {
+                        state.copy(serverMetrics = state.serverMetrics + (profileId to metrics))
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                DiagnosticLogger.warn(
+                    "Metrics",
+                    "read_failed profile=${profileRef(profileId)} ${error.message.orEmpty()}",
+                )
+                _state.update { state ->
+                    val stateConnection = state.connectionStates[profileId]
+                        ?: if (state.selectedProfileId == profileId) state.connection else ConnectionState()
+                    if (stateConnection.phase != ConnectionPhase.Connected) {
+                        state
+                    } else {
+                        state.copy(
+                            serverMetrics = state.serverMetrics + (
+                                profileId to ServerMetrics(
+                                    sampledAtEpochMillis = System.currentTimeMillis(),
+                                    error = error.message ?: "读取失败",
+                                )
+                            ),
+                        )
+                    }
+                }
+            } finally {
+                if (serverMetricsJobs[profileId] === currentCoroutineContext()[Job]) {
+                    serverMetricsJobs.remove(profileId)
+                }
+            }
+        }
+        serverMetricsJobs[profileId] = job
     }
 
     fun refreshThreads(silent: Boolean = false) {
@@ -2264,6 +2335,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fingerprintJobs[profileId]?.cancel()
         connectionJobs[profileId]?.cancel()
         setupJobs[profileId]?.cancel()
+        serverMetricsJobs.remove(profileId)?.cancel()
         sessionSnapshots.remove(profileId)
         contextUsageFallbacks.clear(profileId)
         subAgentNavigationStacks.clear(profileId)
@@ -2283,6 +2355,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     screen = AppScreen.Servers,
                     connection = disconnecting,
                     connectionStates = current.connectionStates + (profileId to disconnecting),
+                    serverMetrics = current.serverMetrics - profileId,
                     pendingFingerprint = null,
                     remoteSetup = null,
                     setupInProgress = false,

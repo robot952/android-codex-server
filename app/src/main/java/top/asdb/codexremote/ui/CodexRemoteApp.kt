@@ -68,12 +68,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import top.asdb.codexremote.AppViewModel
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
@@ -92,6 +97,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     val terminalState by viewModel.terminalState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var serverSwitcherVisible by remember { mutableStateOf(false) }
+    val connectedMetricProfileIds = state.connectionStates
+        .filterValues { it.phase == ConnectionPhase.Connected }
+        .keys
+        .sorted()
+    val lifecycleOwner = LocalLifecycleOwner.current
     val navigationTarget = ScreenAnimationTarget(
         screen = state.screen,
         threadId = state.activeThread?.id,
@@ -108,6 +118,21 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         state.diagnostic?.let {
             snackbar.showSnackbar(it.take(300))
             viewModel.clearDiagnostic()
+        }
+    }
+
+    LaunchedEffect(lifecycleOwner, state.screen, state.selectedProfileId, connectedMetricProfileIds) {
+        if (state.screen !in setOf(AppScreen.Servers, AppScreen.Threads)) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (isActive) {
+                val profileIds = if (state.screen == AppScreen.Servers) {
+                    connectedMetricProfileIds
+                } else {
+                    listOfNotNull(state.selectedProfileId)
+                }
+                profileIds.forEach(viewModel::refreshServerMetrics)
+                delay(10_000L)
+            }
         }
     }
 
@@ -164,6 +189,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onOpen = viewModel::openThread,
                 onSelectWorkspace = viewModel::showWorkspacePicker,
                 onShowServers = { serverSwitcherVisible = true },
+                onBackToServers = viewModel::showServers,
                 terminalSession = state.selectedProfileId?.let(terminalState.sessions::get),
                 onOpenTerminal = viewModel::openTerminal,
             )

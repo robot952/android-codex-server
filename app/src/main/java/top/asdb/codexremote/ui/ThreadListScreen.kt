@@ -71,6 +71,7 @@ fun ThreadListScreen(
     onOpen: (CodexThread) -> Unit,
     onSelectWorkspace: () -> Unit,
     onShowServers: () -> Unit,
+    onBackToServers: () -> Unit,
     terminalSession: SshTerminalSessionState?,
     onOpenTerminal: () -> Unit,
 ) {
@@ -86,7 +87,11 @@ fun ThreadListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .clickable(onClick = onBackToServers)
+                            .semantics { contentDescription = "返回服务器列表" },
+                    ) {
                         Text("CODEX", fontWeight = FontWeight.SemiBold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
@@ -101,6 +106,7 @@ fun ThreadListScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        ServerMetricsText(state.serverMetrics[state.selectedProfileId])
                     }
                 },
                 actions = {

@@ -54,6 +54,15 @@ data class ConnectionState(
     val cliVersion: String? = null,
 )
 
+/** Lightweight read-only resource usage sampled over the active SSH connection. */
+data class ServerMetrics(
+    val cpuPercent: Int? = null,
+    val memoryPercent: Int? = null,
+    val diskPercent: Int? = null,
+    val sampledAtEpochMillis: Long = 0L,
+    val error: String? = null,
+)
+
 data class CodexThread(
     val id: String,
     val title: String,
@@ -266,6 +275,7 @@ data class AppUiState(
     val selectedProfileId: String? = null,
     val connection: ConnectionState = ConnectionState(),
     val connectionStates: Map<String, ConnectionState> = emptyMap(),
+    val serverMetrics: Map<String, ServerMetrics> = emptyMap(),
     val pendingFingerprint: String? = null,
     val remoteSetup: RemoteSetupPrompt? = null,
     val setupInProgress: Boolean = false,
