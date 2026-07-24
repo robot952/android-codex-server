@@ -2,6 +2,7 @@ package top.asdb.codexremote.ui
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -47,6 +48,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.BugReport
@@ -144,6 +146,7 @@ import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 import java.io.ByteArrayOutputStream
 
 private val FieldShape = RoundedCornerShape(7.dp)
+private const val PROMOTION_URL = "https://lowapi.asdb.top"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -372,6 +375,12 @@ fun ServerScreen(
                     }
                 },
                 actions = {
+                    if (!editorVisible) {
+                        PromotionLink(
+                            onClick = { openPromotion(context) },
+                            modifier = Modifier.padding(end = 8.dp),
+                        )
+                    }
                     Text(
                         "v${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.labelMedium,
@@ -889,6 +898,61 @@ fun ServerScreen(
             },
         )
     }
+}
+
+@Composable
+private fun PromotionLink(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = CodexAmber.copy(alpha = 0.12f),
+        contentColor = CodexAmber,
+        shape = RoundedCornerShape(7.dp),
+        border = BorderStroke(1.dp, CodexAmber.copy(alpha = 0.5f)),
+        modifier = modifier
+            .width(148.dp)
+            .height(42.dp)
+            .semantics { contentDescription = "打开低价中转站优选：lowapi.asdb.top" }
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.OpenInNew,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(verticalArrangement = Arrangement.Center) {
+                Text(
+                    "低价中转站优选",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "lowapi.asdb.top",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CodexMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+private fun openPromotion(context: Context) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(PROMOTION_URL))
+        .addCategory(Intent.CATEGORY_BROWSABLE)
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            Toast.makeText(context, "未找到可打开链接的浏览器", Toast.LENGTH_SHORT).show()
+        }
 }
 
 @Composable
