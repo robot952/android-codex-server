@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,13 +45,15 @@ internal fun ServerMetricsText(
     val cpu = metrics?.cpuPercent
     val memory = metrics?.memoryPercent
     val disk = metrics?.diskPercent
+    val networkDownload = metrics?.networkDownloadBytesPerSecond
+    val networkUpload = metrics?.networkUploadBytesPerSecond
     var selectedDetail by remember { mutableStateOf<ResourceMetric?>(null) }
     val details = resourceDetails(metrics)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .semantics {
-                contentDescription = "CPU ${formatMetric(cpu)}，内存 ${formatMetric(memory)}，磁盘 ${formatMetric(disk)}"
+                contentDescription = "CPU ${formatMetric(cpu)}，内存 ${formatMetric(memory)}，磁盘 ${formatMetric(disk)}，网络下载 ${formatNetworkRate(networkDownload, false)}，上传 ${formatNetworkRate(networkUpload, false)}"
             },
         horizontalArrangement = Arrangement.spacedBy(11.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -59,6 +62,7 @@ internal fun ServerMetricsText(
             icon = Icons.Default.Speed,
             label = "CPU",
             value = cpu,
+            displayValue = formatMetric(cpu),
             detail = if (showResourceDetails) details else null,
             selected = selectedDetail == ResourceMetric.Cpu,
             onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Cpu) },
@@ -67,6 +71,7 @@ internal fun ServerMetricsText(
             icon = Icons.Default.Memory,
             label = "内存",
             value = memory,
+            displayValue = formatMetric(memory),
             detail = if (showResourceDetails) details else null,
             selected = selectedDetail == ResourceMetric.Memory,
             onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Memory) },
@@ -75,9 +80,19 @@ internal fun ServerMetricsText(
             icon = Icons.Default.Storage,
             label = "磁盘",
             value = disk,
+            displayValue = formatMetric(disk),
             detail = if (showResourceDetails) details else null,
             selected = selectedDetail == ResourceMetric.Disk,
             onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Disk) },
+        )
+        MetricValue(
+            icon = Icons.Default.NetworkCheck,
+            label = "网络",
+            value = null,
+            displayValue = "↓${formatNetworkRate(networkDownload, true)} ↑${formatNetworkRate(networkUpload, true)}",
+            detail = if (showResourceDetails) details else null,
+            selected = selectedDetail == ResourceMetric.Network,
+            onDetailClick = { selectedDetail = selectedDetail.toggle(ResourceMetric.Network) },
         )
     }
 }
@@ -88,12 +103,13 @@ private fun MetricValue(
     icon: ImageVector,
     label: String,
     value: Int?,
+    displayValue: String,
     detail: ResourceDetails?,
     selected: Boolean,
     onDetailClick: () -> Unit,
 ) {
     if (detail == null) {
-        MetricValueContent(icon, label, value, Modifier)
+        MetricValueContent(icon, label, value, displayValue, Modifier)
         return
     }
 
@@ -127,6 +143,13 @@ private fun MetricValue(
                         softWrap = false,
                         overflow = TextOverflow.Clip,
                     )
+                    Text(
+                        detail.network,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                    )
                 }
             }
         },
@@ -138,6 +161,7 @@ private fun MetricValue(
             icon = icon,
             label = "$label，查看服务器资源详情",
             value = value,
+            displayValue = displayValue,
             modifier = Modifier.clickable(onClick = onDetailClick),
         )
     }
@@ -148,6 +172,7 @@ private fun MetricValueContent(
     icon: ImageVector,
     label: String,
     value: Int?,
+    displayValue: String,
     modifier: Modifier,
 ) {
     val color = metricColor(value)
@@ -159,7 +184,7 @@ private fun MetricValueContent(
             tint = color,
         )
         Text(
-            text = formatMetric(value),
+            text = displayValue,
             modifier = Modifier,
             style = MaterialTheme.typography.labelSmall,
             color = color,
@@ -170,21 +195,23 @@ private fun MetricValueContent(
 
 private fun formatMetric(value: Int?): String = value?.let { "$it%" } ?: "--"
 
-private enum class ResourceMetric { Cpu, Memory, Disk }
+private enum class ResourceMetric { Cpu, Memory, Disk, Network }
 
 private data class ResourceDetails(
     val cpu: String,
     val memory: String,
     val disk: String,
+    val network: String,
 )
 
 private fun ResourceMetric?.toggle(metric: ResourceMetric): ResourceMetric? =
     if (this == metric) null else metric
 
 private fun resourceDetails(metrics: ServerMetrics?): ResourceDetails = ResourceDetails(
-    cpu = "CPU ${formatMetric(metrics?.cpuPercent)} · ${metrics?.cpuCoreCount?.let { "$it 核" } ?: "-- 核"}",
+    cpu = "CPU ${metrics?.cpuCoreCount?.let { "$it 核" } ?: "-- 核"} · ${formatMetric(metrics?.cpuPercent)}",
     memory = "内存 ${usageText(metrics?.memoryPercent, metrics?.memoryTotalKiB, metrics?.memoryUsedKiB)}",
     disk = "硬盘 ${usageText(metrics?.diskPercent, metrics?.diskTotalKiB, metrics?.diskUsedKiB)}",
+    network = "网络 ↓${formatNetworkRate(metrics?.networkDownloadBytesPerSecond, false)} · ↑${formatNetworkRate(metrics?.networkUploadBytesPerSecond, false)}",
 )
 
 private fun usageText(percent: Int?, totalKiB: Long?, usedKiB: Long?): String = when {
@@ -198,6 +225,21 @@ private fun formatSize(kib: Long): String {
         gib >= 1024.0 -> "%.1f TB".format(gib / 1024.0)
         gib >= 1.0 -> "%.1f GB".format(gib)
         else -> "%.0f MB".format(kib / 1024.0)
+    }
+}
+
+private fun formatNetworkRate(bytesPerSecond: Long?, compact: Boolean): String {
+    val bytes = bytesPerSecond ?: return "--"
+    return when {
+        bytes >= 1024L * 1024L -> "%.1f%s".format(
+            bytes.toDouble() / 1024.0 / 1024.0,
+            if (compact) "M" else " MB/s",
+        )
+        bytes >= 1024L -> "%.0f%s".format(
+            bytes.toDouble() / 1024.0,
+            if (compact) "K" else " KB/s",
+        )
+        else -> if (compact) "${bytes}B" else "${bytes} B/s"
     }
 }
 

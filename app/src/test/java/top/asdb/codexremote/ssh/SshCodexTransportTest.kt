@@ -17,7 +17,7 @@ class SshCodexTransportTest {
     @Test
     fun `server metrics parser clamps percentages and keeps the sample time`() {
         val metrics = parseServerMetrics(
-            listOf("noise", "CODEX_METRICS|18|42|101|16777216|7046430|16|104857600|31457280"),
+            listOf("noise", "CODEX_METRICS|18|42|101|16777216|7046430|16|104857600|31457280|2097152|524288"),
             sampledAtEpochMillis = 1234L,
         )
 
@@ -29,13 +29,15 @@ class SshCodexTransportTest {
         assertEquals(7046430L, metrics.memoryUsedKiB)
         assertEquals(104857600L, metrics.diskTotalKiB)
         assertEquals(31457280L, metrics.diskUsedKiB)
+        assertEquals(2097152L, metrics.networkDownloadBytesPerSecond)
+        assertEquals(524288L, metrics.networkUploadBytesPerSecond)
         assertEquals(1234L, metrics.sampledAtEpochMillis)
         assertNull(metrics.error)
     }
 
     @Test
     fun `server metrics parser ignores invalid memory size details`() {
-        val metrics = parseServerMetrics(listOf("CODEX_METRICS|18|42|30|1024|2048|0|4096|8192"))
+        val metrics = parseServerMetrics(listOf("CODEX_METRICS|18|42|30|1024|2048|0|4096|8192|-1|oops"))
 
         assertEquals(42, metrics.memoryPercent)
         assertEquals(1024L, metrics.memoryTotalKiB)
@@ -43,6 +45,8 @@ class SshCodexTransportTest {
         assertNull(metrics.cpuCoreCount)
         assertEquals(4096L, metrics.diskTotalKiB)
         assertNull(metrics.diskUsedKiB)
+        assertNull(metrics.networkDownloadBytesPerSecond)
+        assertNull(metrics.networkUploadBytesPerSecond)
     }
 
     @Test

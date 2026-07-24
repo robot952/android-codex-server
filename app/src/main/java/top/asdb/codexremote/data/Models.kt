@@ -65,6 +65,8 @@ data class ServerMetrics(
     val diskPercent: Int? = null,
     val diskTotalKiB: Long? = null,
     val diskUsedKiB: Long? = null,
+    val networkDownloadBytesPerSecond: Long? = null,
+    val networkUploadBytesPerSecond: Long? = null,
     val sampledAtEpochMillis: Long = 0L,
     val error: String? = null,
 )
