@@ -147,6 +147,7 @@ fun ThreadListScreen(
             ServerMetricsText(
                 state.serverMetrics[state.selectedProfileId],
                 modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 1.dp),
+                showMemoryDetails = true,
             )
             SearchBox(
                 value = state.threadSearch,

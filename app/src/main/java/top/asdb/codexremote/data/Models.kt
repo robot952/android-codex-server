@@ -58,6 +58,9 @@ data class ConnectionState(
 data class ServerMetrics(
     val cpuPercent: Int? = null,
     val memoryPercent: Int? = null,
+    /** Values come from /proc/meminfo, whose kB unit is 1024 bytes. */
+    val memoryTotalKiB: Long? = null,
+    val memoryUsedKiB: Long? = null,
     val diskPercent: Int? = null,
     val sampledAtEpochMillis: Long = 0L,
     val error: String? = null,

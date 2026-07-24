@@ -668,12 +668,21 @@ memory=${'$'}(awk '
 /^Cached:/ { cached=${'$'}2 }
 END {
   if (available == 0) available=free+buffers+cached
-  if (total > 0) printf "%.0f", ((total-available)*100)/total
-  else print -1
+  if (total > 0) {
+    used=total-available
+    if (used < 0) used=0
+    printf "%.0f|%.0f|%.0f", (used*100)/total, total, used
+  } else print "-1|--|--"
 }' /proc/meminfo 2>/dev/null)
 
 disk=${'$'}(df -P -k / 2>/dev/null | awk 'NR == 2 { gsub("%", "", ${'$'}5); print ${'$'}5; exit }')
-printf "CODEX_METRICS|%s|%s|%s\n" "${'$'}cpu" "${'$'}{memory:--}" "${'$'}{disk:--}"
+memory_percent=${'$'}{memory%%|*}
+memory_sizes=${'$'}{memory#*|}
+memory_total=${'$'}{memory_sizes%%|*}
+memory_used=${'$'}{memory_sizes#*|}
+printf "CODEX_METRICS|%s|%s|%s|%s|%s\n" \
+  "${'$'}cpu" "${'$'}{memory_percent:---}" "${'$'}{disk:--}" \
+  "${'$'}{memory_total:---}" "${'$'}{memory_used:---}"
 """.trimIndent()
 
 internal fun parseServerMetrics(
@@ -691,11 +700,18 @@ internal fun parseServerMetrics(
     fun parsePercent(value: String): Int? = value.toIntOrNull()
         ?.takeIf { it >= 0 }
         ?.coerceIn(0, 100)
+    fun parseKiB(value: String): Long? = value.toLongOrNull()?.takeIf { it >= 0L }
+
+    val memoryTotalKiB = fields.getOrNull(4)?.let(::parseKiB)
+    val memoryUsedKiB = fields.getOrNull(5)?.let(::parseKiB)
+        ?.takeIf { used -> memoryTotalKiB == null || used <= memoryTotalKiB }
 
     return ServerMetrics(
         cpuPercent = parsePercent(fields[1]),
         memoryPercent = parsePercent(fields[2]),
         diskPercent = parsePercent(fields[3]),
+        memoryTotalKiB = memoryTotalKiB,
+        memoryUsedKiB = memoryUsedKiB,
         sampledAtEpochMillis = sampledAtEpochMillis,
     )
 }
