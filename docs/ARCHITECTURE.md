@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.38（versionCode 60）
+- Android 应用版本：1.7.39（versionCode 61）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -410,7 +410,10 @@ CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，
 ### 9.1 用户级 Codex 设置
 
 会话列表的齿轮入口可读取和写入**当前已连接服务器、当前 Unix 用户**的全局 Codex 设置。该入口
-与“选择工作目录”并列；它不是 ServerProfile 的本地字段，也不能按会话保存。
+与“选择工作目录”并列；它不是 ServerProfile 的本地字段，也不能按会话保存。读取时必须显示远端
+`model_provider`、默认 `model`、实际生效的模型 URL、代理和登录是否存在，不能只显示本应用曾写入的
+`openai_base_url`。对于自定义 provider，模型 URL 来自对应 `[model_providers.<name>].base_url`；API
+密钥永远只能显示是否存在，不能回显内容。
 
 远端文件边界固定如下：
 
@@ -429,9 +432,9 @@ CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，
 不得修改 `$HOME/.bashrc`、`$HOME/.profile`、任意项目 `.codex/config.toml`、其他工作目录或 VS Code
 扩展文件。项目级配置不能安全覆盖 provider/auth，且这会破坏用户要求的全局行为。
 
-`RemoteCodexSettingsTest` 必须覆盖 URL 校验、POSIX shell 语法、保留 `[features]` 等无关 TOML 表、
-代理文件 `0600` 权限，以及 fake CLI 接收 API 密钥但不回显。`RemoteBootstrapTest` 必须覆盖新 wrapper
-仍 source 该环境文件。
+`RemoteCodexSettingsTest` 必须覆盖 URL 校验、读写 POSIX shell 语法、内置和自定义 provider 的模型
+URL 解析、保留 `[features]` 等无关 TOML 表、代理文件 `0600` 权限，以及 fake CLI 接收 API 密钥但不
+回显。`RemoteBootstrapTest` 必须覆盖新 wrapper 仍 source 该环境文件。
 
 ## 10. 后台运行、完成通知和诊断
 
@@ -833,6 +836,9 @@ Serializable data class（必须给默认值）
 22. Codex 配置入口修改的是当前远程 Unix 用户的全局设置：模型 URL、API 密钥和 HTTP/HTTPS
     代理。API 密钥不能保存到手机；保存后必须断开并在重连时生效，不能改项目级 `.codex`、shell
     profile 或其他工作区。
+23. Codex 配置弹窗必须优先从服务器读取并显示 Provider、默认模型、模型 URL、代理和登录状态。
+    现有自定义 Provider 不能被误显示为“未配置”；若保存会切换到内置 OpenAI Provider，必须在操作前
+    明确提示用户。
 
 若实现与上述约束冲突，先修实现；如确需改变产品契约，必须得到用户明确确认并同步更新本文。
 

@@ -681,6 +681,35 @@ private fun CodexSettingsDialog(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(11.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text("服务器当前配置", style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                "Provider：${remoteSettings?.modelProvider.orEmpty().ifBlank { "openai" }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                "默认模型：${remoteSettings?.model.orEmpty().ifBlank { "未配置，使用 Codex 默认值" }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (remoteSettings?.modelProvider?.let { it != "openai" } == true) {
+                                Text(
+                                    "当前使用自定义 Provider；保存模型 URL 会切换到内置 OpenAI Provider。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = baseUrl,
                         onValueChange = { baseUrl = it },

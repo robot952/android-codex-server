@@ -14,20 +14,61 @@ internal object RemoteCodexSettings {
         CONFIG_FILE="${'$'}CONFIG_DIR/config.toml"
         ENV_FILE="${'$'}CONFIG_DIR/codex-remote.env"
         AUTH_FILE="${'$'}CONFIG_DIR/auth.json"
-        BASE_URL=
-        if [ -r "${'$'}CONFIG_FILE" ]; then
-          BASE_URL="${'$'}(awk '
+        toml_root_value() {
+          awk -v key="${'$'}1" '
             /^[[:space:]]*\[/ { in_table = 1 }
-            !in_table && /^[[:space:]]*openai_base_url[[:space:]]*=/ {
+            !in_table {
               value = ${'$'}0
-              sub(/^[[:space:]]*openai_base_url[[:space:]]*=[[:space:]]*/, "", value)
-              sub(/[[:space:]]*#.*/, "", value)
-              sub(/^[[:space:]]*"/, "", value)
-              sub(/"[[:space:]]*$/, "", value)
-              print value
-              exit
+              sub(/^[[:space:]]*/, "", value)
+              if (value ~ ("^" key "[[:space:]]*=")) {
+                sub("^" key "[[:space:]]*=[[:space:]]*", "", value)
+                sub(/[[:space:]]*#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                sub(/^"/, "", value)
+                sub(/"$/, "", value)
+                print value
+                exit
+              }
             }
-          ' "${'$'}CONFIG_FILE")"
+          ' "${'$'}CONFIG_FILE"
+        }
+        toml_provider_base_url() {
+          awk -v provider="${'$'}1" '
+            /^[[:space:]]*\[/ {
+              section = ${'$'}0
+              sub(/^[[:space:]]*\[/, "", section)
+              sub(/\][[:space:]]*(#.*)?$/, "", section)
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", section)
+              in_provider = (section == "model_providers." provider)
+              next
+            }
+            in_provider {
+              value = ${'$'}0
+              sub(/^[[:space:]]*/, "", value)
+              if (value ~ /^base_url[[:space:]]*=/) {
+                sub(/^base_url[[:space:]]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]]*#.*/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                sub(/^"/, "", value)
+                sub(/"$/, "", value)
+                print value
+                exit
+              }
+            }
+          ' "${'$'}CONFIG_FILE"
+        }
+        BASE_URL=
+        MODEL=
+        MODEL_PROVIDER=openai
+        if [ -r "${'$'}CONFIG_FILE" ]; then
+          MODEL="${'$'}(toml_root_value model)"
+          MODEL_PROVIDER="${'$'}(toml_root_value model_provider)"
+          if [ -z "${'$'}MODEL_PROVIDER" ]; then MODEL_PROVIDER=openai; fi
+          BASE_URL="${'$'}(toml_root_value openai_base_url)"
+          if [ "${'$'}MODEL_PROVIDER" != openai ]; then
+            CUSTOM_BASE_URL="${'$'}(toml_provider_base_url "${'$'}MODEL_PROVIDER")"
+            if [ -n "${'$'}CUSTOM_BASE_URL" ]; then BASE_URL="${'$'}CUSTOM_BASE_URL"; fi
+          fi
         fi
         PROXY_URL=
         if [ -r "${'$'}ENV_FILE" ]; then
@@ -41,6 +82,8 @@ internal object RemoteCodexSettings {
         fi
         if [ -s "${'$'}AUTH_FILE" ]; then AUTH_PRESENT=1; else AUTH_PRESENT=0; fi
         printf '${PREFIX}BASE_URL=%s\n' "${'$'}BASE_URL"
+        printf '${PREFIX}MODEL=%s\n' "${'$'}MODEL"
+        printf '${PREFIX}MODEL_PROVIDER=%s\n' "${'$'}MODEL_PROVIDER"
         printf '${PREFIX}PROXY_URL=%s\n' "${'$'}PROXY_URL"
         printf '${PREFIX}AUTH_PRESENT=%s\n' "${'$'}AUTH_PRESENT"
     """.trimIndent()
@@ -53,6 +96,8 @@ internal object RemoteCodexSettings {
         }.toMap()
         return CodexGlobalSettings(
             baseUrl = values["BASE_URL"].orEmpty(),
+            model = values["MODEL"].orEmpty(),
+            modelProvider = values["MODEL_PROVIDER"].orEmpty().ifBlank { "openai" },
             hasStoredAuthentication = values["AUTH_PRESENT"] == "1",
             proxyUrl = values["PROXY_URL"].orEmpty(),
         )

@@ -277,6 +277,10 @@ data class RemoteSetupPrompt(
 /** User-level Codex configuration read from the connected remote server. */
 data class CodexGlobalSettings(
     val baseUrl: String = "",
+    /** Default model selected by the remote user's global Codex configuration. */
+    val model: String = "",
+    /** Active built-in or custom provider id from the remote global configuration. */
+    val modelProvider: String = "openai",
     /** The remote account has a stored Codex credential; the secret is never returned to the app. */
     val hasStoredAuthentication: Boolean = false,
     val proxyUrl: String = "",

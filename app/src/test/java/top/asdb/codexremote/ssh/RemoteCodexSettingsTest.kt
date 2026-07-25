@@ -41,6 +41,53 @@ class RemoteCodexSettingsTest {
     }
 
     @Test
+    fun `read script has valid POSIX shell syntax`() {
+        val process = ProcessBuilder("sh", "-n").start()
+        process.outputStream.bufferedWriter().use { it.write(RemoteCodexSettings.readScript) }
+
+        assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+    }
+
+    @Test
+    fun `read script reports the active custom provider configuration`() {
+        val home = Files.createTempDirectory("codex-remote-read-settings").toFile()
+        try {
+            val codexDir = home.resolve(".codex").apply { mkdirs() }
+            codexDir.resolve("config.toml").writeText(
+                """
+                model = "gpt-5.4"
+                model_provider = "relay"
+
+                [model_providers.relay]
+                base_url = "https://relay.example.com/v1"
+                env_key = "OPENAI_API_KEY"
+                """.trimIndent() + "\n",
+            )
+            codexDir.resolve("codex-remote.env").writeText(
+                "# codex-remote-proxy: http://127.0.0.1:7890\n",
+            )
+            codexDir.resolve("auth.json").writeText("{\"tokens\":{}}\n")
+
+            val process = ProcessBuilder("sh", "-s")
+                .apply { environment()["HOME"] = home.absolutePath }
+                .start()
+            process.outputStream.bufferedWriter().use { it.write(RemoteCodexSettings.readScript) }
+
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+            val settings = RemoteCodexSettings.parse(process.inputStream.bufferedReader().readLines())
+            assertEquals("relay", settings.modelProvider)
+            assertEquals("gpt-5.4", settings.model)
+            assertEquals("https://relay.example.com/v1", settings.baseUrl)
+            assertEquals("http://127.0.0.1:7890", settings.proxyUrl)
+            assertTrue(settings.hasStoredAuthentication)
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `script preserves unrelated config and keeps proxy and key private`() {
         val home = Files.createTempDirectory("codex-remote-settings").toFile()
         try {
