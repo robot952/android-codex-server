@@ -1,7 +1,10 @@
 package top.asdb.codexremote.ui.components
 
+import android.graphics.Color
 import android.graphics.Typeface
+import android.text.util.Linkify
 import android.widget.TextView
+import androidx.core.text.util.LinkifyCompat
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
@@ -48,12 +51,16 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, selectable: Boolea
                 setTextIsSelectable(selectable)
                 typeface = Typeface.create("sans", Typeface.NORMAL)
                 linksClickable = true
+                setLinkTextColor(LINK_COLOR)
             }
         },
         update = { view ->
             view.setTextColor(color)
+            view.setLinkTextColor(LINK_COLOR)
             if (view.tag != renderedText) {
                 markwon.setMarkdown(view, renderedText)
+                // Markwon handles Markdown links, while Linkify adds clickable spans for bare URLs.
+                LinkifyCompat.addLinks(view, Linkify.WEB_URLS)
                 view.tag = renderedText
             }
         },
@@ -61,3 +68,4 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, selectable: Boolea
 }
 
 private const val MARKDOWN_FRAME_MS = 40L
+private val LINK_COLOR = Color.rgb(100, 181, 246)
