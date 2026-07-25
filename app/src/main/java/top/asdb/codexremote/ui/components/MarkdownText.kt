@@ -2,7 +2,10 @@ package top.asdb.codexremote.ui.components
 
 import android.graphics.Color
 import android.graphics.Typeface
+import android.text.Spannable
+import android.text.style.URLSpan
 import android.text.util.Linkify
+import android.view.View
 import android.widget.TextView
 import androidx.core.text.util.LinkifyCompat
 import androidx.compose.material3.LocalContentColor
@@ -25,7 +28,12 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
 
 @Composable
-fun MarkdownText(text: String, modifier: Modifier = Modifier, selectable: Boolean = true) {
+fun MarkdownText(
+    text: String,
+    modifier: Modifier = Modifier,
+    selectable: Boolean = true,
+    onOpenLink: (String) -> Unit,
+) {
     val context = LocalContext.current
     val color = LocalContentColor.current.toArgb()
     val markwon = remember(context) {
@@ -34,6 +42,7 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, selectable: Boolea
             .build()
     }
     val latestText = rememberUpdatedState(text)
+    val latestOpenLink = rememberUpdatedState(onOpenLink)
     var renderedText by remember { mutableStateOf(text) }
     LaunchedEffect(Unit) {
         snapshotFlow { latestText.value }.conflate().collect { value ->
@@ -61,6 +70,7 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, selectable: Boolea
                 markwon.setMarkdown(view, renderedText)
                 // Markwon handles Markdown links, while Linkify adds clickable spans for bare URLs.
                 LinkifyCompat.addLinks(view, Linkify.WEB_URLS)
+                replaceUrlSpans(view) { url -> latestOpenLink.value(url) }
                 view.tag = renderedText
             }
         },
@@ -69,3 +79,23 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, selectable: Boolea
 
 private const val MARKDOWN_FRAME_MS = 40L
 private val LINK_COLOR = Color.rgb(100, 181, 246)
+
+private fun replaceUrlSpans(view: TextView, onOpenLink: (String) -> Unit) {
+    val text = view.text as? Spannable ?: return
+    text.getSpans(0, text.length, URLSpan::class.java).forEach { span ->
+        if (span is ConfirmUrlSpan) return@forEach
+        val start = text.getSpanStart(span)
+        val end = text.getSpanEnd(span)
+        if (start < 0 || end <= start) return@forEach
+        val flags = text.getSpanFlags(span)
+        text.removeSpan(span)
+        text.setSpan(ConfirmUrlSpan(span.url, onOpenLink), start, end, flags)
+    }
+}
+
+private class ConfirmUrlSpan(
+    url: String,
+    private val onOpenLink: (String) -> Unit,
+) : URLSpan(url) {
+    override fun onClick(widget: View) = onOpenLink(url)
+}

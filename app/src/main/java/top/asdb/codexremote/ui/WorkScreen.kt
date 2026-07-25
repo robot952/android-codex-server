@@ -3,6 +3,7 @@ package top.asdb.codexremote.ui
 import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -233,6 +234,8 @@ fun WorkScreen(
     var imageSaveError by remember { mutableStateOf<String?>(null) }
     var imageSaving by remember { mutableStateOf(false) }
     var pendingImageSave by remember { mutableStateOf<RemoteImagePreview?>(null) }
+    var linkToOpen by remember { mutableStateOf<String?>(null) }
+    var linkOpenError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { onUpload(context, it) }
@@ -499,6 +502,7 @@ fun WorkScreen(
                                 onRollback = { rollbackRequested = true },
                                 onOpenImage = ::openImagePreview,
                                 imageLoadingPath = imageLoadingPath,
+                                onOpenLink = { linkToOpen = it },
                                 onOpenSubAgent = onOpenSubAgent,
                                 canOpenSubAgents = canOpenSubAgents,
                             )
@@ -642,6 +646,36 @@ fun WorkScreen(
             title = { Text("保存图片失败") },
             text = { Text(message) },
             confirmButton = { TextButton(onClick = { imageSaveError = null }) { Text("关闭") } },
+        )
+    }
+
+    linkToOpen?.let { link ->
+        AlertDialog(
+            onDismissRequest = { linkToOpen = null },
+            title = { Text("打开链接") },
+            text = { Text(link) },
+            confirmButton = {
+                TextButton(onClick = {
+                    linkToOpen = null
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                    } catch (error: Throwable) {
+                        linkOpenError = error.message ?: "系统中没有可打开链接的应用"
+                    }
+                }) { Text("打开") }
+            },
+            dismissButton = {
+                TextButton(onClick = { linkToOpen = null }) { Text("取消") }
+            },
+        )
+    }
+
+    linkOpenError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { linkOpenError = null },
+            title = { Text("无法打开链接") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = { linkOpenError = null }) { Text("关闭") } },
         )
     }
 
@@ -872,6 +906,7 @@ private fun TimelineItem(
     onRollback: () -> Unit,
     onOpenImage: (String) -> Unit,
     imageLoadingPath: String?,
+    onOpenLink: (String) -> Unit,
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit,
     canOpenSubAgents: Boolean,
 ) {
@@ -886,7 +921,11 @@ private fun TimelineItem(
             }
         }
 
-        TimelineKind.AgentMessage -> MarkdownText(entry.text, Modifier.fillMaxWidth())
+        TimelineKind.AgentMessage -> MarkdownText(
+            text = entry.text,
+            modifier = Modifier.fillMaxWidth(),
+            onOpenLink = onOpenLink,
+        )
         TimelineKind.Reasoning, TimelineKind.Plan -> CollapsibleText(entry)
         TimelineKind.Command -> CommandBlock(entry)
         TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canMutate, canRollback, onRollback)
@@ -909,7 +948,7 @@ private fun TimelineItem(
                 }
                 if (entry.text.isNotBlank()) {
                     Spacer(Modifier.height(8.dp))
-                    MarkdownText(entry.text)
+                    MarkdownText(text = entry.text, onOpenLink = onOpenLink)
                 }
             }
         }
