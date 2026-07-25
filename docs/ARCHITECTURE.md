@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.39（versionCode 61）
+- Android 应用版本：1.7.40（versionCode 62）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -174,6 +174,9 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
 - 顶部历史使用下拉加载：只有用户拉动时显示提示，到阈值显示“松开加载更多”，内容跟随
   下移并在顶部留出清晰空间；释放后才请求更早内容。
 - 用户阅读旧消息时显示回到最新位置的箭头，不应强制抢回滚动位置。
+- Markdown 中带标题的 HTTP/HTTPS 链接必须显示完整蓝色 URL，不能只留下标题文字；点击标题或 URL
+  都先显示确认打开弹窗，完整 URL 必须可通过长按文本选择复制。裸 URL 和 URL 本身作为标题的链接不应
+  重复显示。相关纯字符串转换放在 `ui/components/MarkdownLinks.kt`，并由 `MarkdownTextTest` 覆盖。
 - 子 Agent 只使用图标和状态表达，不额外显示“子agent”标签；状态由协议事件和父 turn
   终态共同收敛。同一智能体的图标身份色必须由 `threadId -> path -> name` 稳定派生，不能随
   运行、完成或失败状态改变；状态色只用于状态文字和运行指示。
@@ -839,6 +842,8 @@ Serializable data class（必须给默认值）
 23. Codex 配置弹窗必须优先从服务器读取并显示 Provider、默认模型、模型 URL、代理和登录状态。
     现有自定义 Provider 不能被误显示为“未配置”；若保存会切换到内置 OpenAI Provider，必须在操作前
     明确提示用户。
+24. 任何回复中的 HTTP/HTTPS Markdown 链接都必须既可点击又可复制，并显示完整目标 URL；不得只
+    渲染无法辨认或复制的链接标题。
 
 若实现与上述约束冲突，先修实现；如确需改变产品契约，必须得到用户明确确认并同步更新本文。
 

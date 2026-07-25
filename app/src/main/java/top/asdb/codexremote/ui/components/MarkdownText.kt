@@ -3,6 +3,7 @@ package top.asdb.codexremote.ui.components
 import android.graphics.Color
 import android.graphics.Typeface
 import android.text.Spannable
+import android.text.method.LinkMovementMethod
 import android.text.style.URLSpan
 import android.text.util.Linkify
 import android.view.View
@@ -60,6 +61,7 @@ fun MarkdownText(
                 setTextIsSelectable(selectable)
                 typeface = Typeface.create("sans", Typeface.NORMAL)
                 linksClickable = true
+                movementMethod = LinkMovementMethod.getInstance()
                 setLinkTextColor(LINK_COLOR)
             }
         },
@@ -67,7 +69,7 @@ fun MarkdownText(
             view.setTextColor(color)
             view.setLinkTextColor(LINK_COLOR)
             if (view.tag != renderedText) {
-                markwon.setMarkdown(view, renderedText)
+                markwon.setMarkdown(view, markdownWithVisibleLinkDestinations(renderedText))
                 // Markwon handles Markdown links, while Linkify adds clickable spans for bare URLs.
                 LinkifyCompat.addLinks(view, Linkify.WEB_URLS)
                 replaceUrlSpans(view) { url -> latestOpenLink.value(url) }
