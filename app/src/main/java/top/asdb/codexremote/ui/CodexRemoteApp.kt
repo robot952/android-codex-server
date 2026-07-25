@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,6 +72,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -97,6 +100,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     val terminalState by viewModel.terminalState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var serverSwitcherVisible by remember { mutableStateOf(false) }
+    var threadSettingsActionsVisible by remember { mutableStateOf(false) }
     val connectedMetricProfileIds = state.connectionStates
         .filterValues { it.phase == ConnectionPhase.Connected }
         .keys
@@ -187,7 +191,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onRefresh = viewModel::refreshThreads,
                 onCreate = viewModel::createThread,
                 onOpen = viewModel::openThread,
-                onSelectWorkspace = viewModel::showWorkspacePicker,
+                onOpenSettings = { threadSettingsActionsVisible = true },
                 onShowServers = { serverSwitcherVisible = true },
                 onBackToServers = viewModel::showServers,
                 terminalSession = state.selectedProfileId?.let(terminalState.sessions::get),
@@ -279,6 +283,20 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 viewModel.showServers()
             },
             onDismiss = { serverSwitcherVisible = false },
+        )
+    }
+
+    if (threadSettingsActionsVisible) {
+        ThreadSettingsActionsDialog(
+            onSelectWorkspace = {
+                threadSettingsActionsVisible = false
+                viewModel.showWorkspacePicker()
+            },
+            onConfigureCodex = {
+                threadSettingsActionsVisible = false
+                viewModel.showCodexSettings()
+            },
+            onDismiss = { threadSettingsActionsVisible = false },
         )
     }
 
@@ -438,6 +456,14 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         )
     }
 
+    if (state.codexSettingsVisible) {
+        CodexSettingsDialog(
+            state = state,
+            onSave = viewModel::saveCodexSettings,
+            onDismiss = viewModel::dismissCodexSettings,
+        )
+    }
+
     state.approval?.let { prompt ->
         ApprovalDialog(
             prompt = prompt,
@@ -452,6 +478,69 @@ private data class ScreenAnimationTarget(
     val threadId: String?,
     val subAgentBackNavigation: Boolean,
 )
+
+@Composable
+private fun ThreadSettingsActionsDialog(
+    onSelectWorkspace: () -> Unit,
+    onConfigureCodex: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = CodexSurfaceRaised,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp),
+        ) {
+            Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                Text(
+                    "设置",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                )
+                SettingsActionRow(
+                    icon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                    title = "选择工作目录",
+                    detail = "切换新会话默认使用的目录",
+                    onClick = onSelectWorkspace,
+                )
+                SettingsActionRow(
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    title = "配置 Codex",
+                    detail = "模型地址、API 密钥和代理",
+                    onClick = onConfigureCodex,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsActionRow(
+    icon: @Composable () -> Unit,
+    title: String,
+    detail: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.size(34.dp),
+            contentAlignment = Alignment.Center,
+        ) { icon() }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 @Composable
 private fun ServerSwitcherDialog(
@@ -553,6 +642,138 @@ private fun setupProgressFraction(message: String): Float {
         normalized.contains("验证") -> 0.86f
         normalized.contains("完成") -> 1f
         else -> 0.08f
+    }
+}
+
+@Composable
+private fun CodexSettingsDialog(
+    state: AppUiState,
+    onSave: (baseUrl: String, apiKey: String, proxyUrl: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val remoteSettings = state.codexSettings
+    var baseUrl by remember(remoteSettings) { mutableStateOf(remoteSettings?.baseUrl.orEmpty()) }
+    var apiKey by remember(remoteSettings) { mutableStateOf("") }
+    var proxyUrl by remember(remoteSettings) { mutableStateOf(remoteSettings?.proxyUrl.orEmpty()) }
+    var confirmSave by remember(remoteSettings) { mutableStateOf(false) }
+    val busy = state.codexSettingsLoading || state.codexSettingsSaving
+    val settingsReady = remoteSettings != null
+
+    AlertDialog(
+        modifier = Modifier.imePadding(),
+        onDismissRequest = { if (!busy) onDismiss() },
+        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+        title = { Text("配置 Codex") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                if (state.codexSettingsLoading) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(19.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("正在读取服务器上的全局配置")
+                    }
+                } else {
+                    Text(
+                        "这些设置作用于当前服务器用户的全部 Codex CLI、IDE 插件和本应用会话。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = baseUrl,
+                        onValueChange = { baseUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy && settingsReady,
+                        singleLine = true,
+                        label = { Text("模型 URL") },
+                        placeholder = { Text("https://api.openai.com/v1") },
+                        supportingText = { Text("留空使用 Codex 默认 OpenAI 地址") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    )
+                    OutlinedTextField(
+                        value = apiKey,
+                        onValueChange = { apiKey = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy && settingsReady,
+                        singleLine = true,
+                        label = { Text("API 密钥") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        supportingText = {
+                            Text(
+                                if (remoteSettings?.hasStoredAuthentication == true) {
+                                    "服务器已保存登录信息；留空不会覆盖。"
+                                } else {
+                                    "留空不会创建或修改登录信息。"
+                                },
+                            )
+                        },
+                    )
+                    OutlinedTextField(
+                        value = proxyUrl,
+                        onValueChange = { proxyUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy && settingsReady,
+                        singleLine = true,
+                        label = { Text("Codex 代理（可选）") },
+                        placeholder = { Text("http://127.0.0.1:7890") },
+                        supportingText = { Text("支持 HTTP/HTTPS；留空会清除 Codex 代理") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    )
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "保存后会断开当前服务器。下一次连接将使用新的全局配置；填写 API 密钥会替换该用户现有的 Codex 登录。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(11.dp),
+                        )
+                    }
+                }
+                state.codexSettingsError?.takeIf { it.isNotBlank() }?.let { message ->
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { confirmSave = true },
+                enabled = !busy && settingsReady,
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+        },
+    )
+
+    if (confirmSave) {
+        AlertDialog(
+            onDismissRequest = { confirmSave = false },
+            title = { Text("确认保存全局配置") },
+            text = {
+                Text("保存会更新此服务器用户的 Codex 配置并断开当前连接。已填写的 API 密钥会替换现有登录。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmSave = false
+                        onSave(baseUrl, apiKey, proxyUrl)
+                    },
+                ) { Text("确认保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSave = false }) { Text("返回修改") }
+            },
+        )
     }
 }
 

@@ -24,6 +24,7 @@ import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.ApprovalPrompt
 import top.asdb.codexremote.data.CodexModel
+import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.PendingAttachment
 import top.asdb.codexremote.data.RemoteDirectoryListing
@@ -593,6 +594,16 @@ class CodexAppServerClient(
     suspend fun upload(name: String, bytes: ByteArray): String = transport.upload(name, bytes)
 
     suspend fun downloadImage(path: String): ByteArray = transport.downloadImage(path)
+
+    suspend fun readCodexGlobalSettings(profile: ServerProfile): CodexGlobalSettings =
+        transport.readCodexGlobalSettings(profile)
+
+    suspend fun writeCodexGlobalSettings(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+    ) = transport.writeCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl)
 
     suspend fun answerApproval(
         prompt: ApprovalPrompt,

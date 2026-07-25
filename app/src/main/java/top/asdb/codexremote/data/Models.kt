@@ -274,6 +274,14 @@ data class RemoteSetupPrompt(
     val detectedVersion: String? = null,
 )
 
+/** User-level Codex configuration read from the connected remote server. */
+data class CodexGlobalSettings(
+    val baseUrl: String = "",
+    /** The remote account has a stored Codex credential; the secret is never returned to the app. */
+    val hasStoredAuthentication: Boolean = false,
+    val proxyUrl: String = "",
+)
+
 data class AppUiState(
     val screen: AppScreen = AppScreen.Servers,
     /** Lets nested collaborator pages animate B -> A as a back navigation. */
@@ -314,6 +322,11 @@ data class AppUiState(
     val workspaceParentPath: String? = null,
     val workspaceDirectories: List<RemoteDirectory> = emptyList(),
     val workspaceError: String? = null,
+    val codexSettingsVisible: Boolean = false,
+    val codexSettingsLoading: Boolean = false,
+    val codexSettingsSaving: Boolean = false,
+    val codexSettings: CodexGlobalSettings? = null,
+    val codexSettingsError: String? = null,
     val approval: ApprovalPrompt? = null,
     /** Pending server requests are kept in arrival order; the first one is shown in the dialog. */
     val approvalQueue: List<ApprovalPrompt> = emptyList(),

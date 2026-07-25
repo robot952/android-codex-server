@@ -23,6 +23,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
+import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.ServerMetrics
@@ -151,7 +152,7 @@ class SshCodexTransport {
                 exec = sshSession.openChannel("exec") as ChannelExec
                 check(registerConnectingChannel(generation, exec)) { "SSH 连接已取消" }
                 exec.setPty(false)
-                exec.setCommand(profile.remoteCommand)
+                exec.setCommand(appServerCommand(profile.remoteCommand))
                 exec.setErrStream(stderrOut)
                 val stdout = exec.inputStream
                 val stdin = exec.outputStream
@@ -365,6 +366,30 @@ class SshCodexTransport {
         }
     }
 
+    suspend fun readCodexGlobalSettings(profile: ServerProfile): CodexGlobalSettings {
+        val lines = executeScript(
+            profile = profile,
+            script = RemoteCodexSettings.readScript,
+            timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
+            operationName = "读取 Codex 全局配置",
+        )
+        return RemoteCodexSettings.parse(lines)
+    }
+
+    suspend fun writeCodexGlobalSettings(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+    ) {
+        executeScript(
+            profile = profile,
+            script = RemoteCodexSettings.writeScript(baseUrl, apiKey, proxyUrl),
+            timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
+            operationName = "保存 Codex 全局配置",
+        )
+    }
+
     fun isConnected(): Boolean = synchronized(connectionStateLock) {
         session?.isConnected == true && channel?.isConnected == true
     }
@@ -410,6 +435,13 @@ class SshCodexTransport {
             throw error
         }
     }
+
+    private fun appServerCommand(remoteCommand: String): String = """
+        if [ -r "${'$'}HOME/.codex/codex-remote.env" ]; then
+          . "${'$'}HOME/.codex/codex-remote.env"
+        fi
+        exec $remoteCommand
+    """.trimIndent()
 
     private suspend fun executeScriptBlocking(
         profile: ServerProfile,
@@ -655,6 +687,7 @@ class SshCodexTransport {
         private const val MAX_APP_SERVER_LINE_CHARS = 8 * 1024 * 1024
         private const val MAX_IMAGE_PREVIEW_BYTES = 20L * 1024 * 1024
         private const val MAX_REMOTE_PATH_CHARS = 4_096
+        private const val GLOBAL_SETTINGS_TIMEOUT_MS = 30_000L
     }
 }
 

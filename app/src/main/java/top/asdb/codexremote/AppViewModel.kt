@@ -2125,6 +2125,111 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(workspacePickerVisible = false, workspaceError = null) }
     }
 
+    fun showCodexSettings() {
+        val profileId = _state.value.selectedProfileId ?: return
+        val profile = currentProfile() ?: return
+        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+            _state.update { it.copy(error = "服务器未连接，无法读取 Codex 配置") }
+            return
+        }
+        val operation = beginClientOperation(profileId, "codex-settings", client) ?: return
+        _state.update {
+            it.copy(
+                codexSettingsVisible = true,
+                codexSettingsLoading = true,
+                codexSettingsSaving = false,
+                codexSettings = null,
+                codexSettingsError = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val settings = client.readCodexGlobalSettings(profile)
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            codexSettingsLoading = false,
+                            codexSettings = settings,
+                            codexSettingsError = null,
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            codexSettingsLoading = false,
+                            codexSettingsError = error.message ?: "无法读取 Codex 全局配置",
+                        )
+                    }
+                }
+            } finally {
+                finishClientOperation(operation)
+            }
+        }
+    }
+
+    fun dismissCodexSettings() {
+        _state.update { current ->
+            if (current.codexSettingsSaving) current else {
+                current.copy(
+                    codexSettingsVisible = false,
+                    codexSettingsLoading = false,
+                    codexSettings = null,
+                    codexSettingsError = null,
+                )
+            }
+        }
+    }
+
+    fun saveCodexSettings(baseUrl: String, apiKey: String, proxyUrl: String) {
+        val profileId = _state.value.selectedProfileId ?: return
+        val profile = currentProfile() ?: return
+        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+            _state.update { it.copy(codexSettingsError = "服务器未连接，无法保存 Codex 配置") }
+            return
+        }
+        val operation = beginClientOperation(profileId, "codex-settings", client) ?: return
+        _state.update {
+            it.copy(codexSettingsSaving = true, codexSettingsError = null)
+        }
+        viewModelScope.launch {
+            var saved = false
+            try {
+                client.writeCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl)
+                saved = true
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            codexSettingsVisible = false,
+                            codexSettingsLoading = false,
+                            codexSettingsSaving = false,
+                            codexSettings = null,
+                            codexSettingsError = null,
+                        )
+                    }
+                }
+                DiagnosticLogger.info("CodexSettings", "updated global configuration profile=${profileRef(profileId)}")
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            codexSettingsSaving = false,
+                            codexSettingsError = error.message ?: "无法保存 Codex 全局配置",
+                        )
+                    }
+                }
+            } finally {
+                finishClientOperation(operation)
+            }
+            if (saved) startDisconnect(profileId)
+        }
+    }
+
     fun clearError() {
         _state.update { it.copy(error = null) }
     }
@@ -2277,6 +2382,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             approval = approvals.firstOrNull(),
             workspacePickerVisible = false,
             workspaceLoading = false,
+            codexSettingsVisible = false,
+            codexSettingsLoading = false,
+            codexSettingsSaving = false,
+            codexSettings = null,
+            codexSettingsError = null,
             submitting = false,
             error = null,
             diagnostic = null,
@@ -2324,6 +2434,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         workspaceParentPath = null,
         workspaceDirectories = emptyList(),
         workspaceError = null,
+        codexSettingsVisible = false,
+        codexSettingsLoading = false,
+        codexSettingsSaving = false,
+        codexSettings = null,
+        codexSettingsError = null,
         approval = null,
         approvalQueue = emptyList(),
         attachments = emptyList(),

@@ -257,6 +257,10 @@ object RemoteBootstrap {
         WRAPPER="${'$'}BIN_DIR/.codex-remote.${'$'}${'$'}"
         cat > "${'$'}WRAPPER" <<EOF
         #!/bin/sh
+        # codex-remote-global-env
+        if [ -r "\${'$'}{HOME}/.codex/codex-remote.env" ]; then
+          . "\${'$'}{HOME}/.codex/codex-remote.env"
+        fi
         exec "\${'$'}{HOME}/.local/share/codex-remote/runtime/${'$'}NODE_SLOT/bin/node" "\${'$'}{HOME}/.local/share/codex-remote/releases/${'$'}RELEASE_SLOT/lib/node_modules/@openai/codex/bin/codex.js" "\${'$'}@"
         EOF
         chmod 700 "${'$'}WRAPPER"

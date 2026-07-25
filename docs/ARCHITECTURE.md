@@ -5,12 +5,12 @@
 
 文档基线：
 
-- Android 应用版本：1.7.19（versionCode 41）
+- Android 应用版本：1.7.38（versionCode 60）
 - 固定 Codex CLI：0.144.6
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
 - 主要技术：Kotlin、Jetpack Compose、Coroutines/Flow、JSch、kotlinx.serialization
-- 最后核对日期：2026-07-24
+- 最后核对日期：2026-07-25
 
 版本会变化。发布前必须以 app/build.gradle.kts、protocol/codex-version.txt 和
 protocol/node-version.txt 为准，不要只相信本文顶部的快照。
@@ -65,7 +65,7 @@ codex app-server，并把 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插
 | app/src/main/java/top/asdb/codexremote/ui | Compose 页面、导航绑定和交互 | CodexRemoteApp.kt、对应 Screen |
 | app/src/main/java/top/asdb/codexremote/data | 领域模型和加密持久化 | Models.kt、ProfileStore.kt |
 | app/src/main/java/top/asdb/codexremote/codex | JSON-RPC 客户端、协议解析、缓存和多连接 | CodexAppServerClient.kt、CodexProtocol.kt |
-| app/src/main/java/top/asdb/codexremote/ssh | SSH、安全指纹、远程安装和终端 | SshCodexTransport.kt、RemoteBootstrap.kt |
+| app/src/main/java/top/asdb/codexremote/ssh | SSH、安全指纹、远程安装、全局 Codex 设置和终端 | SshCodexTransport.kt、RemoteBootstrap.kt、RemoteCodexSettings.kt |
 | app/src/main/assets/terminal | 本地 xterm.js 渲染资源 | terminal.html、terminal-bridge.js |
 | app/src/test | JVM 单元测试 | 与改动模块对应的 Test 文件 |
 | protocol | 固定版本和 app-server 契约 | codex-version.txt、node-version.txt |
@@ -154,7 +154,7 @@ ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建�
 - 正在工作的会话使用固定尺寸的转圈状态，避免列表布局跳动。
 - 从会话页返回时保留服务器级 SessionSnapshot，重复进入优先显示缓存后再远程校准。
 - 提供服务器切换弹窗；切换只改变当前展示，不主动断开其他服务器。
-- 提供工作目录选择和独立 SSH 终端入口。
+- 顶部齿轮先显示“选择工作目录”和“配置 Codex”；另保留独立 SSH 终端入口。
 
 工作目录自动弹窗只允许在某台服务器第一次成功连接时出现一次。ServerProfile 的
 workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择时再打开。
@@ -406,6 +406,32 @@ http、https、socks5、socks5h；输入必须经过 RemoteBootstrap.validatePro
 
 服务器已有 Codex 或 VS Code 插件时，登录缓存通常由同一 Unix 用户的 CODEX_HOME 复用；
 CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，应用安装器不会创建 OpenAI 凭据。
+
+### 9.1 用户级 Codex 设置
+
+会话列表的齿轮入口可读取和写入**当前已连接服务器、当前 Unix 用户**的全局 Codex 设置。该入口
+与“选择工作目录”并列；它不是 ServerProfile 的本地字段，也不能按会话保存。
+
+远端文件边界固定如下：
+
+| 文件 | 写入方式和用途 |
+| --- | --- |
+| `$HOME/.codex/config.toml` | 原子保留无关根键和表，仅更新根级 `model_provider = "openai"` 与可选 `openai_base_url`。 |
+| `$HOME/.codex/auth.json` | 只有用户填写 API 密钥时，才通过 `codex login --with-api-key` 的标准输入由 CLI 写入；绝不由 App 伪造 JSON。 |
+| `$HOME/.codex/codex-remote.env` | App 管理的 `0600` 私有代理环境文件，含 HTTP/HTTPS/ALL_PROXY 的大小写变量；代理留空时删除该文件。 |
+| `$HOME/.local/bin/codex-remote` | managed wrapper 在启动前 source 代理环境文件；SshCodexTransport 启动 app-server 时也 source 一次，兼容既有 wrapper 和自定义 remoteCommand。 |
+
+因此这些设置会作用于同一用户的 Codex CLI、VS Code Codex 插件和本应用。保存时 API 密钥仅在
+内存和 SSH 标准输入中出现，不能写入 Android ProfileStore、诊断日志、通知或截图；API 密钥留空
+必须保留现有登录，代理留空必须清除 Codex 代理。保存成功后 App 主动断开该 profile，下一次连接
+才会以新的全局设置创建 app-server。
+
+不得修改 `$HOME/.bashrc`、`$HOME/.profile`、任意项目 `.codex/config.toml`、其他工作目录或 VS Code
+扩展文件。项目级配置不能安全覆盖 provider/auth，且这会破坏用户要求的全局行为。
+
+`RemoteCodexSettingsTest` 必须覆盖 URL 校验、POSIX shell 语法、保留 `[features]` 等无关 TOML 表、
+代理文件 `0600` 权限，以及 fake CLI 接收 API 密钥但不回显。`RemoteBootstrapTest` 必须覆盖新 wrapper
+仍 source 该环境文件。
 
 ## 10. 后台运行、完成通知和诊断
 
@@ -804,6 +830,9 @@ Serializable data class（必须给默认值）
     https://lowapi.asdb.top。
 21. 远端工具/MCP 的非致命 stderr 必须转成简短中文提示，不能用原始 HTTP/JSON/Rust 日志遮挡
     会话；真正断线、认证失败和不可恢复错误仍需明确提示。
+22. Codex 配置入口修改的是当前远程 Unix 用户的全局设置：模型 URL、API 密钥和 HTTP/HTTPS
+    代理。API 密钥不能保存到手机；保存后必须断开并在重连时生效，不能改项目级 `.codex`、shell
+    profile 或其他工作区。
 
 若实现与上述约束冲突，先修实现；如确需改变产品契约，必须得到用户明确确认并同步更新本文。
 

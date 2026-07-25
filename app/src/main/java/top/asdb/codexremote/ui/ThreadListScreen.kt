@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -69,7 +70,7 @@ fun ThreadListScreen(
     onRefresh: () -> Unit,
     onCreate: () -> Unit,
     onOpen: (CodexThread) -> Unit,
-    onSelectWorkspace: () -> Unit,
+    onOpenSettings: () -> Unit,
     onShowServers: () -> Unit,
     onBackToServers: () -> Unit,
     terminalSession: SshTerminalSessionState?,
@@ -130,8 +131,8 @@ fun ThreadListScreen(
                     IconButton(onClick = onCreate) {
                         Icon(Icons.Default.AddComment, contentDescription = "新任务")
                     }
-                    IconButton(onClick = onSelectWorkspace) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = "选择工作目录")
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Codex 设置")
                     }
                     IconButton(onClick = onShowServers) {
                         Icon(Icons.Default.Dns, contentDescription = "切换服务器")

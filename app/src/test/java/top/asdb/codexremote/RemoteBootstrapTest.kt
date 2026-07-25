@@ -93,6 +93,14 @@ class RemoteBootstrapTest {
     }
 
     @Test
+    fun `managed wrapper sources the Codex Remote global environment`() {
+        val script = RemoteBootstrap.installScript("0.144.6", "22.17.0")
+
+        assertTrue(script.contains("# codex-remote-global-env"))
+        assertTrue(script.contains(".codex/codex-remote.env"))
+    }
+
+    @Test
     fun `missing flock blocks automatic installation`() {
         val environment = RemoteBootstrap.parseProbe(
             listOf(
