@@ -276,7 +276,7 @@ object CodexPayloadParser {
                 id = id,
                 kind = TimelineKind.Tool,
                 title = when (type) {
-                    "imageView" -> "查看图片"
+                    "imageView" -> "查看了图片"
                     "imageGeneration" -> "生成图片"
                     else -> "等待"
                 },

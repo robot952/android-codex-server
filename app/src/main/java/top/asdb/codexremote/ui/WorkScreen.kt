@@ -1,17 +1,26 @@
 package top.asdb.codexremote.ui
 
+import android.Manifest
+import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -160,6 +169,7 @@ import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
     ExperimentalMaterial3Api::class,
     ExperimentalLayoutApi::class,
     ExperimentalComposeUiApi::class,
+    ExperimentalFoundationApi::class,
 )
 @Composable
 fun WorkScreen(
@@ -220,9 +230,50 @@ fun WorkScreen(
     var imagePreview by remember { mutableStateOf<RemoteImagePreview?>(null) }
     var imageLoadingPath by remember { mutableStateOf<String?>(null) }
     var imagePreviewError by remember { mutableStateOf<String?>(null) }
+    var imageSaveError by remember { mutableStateOf<String?>(null) }
+    var imageSaving by remember { mutableStateOf(false) }
+    var pendingImageSave by remember { mutableStateOf<RemoteImagePreview?>(null) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { onUpload(context, it) }
+    }
+    val saveImage: (RemoteImagePreview) -> Unit = saveImage@{ preview ->
+        if (imageSaving) return@saveImage
+        imageSaveError = null
+        imageSaving = true
+        coroutineScope.launch {
+            try {
+                withContext(Dispatchers.IO) { saveImageToPhone(context, preview) }
+                Toast.makeText(context, "已保存到手机相册", Toast.LENGTH_SHORT).show()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                imageSaveError = error.message ?: "无法保存图片"
+            } finally {
+                imageSaving = false
+            }
+        }
+    }
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val preview = pendingImageSave
+        pendingImageSave = null
+        if (granted && preview != null) {
+            saveImage(preview)
+        } else if (preview != null) {
+            imageSaveError = "未授予保存图片所需的存储权限"
+        }
+    }
+    fun requestImageSave(preview: RemoteImagePreview) {
+        val needsLegacyPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        if (needsLegacyPermission) {
+            pendingImageSave = preview
+            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            saveImage(preview)
+        }
     }
     fun openImagePreview(path: String) {
         if (imageLoadingPath != null) return
@@ -232,7 +283,7 @@ fun WorkScreen(
             try {
                 val bytes = onLoadRemoteImage(path)
                 val bitmap = withContext(Dispatchers.Default) { decodeImagePreview(bytes) }
-                imagePreview = RemoteImagePreview(path, bitmap)
+                imagePreview = RemoteImagePreview(path, bytes, bitmap)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -553,7 +604,12 @@ fun WorkScreen(
     }
 
     imagePreview?.let { preview ->
-        RemoteImagePreviewDialog(preview = preview, onDismiss = { imagePreview = null })
+        RemoteImagePreviewDialog(
+            preview = preview,
+            saving = imageSaving,
+            onSave = { requestImageSave(preview) },
+            onDismiss = { imagePreview = null },
+        )
     }
 
     imageLoadingPath?.let { path ->
@@ -577,6 +633,15 @@ fun WorkScreen(
             title = { Text("无法查看图片") },
             text = { Text(message) },
             confirmButton = { TextButton(onClick = { imagePreviewError = null }) { Text("关闭") } },
+        )
+    }
+
+    imageSaveError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { imageSaveError = null },
+            title = { Text("保存图片失败") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = { imageSaveError = null }) { Text("关闭") } },
         )
     }
 
@@ -1212,7 +1277,7 @@ private fun ToolBlock(
 internal fun imagePreviewPath(entry: TimelineEntry): String? {
     if (entry.kind != TimelineKind.Tool) return null
     val toolName = entry.title.trim().lowercase()
-    if (toolName !in setOf("imageview", "view_image", "image viewer", "查看图片")) return null
+    if (toolName !in setOf("imageview", "view_image", "image viewer", "查看图片", "查看了图片")) return null
     listOf(entry.text, entry.output).forEach { content ->
         content.lineSequence().forEach { line ->
             val path = line.trim().removePrefix("file://").removeSurrounding("\"")
@@ -1226,7 +1291,11 @@ internal fun imagePreviewPath(entry: TimelineEntry): String? {
 
 private val IMAGE_EXTENSIONS = setOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 
-private data class RemoteImagePreview(val path: String, val bitmap: Bitmap)
+private data class RemoteImagePreview(
+    val path: String,
+    val bytes: ByteArray,
+    val bitmap: Bitmap,
+)
 
 private fun decodeImagePreview(bytes: ByteArray): Bitmap {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -1245,8 +1314,55 @@ private fun previewSampleSize(width: Int, height: Int): Int {
     return sample
 }
 
+internal fun imageMimeType(path: String): String = when (path.substringAfterLast('.', "").lowercase()) {
+    "jpg", "jpeg" -> "image/jpeg"
+    "webp" -> "image/webp"
+    "gif" -> "image/gif"
+    "bmp" -> "image/bmp"
+    else -> "image/png"
+}
+
+private fun saveImageToPhone(context: Context, preview: RemoteImagePreview) {
+    val resolver = context.contentResolver
+    val displayName = preview.path.substringAfterLast('/').take(120).ifBlank {
+        "codex-${System.currentTimeMillis()}.png"
+    }
+    val values = ContentValues().apply {
+        put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+        put(MediaStore.Images.Media.MIME_TYPE, imageMimeType(preview.path))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Codex")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+    }
+    val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        ?: throw IllegalStateException("无法创建图片文件")
+    try {
+        resolver.openOutputStream(uri)?.use { output -> output.write(preview.bytes) }
+            ?: throw IllegalStateException("无法写入图片文件")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            resolver.update(
+                uri,
+                ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                null,
+                null,
+            )
+        }
+    } catch (error: Throwable) {
+        resolver.delete(uri, null, null)
+        throw error
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RemoteImagePreviewDialog(preview: RemoteImagePreview, onDismiss: () -> Unit) {
+private fun RemoteImagePreviewDialog(
+    preview: RemoteImagePreview,
+    saving: Boolean,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var saveRequested by remember(preview.path) { mutableStateOf(false) }
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             color = Color.Black,
@@ -1277,11 +1393,43 @@ private fun RemoteImagePreviewDialog(preview: RemoteImagePreview, onDismiss: () 
                         bitmap = preview.bitmap.asImageBitmap(),
                         contentDescription = preview.path,
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().padding(8.dp),
+                        modifier = Modifier.fillMaxSize().padding(8.dp).combinedClickable(
+                            enabled = !saving,
+                            onClick = {},
+                            onLongClick = { saveRequested = true },
+                        ),
                     )
+                    if (saving) {
+                        Surface(shape = RoundedCornerShape(8.dp), color = CodexSurfaceRaised) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Text("正在保存")
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+    if (saveRequested) {
+        AlertDialog(
+            onDismissRequest = { saveRequested = false },
+            title = { Text("保存图片") },
+            text = { Text("保存到手机相册？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    saveRequested = false
+                    onSave()
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { saveRequested = false }) { Text("取消") }
+            },
+        )
     }
 }
 

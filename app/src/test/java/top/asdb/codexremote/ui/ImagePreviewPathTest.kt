@@ -41,12 +41,19 @@ class ImagePreviewPathTest {
             TimelineEntry(
                 id = "image",
                 kind = TimelineKind.Tool,
-                title = "查看图片",
+                title = "查看了图片",
                 text = "/tmp/screenshot.jpg",
             ),
         )
 
         assertEquals("/tmp/screenshot.jpg", path)
+    }
+
+    @Test
+    fun `uses image mime type based on extension`() {
+        assertEquals("image/jpeg", imageMimeType("/tmp/screenshot.JPG"))
+        assertEquals("image/webp", imageMimeType("/tmp/screenshot.webp"))
+        assertEquals("image/png", imageMimeType("/tmp/screenshot.png"))
     }
 
     @Test
