@@ -36,6 +36,20 @@ class ImagePreviewPathTest {
     }
 
     @Test
+    fun `recognizes localized image viewer title`() {
+        val path = imagePreviewPath(
+            TimelineEntry(
+                id = "image",
+                kind = TimelineKind.Tool,
+                title = "查看图片",
+                text = "/tmp/screenshot.jpg",
+            ),
+        )
+
+        assertEquals("/tmp/screenshot.jpg", path)
+    }
+
+    @Test
     fun `rejects non-image tool output`() {
         val path = imagePreviewPath(
             TimelineEntry(

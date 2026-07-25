@@ -275,7 +275,11 @@ object CodexPayloadParser {
             "imageView", "imageGeneration", "sleep" -> TimelineEntry(
                 id = id,
                 kind = TimelineKind.Tool,
-                title = type,
+                title = when (type) {
+                    "imageView" -> "查看图片"
+                    "imageGeneration" -> "生成图片"
+                    else -> "等待"
+                },
                 text = item.string("path").ifBlank { item.string("result") }
                     .bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER),
                 status = item.string("status"),

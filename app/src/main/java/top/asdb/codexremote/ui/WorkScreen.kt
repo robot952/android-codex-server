@@ -1212,7 +1212,7 @@ private fun ToolBlock(
 internal fun imagePreviewPath(entry: TimelineEntry): String? {
     if (entry.kind != TimelineKind.Tool) return null
     val toolName = entry.title.trim().lowercase()
-    if (toolName !in setOf("imageview", "view_image")) return null
+    if (toolName !in setOf("imageview", "view_image", "image viewer", "查看图片")) return null
     listOf(entry.text, entry.output).forEach { content ->
         content.lineSequence().forEach { line ->
             val path = line.trim().removePrefix("file://").removeSurrounding("\"")
