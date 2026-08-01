@@ -7,5 +7,7 @@ dist/
 .DS_Store
 *.jks
 *.keystore
+# This test project's stable signing identity is intentionally versioned.
+!keystore/codex-remote-stable.keystore
 server/.env
 server/generated-schema/

@@ -75,7 +75,7 @@ Both debug and release APKs use the project's persistent signing key at
 Do not delete or regenerate that file. Its signing certificate SHA-256 is:
 
 ```text
-D2:52:C3:93:69:98:B5:20:EB:48:2E:32:20:A9:91:88:A5:85:99:CF:F9:D0:00:90:0A:80:32:04:FE:A4:E3:F0
+72:72:22:18:70:9A:6D:7F:D0:E8:0B:94:49:03:AE:29:61:B4:CF:A8:AB:E0:35:86:F6:02:AC:DC:1E:A0:F5:2A
 ```
 
 The debug APK can be installed directly:
