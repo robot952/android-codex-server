@@ -26,6 +26,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.TokenUsageBreakdown
+import top.asdb.codexremote.data.TurnTiming
 import top.asdb.codexremote.data.hasKnownContextWindow
 
 internal const val MAX_TIMELINE_TEXT_CHARS = 256 * 1024
@@ -539,7 +540,12 @@ private fun completeSubAgentsForTurn(
 }
 
 object CodexEventReducer {
-    fun reduce(state: AppUiState, method: String, params: JsonObject): AppUiState =
+    fun reduce(
+        state: AppUiState,
+        method: String,
+        params: JsonObject,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): AppUiState =
         if (!state.acceptsThreadEvent(method, params)) state else when (method) {
         "turn/started" -> {
             val turn = params.obj("turn")
@@ -551,11 +557,18 @@ object CodexEventReducer {
                     appliesToActiveThread -> state.activeTurnId ?: listedTurnId
                     else -> listedTurnId
                 }
+            val timingThreadId = threadId.ifBlank { state.activeThread?.id.orEmpty() }
             val base = if (appliesToActiveThread) {
                 state.copy(
                     activeTurnId = turnId,
                     running = true,
                     activeThread = state.activeThread?.copy(status = "active"),
+                    turnTiming = startTurnTiming(
+                        current = state.turnTiming,
+                        threadId = timingThreadId,
+                        turnId = turnId.orEmpty(),
+                        nowMillis = nowMillis,
+                    ),
                 )
             } else state
             base.updateThreadRuntime(threadId.ifBlank { state.activeThread?.id.orEmpty() }, "active", turnId)
@@ -576,12 +589,19 @@ object CodexEventReducer {
                 val error = turn?.obj("error")?.string("message")
                 val resolvedTurnId = completedTurnId.ifBlank { state.activeTurnId.orEmpty() }
                 val terminalStatus = subAgentStatusForTurn(turn?.string("status").orEmpty())
+                val timingThreadId = threadId.ifBlank { state.activeThread?.id.orEmpty() }
                 state.copy(
                     activeTurnId = null,
                     running = false,
                     activeThread = state.activeThread?.copy(status = "idle"),
                     error = error?.takeIf { it.isNotBlank() } ?: state.error,
                     timeline = completeSubAgentsForTurn(state.timeline, resolvedTurnId, terminalStatus),
+                    turnTiming = completeTurnTiming(
+                        current = state.turnTiming,
+                        threadId = timingThreadId,
+                        turnId = resolvedTurnId,
+                        nowMillis = nowMillis,
+                    ),
                 ).updateThreadRuntime(threadId.ifBlank { state.activeThread?.id.orEmpty() }, "idle", null)
             }
         }
@@ -603,11 +623,27 @@ object CodexEventReducer {
                         appliesToActiveThread -> state.activeTurnId ?: listedTurnId
                         else -> listedTurnId
                     }
+                val timingThreadId = threadId.ifBlank { state.activeThread?.id.orEmpty() }
                 val base = if (appliesToActiveThread) {
                     state.copy(
                         activeThread = state.activeThread?.copy(status = status),
                         running = status == "active",
                         activeTurnId = if (status == "active") activeTurn else null,
+                        turnTiming = if (status == "active") {
+                            startTurnTiming(
+                                current = state.turnTiming,
+                                threadId = timingThreadId,
+                                turnId = activeTurn.orEmpty(),
+                                nowMillis = nowMillis,
+                            )
+                        } else {
+                            completeTurnTiming(
+                                current = state.turnTiming,
+                                threadId = timingThreadId,
+                                turnId = state.activeTurnId.orEmpty(),
+                                nowMillis = nowMillis,
+                            )
+                        },
                     )
                 } else state
                 base.updateThreadRuntime(threadId, status, activeTurn)
@@ -812,6 +848,41 @@ object CodexEventReducer {
 
         else -> state
         }
+
+    private fun startTurnTiming(
+        current: TurnTiming?,
+        threadId: String,
+        turnId: String,
+        nowMillis: Long,
+    ): TurnTiming? {
+        if (threadId.isBlank()) return current
+        if (
+            current?.threadId == threadId &&
+            current.completedAtMillis == null &&
+            (turnId.isBlank() || current.turnId.isNullOrBlank() || current.turnId == turnId)
+        ) {
+            return current.copy(turnId = current.turnId ?: turnId.takeIf { it.isNotBlank() })
+        }
+        return TurnTiming(
+            threadId = threadId,
+            turnId = turnId.takeIf { it.isNotBlank() },
+            startedAtMillis = nowMillis,
+        )
+    }
+
+    private fun completeTurnTiming(
+        current: TurnTiming?,
+        threadId: String,
+        turnId: String,
+        nowMillis: Long,
+    ): TurnTiming? {
+        if (current == null || threadId.isBlank() || current.threadId != threadId) return current
+        if (turnId.isNotBlank() && current.turnId != null && current.turnId != turnId) return current
+        return current.copy(
+            turnId = current.turnId ?: turnId.takeIf { it.isNotBlank() },
+            completedAtMillis = current.completedAtMillis ?: nowMillis,
+        )
+    }
 
     private fun AppUiState.acceptsThreadEvent(method: String, params: JsonObject): Boolean {
         val eventThreadId = params.string("threadId")

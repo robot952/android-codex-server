@@ -28,6 +28,8 @@ data class ServerProfile(
     /** Per-server model preferences restored after reconnecting or restarting the app. */
     val preferredModel: String = "",
     val preferredEffort: String = "",
+    /** Model used only by the non-mutating API settings connection check. */
+    val testModel: String = "",
 )
 
 @Serializable
@@ -180,6 +182,14 @@ data class TimelineEntry(
     val reasoningContent: List<String> = emptyList(),
 )
 
+/** Local timing for the latest turn in a thread; the app-server does not emit a completion time. */
+data class TurnTiming(
+    val threadId: String,
+    val turnId: String? = null,
+    val startedAtMillis: Long,
+    val completedAtMillis: Long? = null,
+)
+
 enum class ApprovalKind { Command, FileChange, Permission, UserInput }
 
 data class InputOption(
@@ -213,6 +223,8 @@ data class PendingAttachment(
     val name: String,
     val remotePath: String,
     val mimeType: String,
+    /** Text attachments are sent inline so the remote model can read their contents directly. */
+    val textContent: String? = null,
 )
 
 enum class AppScreen { Servers, Threads, Work, AgentWork }
@@ -281,9 +293,20 @@ data class CodexGlobalSettings(
     val model: String = "",
     /** Active built-in or custom provider id from the remote global configuration. */
     val modelProvider: String = "openai",
-    /** The remote account has a stored Codex credential; the secret is never returned to the app. */
+    /** The remote account has a stored Codex credential. */
     val hasStoredAuthentication: Boolean = false,
+    /**
+     * API-key authentication read only while the settings dialog is open. It is never persisted
+     * on the device or written to diagnostic output. OAuth authentication has no displayable key.
+     */
+    val apiKey: String = "",
     val proxyUrl: String = "",
+)
+
+/** Result of a non-mutating API request started from the remote server. */
+data class CodexConnectionTestResult(
+    val successful: Boolean,
+    val message: String,
 )
 
 data class AppUiState(
@@ -313,6 +336,7 @@ data class AppUiState(
     val olderTurnsLoading: Boolean = false,
     val activeTurnId: String? = null,
     val running: Boolean = false,
+    val turnTiming: TurnTiming? = null,
     val submitting: Boolean = false,
     val loading: Boolean = false,
     val models: List<CodexModel> = emptyList(),
@@ -329,7 +353,9 @@ data class AppUiState(
     val codexSettingsVisible: Boolean = false,
     val codexSettingsLoading: Boolean = false,
     val codexSettingsSaving: Boolean = false,
+    val codexSettingsTesting: Boolean = false,
     val codexSettings: CodexGlobalSettings? = null,
+    val codexSettingsTestResult: CodexConnectionTestResult? = null,
     val codexSettingsError: String? = null,
     val approval: ApprovalPrompt? = null,
     /** Pending server requests are kept in arrival order; the first one is shown in the dialog. */

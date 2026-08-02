@@ -75,6 +75,7 @@ import androidx.compose.material.icons.filled.Pending
 import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.PauseCircleOutline
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
@@ -149,6 +150,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.roundToInt
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.AppScreen
@@ -237,7 +242,10 @@ fun WorkScreen(
     var linkToOpen by remember { mutableStateOf<String?>(null) }
     var linkOpenError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { onUpload(context, it) }
+    }
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { onUpload(context, it) }
     }
     val saveImage: (RemoteImagePreview) -> Unit = saveImage@{ preview ->
@@ -309,10 +317,32 @@ fun WorkScreen(
     }
     val lastEntry = state.timeline.lastOrNull()
     val latestFileChangeId = state.timeline.lastOrNull { it.kind == TimelineKind.FileChange }?.id
+    val activeThreadId = state.activeThread?.id.orEmpty()
+    val matchingTurnTiming = state.turnTiming?.takeIf { it.threadId == activeThreadId }
+    var turnClockMillis by remember(activeThreadId, matchingTurnTiming?.startedAtMillis, state.activeTurnId) {
+        mutableStateOf(System.currentTimeMillis())
+    }
+    LaunchedEffect(state.running, activeThreadId, matchingTurnTiming?.startedAtMillis, state.activeTurnId) {
+        turnClockMillis = System.currentTimeMillis()
+        if (state.running) {
+            while (true) {
+                delay(1_000)
+                turnClockMillis = System.currentTimeMillis()
+            }
+        }
+    }
+    val runningTurnStartedAtMillis = matchingTurnTiming
+        ?.takeIf { it.completedAtMillis == null }
+        ?.startedAtMillis
+        ?: turnClockMillis
+    val completedTurnTiming = matchingTurnTiming?.takeIf {
+        !state.running && it.completedAtMillis != null
+    }
+    val hasTurnTimingFooter = state.running || completedTurnTiming != null
     var followOutput by remember(state.activeThread?.id) { mutableStateOf(true) }
     val trailingItemIndex = timelineRows.size +
         (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
-        (if (state.running) 1 else 0)
+        (if (hasTurnTimingFooter) 1 else 0)
 
     LaunchedEffect(pullToRefreshState.isRefreshing) {
         if (pullToRefreshState.isRefreshing) {
@@ -450,7 +480,8 @@ fun WorkScreen(
                 state = state,
                 value = state.composerDraft,
                 onValueChange = onComposerChange,
-                onAttach = { filePicker.launch(arrayOf("image/*", "text/*", "application/pdf")) },
+                onAttachImage = { imagePicker.launch(arrayOf("image/*")) },
+                onAttachFile = { documentPicker.launch(arrayOf("*/*")) },
                 onRemoveAttachment = onRemoveAttachment,
                 onSend = { onSend(state.composerDraft) },
                 onStop = onStop,
@@ -536,8 +567,37 @@ fun WorkScreen(
                         ) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(9.dp))
-                            Text("正在处理", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            Text(
+                                "正在处理  本次耗时 ${formatTurnElapsed(runningTurnStartedAtMillis, turnClockMillis)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                } else if (completedTurnTiming != null) {
+                    item(key = "turn-completion") {
+                        val completedAtMillis = checkNotNull(completedTurnTiming.completedAtMillis)
+                        Row(
+                            modifier = Modifier.semantics {
+                                contentDescription = "本次耗时 ${formatTurnElapsed(
+                                    completedTurnTiming.startedAtMillis,
+                                    completedAtMillis,
+                                )}，完成于 ${formatTurnCompletionTime(completedAtMillis)}"
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = CodexGreen,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(9.dp))
+                            Text(
+                                "本次耗时 ${formatTurnElapsed(completedTurnTiming.startedAtMillis, completedAtMillis)}" +
+                                    "  完成于 ${formatTurnCompletionTime(completedAtMillis)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     }
                 }
@@ -1774,7 +1834,8 @@ private fun WorkComposer(
     state: AppUiState,
     value: String,
     onValueChange: (String) -> Unit,
-    onAttach: () -> Unit,
+    onAttachImage: () -> Unit,
+    onAttachFile: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -1790,6 +1851,7 @@ private fun WorkComposer(
 ) {
     val composerScroll = rememberScrollState()
     var actionMenuVisible by remember { mutableStateOf(false) }
+    var attachmentMenuVisible by remember { mutableStateOf(false) }
     val modelName = state.models.firstOrNull { it.model == state.selectedModel }?.displayName
         ?: state.selectedModel ?: "模型"
     val effortName = when (state.selectedEffort) {
@@ -1873,9 +1935,35 @@ private fun WorkComposer(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = onAttach, enabled = !state.loading,
-                            modifier = Modifier.size(36.dp)) {
-                            Icon(Icons.Default.Add, contentDescription = "添加附件", modifier = Modifier.size(20.dp))
+                        Box {
+                            IconButton(
+                                onClick = { attachmentMenuVisible = true },
+                                enabled = !state.loading,
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "添加附件", modifier = Modifier.size(20.dp))
+                            }
+                            DropdownMenu(
+                                expanded = attachmentMenuVisible,
+                                onDismissRequest = { attachmentMenuVisible = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("上传图片") },
+                                    leadingIcon = { Icon(Icons.Default.Photo, contentDescription = null) },
+                                    onClick = {
+                                        attachmentMenuVisible = false
+                                        onAttachImage()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("上传文件") },
+                                    leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
+                                    onClick = {
+                                        attachmentMenuVisible = false
+                                        onAttachFile()
+                                    },
+                                )
+                            }
                         }
                         Box {
                             IconButton(
@@ -2168,6 +2256,21 @@ private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
         else -> "${seconds / 3_600}h ${(seconds % 3_600) / 60}m"
     }
 }
+
+private fun formatTurnElapsed(startedAtMillis: Long, endedAtMillis: Long): String {
+    val seconds = ((endedAtMillis - startedAtMillis).coerceAtLeast(0L) / 1_000L)
+    val hours = seconds / 3_600L
+    val minutes = (seconds % 3_600L) / 60L
+    val remainderSeconds = seconds % 60L
+    return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, remainderSeconds)
+}
+
+private fun formatTurnCompletionTime(completedAtMillis: Long): String =
+    Instant.ofEpochMilli(completedAtMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(TURN_COMPLETION_TIME_FORMATTER)
+
+private val TURN_COMPLETION_TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

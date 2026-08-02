@@ -98,6 +98,11 @@ class RemoteBootstrapTest {
 
         assertTrue(script.contains("# codex-remote-global-env"))
         assertTrue(script.contains(".codex/codex-remote.env"))
+        assertTrue(script.contains("MODEL_CACHE=\"\\\${HOME}/.codex/models_cache.json\""))
+        assertTrue(script.contains("[ \"\\\${1:-}\" = \"app-server\" ]"))
+        assertTrue(script.contains("supports_reasoning_summaries"))
+        assertTrue(script.contains("MODEL_CACHE.incompatible."))
+        assertTrue(script.contains("date +%s"))
     }
 
     @Test

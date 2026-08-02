@@ -586,6 +586,31 @@ class CodexPayloadParserTest {
     }
 
     @Test
+    fun recordsTurnTimingFromStartThroughCompletion() {
+        val thread = top.asdb.codexremote.data.CodexThread(
+            id = "thr-1", title = "任务", preview = "", cwd = "/srv/app", source = "appServer",
+            status = "idle", createdAt = 0, updatedAt = 0, cliVersion = "0.144.6",
+        )
+        val started = CodexEventReducer.reduce(
+            AppUiState(activeThread = thread),
+            "turn/started",
+            json.parseToJsonElement("""{"threadId":"thr-1","turn":{"id":"turn-1"}}""").jsonObject,
+            nowMillis = 1_000L,
+        )
+        assertEquals(1_000L, started.turnTiming?.startedAtMillis)
+        assertEquals(null, started.turnTiming?.completedAtMillis)
+
+        val completed = CodexEventReducer.reduce(
+            started,
+            "turn/completed",
+            json.parseToJsonElement("""{"threadId":"thr-1","turn":{"id":"turn-1"}}""").jsonObject,
+            nowMillis = 4_500L,
+        )
+        assertEquals(1_000L, completed.turnTiming?.startedAtMillis)
+        assertEquals(4_500L, completed.turnTiming?.completedAtMillis)
+    }
+
+    @Test
     fun capsStreamedTextAndStopsCopyingAfterTheLimit() {
         val contentLimit = MAX_TIMELINE_TEXT_CHARS - TEXT_TRUNCATION_MARKER.length
         val initial = buildJsonObject {

@@ -23,6 +23,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
+import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
@@ -388,6 +389,22 @@ class SshCodexTransport {
             timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
             operationName = "保存 Codex 全局配置",
         )
+    }
+
+    suspend fun testCodexGlobalSettings(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        testModel: String,
+    ): CodexConnectionTestResult {
+        val lines = executeScript(
+            profile = profile,
+            script = RemoteCodexSettings.testConnectionScript(baseUrl, apiKey, proxyUrl, testModel),
+            timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
+            operationName = "测试 Codex API 连接",
+        )
+        return RemoteCodexSettings.parseConnectionTest(lines)
     }
 
     fun isConnected(): Boolean = synchronized(connectionStateLock) {

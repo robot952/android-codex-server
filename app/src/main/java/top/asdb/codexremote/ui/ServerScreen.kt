@@ -1,6 +1,8 @@
 package top.asdb.codexremote.ui
 
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
@@ -51,6 +53,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DeleteForever
@@ -1035,6 +1038,15 @@ private fun DiagnosticLogSheet(onDismiss: () -> Unit, onDisable: () -> Unit) {
             }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { copyDiagnosticLog(context, snapshot.preview) },
+                    modifier = Modifier.weight(1f),
+                    enabled = snapshot.preview.isNotBlank(),
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("复制")
+                }
                 OutlinedButton(onClick = { clearRequested = true }, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
@@ -1069,6 +1081,21 @@ private fun DiagnosticLogSheet(onDismiss: () -> Unit, onDisable: () -> Unit) {
                 TextButton(onClick = { clearRequested = false }) { Text("取消") }
             },
         )
+    }
+}
+
+private fun copyDiagnosticLog(context: Context, value: String) {
+    if (value.isBlank()) {
+        Toast.makeText(context, "暂无日志可复制", Toast.LENGTH_SHORT).show()
+        return
+    }
+    runCatching {
+        context.getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("Codex Debug Log", value))
+    }.onSuccess {
+        Toast.makeText(context, "日志已复制", Toast.LENGTH_SHORT).show()
+    }.onFailure {
+        Toast.makeText(context, "无法复制日志", Toast.LENGTH_SHORT).show()
     }
 }
 

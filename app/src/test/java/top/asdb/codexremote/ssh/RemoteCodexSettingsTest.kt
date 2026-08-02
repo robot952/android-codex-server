@@ -82,9 +82,122 @@ class RemoteCodexSettingsTest {
             assertEquals("https://relay.example.com/v1", settings.baseUrl)
             assertEquals("http://127.0.0.1:7890", settings.proxyUrl)
             assertTrue(settings.hasStoredAuthentication)
+            assertEquals("", settings.apiKey)
         } finally {
             home.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `read script returns API key authentication for the settings page`() {
+        val home = Files.createTempDirectory("codex-remote-read-api-key").toFile()
+        try {
+            val codexDir = home.resolve(".codex").apply { mkdirs() }
+            codexDir.resolve("auth.json").writeText("{\"OPENAI_API_KEY\":\"sk-visible-test-key\"}\n")
+
+            val process = ProcessBuilder("sh", "-s")
+                .apply { environment()["HOME"] = home.absolutePath }
+                .start()
+            process.outputStream.bufferedWriter().use { it.write(RemoteCodexSettings.readScript) }
+
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+            val settings = RemoteCodexSettings.parse(process.inputStream.bufferedReader().readLines())
+            assertTrue(settings.hasStoredAuthentication)
+            assertEquals("sk-visible-test-key", settings.apiKey)
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `connection test keeps API key out of command arguments and reports success`() {
+        val home = Files.createTempDirectory("codex-remote-test-connection").toFile()
+        try {
+            val bin = home.resolve("bin").apply { mkdirs() }
+            val curl = bin.resolve("curl")
+            curl.writeText(
+                """
+                #!/bin/sh
+                header_file=
+                body_file=
+                for argument in "${'$'}@"; do
+                  case "${'$'}argument" in
+                    @*)
+                      candidate="${'$'}{argument#@}"
+                      if grep -Fqx 'Authorization: Bearer sk-test-connection' "${'$'}candidate"; then
+                        header_file="${'$'}candidate"
+                      else
+                        body_file="${'$'}candidate"
+                      fi
+                      ;;
+                    *sk-test-connection*) exit 91 ;;
+                  esac
+                done
+                [ -n "${'$'}header_file" ] || exit 92
+                [ -n "${'$'}body_file" ] || exit 95
+                [ "${'$'}(stat -c '%a' "${'$'}header_file")" = 600 ] || exit 93
+                [ "${'$'}(stat -c '%a' "${'$'}body_file")" = 600 ] || exit 96
+                grep -Fqx 'Authorization: Bearer sk-test-connection' "${'$'}header_file" || exit 94
+                grep -Fqx '{"model":"gpt-test","input":"ping","max_output_tokens":1}' "${'$'}body_file" || exit 97
+                printf '204'
+                """.trimIndent() + "\n",
+            )
+            assertTrue(curl.setExecutable(true))
+
+            val process = ProcessBuilder("sh", "-s")
+                .apply {
+                    environment()["HOME"] = home.absolutePath
+                    environment()["PATH"] = listOf(bin.absolutePath, System.getenv("PATH").orEmpty()).joinToString(":")
+                }
+                .start()
+            process.outputStream.bufferedWriter().use {
+                it.write(
+                    RemoteCodexSettings.testConnectionScript(
+                        "https://gateway.example.com/v1",
+                        "sk-test-connection",
+                        "",
+                        "gpt-test",
+                    ),
+                )
+            }
+
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            assertEquals(stderr, 0, process.exitValue())
+            assertTrue(stdout.contains("__CODEX_CONNECTION_TEST_STATUS=SUCCESS"))
+            assertFalse(stdout.contains("sk-test-connection"))
+            assertFalse(stderr.contains("sk-test-connection"))
+            val result = RemoteCodexSettings.parseConnectionTest(stdout.lineSequence().toList())
+            assertTrue(result.successful)
+            assertTrue(result.message.contains("gpt-test"))
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `connection test requires a model and targets Responses API`() {
+        val script = RemoteCodexSettings.testConnectionScript(
+            "https://gateway.example.com/v1",
+            "sk-test",
+            "",
+            "",
+        )
+
+        assertTrue(script.contains("/responses"))
+        assertTrue(script.contains("max_output_tokens"))
+        assertFalse(
+            RemoteCodexSettings.parseConnectionTest(
+                listOf("__CODEX_CONNECTION_TEST_STATUS=MISSING_TEST_MODEL"),
+            ).successful,
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `test model rejects whitespace and shell-like input`() {
+        RemoteCodexSettings.normalizeTestModel("gpt-test; rm")
     }
 
     @Test

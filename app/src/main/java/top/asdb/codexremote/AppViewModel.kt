@@ -49,14 +49,17 @@ import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.ThreadModelPreference
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TokenUsage
+import top.asdb.codexremote.data.TurnTiming
 import top.asdb.codexremote.data.hasKnownContextWindow
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
+import top.asdb.codexremote.ssh.RemoteCodexSettings
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshTerminalManager
 import top.asdb.codexremote.ssh.SshTerminalOutputBatch
 import java.io.ByteArrayOutputStream
 import java.util.LinkedHashMap
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -233,6 +236,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspacePromptShown = input.workspacePromptShown || existing.workspacePromptShown,
                 preferredModel = input.preferredModel.ifBlank { existing.preferredModel },
                 preferredEffort = input.preferredEffort.ifBlank { existing.preferredEffort },
+                testModel = input.testModel.ifBlank { existing.testModel },
             )
         } else input
         val switching = before.selectedProfileId != normalized.id
@@ -1514,6 +1518,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             showError(IllegalStateException("当前回合仍在运行，尚未收到回合 ID，请稍后再试"))
             return
         }
+        val requestedAtMillis = System.currentTimeMillis()
         DiagnosticLogger.info(
             "Turn",
             "send_start profile=${profileRef(profileId)} thread=${profileRef(thread.id)} steering=${current.running} attachments=${current.attachments.size}",
@@ -1553,6 +1558,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             state.copy(
                                 activeTurnId = turnId.ifBlank { state.activeTurnId },
                                 running = true,
+                                turnTiming = state.turnTiming
+                                    ?.takeIf {
+                                        it.threadId == thread.id && it.completedAtMillis == null
+                                    }
+                                    ?.let { timing ->
+                                        timing.copy(
+                                            turnId = timing.turnId ?: turnId.takeIf { value -> value.isNotBlank() },
+                                        )
+                                    }
+                                    ?: TurnTiming(
+                                        threadId = thread.id,
+                                        turnId = turnId.takeIf { value -> value.isNotBlank() } ?: activeTurn,
+                                        startedAtMillis = requestedAtMillis,
+                                    ),
                                 submitting = false,
                                 attachments = emptyList(),
                                 composerClearNonce = state.composerClearNonce + 1,
@@ -1968,7 +1987,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 ?.let { size = cursor.getLong(it) }
                         }
                     }
-                    require(size < 20L * 1024 * 1024 || size < 0) { "附件不能超过 20 MB" }
+                    val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+                    val isText = isTextAttachment(name, mimeType)
+                    val maximumBytes = if (isText) MAX_INLINE_TEXT_ATTACHMENT_BYTES else MAX_ATTACHMENT_BYTES
+                    val sizeError = if (isText) "文本附件不能超过 512 KB" else "附件不能超过 20 MB"
+                    require(size <= maximumBytes || size < 0) { sizeError }
                     val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
                         val output = ByteArrayOutputStream()
                         val buffer = ByteArray(8 * 1024)
@@ -1977,15 +2000,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             val count = input.read(buffer)
                             if (count < 0) break
                             total += count
-                            require(total <= MAX_ATTACHMENT_BYTES) { "附件不能超过 20 MB" }
+                            require(total <= maximumBytes) { sizeError }
                             output.write(buffer, 0, count)
                         }
                         output.toByteArray()
                     } ?: throw IllegalStateException("无法读取附件")
-                    Triple(name, context.contentResolver.getType(uri) ?: "application/octet-stream", bytes)
+                    AttachmentUploadContent(
+                        name = name,
+                        mimeType = mimeType,
+                        bytes = bytes,
+                        textContent = if (isText) String(bytes, Charsets.UTF_8) else null,
+                    )
                 }
-                val remotePath = client.upload(content.first, content.third)
-                val attachment = PendingAttachment(content.first, remotePath, content.second)
+                val remotePath = client.upload(content.name, content.bytes)
+                val attachment = PendingAttachment(
+                    name = content.name,
+                    remotePath = remotePath,
+                    mimeType = content.mimeType,
+                    textContent = content.textContent,
+                )
                 if (isOperationCurrent(operation)) {
                     applySessionState(profileId) {
                         it.copy(attachments = it.attachments + attachment, loading = false)
@@ -2138,7 +2171,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 codexSettingsVisible = true,
                 codexSettingsLoading = true,
                 codexSettingsSaving = false,
+                codexSettingsTesting = false,
                 codexSettings = null,
+                codexSettingsTestResult = null,
                 codexSettingsError = null,
             )
         }
@@ -2173,40 +2208,104 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissCodexSettings() {
         _state.update { current ->
-            if (current.codexSettingsSaving) current else {
+            if (current.codexSettingsSaving || current.codexSettingsTesting) current else {
                 current.copy(
                     codexSettingsVisible = false,
                     codexSettingsLoading = false,
+                    codexSettingsTesting = false,
                     codexSettings = null,
+                    codexSettingsTestResult = null,
                     codexSettingsError = null,
                 )
             }
         }
     }
 
-    fun saveCodexSettings(baseUrl: String, apiKey: String, proxyUrl: String) {
+    fun testCodexSettings(baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) {
         val profileId = _state.value.selectedProfileId ?: return
         val profile = currentProfile() ?: return
+        val current = _state.value
+        if (current.codexSettingsLoading || current.codexSettingsSaving || current.codexSettingsTesting) return
+        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+            _state.update { it.copy(codexSettingsError = "服务器未连接，无法测试 Codex API") }
+            return
+        }
+        val operation = beginClientOperation(profileId, "codex-settings", client) ?: return
+        _state.update {
+            it.copy(
+                codexSettingsTesting = true,
+                codexSettingsTestResult = null,
+                codexSettingsError = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val result = client.testCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl, testModel)
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            codexSettingsTesting = false,
+                            codexSettingsTestResult = result,
+                            codexSettingsError = null,
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            codexSettingsTesting = false,
+                            codexSettingsTestResult = null,
+                            codexSettingsError = error.message ?: "无法测试 Codex API 连接",
+                        )
+                    }
+                }
+            } finally {
+                finishClientOperation(operation)
+            }
+        }
+    }
+
+    fun saveCodexSettings(baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) {
+        val profileId = _state.value.selectedProfileId ?: return
+        val profile = currentProfile() ?: return
+        if (_state.value.codexSettingsTesting) return
+        val normalizedTestModel = runCatching { RemoteCodexSettings.normalizeTestModel(testModel) }
+            .getOrElse { error ->
+                _state.update {
+                    it.copy(codexSettingsError = error.message ?: "测试模型格式错误")
+                }
+                return
+            }
         val client = activeClient()?.takeIf { it.isConnected() } ?: run {
             _state.update { it.copy(codexSettingsError = "服务器未连接，无法保存 Codex 配置") }
             return
         }
         val operation = beginClientOperation(profileId, "codex-settings", client) ?: return
         _state.update {
-            it.copy(codexSettingsSaving = true, codexSettingsError = null)
+            it.copy(
+                codexSettingsSaving = true,
+                codexSettingsTestResult = null,
+                codexSettingsError = null,
+            )
         }
         viewModelScope.launch {
             var saved = false
             try {
                 client.writeCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl)
                 saved = true
+                updateProfileTestModel(profileId, normalizedTestModel)
                 if (isOperationVisible(operation)) {
                     _state.update {
                         it.copy(
                             codexSettingsVisible = false,
                             codexSettingsLoading = false,
                             codexSettingsSaving = false,
+                            codexSettingsTesting = false,
                             codexSettings = null,
+                            codexSettingsTestResult = null,
                             codexSettingsError = null,
                         )
                     }
@@ -2385,7 +2484,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             codexSettingsVisible = false,
             codexSettingsLoading = false,
             codexSettingsSaving = false,
+            codexSettingsTesting = false,
             codexSettings = null,
+            codexSettingsTestResult = null,
             codexSettingsError = null,
             submitting = false,
             error = null,
@@ -2422,6 +2523,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         olderTurnsLoading = false,
         activeTurnId = null,
         running = false,
+        turnTiming = null,
         submitting = false,
         loading = false,
         models = emptyList(),
@@ -2437,7 +2539,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         codexSettingsVisible = false,
         codexSettingsLoading = false,
         codexSettingsSaving = false,
+        codexSettingsTesting = false,
         codexSettings = null,
+        codexSettingsTestResult = null,
         codexSettingsError = null,
         approval = null,
         approvalQueue = emptyList(),
@@ -2934,7 +3038,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         proxyUrl = profile.proxyUrl.trim(),
         hostFingerprint = profile.hostFingerprint.trim(),
         remoteCommand = profile.remoteCommand.trim().ifBlank { RemoteBootstrap.MANAGED_REMOTE_COMMAND },
+        testModel = profile.testModel.trim(),
     )
+
+    private fun updateProfileTestModel(profileId: String, testModel: String) {
+        _state.update { current ->
+            current.copy(
+                profiles = current.profiles.map { profile ->
+                    if (profile.id == profileId) profile.copy(testModel = testModel) else profile
+                },
+            )
+        }
+        persistProfiles()
+    }
 
     private fun persistProfiles() {
         val state = _state.value
@@ -3064,6 +3180,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
+        private const val MAX_INLINE_TEXT_ATTACHMENT_BYTES = 512L * 1024
         private const val MAX_PENDING_APPROVALS = 8
         private const val MAX_COMPOSER_DRAFTS = 64
         private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
@@ -3073,6 +3190,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_SURFACED_DIAGNOSTICS = 64
     }
 }
+
+private data class AttachmentUploadContent(
+    val name: String,
+    val mimeType: String,
+    val bytes: ByteArray,
+    val textContent: String?,
+)
+
+private fun isTextAttachment(name: String, mimeType: String): Boolean {
+    if (mimeType.substringBefore(';').trim().lowercase(Locale.ROOT).startsWith("text/")) return true
+    val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    return extension in TEXT_ATTACHMENT_EXTENSIONS
+}
+
+private val TEXT_ATTACHMENT_EXTENSIONS = setOf(
+    "cfg", "conf", "csv", "css", "env", "gradle", "html", "ini", "java", "js", "json", "jsonl",
+    "kt", "kts", "log", "markdown", "md", "properties", "py", "sh", "sql", "toml", "ts", "tsx",
+    "txt", "xml", "yaml", "yml",
+)
 
 private fun profileRef(value: String): String = value.take(8).ifBlank { "unknown" }
 
@@ -3345,6 +3481,7 @@ private data class SessionSnapshot(
     val olderTurnsLoading: Boolean = false,
     val activeTurnId: String? = null,
     val running: Boolean = false,
+    val turnTiming: TurnTiming? = null,
     val submitting: Boolean = false,
     val loading: Boolean = false,
     val aggregateDiff: String = "",
@@ -3374,6 +3511,7 @@ private data class SessionSnapshot(
         olderTurnsLoading = false,
         activeTurnId = activeTurnId,
         running = running,
+        turnTiming = turnTiming,
         submitting = submitting,
         loading = loading,
         aggregateDiff = aggregateDiff,
@@ -3412,6 +3550,7 @@ private data class SessionSnapshot(
                 olderTurnsLoading = false,
                 activeTurnId = state.activeTurnId,
                 running = state.running,
+                turnTiming = state.turnTiming,
                 submitting = state.submitting,
                 loading = state.loading,
                 aggregateDiff = state.aggregateDiff,

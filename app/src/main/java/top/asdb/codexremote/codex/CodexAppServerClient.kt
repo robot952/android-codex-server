@@ -23,6 +23,7 @@ import top.asdb.codexremote.BuildConfig
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.ApprovalPrompt
+import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.CodexThread
@@ -75,6 +76,34 @@ internal fun buildThreadTurnsListParams(
         put("limit", limit)
         put("sortDirection", "desc")
         put("itemsView", itemsView)
+    }
+}
+
+internal fun buildUserInput(
+    text: String,
+    attachments: List<PendingAttachment>,
+): JsonArray = buildJsonArray {
+    if (text.isNotBlank()) add(buildJsonObject {
+        put("type", "text")
+        put("text", text)
+    })
+    attachments.forEach { attachment ->
+        when {
+            attachment.mimeType.startsWith("image/") -> add(buildJsonObject {
+                put("type", "localImage")
+                put("path", attachment.remotePath)
+            })
+
+            attachment.textContent != null -> add(buildJsonObject {
+                put("type", "text")
+                put("text", "文本附件 ${attachment.name}:\n${attachment.textContent}")
+            })
+
+            else -> add(buildJsonObject {
+                put("type", "text")
+                put("text", "附件 ${attachment.name}: ${attachment.remotePath}")
+            })
+        }
     }
 }
 
@@ -605,6 +634,15 @@ class CodexAppServerClient(
         proxyUrl: String,
     ) = transport.writeCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl)
 
+    suspend fun testCodexGlobalSettings(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        testModel: String,
+    ): CodexConnectionTestResult =
+        transport.testCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl, testModel)
+
     suspend fun answerApproval(
         prompt: ApprovalPrompt,
         accept: Boolean,
@@ -651,29 +689,6 @@ class CodexAppServerClient(
     }
 
     fun isConnected(): Boolean = transport.isConnected()
-
-    private fun buildUserInput(
-        text: String,
-        attachments: List<PendingAttachment>,
-    ): JsonArray = buildJsonArray {
-        if (text.isNotBlank()) add(buildJsonObject {
-            put("type", "text")
-            put("text", text)
-        })
-        attachments.forEach { attachment ->
-            if (attachment.mimeType.startsWith("image/")) {
-                add(buildJsonObject {
-                    put("type", "localImage")
-                    put("path", attachment.remotePath)
-                })
-            } else {
-                add(buildJsonObject {
-                    put("type", "text")
-                    put("text", "附件 ${attachment.name}: ${attachment.remotePath}")
-                })
-            }
-        }
-    }
 
     private suspend fun request(
         method: String,

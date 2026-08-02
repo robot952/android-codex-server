@@ -261,6 +261,12 @@ object RemoteBootstrap {
         if [ -r "\${'$'}{HOME}/.codex/codex-remote.env" ]; then
           . "\${'$'}{HOME}/.codex/codex-remote.env"
         fi
+        MODEL_CACHE="\${'$'}{HOME}/.codex/models_cache.json"
+        if [ "\${'$'}{1:-}" = "app-server" ] && \\
+          [ -r "\${'$'}MODEL_CACHE" ] && \\
+          ! grep -Fq '"supports_reasoning_summaries"' "\${'$'}MODEL_CACHE"; then
+          mv "\${'$'}MODEL_CACHE" "\${'$'}MODEL_CACHE.incompatible.\${'$'}(date +%s)" 2>/dev/null || true
+        fi
         exec "\${'$'}{HOME}/.local/share/codex-remote/runtime/${'$'}NODE_SLOT/bin/node" "\${'$'}{HOME}/.local/share/codex-remote/releases/${'$'}RELEASE_SLOT/lib/node_modules/@openai/codex/bin/codex.js" "\${'$'}@"
         EOF
         chmod 700 "${'$'}WRAPPER"

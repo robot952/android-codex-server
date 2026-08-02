@@ -41,16 +41,21 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -73,6 +78,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -460,6 +466,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         CodexSettingsDialog(
             state = state,
             onSave = viewModel::saveCodexSettings,
+            onTest = viewModel::testCodexSettings,
             onDismiss = viewModel::dismissCodexSettings,
         )
     }
@@ -648,15 +655,22 @@ private fun setupProgressFraction(message: String): Float {
 @Composable
 private fun CodexSettingsDialog(
     state: AppUiState,
-    onSave: (baseUrl: String, apiKey: String, proxyUrl: String) -> Unit,
+    onSave: (baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) -> Unit,
+    onTest: (baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val remoteSettings = state.codexSettings
+    val savedTestModel = state.profiles.firstOrNull { it.id == state.selectedProfileId }?.testModel.orEmpty()
     var baseUrl by remember(remoteSettings) { mutableStateOf(remoteSettings?.baseUrl.orEmpty()) }
-    var apiKey by remember(remoteSettings) { mutableStateOf("") }
+    var apiKey by remember(remoteSettings) { mutableStateOf(remoteSettings?.apiKey.orEmpty()) }
+    var apiKeyVisible by remember(remoteSettings) { mutableStateOf(false) }
     var proxyUrl by remember(remoteSettings) { mutableStateOf(remoteSettings?.proxyUrl.orEmpty()) }
+    var testModel by remember(remoteSettings, savedTestModel) {
+        mutableStateOf(savedTestModel.ifBlank { remoteSettings?.model.orEmpty() })
+    }
     var confirmSave by remember(remoteSettings) { mutableStateOf(false) }
-    val busy = state.codexSettingsLoading || state.codexSettingsSaving
+    var testResultStale by remember(remoteSettings) { mutableStateOf(false) }
+    val busy = state.codexSettingsLoading || state.codexSettingsSaving || state.codexSettingsTesting
     val settingsReady = remoteSettings != null
 
     AlertDialog(
@@ -712,7 +726,10 @@ private fun CodexSettingsDialog(
                     }
                     OutlinedTextField(
                         value = baseUrl,
-                        onValueChange = { baseUrl = it },
+                        onValueChange = {
+                            baseUrl = it
+                            testResultStale = true
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !busy && settingsReady,
                         singleLine = true,
@@ -723,26 +740,49 @@ private fun CodexSettingsDialog(
                     )
                     OutlinedTextField(
                         value = apiKey,
-                        onValueChange = { apiKey = it },
+                        onValueChange = {
+                            apiKey = it
+                            testResultStale = true
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !busy && settingsReady,
                         singleLine = true,
                         label = { Text("API 密钥") },
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (apiKeyVisible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { apiKeyVisible = !apiKeyVisible },
+                                enabled = !busy && settingsReady,
+                            ) {
+                                Icon(
+                                    imageVector = if (apiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (apiKeyVisible) "隐藏 API 密钥" else "显示 API 密钥",
+                                )
+                            }
+                        },
                         supportingText = {
                             Text(
-                                if (remoteSettings?.hasStoredAuthentication == true) {
-                                    "服务器已保存登录信息；留空不会覆盖。"
-                                } else {
-                                    "留空不会创建或修改登录信息。"
+                                when {
+                                    remoteSettings?.apiKey?.isNotBlank() == true ->
+                                        "已读取服务器 API 密钥，仅在当前设置页面的内存中保留。"
+                                    remoteSettings?.hasStoredAuthentication == true ->
+                                        "服务器使用非 API 密钥登录，无法显示密钥；填写可替换登录。"
+                                    else -> "留空不会创建或修改登录信息。"
                                 },
                             )
                         },
                     )
                     OutlinedTextField(
                         value = proxyUrl,
-                        onValueChange = { proxyUrl = it },
+                        onValueChange = {
+                            proxyUrl = it
+                            testResultStale = true
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !busy && settingsReady,
                         singleLine = true,
@@ -751,13 +791,51 @@ private fun CodexSettingsDialog(
                         supportingText = { Text("支持 HTTP/HTTPS；留空会清除 Codex 代理") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     )
+                    OutlinedTextField(
+                        value = testModel,
+                        onValueChange = {
+                            testModel = it
+                            testResultStale = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy && settingsReady,
+                        singleLine = true,
+                        label = { Text("测试模型") },
+                        placeholder = { Text("gpt-5.6-sol") },
+                        supportingText = { Text("保存后按当前服务器记住") },
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            testResultStale = false
+                            onTest(baseUrl, apiKey, proxyUrl, testModel)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy && settingsReady,
+                    ) {
+                        if (state.codexSettingsTesting) {
+                            CircularProgressIndicator(modifier = Modifier.size(17.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("正在测试")
+                        } else {
+                            Icon(Icons.Default.NetworkCheck, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("测试连接")
+                        }
+                    }
+                    state.codexSettingsTestResult?.takeUnless { testResultStale }?.let { result ->
+                        Text(
+                            result.message,
+                            color = if (result.successful) CodexGreen else MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            "保存后会断开当前服务器。下一次连接将使用新的全局配置；填写 API 密钥会替换该用户现有的 Codex 登录。",
+                            "测试不会保存或断开连接。保存后会断开当前服务器；修改 API 密钥才会替换该用户现有的 Codex 登录。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(11.dp),
@@ -795,7 +873,12 @@ private fun CodexSettingsDialog(
                 Button(
                     onClick = {
                         confirmSave = false
-                        onSave(baseUrl, apiKey, proxyUrl)
+                        onSave(
+                            baseUrl,
+                            apiKey.takeUnless { it == remoteSettings?.apiKey }.orEmpty(),
+                            proxyUrl,
+                            testModel,
+                        )
                     },
                 ) { Text("确认保存") }
             },

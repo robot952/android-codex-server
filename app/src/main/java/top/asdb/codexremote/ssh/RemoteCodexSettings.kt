@@ -2,11 +2,14 @@ package top.asdb.codexremote.ssh
 
 import java.net.URI
 import java.util.Locale
+import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
 
 /** Builds narrowly-scoped scripts for the user's global Codex configuration. */
 internal object RemoteCodexSettings {
     private const val PREFIX = "__CODEX_GLOBAL_"
+    private const val TEST_PREFIX = "__CODEX_CONNECTION_TEST_"
+    private const val DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
     val readScript: String = """
         set -eu
@@ -80,12 +83,25 @@ internal object RemoteCodexSettings {
             }
           ' "${'$'}ENV_FILE")"
         fi
+        AUTH_API_KEY=
+        if [ -r "${'$'}AUTH_FILE" ]; then
+          AUTH_API_KEY="${'$'}(awk '
+            index(${'$'}0, "OPENAI_API_KEY") {
+              value = ${'$'}0
+              sub(/^.*"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"/, "", value)
+              sub(/".*${'$'}/, "", value)
+              print value
+              exit
+            }
+          ' "${'$'}AUTH_FILE")"
+        fi
         if [ -s "${'$'}AUTH_FILE" ]; then AUTH_PRESENT=1; else AUTH_PRESENT=0; fi
         printf '${PREFIX}BASE_URL=%s\n' "${'$'}BASE_URL"
         printf '${PREFIX}MODEL=%s\n' "${'$'}MODEL"
         printf '${PREFIX}MODEL_PROVIDER=%s\n' "${'$'}MODEL_PROVIDER"
         printf '${PREFIX}PROXY_URL=%s\n' "${'$'}PROXY_URL"
         printf '${PREFIX}AUTH_PRESENT=%s\n' "${'$'}AUTH_PRESENT"
+        printf '${PREFIX}API_KEY=%s\n' "${'$'}AUTH_API_KEY"
     """.trimIndent()
 
     fun parse(lines: List<String>): CodexGlobalSettings {
@@ -99,8 +115,127 @@ internal object RemoteCodexSettings {
             model = values["MODEL"].orEmpty(),
             modelProvider = values["MODEL_PROVIDER"].orEmpty().ifBlank { "openai" },
             hasStoredAuthentication = values["AUTH_PRESENT"] == "1",
+            apiKey = values["API_KEY"].orEmpty(),
             proxyUrl = values["PROXY_URL"].orEmpty(),
         )
+    }
+
+    /**
+     * Sends a minimal OpenAI Responses request to the selected model from the remote server. The
+     * key is placed in a mode-0600 temporary header file so it is not exposed through process
+     * arguments or script output.
+     */
+    fun testConnectionScript(
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        testModel: String,
+    ): String {
+        val normalizedBaseUrl = validateBaseUrl(baseUrl).ifBlank { DEFAULT_OPENAI_BASE_URL }
+        val normalizedApiKey = validateApiKey(apiKey)
+        val normalizedProxy = RemoteBootstrap.validateProxyUrl(proxyUrl)
+        val normalizedTestModel = normalizeTestModel(testModel)
+        val endpoint = "${normalizedBaseUrl.trimEnd('/')}/responses"
+        val requestBody = "{\"model\":\"$normalizedTestModel\",\"input\":\"ping\",\"max_output_tokens\":1}"
+        return """
+            set -u
+            API_KEY=${shellQuote(normalizedApiKey)}
+            PROXY_URL=${shellQuote(normalizedProxy)}
+            TEST_MODEL=${shellQuote(normalizedTestModel)}
+            ENDPOINT=${shellQuote(endpoint)}
+            REQUEST_BODY=${shellQuote(requestBody)}
+            unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+            if [ -z "${'$'}API_KEY" ]; then
+              printf '${TEST_PREFIX}STATUS=MISSING_API_KEY\n'
+              exit 0
+            fi
+            if [ -z "${'$'}TEST_MODEL" ]; then
+              printf '${TEST_PREFIX}STATUS=MISSING_TEST_MODEL\n'
+              exit 0
+            fi
+            if ! command -v curl >/dev/null 2>&1; then
+              printf '${TEST_PREFIX}STATUS=CURL_UNAVAILABLE\n'
+              exit 0
+            fi
+
+            HEADER_FILE="${'$'}(mktemp "${'$'}{TMPDIR:-/tmp}/codex-api-header.XXXXXX" 2>/dev/null)" || {
+              printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
+              exit 0
+            }
+            BODY_FILE="${'$'}(mktemp "${'$'}{TMPDIR:-/tmp}/codex-api-body.XXXXXX" 2>/dev/null)" || {
+              rm -f "${'$'}HEADER_FILE"
+              printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
+              exit 0
+            }
+            cleanup() { rm -f "${'$'}HEADER_FILE" "${'$'}BODY_FILE"; }
+            trap cleanup EXIT HUP INT TERM
+            if ! chmod 600 "${'$'}HEADER_FILE" "${'$'}BODY_FILE" 2>/dev/null ||
+                ! printf 'Authorization: Bearer %s\n' "${'$'}API_KEY" > "${'$'}HEADER_FILE" ||
+                ! printf '%s' "${'$'}REQUEST_BODY" > "${'$'}BODY_FILE"; then
+              printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
+              exit 0
+            fi
+
+            if [ -n "${'$'}PROXY_URL" ]; then
+              HTTP_STATUS="${'$'}(curl --disable --silent --output /dev/null --write-out '%{http_code}' \
+                --connect-timeout 10 --max-time 25 --proxy "${'$'}PROXY_URL" \
+                --request POST --header "@${'$'}HEADER_FILE" --header 'Content-Type: application/json' \
+                --data-binary "@${'$'}BODY_FILE" "${'$'}ENDPOINT" 2>/dev/null)"
+            else
+              HTTP_STATUS="${'$'}(curl --disable --silent --output /dev/null --write-out '%{http_code}' \
+                --connect-timeout 10 --max-time 25 --request POST --header "@${'$'}HEADER_FILE" \
+                --header 'Content-Type: application/json' --data-binary "@${'$'}BODY_FILE" \
+                "${'$'}ENDPOINT" 2>/dev/null)"
+            fi
+            CURL_EXIT=${'$'}?
+            if [ "${'$'}CURL_EXIT" -ne 0 ]; then
+              printf '${TEST_PREFIX}STATUS=NETWORK_ERROR\n'
+              exit 0
+            fi
+
+            case "${'$'}HTTP_STATUS" in
+              2??) TEST_STATUS=SUCCESS ;;
+              401|403) TEST_STATUS=UNAUTHORIZED ;;
+              *) TEST_STATUS=HTTP_ERROR ;;
+            esac
+            printf '${TEST_PREFIX}STATUS=%s\n' "${'$'}TEST_STATUS"
+            printf '${TEST_PREFIX}MODEL=%s\n' "${'$'}TEST_MODEL"
+            printf '${TEST_PREFIX}HTTP_STATUS=%s\n' "${'$'}HTTP_STATUS"
+        """.trimIndent()
+    }
+
+    fun parseConnectionTest(lines: List<String>): CodexConnectionTestResult {
+        val values = lines.mapNotNull { line ->
+            if (!line.startsWith(TEST_PREFIX)) return@mapNotNull null
+            line.removePrefix(TEST_PREFIX).split('=', limit = 2).takeIf { it.size == 2 }
+                ?.let { it[0] to it[1] }
+        }.toMap()
+        val httpStatus = values["HTTP_STATUS"]?.trim()?.takeIf { it.matches(Regex("\\d{3}")) }
+        val model = values["MODEL"].orEmpty()
+        return when (values["STATUS"]) {
+            "SUCCESS" -> CodexConnectionTestResult(
+                successful = true,
+                message = "模型 ${model.ifBlank { "请求" }} 可用${httpStatus?.let { "（HTTP $it）" }.orEmpty()}",
+            )
+
+            "MISSING_API_KEY" -> CodexConnectionTestResult(false, "请输入 API 密钥后再测试")
+            "MISSING_TEST_MODEL" -> CodexConnectionTestResult(false, "请输入测试模型后再测试")
+            "CURL_UNAVAILABLE" -> CodexConnectionTestResult(false, "服务器未安装 curl，无法测试 API 连接")
+            "TEMPORARY_FILE_ERROR" -> CodexConnectionTestResult(false, "无法安全准备 API 测试请求")
+            "NETWORK_ERROR" -> CodexConnectionTestResult(false, "无法连接 API 服务，请检查模型 URL、代理或服务器网络")
+            "UNAUTHORIZED" -> CodexConnectionTestResult(
+                false,
+                "API 密钥无效或没有权限${httpStatus?.let { "（HTTP $it）" }.orEmpty()}",
+            )
+
+            "HTTP_ERROR" -> CodexConnectionTestResult(
+                false,
+                "API 服务返回异常${httpStatus?.let { "（HTTP $it）" }.orEmpty()}",
+            )
+
+            else -> throw IllegalStateException("API 测试未返回可识别的结果")
+        }
     }
 
     fun writeScript(
@@ -218,6 +353,15 @@ internal object RemoteCodexSettings {
             "模型 URL 必须是 http:// 或 https:// 地址"
         }
         return baseUrl
+    }
+
+    internal fun normalizeTestModel(value: String): String {
+        val model = value.trim()
+        if (model.isEmpty()) return ""
+        require(model.length <= 200 && model.matches(Regex("[A-Za-z0-9._:/@+-]+"))) {
+            "测试模型只能包含字母、数字及 . _ - / : @ +"
+        }
+        return model
     }
 
     private fun validateApiKey(value: String): String {

@@ -416,14 +416,16 @@ CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，
 与“选择工作目录”并列；它不是 ServerProfile 的本地字段，也不能按会话保存。读取时必须显示远端
 `model_provider`、默认 `model`、实际生效的模型 URL、代理和登录是否存在，不能只显示本应用曾写入的
 `openai_base_url`。对于自定义 provider，模型 URL 来自对应 `[model_providers.<name>].base_url`；API
-密钥永远只能显示是否存在，不能回显内容。
+密钥默认只显示是否存在；用户在设置弹窗中明确点击显示后，可查看 `OPENAI_API_KEY` 的完整内容。它只在
+当前弹窗和测试请求的内存中存在，关闭弹窗、切换服务器或断线时立即清除，绝不写入 ProfileStore、SavedState、
+日志、通知或截图。
 
 远端文件边界固定如下：
 
 | 文件 | 写入方式和用途 |
 | --- | --- |
 | `$HOME/.codex/config.toml` | 原子保留无关根键和表，仅更新根级 `model_provider = "openai"` 与可选 `openai_base_url`。 |
-| `$HOME/.codex/auth.json` | 只有用户填写 API 密钥时，才通过 `codex login --with-api-key` 的标准输入由 CLI 写入；绝不由 App 伪造 JSON。 |
+| `$HOME/.codex/auth.json` | 只有用户填写 API 密钥时，才通过 `codex login --with-api-key` 的标准输入由 CLI 写入；绝不由 App 伪造 JSON。用户打开设置时，可通过既有 SSH 通道仅读取 `OPENAI_API_KEY` 供掩码显示和连通性测试，绝不持久化到手机。 |
 | `$HOME/.codex/codex-remote.env` | App 管理的 `0600` 私有代理环境文件，含 HTTP/HTTPS/ALL_PROXY 的大小写变量；代理留空时删除该文件。 |
 | `$HOME/.local/bin/codex-remote` | managed wrapper 在启动前 source 代理环境文件；SshCodexTransport 启动 app-server 时也 source 一次，兼容既有 wrapper 和自定义 remoteCommand。 |
 
@@ -474,10 +476,12 @@ DiagnosticLogger：
 - AndroidManifest 禁止备份和 cleartext traffic。
 - SSH 未知主机永不静默接受。
 - 密码和导入私钥只放加密存储。
-- OpenAI auth.json 永远留在服务器，不打包、不下载到手机。
+- OpenAI auth.json 永远留在服务器，不打包；设置弹窗仅在用户主动打开时通过 SSH 临时读取 API-key
+  登录值，默认掩码显示，绝不持久化到手机或日志。
 - 默认权限为“请求批准”加 workspace-write；完全访问必须由用户显式选择。
 - app-server 仅走 SSH stdio，不监听公网端口。
-- SFTP 附件依赖服务器 subsystem；远程路径位于应用专用暂存区。
+- SFTP 附件依赖服务器 subsystem；远程路径位于应用专用暂存区。图片以 `localImage` 发送；文本附件
+  最大 512 KB，并将内容作为 `text` 输入发送给会话。
 
 生产部署推荐非 root 专用账户、每台手机独立 SSH key、forced command、禁用 PTY/forwarding，
 并用 Unix 权限或容器限制工作区。当前产品默认用户名按用户要求是 root，这是便利默认值，不代表
@@ -565,15 +569,14 @@ ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
 /var/www/html/codex.apk
 ~~~
 
-发布后必须实际请求两个地址，并同时给用户：
+发布后必须实际请求下载地址，并给用户：
 
 ~~~text
-内网：http://192.168.8.109/codex.apk
-外网：http://frp.asdb.top:18080/codex.apk
+http://210.16.163.118:18080/codex.apk
 ~~~
 
-外网 FRP 端口曾被误写为 108080，正确记录是 18080。地址是部署环境，不是代码常量；报告前需
-绕过不合适的代理实际验证。不得在文档或提交中写 FRP token。
+下载端口是 18080。地址是部署环境，不是代码常量；报告前需绕过不合适的代理实际验证。不得在文档或提交中写
+访问 token。
 
 ### 13.1 Gitee tag 自动发布
 
@@ -837,9 +840,11 @@ Serializable data class（必须给默认值）
 21. 远端工具/MCP 的非致命 stderr 必须转成简短中文提示，不能用原始 HTTP/JSON/Rust 日志遮挡
     会话；真正断线、认证失败和不可恢复错误仍需明确提示。
 22. Codex 配置入口修改的是当前远程 Unix 用户的全局设置：模型 URL、API 密钥和 HTTP/HTTPS
-    代理。API 密钥不能保存到手机；保存后必须断开并在重连时生效，不能改项目级 `.codex`、shell
-    profile 或其他工作区。
-23. Codex 配置弹窗必须优先从服务器读取并显示 Provider、默认模型、模型 URL、代理和登录状态。
+    代理。API 密钥不能保存到手机；设置弹窗可临时读取、默认掩码显示。测试模型按服务器保存在本地，测试时
+    使用当前输入值从服务器向 OpenAI 兼容 `/responses` 发送最小请求。保存后必须断开并在重连时生效，不能改
+    项目级 `.codex`、shell profile 或其他工作区。
+23. Codex 配置弹窗必须优先从服务器读取并显示 Provider、默认模型、模型 URL、代理、登录状态和可用的
+    API 密钥。现有自定义 Provider 不能被误显示为“未配置”；若保存会切换到内置 OpenAI Provider，必须在操作前
     现有自定义 Provider 不能被误显示为“未配置”；若保存会切换到内置 OpenAI Provider，必须在操作前
     明确提示用户。
 24. 任何回复中的 HTTP/HTTPS Markdown 链接都必须既可点击又可复制，并显示完整目标 URL；不得只
