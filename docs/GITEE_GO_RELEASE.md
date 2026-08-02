@@ -5,8 +5,8 @@ corresponding Gitee Release, and uploads `CodexRemote-<version>.apk` as its atta
 
 ## One-Time Variable Setup
 
-Create a Gitee personal access token with repository project access. In Gitee Go, open the
-pipeline's **Variable Settings** and add the following protected and masked variable:
+Create a Gitee personal access token with repository project access. Create the following masked
+common variable in Gitee Go, then reference it from the pipeline's **Variable Settings**:
 
 ```text
 CODEX_RELEASE_TOKEN
@@ -15,9 +15,9 @@ CODEX_RELEASE_TOKEN
 Put only the token value in this variable. Never add it to the workflow YAML, source code, logs,
 or Git commits.
 
-Gitee Go resolves common variables only when they are referenced by the workflow command. The
-workflow passes `$CODEX_RELEASE_TOKEN` to the release script; keep the variable marked as secret
-so the resolved value is masked in build logs.
+The workflow records that reference under `variables.global`; Gitee Go then exposes it to the
+release script as an environment variable. Do not interpolate the token in `commands`, because
+Gitee Go prints the resolved command in the build log.
 
 The defaults publish to `YanGanYuan/android-codex-server`. A fork can override the target with
 optional protected variables `CODEX_RELEASE_OWNER` and `CODEX_RELEASE_REPOSITORY`.
@@ -43,5 +43,7 @@ publish a Release.
 2. Create and push the matching annotated tag, for example `v1.7.55`.
 3. Gitee Go builds the Release APK and attaches it to the Gitee Release page.
 
-The release body contains up to the latest two Git commit subjects and the APK SHA-256 checksum.
-A retry reuses the existing Release and only uploads the APK when that attachment is absent.
+The release body contains up to the latest 12 Git commit subjects and the APK SHA-256 checksum.
+The Android client checks the public Gitee Release list on startup, verifies that the expected APK
+attachment exists, and displays these Git subjects as its update log. A retry reuses the existing
+Release and only uploads the APK when that attachment is absent.

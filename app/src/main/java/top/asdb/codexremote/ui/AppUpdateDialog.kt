@@ -49,7 +49,7 @@ fun AppUpdateDialog(
                 modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("更新说明", style = MaterialTheme.typography.labelLarge)
+                Text("更新日志", style = MaterialTheme.typography.labelLarge)
                 if (update.changes.isEmpty()) {
                     Text(
                         "此版本包含改进与问题修复。",

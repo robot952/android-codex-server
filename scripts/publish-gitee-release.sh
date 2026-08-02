@@ -93,14 +93,14 @@ artifact_sha256="$(sha256sum "$artifact_path" | awk '{print $1}')"
     printf 'certificateSha256=%s\n' "$certificate_sha256"
 } > "$output_dir/release-metadata.txt"
 
-# Gitee Go checks out a shallow tag commit. Fetching the tag with depth two lets
-# the release body include the most recent two commits when the runner permits it.
-git fetch --quiet --depth=2 origin "refs/tags/$expected_tag:refs/tags/$expected_tag" || true
-release_notes="$(git log -2 --pretty=format:'- `%h` %s' HEAD)"
+# Gitee Go checks out a shallow tag commit. Fetch enough history to include a
+# useful, user-visible changelog without making the release job fetch the full repository.
+git fetch --quiet --depth=32 origin "refs/tags/$expected_tag:refs/tags/$expected_tag" || true
+release_notes="$(git log -12 --pretty=format:'- `%h` %s' HEAD)"
 if [[ -z "$release_notes" ]]; then
     release_notes="- `$head_commit` 发布 $expected_tag"
 fi
-release_body=$'## 更新提交\n\n'
+release_body=$'## 更新日志\n\n'
 release_body+="$release_notes"
 release_body+=$'\n\n## APK 校验\n\n'
 release_body+="SHA-256: \`$artifact_sha256\`"

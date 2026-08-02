@@ -15,10 +15,11 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import top.asdb.codexremote.BuildConfig
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import java.io.ByteArrayOutputStream
@@ -33,7 +34,6 @@ data class AppUpdateReleaseNote(
 )
 
 data class AppUpdateInfo(
-    val versionCode: Int,
     val versionName: String,
     val changes: List<AppUpdateReleaseNote>,
 )
@@ -43,10 +43,7 @@ data class AppUpdateState(
     val availableUpdate: AppUpdateInfo? = null,
 )
 
-/**
- * Fetches a small release manifest on application startup. The APK address is intentionally fixed
- * in the client for this initial release so an untrusted manifest cannot redirect users elsewhere.
- */
+/** Fetches stable Gitee Releases on application startup and only opens a fixed repository download URL. */
 object AppUpdateManager {
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -83,15 +80,16 @@ object AppUpdateManager {
                 _state.update { it.copy(checking = true) }
                 runCatching(::fetchUpdateInfo)
                     .onSuccess { update ->
-                        val ignoredVersion = preferences.getInt(KEY_IGNORED_VERSION_CODE, NO_IGNORED_VERSION)
-                        val available = update.takeIf {
-                            it.versionCode > BuildConfig.VERSION_CODE && it.versionCode != ignoredVersion
+                        val ignoredVersion = preferences.getString(KEY_IGNORED_VERSION_NAME, null)
+                        val available = update?.takeIf {
+                            isVersionNewer(it.versionName, BuildConfig.VERSION_NAME) &&
+                                it.versionName != ignoredVersion
                         }
                         _state.update { it.copy(checking = false, availableUpdate = available) }
                         if (available != null) {
                             DiagnosticLogger.info(
                                 "Update",
-                                "available version=${available.versionName}(${available.versionCode})",
+                                "available version=${available.versionName}",
                             )
                         }
                     }
@@ -103,17 +101,17 @@ object AppUpdateManager {
         }
     }
 
-    fun ignoreVersion(versionCode: Int) {
-        if (versionCode <= 0 || !initialized) return
-        preferences.edit().putInt(KEY_IGNORED_VERSION_CODE, versionCode).apply()
+    fun ignoreVersion(versionName: String) {
+        if (versionName.isBlank() || !initialized) return
+        preferences.edit().putString(KEY_IGNORED_VERSION_NAME, versionName).apply()
         _state.update { current ->
-            if (current.availableUpdate?.versionCode == versionCode) {
+            if (current.availableUpdate?.versionName == versionName) {
                 current.copy(availableUpdate = null)
             } else {
                 current
             }
         }
-        DiagnosticLogger.info("Update", "ignored versionCode=$versionCode")
+        DiagnosticLogger.info("Update", "ignored version=$versionName")
     }
 
     fun openDownload(context: Context, update: AppUpdateInfo): Boolean = runCatching {
@@ -123,8 +121,8 @@ object AppUpdateManager {
         context.startActivity(Intent.createChooser(intent, "下载 ${update.versionName}"))
     }.isSuccess
 
-    private fun fetchUpdateInfo(): AppUpdateInfo {
-        val connection = (URL(UPDATE_MANIFEST_URL).openConnection() as? HttpURLConnection)
+    private fun fetchUpdateInfo(): AppUpdateInfo? {
+        val connection = (URL(GITEE_RELEASES_URL).openConnection() as? HttpURLConnection)
             ?: throw IllegalStateException("更新服务器连接不可用")
         try {
             connection.requestMethod = "GET"
@@ -137,60 +135,126 @@ object AppUpdateManager {
                 "更新服务器返回 HTTP ${connection.responseCode}"
             }
             val length = connection.contentLengthLong
-            check(length < 0L || length <= MAX_MANIFEST_BYTES) { "更新清单过大" }
+            check(length < 0L || length <= MAX_RELEASE_RESPONSE_BYTES) { "更新信息过大" }
             val body = connection.inputStream.use { input ->
-                input.readUtf8AtMost(MAX_MANIFEST_BYTES.toInt())
+                input.readUtf8AtMost(MAX_RELEASE_RESPONSE_BYTES.toInt())
             }
-            return parseAppUpdateManifest(body, json)
+            return parseGiteeReleases(body, json)
         } finally {
             connection.disconnect()
         }
     }
 
     private const val PREFERENCES_NAME = "app_update_settings"
-    private const val KEY_IGNORED_VERSION_CODE = "ignored_version_code"
-    private const val NO_IGNORED_VERSION = -1
+    private const val KEY_IGNORED_VERSION_NAME = "ignored_version_name"
     private const val NETWORK_TIMEOUT_MILLIS = 5_000
-    private const val MAX_MANIFEST_BYTES = 64L * 1024L
+    private const val MAX_RELEASE_RESPONSE_BYTES = 256L * 1024L
 
     private const val GITEE_REPOSITORY_URL = "https://gitee.com/YanGanYuan/android-codex-server"
-    private const val UPDATE_MANIFEST_URL = "$GITEE_REPOSITORY_URL/raw/apk-release/update.json"
+    private const val GITEE_RELEASES_URL =
+        "https://gitee.com/api/v5/repos/YanGanYuan/android-codex-server/releases?page=1&per_page=30"
 
     private fun apkDownloadUrl(update: AppUpdateInfo): String =
-        "$GITEE_REPOSITORY_URL/raw/apk-release/CodexRemote-${update.versionName}.apk"
+        "$GITEE_REPOSITORY_URL/releases/download/v${update.versionName}/CodexRemote-${update.versionName}.apk"
 }
 
-internal fun parseAppUpdateManifest(value: String, json: Json = Json { ignoreUnknownKeys = true }): AppUpdateInfo {
-    val root = json.parseToJsonElement(value).jsonObject
-    val versionCode = root.requiredInt("versionCode")
-    val versionName = root.requiredText("versionName", MAX_VERSION_NAME_CHARS)
-    require(versionCode > 0) { "更新版本号无效" }
-    require(VERSION_NAME_PATTERN.matches(versionName)) { "更新版本名无效" }
-    val changes = (root["changes"] as? JsonArray)
+/** Returns the newest stable release which has the expected APK attachment. */
+internal fun parseGiteeReleases(value: String, json: Json = Json { ignoreUnknownKeys = true }): AppUpdateInfo? =
+    json.parseToJsonElement(value).jsonArray
+        .mapNotNull { (it as? JsonObject)?.toAppUpdateInfo() }
+        .maxWithOrNull(Comparator { left, right -> compareSemanticVersions(left.versionName, right.versionName) })
+
+internal fun isVersionNewer(candidate: String, current: String): Boolean =
+    compareSemanticVersions(candidate, current) > 0
+
+internal fun compareSemanticVersions(left: String, right: String): Int {
+    val leftVersion = parseSemanticVersion(left) ?: return 0
+    val rightVersion = parseSemanticVersion(right) ?: return 0
+    listOf(
+        leftVersion.major.compareTo(rightVersion.major),
+        leftVersion.minor.compareTo(rightVersion.minor),
+        leftVersion.patch.compareTo(rightVersion.patch),
+    ).firstOrNull { it != 0 }?.let { return it }
+    return comparePreRelease(leftVersion.preRelease, rightVersion.preRelease)
+}
+
+private fun JsonObject.toAppUpdateInfo(): AppUpdateInfo? {
+    if ((this["prerelease"] as? JsonPrimitive)?.booleanOrNull == true) return null
+    val versionName = optionalText("tag_name", MAX_TAG_NAME_CHARS)
+        ?.removePrefix("v")
+        ?.takeIf { parseSemanticVersion(it) != null }
+        ?: return null
+    val expectedAssetName = "CodexRemote-$versionName.apk"
+    val hasExpectedAsset = (this["assets"] as? JsonArray)
         .orEmpty()
-        .mapNotNull { entry ->
-            val change = entry as? JsonObject ?: return@mapNotNull null
-            val changeVersion = change.optionalText("versionName", MAX_VERSION_NAME_CHARS) ?: return@mapNotNull null
-            val gitCommit = change.optionalText("gitCommit", MAX_GIT_COMMIT_CHARS) ?: return@mapNotNull null
-            val message = change.optionalText("message", MAX_CHANGE_MESSAGE_CHARS) ?: return@mapNotNull null
-            AppUpdateReleaseNote(changeVersion, gitCommit, message)
-        }
-        .take(MAX_RELEASE_NOTES)
-    return AppUpdateInfo(versionCode, versionName, changes)
+        .mapNotNull { it as? JsonObject }
+        .any { it.optionalText("name", MAX_ASSET_NAME_CHARS) == expectedAssetName }
+    if (!hasExpectedAsset) return null
+
+    val body = optionalText("body", MAX_RELEASE_BODY_CHARS).orEmpty()
+    return AppUpdateInfo(
+        versionName = versionName,
+        changes = parseReleaseNotes(body, versionName),
+    )
 }
-
-private fun JsonObject.requiredInt(name: String): Int =
-    this[name]?.jsonPrimitive?.intOrNull ?: throw IllegalArgumentException("缺少 $name")
-
-private fun JsonObject.requiredText(name: String, maxLength: Int): String =
-    optionalText(name, maxLength) ?: throw IllegalArgumentException("缺少 $name")
 
 private fun JsonObject.optionalText(name: String, maxLength: Int): String? =
-    this[name]?.jsonPrimitive?.contentOrNull
+    (this[name] as? JsonPrimitive)?.contentOrNull
         ?.replace('\u0000', ' ')
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
         ?.take(maxLength)
+
+private fun parseReleaseNotes(body: String, versionName: String): List<AppUpdateReleaseNote> =
+    RELEASE_NOTE_PATTERN.findAll(body)
+        .mapNotNull { match ->
+            val gitCommit = match.groupValues[1].lowercase()
+            val message = match.groupValues[2]
+                .replace('\u0000', ' ')
+                .trim()
+                .take(MAX_CHANGE_MESSAGE_CHARS)
+                .takeIf { it.isNotEmpty() }
+                ?: return@mapNotNull null
+            AppUpdateReleaseNote(versionName, gitCommit, message)
+        }
+        .take(MAX_RELEASE_NOTES)
+        .toList()
+
+private data class SemanticVersion(
+    val major: Long,
+    val minor: Long,
+    val patch: Long,
+    val preRelease: List<String>?,
+)
+
+private fun parseSemanticVersion(value: String): SemanticVersion? {
+    val match = SEMANTIC_VERSION_PATTERN.matchEntire(value.trim()) ?: return null
+    val major = match.groupValues[1].toLongOrNull() ?: return null
+    val minor = match.groupValues[2].toLongOrNull() ?: return null
+    val patch = match.groupValues[3].toLongOrNull() ?: return null
+    val preRelease = match.groupValues[4].takeIf { it.isNotEmpty() }?.split('.')
+    return SemanticVersion(major, minor, patch, preRelease)
+}
+
+private fun comparePreRelease(left: List<String>?, right: List<String>?): Int {
+    if (left == null) return if (right == null) 0 else 1
+    if (right == null) return -1
+    val longest = maxOf(left.size, right.size)
+    for (index in 0 until longest) {
+        val leftIdentifier = left.getOrNull(index) ?: return -1
+        val rightIdentifier = right.getOrNull(index) ?: return 1
+        val leftNumeric = leftIdentifier.toLongOrNull()
+        val rightNumeric = rightIdentifier.toLongOrNull()
+        val comparison = when {
+            leftNumeric != null && rightNumeric != null -> leftNumeric.compareTo(rightNumeric)
+            leftNumeric != null -> -1
+            rightNumeric != null -> 1
+            else -> leftIdentifier.compareTo(rightIdentifier)
+        }
+        if (comparison != 0) return comparison
+    }
+    return 0
+}
 
 private fun InputStream.readUtf8AtMost(maxBytes: Int): String {
     val output = ByteArrayOutputStream()
@@ -204,8 +268,12 @@ private fun InputStream.readUtf8AtMost(maxBytes: Int): String {
     return output.toString(Charsets.UTF_8.name())
 }
 
-private const val MAX_VERSION_NAME_CHARS = 48
-private const val MAX_GIT_COMMIT_CHARS = 64
+private const val MAX_TAG_NAME_CHARS = 64
+private const val MAX_ASSET_NAME_CHARS = 128
+private const val MAX_RELEASE_BODY_CHARS = 16 * 1024
 private const val MAX_CHANGE_MESSAGE_CHARS = 240
 private const val MAX_RELEASE_NOTES = 12
-private val VERSION_NAME_PATTERN = Regex("[0-9]+(?:\\.[0-9]+){2}(?:[-+][0-9A-Za-z.-]+)?")
+private val SEMANTIC_VERSION_PATTERN =
+    Regex("""^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$""")
+private val RELEASE_NOTE_PATTERN =
+    Regex("""(?m)^\s*[-*]\s+`?([0-9a-fA-F]{7,64})`?\s+(.+?)\s*$""")

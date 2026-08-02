@@ -114,7 +114,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     var serverSwitcherVisible by remember { mutableStateOf(false) }
     var threadSettingsActionsVisible by remember { mutableStateOf(false) }
     var updateDialogVisible by rememberSaveable { mutableStateOf(false) }
-    var deferredUpdateVersionCode by rememberSaveable { mutableStateOf<Int?>(null) }
+    var deferredUpdateVersionName by rememberSaveable { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val connectedMetricProfileIds = state.connectionStates
         .filterValues { it.phase == ConnectionPhase.Connected }
@@ -139,9 +139,9 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             viewModel.clearDiagnostic()
         }
     }
-    LaunchedEffect(updateState.availableUpdate?.versionCode) {
+    LaunchedEffect(updateState.availableUpdate?.versionName) {
         val update = updateState.availableUpdate ?: return@LaunchedEffect
-        if (deferredUpdateVersionCode != update.versionCode) {
+        if (deferredUpdateVersionName != update.versionName) {
             updateDialogVisible = true
         }
     }
@@ -267,11 +267,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                         }
                     },
                     onLater = {
-                        deferredUpdateVersionCode = update.versionCode
+                        deferredUpdateVersionName = update.versionName
                         updateDialogVisible = false
                     },
                     onIgnore = {
-                        AppUpdateManager.ignoreVersion(update.versionCode)
+                        AppUpdateManager.ignoreVersion(update.versionName)
                         updateDialogVisible = false
                     },
                 )
