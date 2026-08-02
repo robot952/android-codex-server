@@ -120,7 +120,7 @@ connect. The app loads the same persisted Codex threads visible to other Codex c
 Unix user's `CODEX_HOME`.
 
 When the default managed command is selected, the app checks the remote host before starting Codex.
-An existing compatible `codex-cli 0.144.6` is reused. If Codex is missing or has a different version,
+An existing compatible `codex-cli 0.146.0` is reused. If Codex is missing or has a different version,
 the app asks before installing Node.js 22.17.0 and Codex into:
 
 ```text
@@ -179,7 +179,7 @@ retain their JSON-RPC request id until the user approves, declines, or answers.
 - Full access requires a separate confirmation in the UI.
 - Public app-server WebSocket listeners are not used.
 
-`request_user_input` is experimental and disabled by default in Codex 0.144.6. The UI is ready for
+`request_user_input` is experimental and disabled by default in Codex 0.146.0. The UI is ready for
 servers that explicitly enable `default_mode_request_user_input`; otherwise normal command/file
 approvals remain available.
 
@@ -192,7 +192,7 @@ filesystem confinement is needed.
 
 ## Protocol version
 
-The direct transport pins `codex-cli 0.144.6`. The optional standalone daemon bootstrap starts an
+The direct transport pins `codex-cli 0.146.0`. The optional standalone daemon bootstrap starts an
 updater and can move to a newer CLI, so use direct mode when a strict version pin is required. The
 app-server interface remains experimental. Upgrade only by changing `protocol/codex-version.txt`
 (the Android build reads this as its single version source), regenerating the schema, reviewing its

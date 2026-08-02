@@ -105,7 +105,7 @@ for example `env -u SSH_CONNECTION ...`; do not use that bypass for a real clien
 If the host does not expose a compatible subsystem, use direct mode without attachments or a
 separate, dedicated upload-only SSH account rather than weakening the forced command.
 
-The `request_user_input` dialog is an experimental app-server API. In Codex 0.144.6 the
+The `request_user_input` dialog is an experimental app-server API. In Codex 0.146.0 the
 `default_mode_request_user_input` feature is disabled by default; enable it explicitly in the
 server's own configuration/command only after reviewing the risk, for example:
 

@@ -19,7 +19,7 @@ class RemoteBootstrapTest {
                 "__CODEX_REMOTE_HOME=/home/dev",
                 "__CODEX_REMOTE_LIBC=glibc",
                 "__CODEX_REMOTE_MANAGED_PATH=/home/dev/.local/bin/codex-remote",
-                "__CODEX_REMOTE_MANAGED_VERSION=codex-cli 0.144.6",
+                "__CODEX_REMOTE_MANAGED_VERSION=codex-cli 0.146.0",
                 "__CODEX_REMOTE_HAS_SHELL=1",
                 "__CODEX_REMOTE_HAS_TAR=1",
                 "__CODEX_REMOTE_HAS_SHA256=1",
@@ -31,7 +31,7 @@ class RemoteBootstrapTest {
 
         assertEquals(
             "'/home/dev/.local/bin/codex-remote' app-server --listen stdio://",
-            environment.compatibleCommand("0.144.6"),
+            environment.compatibleCommand("0.146.0"),
         )
         assertNull(environment.installationProblem())
     }
@@ -55,16 +55,16 @@ class RemoteBootstrapTest {
             ),
         )
 
-        assertNull(environment.compatibleCommand("0.144.6"))
+        assertNull(environment.compatibleCommand("0.146.0"))
         assertEquals("codex-cli 0.145.0-alpha.18", environment.detectedVersion())
         assertNull(environment.installationProblem())
     }
 
     @Test
     fun `installer is pinned and never requests system privileges`() {
-        val script = RemoteBootstrap.installScript("0.144.6", "22.17.0")
+        val script = RemoteBootstrap.installScript("0.146.0", "22.17.0")
 
-        assertTrue(script.contains("@openai/codex@0.144.6"))
+        assertTrue(script.contains("@openai/codex@0.146.0"))
         assertTrue(script.contains("node-v22.17.0-linux-"))
         assertTrue(script.contains("0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a"))
         assertTrue(script.contains("3e99df8b01b27dc8b334a2a30d1cd500442b3b0877d217b308fd61a9ccfc33d4"))
@@ -94,7 +94,7 @@ class RemoteBootstrapTest {
 
     @Test
     fun `managed wrapper sources the Codex Remote global environment`() {
-        val script = RemoteBootstrap.installScript("0.144.6", "22.17.0")
+        val script = RemoteBootstrap.installScript("0.146.0", "22.17.0")
 
         assertTrue(script.contains("# codex-remote-global-env"))
         assertTrue(script.contains(".codex/codex-remote.env"))
@@ -168,7 +168,7 @@ class RemoteBootstrapTest {
     fun `generated installer has valid posix shell syntax`() {
         val process = ProcessBuilder("sh", "-n").start()
         process.outputStream.bufferedWriter().use {
-            it.write(RemoteBootstrap.installScript("0.144.6", "22.17.0"))
+            it.write(RemoteBootstrap.installScript("0.146.0", "22.17.0"))
         }
 
         assertTrue(process.waitFor(5, TimeUnit.SECONDS))
