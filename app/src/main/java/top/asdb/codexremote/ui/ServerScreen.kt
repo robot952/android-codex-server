@@ -144,6 +144,7 @@ import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.diagnostics.DebugTapCounter
+import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.theme.CodexAmber
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
