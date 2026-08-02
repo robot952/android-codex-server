@@ -1018,20 +1018,23 @@ private fun AppVersionStatus(
                 )
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier.height(16.dp),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
             if (updateChecking) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(11.dp),
                     strokeWidth = 1.5.dp,
                     color = CodexGreen,
                 )
-                Spacer(Modifier.width(4.dp))
+            } else {
+                Text(
+                    text = if (updateAvailable) "有更新" else "检查更新",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (updateAvailable) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            Text(
-                text = if (updateAvailable) "有更新" else "检查更新",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (updateAvailable) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
