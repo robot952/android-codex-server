@@ -144,7 +144,6 @@ import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.diagnostics.DebugTapCounter
-import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.theme.CodexAmber
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
@@ -296,8 +295,7 @@ fun ServerScreen(
     val blockingConnection = blockingProfile?.let { connectionForProfile(it) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val hasRetainedDebugLogs = remember(state.debugModeEnabled) { DiagnosticLogger.hasLogs() }
-    val canAccessDebugLogs = state.debugModeEnabled || hasRetainedDebugLogs
+    val canAccessDebugLogs = state.debugModeEnabled
 
     BackHandler(enabled = editorVisible, onBack = ::closeEditor)
     val keyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->

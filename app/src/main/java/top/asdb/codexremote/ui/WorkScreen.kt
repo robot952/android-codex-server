@@ -169,7 +169,6 @@ import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.normalizeEpochMillis
-import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.components.MarkdownText
 import top.asdb.codexremote.ui.theme.CodexAmber
 import top.asdb.codexremote.ui.theme.CodexBorder
@@ -250,8 +249,7 @@ fun WorkScreen(
     var linkOpenError by remember { mutableStateOf<String?>(null) }
     var showDebugLogPicker by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val hasRetainedDebugLogs = remember(state.debugModeEnabled) { DiagnosticLogger.hasLogs() }
-    val canAddDebugLog = state.debugModeEnabled || hasRetainedDebugLogs
+    val canAddDebugLog = state.debugModeEnabled
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) onUpload(context, uris)
     }
