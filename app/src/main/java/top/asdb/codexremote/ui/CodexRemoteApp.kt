@@ -139,9 +139,9 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             viewModel.clearDiagnostic()
         }
     }
-    LaunchedEffect(updateState.availableUpdate?.versionName) {
+    LaunchedEffect(updateState.availableUpdate?.versionName, updateState.shouldPromptUpdate) {
         val update = updateState.availableUpdate ?: return@LaunchedEffect
-        if (deferredUpdateVersionName != update.versionName) {
+        if (updateState.shouldPromptUpdate && deferredUpdateVersionName != update.versionName) {
             updateDialogVisible = true
         }
     }
@@ -205,7 +205,14 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onEnableDebugMode = viewModel::enableDebugMode,
                 onDisableDebugMode = viewModel::disableDebugMode,
                 updateAvailable = updateState.availableUpdate != null,
-                onShowUpdate = { updateDialogVisible = true },
+                updateChecking = updateState.checking,
+                onShowUpdate = {
+                    if (updateState.availableUpdate != null) {
+                        updateDialogVisible = true
+                    } else {
+                        AppUpdateManager.checkForUpdates()
+                    }
+                },
             )
 
             AppScreen.Threads -> ThreadListScreen(

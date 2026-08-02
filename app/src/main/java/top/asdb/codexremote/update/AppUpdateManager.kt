@@ -41,6 +41,7 @@ data class AppUpdateInfo(
 data class AppUpdateState(
     val checking: Boolean = false,
     val availableUpdate: AppUpdateInfo? = null,
+    val shouldPromptUpdate: Boolean = false,
 )
 
 /** Fetches stable Gitee Releases on application startup and only opens a fixed repository download URL. */
@@ -81,11 +82,14 @@ object AppUpdateManager {
                 runCatching(::fetchUpdateInfo)
                     .onSuccess { update ->
                         val ignoredVersion = preferences.getString(KEY_IGNORED_VERSION_NAME, null)
-                        val available = update?.takeIf {
-                            isVersionNewer(it.versionName, BuildConfig.VERSION_NAME) &&
-                                it.versionName != ignoredVersion
+                        val available = availableUpdateFor(update, BuildConfig.VERSION_NAME)
+                        _state.update {
+                            it.copy(
+                                checking = false,
+                                availableUpdate = available,
+                                shouldPromptUpdate = shouldPromptUpdate(available, ignoredVersion),
+                            )
                         }
-                        _state.update { it.copy(checking = false, availableUpdate = available) }
                         if (available != null) {
                             DiagnosticLogger.info(
                                 "Update",
@@ -106,7 +110,7 @@ object AppUpdateManager {
         preferences.edit().putString(KEY_IGNORED_VERSION_NAME, versionName).apply()
         _state.update { current ->
             if (current.availableUpdate?.versionName == versionName) {
-                current.copy(availableUpdate = null)
+                current.copy(shouldPromptUpdate = false)
             } else {
                 current
             }
@@ -166,6 +170,12 @@ internal fun parseGiteeReleases(value: String, json: Json = Json { ignoreUnknown
 
 internal fun isVersionNewer(candidate: String, current: String): Boolean =
     compareSemanticVersions(candidate, current) > 0
+
+internal fun availableUpdateFor(latestRelease: AppUpdateInfo?, installedVersion: String): AppUpdateInfo? =
+    latestRelease?.takeIf { isVersionNewer(it.versionName, installedVersion) }
+
+internal fun shouldPromptUpdate(update: AppUpdateInfo?, ignoredVersion: String?): Boolean =
+    update != null && update.versionName != ignoredVersion
 
 internal fun compareSemanticVersions(left: String, right: String): Int {
     val leftVersion = parseSemanticVersion(left) ?: return 0

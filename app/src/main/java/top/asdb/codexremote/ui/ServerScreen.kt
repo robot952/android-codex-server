@@ -170,6 +170,7 @@ fun ServerScreen(
     onEnableDebugMode: () -> Unit,
     onDisableDebugMode: () -> Unit,
     updateAvailable: Boolean,
+    updateChecking: Boolean,
     onShowUpdate: () -> Unit,
 ) {
     val selected = state.profiles.firstOrNull { it.id == state.selectedProfileId }
@@ -396,6 +397,7 @@ fun ServerScreen(
                     AppVersionStatus(
                         versionName = BuildConfig.VERSION_NAME,
                         updateAvailable = updateAvailable,
+                        updateChecking = updateChecking,
                         onClick = onShowUpdate,
                         modifier = Modifier.padding(end = 10.dp),
                     )
@@ -987,16 +989,20 @@ private fun openPromotion(context: Context) {
 private fun AppVersionStatus(
     versionName: String,
     updateAvailable: Boolean,
+    updateChecking: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val interactionModifier = if (updateAvailable) {
-        Modifier.clickable(onClick = onClick).semantics { contentDescription = "有新版本，点击查看更新" }
-    } else {
-        Modifier
+    val contentDescription = when {
+        updateAvailable -> "有新版本，点击查看更新"
+        updateChecking -> "正在检查更新"
+        else -> "点击检查更新"
     }
     Column(
-        modifier = modifier.then(interactionModifier).padding(horizontal = 4.dp, vertical = 3.dp),
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .semantics { this.contentDescription = contentDescription }
+            .padding(horizontal = 4.dp, vertical = 3.dp),
         horizontalAlignment = Alignment.End,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1012,13 +1018,15 @@ private fun AppVersionStatus(
                 )
             }
         }
-        if (updateAvailable) {
-            Text(
-                "有更新",
-                style = MaterialTheme.typography.labelSmall,
-                color = CodexGreen,
-            )
-        }
+        Text(
+            text = when {
+                updateAvailable -> "有更新"
+                updateChecking -> "正在检查更新"
+                else -> "点击检查更新"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (updateAvailable) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

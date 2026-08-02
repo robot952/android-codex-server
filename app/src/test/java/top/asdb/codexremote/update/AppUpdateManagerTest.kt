@@ -86,4 +86,15 @@ class AppUpdateManagerTest {
         assertTrue(isVersionNewer("1.7.57", "1.7.57-beta.4"))
         assertFalse(isVersionNewer("invalid", "1.7.56"))
     }
+
+    @Test
+    fun keepsIgnoredUpdateVisibleButDisablesAutomaticPrompt() {
+        val update = AppUpdateInfo(versionName = "1.7.57", changes = emptyList())
+        val available = availableUpdateFor(update, "1.7.56")
+
+        assertEquals(update, available)
+        assertFalse(shouldPromptUpdate(available, "1.7.57"))
+        assertTrue(shouldPromptUpdate(available, null))
+        assertNull(availableUpdateFor(update, "1.7.57"))
+    }
 }
