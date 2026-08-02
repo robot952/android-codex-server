@@ -15,9 +15,9 @@ stages:
     buildToolsVersion: 34.0.0
     ndkVersion: 28.2.13676358
     commands:
-    - CODEX_RELEASE_TOKEN="$CODEX_RELEASE_TOKEN" GRADLE_USER_HOME="$HOME/.gradle" CODEX_BUILD_ONLINE=1
-      GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=8"
-      ./scripts/publish-gitee-release.sh
+    - CODEX_RELEASE_TOKEN="$CODEX_RELEASE_TOKEN" GRADLE_USER_HOME="$HOME/.gradle"
+      CODEX_BUILD_ONLINE=1 GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8
+      -Dorg.gradle.workers.max=8" ./scripts/publish-gitee-release.sh
     artifacts:
     - name: BUILD_ARTIFACT
       path:
@@ -42,3 +42,5 @@ triggers:
 notify: []
 strategy:
   blocking: true
+variables:
+  CODEX_RELEASE_TOKEN: 1d428c37e888a3d8ce32f593fa375524
