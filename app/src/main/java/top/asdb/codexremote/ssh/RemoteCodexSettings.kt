@@ -121,8 +121,9 @@ internal object RemoteCodexSettings {
     }
 
     /**
-     * Sends a minimal OpenAI Responses request to the selected model from the remote server. The
-     * key is placed in a mode-0600 temporary header file so it is not exposed through process
+     * Tests the selected model from the remote server. Responses is preferred for Codex, while
+     * compatible gateways that only expose Chat Completions are accepted as a fallback. The key
+     * is placed in a mode-0600 temporary header file so it is not exposed through process
      * arguments or script output.
      */
     fun testConnectionScript(
@@ -135,15 +136,21 @@ internal object RemoteCodexSettings {
         val normalizedApiKey = validateApiKey(apiKey)
         val normalizedProxy = RemoteBootstrap.validateProxyUrl(proxyUrl)
         val normalizedTestModel = normalizeTestModel(testModel)
-        val endpoint = "${normalizedBaseUrl.trimEnd('/')}/responses"
-        val requestBody = "{\"model\":\"$normalizedTestModel\",\"input\":\"ping\",\"max_output_tokens\":1}"
+        val baseEndpoint = normalizedBaseUrl.trimEnd('/')
+        val responsesEndpoint = "$baseEndpoint/responses"
+        val chatCompletionsEndpoint = "$baseEndpoint/chat/completions"
+        val responsesRequestBody = "{\"model\":\"$normalizedTestModel\",\"input\":\"ping\",\"max_output_tokens\":1}"
+        val chatCompletionsRequestBody =
+            "{\"model\":\"$normalizedTestModel\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}"
         return """
             set -u
             API_KEY=${shellQuote(normalizedApiKey)}
             PROXY_URL=${shellQuote(normalizedProxy)}
             TEST_MODEL=${shellQuote(normalizedTestModel)}
-            ENDPOINT=${shellQuote(endpoint)}
-            REQUEST_BODY=${shellQuote(requestBody)}
+            RESPONSES_ENDPOINT=${shellQuote(responsesEndpoint)}
+            CHAT_COMPLETIONS_ENDPOINT=${shellQuote(chatCompletionsEndpoint)}
+            RESPONSES_REQUEST_BODY=${shellQuote(responsesRequestBody)}
+            CHAT_COMPLETIONS_REQUEST_BODY=${shellQuote(chatCompletionsRequestBody)}
             unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 
             if [ -z "${'$'}API_KEY" ]; then
@@ -163,31 +170,45 @@ internal object RemoteCodexSettings {
               printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
               exit 0
             }
-            BODY_FILE="${'$'}(mktemp "${'$'}{TMPDIR:-/tmp}/codex-api-body.XXXXXX" 2>/dev/null)" || {
+            RESPONSES_BODY_FILE="${'$'}(mktemp "${'$'}{TMPDIR:-/tmp}/codex-api-responses-body.XXXXXX" 2>/dev/null)" || {
               rm -f "${'$'}HEADER_FILE"
               printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
               exit 0
             }
-            cleanup() { rm -f "${'$'}HEADER_FILE" "${'$'}BODY_FILE"; }
+            CHAT_COMPLETIONS_BODY_FILE="${'$'}(mktemp "${'$'}{TMPDIR:-/tmp}/codex-api-chat-body.XXXXXX" 2>/dev/null)" || {
+              rm -f "${'$'}HEADER_FILE" "${'$'}RESPONSES_BODY_FILE"
+              printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
+              exit 0
+            }
+            cleanup() {
+              rm -f "${'$'}HEADER_FILE" "${'$'}RESPONSES_BODY_FILE" "${'$'}CHAT_COMPLETIONS_BODY_FILE"
+            }
             trap cleanup EXIT HUP INT TERM
-            if ! chmod 600 "${'$'}HEADER_FILE" "${'$'}BODY_FILE" 2>/dev/null ||
+            if ! chmod 600 "${'$'}HEADER_FILE" "${'$'}RESPONSES_BODY_FILE" "${'$'}CHAT_COMPLETIONS_BODY_FILE" 2>/dev/null ||
                 ! printf 'Authorization: Bearer %s\n' "${'$'}API_KEY" > "${'$'}HEADER_FILE" ||
-                ! printf '%s' "${'$'}REQUEST_BODY" > "${'$'}BODY_FILE"; then
+                ! printf '%s' "${'$'}RESPONSES_REQUEST_BODY" > "${'$'}RESPONSES_BODY_FILE" ||
+                ! printf '%s' "${'$'}CHAT_COMPLETIONS_REQUEST_BODY" > "${'$'}CHAT_COMPLETIONS_BODY_FILE"; then
               printf '${TEST_PREFIX}STATUS=TEMPORARY_FILE_ERROR\n'
               exit 0
             fi
 
-            if [ -n "${'$'}PROXY_URL" ]; then
-              HTTP_STATUS="${'$'}(curl --disable --silent --output /dev/null --write-out '%{http_code}' \
-                --connect-timeout 10 --max-time 25 --proxy "${'$'}PROXY_URL" \
-                --request POST --header "@${'$'}HEADER_FILE" --header 'Content-Type: application/json' \
-                --data-binary "@${'$'}BODY_FILE" "${'$'}ENDPOINT" 2>/dev/null)"
-            else
-              HTTP_STATUS="${'$'}(curl --disable --silent --output /dev/null --write-out '%{http_code}' \
-                --connect-timeout 10 --max-time 25 --request POST --header "@${'$'}HEADER_FILE" \
-                --header 'Content-Type: application/json' --data-binary "@${'$'}BODY_FILE" \
-                "${'$'}ENDPOINT" 2>/dev/null)"
-            fi
+            run_request() {
+              endpoint="${'$'}1"
+              body_file="${'$'}2"
+              if [ -n "${'$'}PROXY_URL" ]; then
+                curl --disable --silent --output /dev/null --write-out '%{http_code}' \
+                  --connect-timeout 10 --max-time 25 --proxy "${'$'}PROXY_URL" \
+                  --request POST --header "@${'$'}HEADER_FILE" --header 'Content-Type: application/json' \
+                  --data-binary "@${'$'}body_file" "${'$'}endpoint" 2>/dev/null
+              else
+                curl --disable --silent --output /dev/null --write-out '%{http_code}' \
+                  --connect-timeout 10 --max-time 25 --request POST --header "@${'$'}HEADER_FILE" \
+                  --header 'Content-Type: application/json' --data-binary "@${'$'}body_file" \
+                  "${'$'}endpoint" 2>/dev/null
+              fi
+            }
+
+            HTTP_STATUS="${'$'}(run_request "${'$'}RESPONSES_ENDPOINT" "${'$'}RESPONSES_BODY_FILE")"
             CURL_EXIT=${'$'}?
             if [ "${'$'}CURL_EXIT" -ne 0 ]; then
               printf '${TEST_PREFIX}STATUS=NETWORK_ERROR\n'
@@ -195,12 +216,30 @@ internal object RemoteCodexSettings {
             fi
 
             case "${'$'}HTTP_STATUS" in
-              2??) TEST_STATUS=SUCCESS ;;
+              2??)
+                TEST_STATUS=SUCCESS
+                TEST_API=responses
+                ;;
               401|403) TEST_STATUS=UNAUTHORIZED ;;
-              *) TEST_STATUS=HTTP_ERROR ;;
+              *)
+                CHAT_HTTP_STATUS="${'$'}(run_request "${'$'}CHAT_COMPLETIONS_ENDPOINT" "${'$'}CHAT_COMPLETIONS_BODY_FILE")"
+                CHAT_CURL_EXIT=${'$'}?
+                if [ "${'$'}CHAT_CURL_EXIT" -ne 0 ]; then
+                  TEST_STATUS=NETWORK_ERROR
+                else
+                  HTTP_STATUS="${'$'}CHAT_HTTP_STATUS"
+                  TEST_API=chat/completions
+                  case "${'$'}CHAT_HTTP_STATUS" in
+                    2??) TEST_STATUS=SUCCESS ;;
+                    401|403) TEST_STATUS=UNAUTHORIZED ;;
+                    *) TEST_STATUS=HTTP_ERROR ;;
+                  esac
+                fi
+                ;;
             esac
             printf '${TEST_PREFIX}STATUS=%s\n' "${'$'}TEST_STATUS"
             printf '${TEST_PREFIX}MODEL=%s\n' "${'$'}TEST_MODEL"
+            printf '${TEST_PREFIX}API=%s\n' "${'$'}{TEST_API:-responses}"
             printf '${TEST_PREFIX}HTTP_STATUS=%s\n' "${'$'}HTTP_STATUS"
         """.trimIndent()
     }
@@ -213,10 +252,19 @@ internal object RemoteCodexSettings {
         }.toMap()
         val httpStatus = values["HTTP_STATUS"]?.trim()?.takeIf { it.matches(Regex("\\d{3}")) }
         val model = values["MODEL"].orEmpty()
+        val api = when (values["API"]) {
+            "responses" -> "Responses"
+            "chat/completions" -> "Chat Completions"
+            else -> ""
+        }
         return when (values["STATUS"]) {
             "SUCCESS" -> CodexConnectionTestResult(
                 successful = true,
-                message = "模型 ${model.ifBlank { "请求" }} 可用${httpStatus?.let { "（HTTP $it）" }.orEmpty()}",
+                message = buildString {
+                    append("模型 ").append(model.ifBlank { "请求" }).append(" 可用")
+                    if (api.isNotBlank()) append("（").append(api).append("）")
+                    httpStatus?.let { append("（HTTP ").append(it).append("）") }
+                },
             )
 
             "MISSING_API_KEY" -> CodexConnectionTestResult(false, "请输入 API 密钥后再测试")

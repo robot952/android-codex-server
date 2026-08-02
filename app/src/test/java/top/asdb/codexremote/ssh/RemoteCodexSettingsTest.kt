@@ -178,7 +178,7 @@ class RemoteCodexSettingsTest {
     }
 
     @Test
-    fun `connection test requires a model and targets Responses API`() {
+    fun `connection test requires a model and targets compatible APIs`() {
         val script = RemoteCodexSettings.testConnectionScript(
             "https://gateway.example.com/v1",
             "sk-test",
@@ -187,12 +187,87 @@ class RemoteCodexSettingsTest {
         )
 
         assertTrue(script.contains("/responses"))
+        assertTrue(script.contains("/chat/completions"))
         assertTrue(script.contains("max_output_tokens"))
+        assertTrue(script.contains("max_tokens"))
         assertFalse(
             RemoteCodexSettings.parseConnectionTest(
                 listOf("__CODEX_CONNECTION_TEST_STATUS=MISSING_TEST_MODEL"),
             ).successful,
         )
+    }
+
+    @Test
+    fun `connection test falls back to Chat Completions when Responses is unavailable`() {
+        val home = Files.createTempDirectory("codex-remote-test-chat-fallback").toFile()
+        try {
+            val bin = home.resolve("bin").apply { mkdirs() }
+            val curl = bin.resolve("curl")
+            curl.writeText(
+                """
+                #!/bin/sh
+                endpoint=
+                header_file=
+                body_file=
+                for argument in "${'$'}@"; do
+                  case "${'$'}argument" in
+                    https://*) endpoint="${'$'}argument" ;;
+                    @*)
+                      candidate="${'$'}{argument#@}"
+                      if grep -Fqx 'Authorization: Bearer sk-chat-fallback' "${'$'}candidate"; then
+                        header_file="${'$'}candidate"
+                      else
+                        body_file="${'$'}candidate"
+                      fi
+                      ;;
+                  esac
+                done
+                [ -n "${'$'}header_file" ] || exit 91
+                [ -n "${'$'}body_file" ] || exit 92
+                case "${'$'}endpoint" in
+                  */responses)
+                    grep -Fqx '{"model":"gpt-chat","input":"ping","max_output_tokens":1}' "${'$'}body_file" || exit 93
+                    printf '404'
+                    ;;
+                  */chat/completions)
+                    grep -Fqx '{"model":"gpt-chat","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' "${'$'}body_file" || exit 94
+                    printf '200'
+                    ;;
+                  *) exit 95 ;;
+                esac
+                """.trimIndent() + "\n",
+            )
+            assertTrue(curl.setExecutable(true))
+
+            val process = ProcessBuilder("sh", "-s")
+                .apply {
+                    environment()["HOME"] = home.absolutePath
+                    environment()["PATH"] = listOf(bin.absolutePath, System.getenv("PATH").orEmpty()).joinToString(":")
+                }
+                .start()
+            process.outputStream.bufferedWriter().use {
+                it.write(
+                    RemoteCodexSettings.testConnectionScript(
+                        "https://gateway.example.com/v1",
+                        "sk-chat-fallback",
+                        "",
+                        "gpt-chat",
+                    ),
+                )
+            }
+
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            assertEquals(stderr, 0, process.exitValue())
+            assertTrue(stdout.contains("__CODEX_CONNECTION_TEST_STATUS=SUCCESS"))
+            assertTrue(stdout.contains("__CODEX_CONNECTION_TEST_API=chat/completions"))
+            val result = RemoteCodexSettings.parseConnectionTest(stdout.lineSequence().toList())
+            assertTrue(result.successful)
+            assertTrue(result.message.contains("Chat Completions"))
+        } finally {
+            home.deleteRecursively()
+        }
     }
 
     @Test(expected = IllegalArgumentException::class)
