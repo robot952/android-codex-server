@@ -37,7 +37,7 @@ triggers:
   push:
     tags:
       prefix:
-      - v*
+      - v
       precise: []
       include: []
 notify: []
