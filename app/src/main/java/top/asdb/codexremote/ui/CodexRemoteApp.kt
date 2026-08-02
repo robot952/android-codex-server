@@ -1,5 +1,6 @@
 package top.asdb.codexremote.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -69,12 +70,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -95,6 +98,7 @@ import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalPrompt
 import top.asdb.codexremote.data.ConnectionPhase
+import top.asdb.codexremote.update.AppUpdateManager
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
 import top.asdb.codexremote.ui.theme.CodexMuted
@@ -105,9 +109,13 @@ import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 fun CodexRemoteApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val terminalState by viewModel.terminalState.collectAsStateWithLifecycle()
+    val updateState by AppUpdateManager.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var serverSwitcherVisible by remember { mutableStateOf(false) }
     var threadSettingsActionsVisible by remember { mutableStateOf(false) }
+    var updateDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var deferredUpdateVersionCode by rememberSaveable { mutableStateOf<Int?>(null) }
+    val context = LocalContext.current
     val connectedMetricProfileIds = state.connectionStates
         .filterValues { it.phase == ConnectionPhase.Connected }
         .keys
@@ -129,6 +137,12 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         state.diagnostic?.let {
             snackbar.showSnackbar(it.take(300))
             viewModel.clearDiagnostic()
+        }
+    }
+    LaunchedEffect(updateState.availableUpdate?.versionCode) {
+        val update = updateState.availableUpdate ?: return@LaunchedEffect
+        if (deferredUpdateVersionCode != update.versionCode) {
+            updateDialogVisible = true
         }
     }
 
@@ -190,6 +204,8 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onConnect = viewModel::connect,
                 onEnableDebugMode = viewModel::enableDebugMode,
                 onDisableDebugMode = viewModel::disableDebugMode,
+                updateAvailable = updateState.availableUpdate != null,
+                onShowUpdate = { updateDialogVisible = true },
             )
 
             AppScreen.Threads -> ThreadListScreen(
@@ -237,6 +253,28 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                     onOpenSubAgent = viewModel::openSubAgentThread,
                 )
             }
+            }
+        }
+        updateState.availableUpdate?.let { update ->
+            if (updateDialogVisible) {
+                AppUpdateDialog(
+                    update = update,
+                    onDownload = {
+                        if (AppUpdateManager.openDownload(context, update)) {
+                            updateDialogVisible = false
+                        } else {
+                            Toast.makeText(context, "无法打开下载页面", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onLater = {
+                        deferredUpdateVersionCode = update.versionCode
+                        updateDialogVisible = false
+                    },
+                    onIgnore = {
+                        AppUpdateManager.ignoreVersion(update.versionCode)
+                        updateDialogVisible = false
+                    },
+                )
             }
         }
         SnackbarHost(

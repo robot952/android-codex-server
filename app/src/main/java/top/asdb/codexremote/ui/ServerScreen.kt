@@ -169,6 +169,8 @@ fun ServerScreen(
     onConnect: (ServerProfile) -> Unit,
     onEnableDebugMode: () -> Unit,
     onDisableDebugMode: () -> Unit,
+    updateAvailable: Boolean,
+    onShowUpdate: () -> Unit,
 ) {
     val selected = state.profiles.firstOrNull { it.id == state.selectedProfileId }
     val unsavedDrafts = remember { mutableStateMapOf<String, ServerProfile>() }
@@ -391,11 +393,11 @@ fun ServerScreen(
                             modifier = Modifier.padding(end = 8.dp),
                         )
                     }
-                    Text(
-                        "v${BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 14.dp),
+                    AppVersionStatus(
+                        versionName = BuildConfig.VERSION_NAME,
+                        updateAvailable = updateAvailable,
+                        onClick = onShowUpdate,
+                        modifier = Modifier.padding(end = 10.dp),
                     )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
@@ -979,6 +981,45 @@ private fun openPromotion(context: Context) {
         .onFailure {
             Toast.makeText(context, "未找到可打开链接的浏览器", Toast.LENGTH_SHORT).show()
         }
+}
+
+@Composable
+private fun AppVersionStatus(
+    versionName: String,
+    updateAvailable: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interactionModifier = if (updateAvailable) {
+        Modifier.clickable(onClick = onClick).semantics { contentDescription = "有新版本，点击查看更新" }
+    } else {
+        Modifier
+    }
+    Column(
+        modifier = modifier.then(interactionModifier).padding(horizontal = 4.dp, vertical = 3.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "v$versionName",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (updateAvailable) {
+                Spacer(Modifier.width(5.dp))
+                Box(
+                    modifier = Modifier.size(8.dp).clip(CircleShape).background(CodexGreen),
+                )
+            }
+        }
+        if (updateAvailable) {
+            Text(
+                "有更新",
+                style = MaterialTheme.typography.labelSmall,
+                color = CodexGreen,
+            )
+        }
+    }
 }
 
 @Composable
