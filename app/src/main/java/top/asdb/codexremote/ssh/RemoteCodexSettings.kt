@@ -139,9 +139,9 @@ internal object RemoteCodexSettings {
         val baseEndpoint = normalizedBaseUrl.trimEnd('/')
         val responsesEndpoint = "$baseEndpoint/responses"
         val chatCompletionsEndpoint = "$baseEndpoint/chat/completions"
-        val responsesRequestBody = "{\"model\":\"$normalizedTestModel\",\"input\":\"ping\",\"max_output_tokens\":1}"
+        val responsesRequestBody = "{\"model\":\"$normalizedTestModel\",\"input\":\"ping\"}"
         val chatCompletionsRequestBody =
-            "{\"model\":\"$normalizedTestModel\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}"
+            "{\"model\":\"$normalizedTestModel\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
         return """
             set -u
             API_KEY=${shellQuote(normalizedApiKey)}

@@ -139,7 +139,7 @@ class RemoteCodexSettingsTest {
                 [ "${'$'}(stat -c '%a' "${'$'}header_file")" = 600 ] || exit 93
                 [ "${'$'}(stat -c '%a' "${'$'}body_file")" = 600 ] || exit 96
                 grep -Fqx 'Authorization: Bearer sk-test-connection' "${'$'}header_file" || exit 94
-                grep -Fqx '{"model":"gpt-test","input":"ping","max_output_tokens":1}' "${'$'}body_file" || exit 97
+                grep -Fqx '{"model":"gpt-test","input":"ping"}' "${'$'}body_file" || exit 97
                 printf '204'
                 """.trimIndent() + "\n",
             )
@@ -167,11 +167,13 @@ class RemoteCodexSettingsTest {
             val stderr = process.errorStream.bufferedReader().readText()
             assertEquals(stderr, 0, process.exitValue())
             assertTrue(stdout.contains("__CODEX_CONNECTION_TEST_STATUS=SUCCESS"))
+            assertTrue(stdout.contains("__CODEX_CONNECTION_TEST_API=responses"))
             assertFalse(stdout.contains("sk-test-connection"))
             assertFalse(stderr.contains("sk-test-connection"))
             val result = RemoteCodexSettings.parseConnectionTest(stdout.lineSequence().toList())
             assertTrue(result.successful)
             assertTrue(result.message.contains("gpt-test"))
+            assertTrue(result.message.contains("Responses"))
         } finally {
             home.deleteRecursively()
         }
@@ -188,8 +190,8 @@ class RemoteCodexSettingsTest {
 
         assertTrue(script.contains("/responses"))
         assertTrue(script.contains("/chat/completions"))
-        assertTrue(script.contains("max_output_tokens"))
-        assertTrue(script.contains("max_tokens"))
+        assertFalse(script.contains("max_output_tokens"))
+        assertFalse(script.contains("max_tokens"))
         assertFalse(
             RemoteCodexSettings.parseConnectionTest(
                 listOf("__CODEX_CONNECTION_TEST_STATUS=MISSING_TEST_MODEL"),
@@ -226,11 +228,11 @@ class RemoteCodexSettingsTest {
                 [ -n "${'$'}body_file" ] || exit 92
                 case "${'$'}endpoint" in
                   */responses)
-                    grep -Fqx '{"model":"gpt-chat","input":"ping","max_output_tokens":1}' "${'$'}body_file" || exit 93
+                    grep -Fqx '{"model":"gpt-chat","input":"ping"}' "${'$'}body_file" || exit 93
                     printf '404'
                     ;;
                   */chat/completions)
-                    grep -Fqx '{"model":"gpt-chat","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' "${'$'}body_file" || exit 94
+                    grep -Fqx '{"model":"gpt-chat","messages":[{"role":"user","content":"ping"}]}' "${'$'}body_file" || exit 94
                     printf '200'
                     ;;
                   *) exit 95 ;;

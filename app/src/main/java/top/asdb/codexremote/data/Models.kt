@@ -40,6 +40,8 @@ data class StoredProfiles(
     val composerDrafts: Map<String, String> = emptyMap(),
     /** Model and reasoning effort selected independently for each server thread. */
     val threadModelPreferences: Map<String, ThreadModelPreference> = emptyMap(),
+    /** Latest completed turn timing keyed by server id and thread id. */
+    val completedTurnTimings: Map<String, TurnTiming> = emptyMap(),
 )
 
 @Serializable
@@ -183,6 +185,7 @@ data class TimelineEntry(
 )
 
 /** Local timing for the latest turn in a thread; the app-server does not emit a completion time. */
+@Serializable
 data class TurnTiming(
     val threadId: String,
     val turnId: String? = null,

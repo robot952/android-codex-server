@@ -107,6 +107,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (key.isNotBlank() && preference.model.isNotBlank()) put(key, preference)
             }
     }
+    private val completedTurnTimings = LinkedHashMap<String, TurnTiming>().apply {
+        loaded.completedTurnTimings.entries.toList().takeLast(MAX_COMPLETED_TURN_TIMINGS)
+            .forEach { (key, timing) ->
+                if (key.isNotBlank() && timing.threadId.isNotBlank() && timing.completedAtMillis != null) {
+                    put(key, timing)
+                }
+            }
+    }
     private val pendingFingerprints = mutableMapOf<String, String>()
     /** Resolved executable for a managed profile; keeps later saves from replacing its client. */
     private val effectiveProfiles = mutableMapOf<String, ServerProfile>()
@@ -260,6 +268,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             effectiveProfiles.remove(normalized.id)
             removeComposerDrafts(normalized.id)
             removeThreadModelPreferences(normalized.id)
+            removeCompletedTurnTimings(normalized.id)
         }
         if (switching) {
             before.selectedProfileId?.let { sessionSnapshots[it] = SessionSnapshot.capture(before) }
@@ -382,6 +391,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fingerprintProfiles.remove(id)
         removeComposerDrafts(id)
         removeThreadModelPreferences(id)
+        removeCompletedTurnTimings(id)
         if (fingerprintDialogProfileId == id) fingerprintDialogProfileId = null
         fingerprintJobs.remove(id)?.cancel()
         connectionJobs.remove(id)?.cancel()
@@ -1140,6 +1150,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val cachedThread = snapshot.thread
             val timeline = snapshot.timeline
             val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
+            val running = cachedThread.activeTurnId != null || activeTurn != null || cachedThread.status == "active"
             applySessionState(profileId) {
                 it.copy(
                     screen = targetScreen,
@@ -1154,7 +1165,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     olderTurnsCursor = snapshot.nextTurnsCursor,
                     olderTurnsLoading = false,
                     activeTurnId = cachedThread.activeTurnId ?: activeTurn,
-                    running = cachedThread.activeTurnId != null || activeTurn != null || cachedThread.status == "active",
+                    running = running,
+                    turnTiming = restoredTurnTiming(profileId, cachedThread.id, running),
                     aggregateDiff = "",
                     tokenUsage = rememberedTokenUsage,
                     attachments = if (initialSnapshot?.activeThread?.id == cachedThread.id) {
@@ -1171,6 +1183,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             initialSnapshot?.takeIf { isOperationVisible(operation) }?.let { snapshot ->
                 val snapshotThread = snapshot.activeThread ?: thread
                 val activeTurn = snapshot.timeline.lastOrNull { it.status == "inProgress" }?.turnId
+                val running = snapshotThread.activeTurnId != null || activeTurn != null || snapshotThread.status == "active"
                 applySessionState(profileId) { state ->
                     snapshot.restore(state).copy(
                         screen = targetScreen,
@@ -1182,14 +1195,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         selectedModel = threadSelection.model,
                         selectedEffort = threadSelection.effort,
                         activeTurnId = snapshotThread.activeTurnId ?: activeTurn,
-                        running = snapshotThread.activeTurnId != null || activeTurn != null ||
-                            snapshotThread.status == "active",
+                        running = running,
+                        turnTiming = restoredTurnTiming(profileId, snapshotThread.id, running, snapshot.turnTiming),
                         tokenUsage = rememberedTokenUsage,
                         loading = true,
                         error = null,
                     )
                 }
             } ?: applySessionState(profileId) {
+                val running = thread.activeTurnId != null || thread.status == "active"
                 it.copy(
                     screen = targetScreen,
                     subAgentBackNavigation = subAgentBackNavigation,
@@ -1200,7 +1214,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     olderTurnsCursor = null,
                     olderTurnsLoading = false,
                     activeTurnId = thread.activeTurnId,
-                    running = thread.activeTurnId != null || thread.status == "active",
+                    running = running,
+                    turnTiming = restoredTurnTiming(profileId, thread.id, running),
                     aggregateDiff = "",
                     tokenUsage = rememberedTokenUsage,
                     attachments = emptyList(),
@@ -1241,6 +1256,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         "open_success profile=${profileRef(profileId)} thread=${profileRef(loaded.id)} items=${timeline.size}",
                     )
                     val activeTurn = timeline.lastOrNull { it.status == "inProgress" }?.turnId
+                    val running = loaded.activeTurnId != null || activeTurn != null || loaded.status == "active"
                     // Re-read the preference in case the user changed it while resume was loading.
                     val latestThreadSelection = resolveThreadModelSelection(
                         profileId,
@@ -1269,7 +1285,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             olderTurnsCursor = nextTurnsCursor,
                             olderTurnsLoading = false,
                             activeTurnId = loaded.activeTurnId ?: activeTurn,
-                            running = loaded.activeTurnId != null || activeTurn != null || loaded.status == "active",
+                            running = running,
+                            turnTiming = restoredTurnTiming(profileId, loaded.id, running, current.turnTiming),
                             aggregateDiff = "",
                             tokenUsage = latestTokenUsage,
                             attachments = if (initialSnapshot?.activeThread?.id == loaded.id) {
@@ -1549,6 +1566,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         "send_accepted profile=${profileRef(profileId)} thread=${profileRef(thread.id)}",
                     )
                     composerDrafts.remove(composerDraftKey(profileId, thread.id))
+                    completedTurnTimings.remove(threadStorageKey(profileId, thread.id))
                     applySessionState(profileId) { state ->
                         // Session navigation can race with a sent request. Never attach this
                         // thread's turn state or draft cleanup to whichever thread is now visible.
@@ -1853,6 +1871,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (isOperationCurrent(operation)) {
                     composerDrafts.remove(composerDraftKey(profileId, threadId))
                     threadModelPreferences.remove(threadStorageKey(profileId, threadId))
+                    completedTurnTimings.remove(threadStorageKey(profileId, threadId))
                     contextUsageFallbacks.remove(profileId, threadId)
                     pendingApprovalsByProfile[profileId] = emptyList()
                     applySessionState(profileId) {
@@ -2713,6 +2732,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         applySessionState(profileId) { current ->
             CodexEventReducer.reduce(current, notification.method, notification.params)
         }
+        syncCompletedTurnTiming(profileId, notification.method, notification.params)
         if (notification.method == "turn/completed" || notification.method == "thread/tokenUsage/updated") {
             sessionSnapshots[profileId]?.activeThread?.let { thread ->
                 val snapshot = sessionSnapshots[profileId]
@@ -3060,6 +3080,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 selectedProfileId = state.selectedProfileId,
                 composerDrafts = composerDrafts.toMap(),
                 threadModelPreferences = threadModelPreferences.toMap(),
+                completedTurnTimings = completedTurnTimings.toMap(),
             ),
         )
     }
@@ -3119,6 +3140,53 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threadModelPreferences.keys.removeAll { it.startsWith(prefix) }
     }
 
+    private fun restoredTurnTiming(
+        profileId: String,
+        threadId: String,
+        running: Boolean,
+        current: TurnTiming? = null,
+    ): TurnTiming? {
+        if (running || threadId.isBlank()) return null
+        return current?.takeIf { it.threadId == threadId && it.completedAtMillis != null }
+            ?: completedTurnTimings[threadStorageKey(profileId, threadId)]
+                ?.takeIf { it.threadId == threadId && it.completedAtMillis != null }
+    }
+
+    private fun syncCompletedTurnTiming(
+        profileId: String,
+        method: String,
+        params: kotlinx.serialization.json.JsonObject,
+    ) {
+        if (method !in TURN_TIMING_EVENT_METHODS) return
+        val snapshot = sessionSnapshots[profileId]
+        val timing = snapshot?.turnTiming
+        val threadId = params.string("threadId").ifBlank { timing?.threadId.orEmpty() }
+        if (threadId.isBlank()) return
+        val key = threadStorageKey(profileId, threadId)
+        val completed = timing?.takeIf { it.threadId == threadId && it.completedAtMillis != null }
+        val changed = when {
+            completed != null && completedTurnTimings[key] != completed -> {
+                completedTurnTimings[key] = completed
+                trimCompletedTurnTimings()
+                true
+            }
+
+            method == "turn/started" ||
+                (method == "thread/status/changed" &&
+                    snapshot?.activeThread?.id == threadId && snapshot.running) -> {
+                completedTurnTimings.remove(key) != null
+            }
+
+            else -> false
+        }
+        if (changed) persistProfiles()
+    }
+
+    private fun removeCompletedTurnTimings(profileId: String) {
+        val prefix = "$profileId\u0000"
+        completedTurnTimings.keys.removeAll { it.startsWith(prefix) }
+    }
+
     private fun rememberContextUsage(profileId: String, threadId: String, usage: TokenUsage?) {
         usage?.let { contextUsageFallbacks.remember(profileId, threadId, it) }
     }
@@ -3132,6 +3200,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun trimThreadModelPreferences() {
         while (threadModelPreferences.size > MAX_THREAD_MODEL_PREFERENCES) {
             threadModelPreferences.remove(threadModelPreferences.keys.first())
+        }
+    }
+
+    private fun trimCompletedTurnTimings() {
+        while (completedTurnTimings.size > MAX_COMPLETED_TURN_TIMINGS) {
+            completedTurnTimings.remove(completedTurnTimings.keys.first())
         }
     }
 
@@ -3185,7 +3259,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_COMPOSER_DRAFTS = 64
         private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
         private const val MAX_THREAD_MODEL_PREFERENCES = 512
+        private const val MAX_COMPLETED_TURN_TIMINGS = 512
         private const val MAX_GOAL_OBJECTIVE_CHARS = 4_000
+        private val TURN_TIMING_EVENT_METHODS = setOf(
+            "turn/started",
+            "turn/completed",
+            "thread/status/changed",
+        )
         private const val DIAGNOSTIC_REPEAT_WINDOW_MS = 30_000L
         private const val MAX_SURFACED_DIAGNOSTICS = 64
     }
