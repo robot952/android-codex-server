@@ -2037,72 +2037,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun uploadAttachment(context: Context, uri: Uri) {
+        uploadAttachments(context, listOf(uri))
+    }
+
+    fun uploadAttachments(context: Context, uris: List<Uri>) {
+        if (uris.isEmpty()) return
         val profileId = _state.value.selectedProfileId ?: return
         currentProfile() ?: return
         val client = activeClient() ?: return
-        uploadAttachmentContent(profileId, client) {
-            withContext(Dispatchers.IO) {
-                var name = "attachment"
-                var size = -1L
-                context.contentResolver.query(
-                    uri,
-                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                    null,
-                    null,
-                    null,
-                )?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }
-                            ?.let { name = cursor.getString(it) ?: name }
-                        cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 }
-                            ?.let { size = cursor.getLong(it) }
-                    }
-                }
-                val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
-                val isText = isTextAttachment(name, mimeType)
-                val maximumBytes = if (isText) MAX_INLINE_TEXT_ATTACHMENT_BYTES else MAX_ATTACHMENT_BYTES
-                val sizeError = if (isText) "文本附件不能超过 512 KB" else "附件不能超过 20 MB"
-                require(size <= maximumBytes || size < 0) { sizeError }
-                val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
-                    val output = ByteArrayOutputStream()
-                    val buffer = ByteArray(8 * 1024)
-                    var total = 0L
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        total += count
-                        require(total <= maximumBytes) { sizeError }
-                        output.write(buffer, 0, count)
-                    }
-                    output.toByteArray()
-                } ?: throw IllegalStateException("无法读取附件")
-                AttachmentUploadContent(
-                    name = name,
-                    mimeType = mimeType,
-                    bytes = bytes,
-                    textContent = if (isText) String(bytes, Charsets.UTF_8) else null,
-                )
-            }
+        uploadAttachmentContents(profileId, client, uris) { uri ->
+            readAttachmentContent(context, uri)
         }
     }
 
-    /** Adds the local, redacted diagnostic log through the same text-attachment path as a .txt file. */
+    /** Adds the newest retained diagnostic log for legacy callers. */
     fun addDebugLogAttachment() {
-        if (!_state.value.debugModeEnabled) return
+        addDebugLogAttachments(DiagnosticLogger.listLogs().take(1).map { it.id })
+    }
+
+    /** Adds each user-selected, redacted diagnostic log as its own text attachment. */
+    fun addDebugLogAttachments(logIds: List<String>) {
+        val selectedIds = logIds.distinct()
+        if (selectedIds.isEmpty()) return
         val profileId = _state.value.selectedProfileId ?: return
         currentProfile() ?: return
         val client = activeClient() ?: return
-        DiagnosticLogger.info("Debug", "diagnostic_log_attachment_requested")
-        uploadAttachmentContent(profileId, client) {
+        uploadAttachmentContents(profileId, client, selectedIds) { id ->
             val maxBytes = MAX_INLINE_TEXT_ATTACHMENT_BYTES.toInt()
             val text = withContext(Dispatchers.IO) {
-                DiagnosticLogger.attachmentText(maxBytes)
-            }
-            check(text.isNotBlank()) { "暂无 Debug 日志可添加" }
+                DiagnosticLogger.attachmentText(id, maxBytes)
+            } ?: throw IllegalStateException("所选 Debug 日志已不可用")
+            check(text.isNotBlank()) { "所选 Debug 日志为空" }
             val bytes = text.toByteArray(Charsets.UTF_8)
             check(bytes.size <= maxBytes) { "Debug 日志不能超过 512 KB" }
             AttachmentUploadContent(
-                name = "codex-debug-log-${System.currentTimeMillis()}.txt",
+                name = "codex-debug-log-$id",
                 mimeType = "text/plain",
                 bytes = bytes,
                 textContent = text,
@@ -2110,37 +2079,99 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun uploadAttachmentContent(
+    private fun <T> uploadAttachmentContents(
         profileId: String,
         client: CodexAppServerClient,
-        loadContent: suspend () -> AttachmentUploadContent,
+        items: List<T>,
+        loadContent: suspend (T) -> AttachmentUploadContent,
     ) {
         val operation = beginClientOperation(profileId, "upload", client, exclusive = false) ?: return
         viewModelScope.launch {
             if (isOperationVisible(operation)) applySessionState(profileId) { it.copy(loading = true, error = null) }
+            var firstError: Throwable? = null
+            var completed = false
             try {
-                val content = loadContent()
-                val remotePath = client.upload(content.name, content.bytes)
-                val attachment = PendingAttachment(
-                    name = content.name,
-                    remotePath = remotePath,
-                    mimeType = content.mimeType,
-                    textContent = content.textContent,
-                )
-                if (isOperationCurrent(operation)) {
-                    applySessionState(profileId) {
-                        it.copy(attachments = it.attachments + attachment, loading = false)
+                items.forEach { item ->
+                    try {
+                        val content = loadContent(item)
+                        val remotePath = client.upload(content.name, content.bytes)
+                        val attachment = PendingAttachment(
+                            name = content.name,
+                            remotePath = remotePath,
+                            mimeType = content.mimeType,
+                            textContent = content.textContent,
+                        )
+                        if (isOperationCurrent(operation)) {
+                            applySessionState(profileId) { state ->
+                                state.copy(attachments = state.attachments + attachment)
+                            }
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        if (firstError == null) firstError = error
                     }
                 }
+                firstError?.let { error ->
+                    if (isOperationCurrent(operation)) showError(error, profileId)
+                }
+                completed = true
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 if (isOperationCurrent(operation)) showError(error, profileId)
             } finally {
+                if (completed && firstError == null && isOperationCurrent(operation)) {
+                    applySessionState(profileId) { it.copy(loading = false) }
+                }
                 finishClientOperation(operation)
             }
         }
     }
+
+    private suspend fun readAttachmentContent(context: Context, uri: Uri): AttachmentUploadContent =
+        withContext(Dispatchers.IO) {
+            var name = "attachment"
+            var size = -1L
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }
+                        ?.let { name = cursor.getString(it) ?: name }
+                    cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 }
+                        ?.let { size = cursor.getLong(it) }
+                }
+            }
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+            val isText = isTextAttachment(name, mimeType)
+            val maximumBytes = if (isText) MAX_INLINE_TEXT_ATTACHMENT_BYTES else MAX_ATTACHMENT_BYTES
+            val sizeError = if (isText) "文本附件不能超过 512 KB" else "附件不能超过 20 MB"
+            require(size <= maximumBytes || size < 0) { sizeError }
+            val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8 * 1024)
+                var total = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    require(total <= maximumBytes) { sizeError }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            } ?: throw IllegalStateException("无法读取附件")
+            AttachmentUploadContent(
+                name = name,
+                mimeType = mimeType,
+                bytes = bytes,
+                textContent = if (isText) String(bytes, Charsets.UTF_8) else null,
+            )
+        }
 
     suspend fun loadImagePreview(path: String): ByteArray {
         currentProfile() ?: throw IllegalStateException("未选择服务器")

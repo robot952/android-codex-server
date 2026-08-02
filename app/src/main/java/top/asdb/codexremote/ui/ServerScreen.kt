@@ -130,6 +130,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -199,6 +200,7 @@ fun ServerScreen(
     var disconnectRequested by remember { mutableStateOf<ServerProfile?>(null) }
     var keyImportError by remember { mutableStateOf<String?>(null) }
     var showDebugLogs by remember { mutableStateOf(false) }
+    var showDebugLogSharePicker by remember { mutableStateOf(false) }
     var editorVisible by rememberSaveable { mutableStateOf(false) }
     var newDraftStarted by rememberSaveable { mutableStateOf(false) }
     val debugTapCounter = remember { DebugTapCounter() }
@@ -291,6 +293,8 @@ fun ServerScreen(
     val blockingConnection = blockingProfile?.let { connectionForProfile(it) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val hasRetainedDebugLogs = remember(state.debugModeEnabled) { DiagnosticLogger.hasLogs() }
+    val canAccessDebugLogs = state.debugModeEnabled || hasRetainedDebugLogs
 
     BackHandler(enabled = editorVisible, onBack = ::closeEditor)
     val keyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -435,10 +439,11 @@ fun ServerScreen(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                     )
 
-                    if (state.debugModeEnabled) {
+                    if (canAccessDebugLogs) {
                         DebugLogBar(
+                            debugEnabled = state.debugModeEnabled,
                             onOpen = { showDebugLogs = true },
-                            onShare = { shareDiagnosticLog(context) },
+                            onShare = { showDebugLogSharePicker = true },
                         )
                         HorizontalDivider(color = CodexBorder)
                     }
@@ -800,12 +805,26 @@ fun ServerScreen(
         }
     }
 
-    if (showDebugLogs && state.debugModeEnabled) {
+    if (showDebugLogs && canAccessDebugLogs) {
         DiagnosticLogSheet(
+            debugEnabled = state.debugModeEnabled,
             onDismiss = { showDebugLogs = false },
             onDisable = {
                 showDebugLogs = false
                 onDisableDebugMode()
+            },
+            onShare = { showDebugLogSharePicker = true },
+        )
+    }
+
+    if (showDebugLogSharePicker) {
+        DiagnosticLogPickerDialog(
+            title = "选择要分享的诊断日志",
+            confirmLabel = "分享",
+            onDismissRequest = { showDebugLogSharePicker = false },
+            onConfirm = { ids ->
+                showDebugLogSharePicker = false
+                shareDiagnosticLog(context, coroutineScope, ids)
             },
         )
     }
@@ -963,7 +982,7 @@ private fun openPromotion(context: Context) {
 }
 
 @Composable
-private fun DebugLogBar(onOpen: () -> Unit, onShare: () -> Unit) {
+private fun DebugLogBar(debugEnabled: Boolean, onOpen: () -> Unit, onShare: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)
             .padding(horizontal = 16.dp, vertical = 11.dp),
@@ -977,9 +996,13 @@ private fun DebugLogBar(onOpen: () -> Unit, onShare: () -> Unit) {
         )
         Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
-            Text("Debug 模式", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
             Text(
-                "运行日志正在记录",
+                if (debugEnabled) "Debug 模式" else "诊断日志",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                if (debugEnabled) "运行日志正在记录" else "保留的运行日志",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -992,7 +1015,12 @@ private fun DebugLogBar(onOpen: () -> Unit, onShare: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DiagnosticLogSheet(onDismiss: () -> Unit, onDisable: () -> Unit) {
+private fun DiagnosticLogSheet(
+    debugEnabled: Boolean,
+    onDismiss: () -> Unit,
+    onDisable: () -> Unit,
+    onShare: () -> Unit,
+) {
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var snapshot by remember { mutableStateOf(DiagnosticLogger.snapshot()) }
@@ -1052,15 +1080,17 @@ private fun DiagnosticLogSheet(onDismiss: () -> Unit, onDisable: () -> Unit) {
                     Spacer(Modifier.width(7.dp))
                     Text("清空")
                 }
-                Button(onClick = { shareDiagnosticLog(context) }, modifier = Modifier.weight(1f)) {
+                Button(onClick = onShare, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
                     Text("分享")
                 }
             }
 
-            TextButton(onClick = onDisable, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                Text("关闭 Debug 模式", color = MaterialTheme.colorScheme.error)
+            if (debugEnabled) {
+                TextButton(onClick = onDisable, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("关闭 Debug 模式", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
@@ -1099,14 +1129,26 @@ private fun copyDiagnosticLog(context: Context, value: String) {
     }
 }
 
-private fun shareDiagnosticLog(context: Context) {
-    DiagnosticLogger.info("Debug", "diagnostic_log_share_requested")
-    runCatching {
-        val shareIntent = DiagnosticLogger.createShareIntent(context)
-        context.startActivity(Intent.createChooser(shareIntent, "分享诊断日志"))
-    }.onFailure {
-        DiagnosticLogger.error("Debug", "diagnostic_log_share_failed", it)
-        Toast.makeText(context, "无法打开系统分享", Toast.LENGTH_SHORT).show()
+private fun shareDiagnosticLog(
+    context: Context,
+    coroutineScope: CoroutineScope,
+    logIds: List<String>,
+) {
+    coroutineScope.launch {
+        runCatching {
+            withContext(Dispatchers.IO) { DiagnosticLogger.createShareIntent(context, logIds) }
+        }.onSuccess { shareIntent ->
+            DiagnosticLogger.info("Debug", "diagnostic_log_share_requested count=${logIds.size}")
+            runCatching {
+                context.startActivity(Intent.createChooser(shareIntent, "分享诊断日志"))
+            }.onFailure { error ->
+                DiagnosticLogger.error("Debug", "diagnostic_log_share_failed", error)
+                Toast.makeText(context, "无法打开系统分享", Toast.LENGTH_SHORT).show()
+            }
+        }.onFailure { error ->
+            DiagnosticLogger.error("Debug", "diagnostic_log_share_failed", error)
+            Toast.makeText(context, "无法生成诊断日志", Toast.LENGTH_SHORT).show()
+        }
     }
 }
 

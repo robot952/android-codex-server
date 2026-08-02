@@ -169,6 +169,7 @@ import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.normalizeEpochMillis
+import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.components.MarkdownText
 import top.asdb.codexremote.ui.theme.CodexAmber
 import top.asdb.codexremote.ui.theme.CodexBorder
@@ -192,8 +193,8 @@ fun WorkScreen(
     onRollback: () -> Unit,
     onArchive: () -> Unit,
     onRename: (String) -> Unit,
-    onUpload: (Context, Uri) -> Unit,
-    onAddDebugLog: () -> Unit,
+    onUpload: (Context, List<Uri>) -> Unit,
+    onAddDebugLog: (List<String>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onComposerChange: (String) -> Unit,
     onSelectModel: (String, String?) -> Unit,
@@ -247,12 +248,15 @@ fun WorkScreen(
     var pendingImageSave by remember { mutableStateOf<RemoteImagePreview?>(null) }
     var linkToOpen by remember { mutableStateOf<String?>(null) }
     var linkOpenError by remember { mutableStateOf<String?>(null) }
+    var showDebugLogPicker by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { onUpload(context, it) }
+    val hasRetainedDebugLogs = remember(state.debugModeEnabled) { DiagnosticLogger.hasLogs() }
+    val canAddDebugLog = state.debugModeEnabled || hasRetainedDebugLogs
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) onUpload(context, uris)
     }
-    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { onUpload(context, it) }
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) onUpload(context, uris)
     }
     val saveImage: (RemoteImagePreview) -> Unit = saveImage@{ preview ->
         if (imageSaving) return@saveImage
@@ -478,7 +482,7 @@ fun WorkScreen(
                                 enabled = !state.loading && !state.submitting,
                                 onClick = { showMenu = false; goalEditorVisible = true },
                             )
-                            if (state.debugModeEnabled) {
+                            if (canAddDebugLog) {
                                 HorizontalDivider()
                                 DropdownMenuItem(
                                     text = { Text("添加 Debug 日志") },
@@ -486,7 +490,7 @@ fun WorkScreen(
                                     enabled = !state.loading && !state.submitting,
                                     onClick = {
                                         showMenu = false
-                                        onAddDebugLog()
+                                        showDebugLogPicker = true
                                     },
                                 )
                             }
@@ -698,6 +702,18 @@ fun WorkScreen(
                 }
             }
         }
+    }
+
+    if (showDebugLogPicker) {
+        DiagnosticLogPickerDialog(
+            title = "选择要添加的诊断日志",
+            confirmLabel = "添加到对话",
+            onDismissRequest = { showDebugLogPicker = false },
+            onConfirm = { ids ->
+                showDebugLogPicker = false
+                onAddDebugLog(ids)
+            },
+        )
     }
 
     selectedDiff?.let { change ->
