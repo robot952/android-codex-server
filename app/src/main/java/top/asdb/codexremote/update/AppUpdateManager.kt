@@ -1,16 +1,22 @@
 package top.asdb.codexremote.update
 
+import android.app.DownloadManager
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -26,6 +32,8 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
+import kotlin.coroutines.coroutineContext
 
 data class AppUpdateReleaseNote(
     val versionName: String,
@@ -38,13 +46,32 @@ data class AppUpdateInfo(
     val changes: List<AppUpdateReleaseNote>,
 )
 
+enum class AppUpdateDownloadStatus {
+    Idle,
+    Downloading,
+    Downloaded,
+    AwaitingInstallPermission,
+    Installing,
+    Failed,
+}
+
+data class AppUpdateDownloadState(
+    val versionName: String? = null,
+    val downloadId: Long? = null,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long? = null,
+    val status: AppUpdateDownloadStatus = AppUpdateDownloadStatus.Idle,
+    val errorMessage: String? = null,
+)
+
 data class AppUpdateState(
     val checking: Boolean = false,
     val availableUpdate: AppUpdateInfo? = null,
     val shouldPromptUpdate: Boolean = false,
+    val download: AppUpdateDownloadState = AppUpdateDownloadState(),
 )
 
-/** Fetches stable Gitee Releases on application startup and only opens a fixed repository download URL. */
+/** Fetches stable Gitee Releases and downloads an APK through Android's system download service. */
 object AppUpdateManager {
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -53,6 +80,7 @@ object AppUpdateManager {
 
     private lateinit var preferences: android.content.SharedPreferences
     private var checkJob: Job? = null
+    private var downloadJob: Job? = null
     private var initialized = false
 
     val state: StateFlow<AppUpdateState> = _state.asStateFlow()
@@ -88,6 +116,9 @@ object AppUpdateManager {
                                 checking = false,
                                 availableUpdate = available,
                                 shouldPromptUpdate = shouldPromptUpdate(available, ignoredVersion),
+                                download = it.download.takeIf { download ->
+                                    download.versionName == available?.versionName
+                                } ?: AppUpdateDownloadState(),
                             )
                         }
                         if (available != null) {
@@ -118,12 +149,210 @@ object AppUpdateManager {
         DiagnosticLogger.info("Update", "ignored version=$versionName")
     }
 
-    fun openDownload(context: Context, update: AppUpdateInfo): Boolean = runCatching {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(apkDownloadUrl(update))).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun startDownload(context: Context, update: AppUpdateInfo): Boolean {
+        if (!initialized) return false
+        val current = _state.value.download
+        if (
+            current.status == AppUpdateDownloadStatus.Downloading &&
+            current.versionName == update.versionName
+        ) {
+            return true
         }
-        context.startActivity(Intent.createChooser(intent, "下载 ${update.versionName}"))
-    }.isSuccess
+
+        val appContext = context.applicationContext
+        return runCatching {
+            val downloadManager = appContext.getSystemService(DownloadManager::class.java)
+                ?: error("系统下载服务不可用")
+            val downloadId = downloadManager.enqueue(
+                DownloadManager.Request(Uri.parse(apkDownloadUrl(update))).apply {
+                    setTitle("Codex v${update.versionName}")
+                    setDescription("正在下载更新")
+                    setMimeType(APK_MIME_TYPE)
+                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    setVisibleInDownloadsUi(true)
+                    setAllowedOverMetered(true)
+                    setAllowedOverRoaming(false)
+                    setDestinationInExternalFilesDir(
+                        appContext,
+                        Environment.DIRECTORY_DOWNLOADS,
+                        "CodexRemote-${update.versionName}-${System.currentTimeMillis()}.apk",
+                    )
+                },
+            )
+            _state.update {
+                it.copy(
+                    download = AppUpdateDownloadState(
+                        versionName = update.versionName,
+                        downloadId = downloadId,
+                        status = AppUpdateDownloadStatus.Downloading,
+                    ),
+                )
+            }
+            synchronized(lock) {
+                downloadJob?.cancel()
+                downloadJob = scope.launch {
+                    monitorDownload(downloadManager, downloadId, update.versionName)
+                }
+            }
+            DiagnosticLogger.info("Update", "download_started version=${update.versionName}")
+            true
+        }.getOrElse { error ->
+            _state.update {
+                it.copy(
+                    download = AppUpdateDownloadState(
+                        versionName = update.versionName,
+                        status = AppUpdateDownloadStatus.Failed,
+                        errorMessage = updateErrorMessage(error),
+                    ),
+                )
+            }
+            DiagnosticLogger.warn("Update", "download_start_failed reason=${error.message.orEmpty().take(160)}")
+            false
+        }
+    }
+
+    fun installDownloadedUpdate(context: Context): Boolean {
+        val download = _state.value.download
+        val downloadId = download.downloadId ?: return false
+        if (download.status !in setOf(
+                AppUpdateDownloadStatus.Downloaded,
+                AppUpdateDownloadStatus.AwaitingInstallPermission,
+            )
+        ) {
+            return false
+        }
+
+        val appContext = context.applicationContext
+        return runCatching {
+            val downloadManager = appContext.getSystemService(DownloadManager::class.java)
+                ?: error("系统下载服务不可用")
+            val apkUri = downloadManager.getUriForDownloadedFile(downloadId)
+                ?: error("安装包尚未准备完成")
+            if (!appContext.packageManager.canRequestPackageInstalls()) {
+                updateDownload(downloadId) {
+                    it.copy(status = AppUpdateDownloadStatus.AwaitingInstallPermission)
+                }
+                appContext.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${appContext.packageName}"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } else {
+                val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(apkUri, APK_MIME_TYPE)
+                    clipData = ClipData.newRawUri("Codex update", apkUri)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                appContext.startActivity(installIntent)
+                updateDownload(downloadId) {
+                    it.copy(status = AppUpdateDownloadStatus.Installing, errorMessage = null)
+                }
+                DiagnosticLogger.info("Update", "install_requested version=${download.versionName.orEmpty()}")
+            }
+            true
+        }.getOrElse { error ->
+            updateDownload(downloadId) {
+                it.copy(
+                    status = AppUpdateDownloadStatus.Failed,
+                    errorMessage = updateErrorMessage(error),
+                )
+            }
+            DiagnosticLogger.warn("Update", "install_failed reason=${error.message.orEmpty().take(160)}")
+            false
+        }
+    }
+
+    private suspend fun monitorDownload(
+        downloadManager: DownloadManager,
+        downloadId: Long,
+        versionName: String,
+    ) {
+        while (coroutineContext.isActive) {
+            val snapshot = readDownloadSnapshot(downloadManager, downloadId)
+            if (snapshot == null) {
+                updateDownload(downloadId) {
+                    it.copy(
+                        status = AppUpdateDownloadStatus.Failed,
+                        errorMessage = "找不到下载任务",
+                    )
+                }
+                return
+            }
+            when (snapshot.status) {
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    updateDownload(downloadId) {
+                        it.copy(
+                            downloadedBytes = snapshot.downloadedBytes,
+                            totalBytes = snapshot.totalBytes ?: snapshot.downloadedBytes,
+                            status = AppUpdateDownloadStatus.Downloaded,
+                            errorMessage = null,
+                        )
+                    }
+                    DiagnosticLogger.info("Update", "download_completed version=$versionName")
+                    return
+                }
+
+                DownloadManager.STATUS_FAILED -> {
+                    updateDownload(downloadId) {
+                        it.copy(
+                            downloadedBytes = snapshot.downloadedBytes,
+                            totalBytes = snapshot.totalBytes,
+                            status = AppUpdateDownloadStatus.Failed,
+                            errorMessage = downloadFailureMessage(snapshot.reason),
+                        )
+                    }
+                    DiagnosticLogger.warn("Update", "download_failed version=$versionName reason=${snapshot.reason}")
+                    return
+                }
+
+                else -> updateDownload(downloadId) {
+                    it.copy(
+                        downloadedBytes = snapshot.downloadedBytes,
+                        totalBytes = snapshot.totalBytes,
+                        status = AppUpdateDownloadStatus.Downloading,
+                        errorMessage = null,
+                    )
+                }
+            }
+            delay(DOWNLOAD_PROGRESS_POLL_MILLIS)
+        }
+    }
+
+    private fun readDownloadSnapshot(
+        downloadManager: DownloadManager,
+        downloadId: Long,
+    ): DownloadSnapshot? {
+        val cursor = downloadManager.query(DownloadManager.Query().setFilterById(downloadId)) ?: return null
+        cursor.use {
+            if (!it.moveToFirst()) return null
+            val totalBytes = it.getLong(
+                it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
+            ).takeIf { value -> value > 0L }
+            return DownloadSnapshot(
+                status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
+                reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
+                downloadedBytes = it.getLong(
+                    it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
+                ).coerceAtLeast(0L),
+                totalBytes = totalBytes,
+            )
+        }
+    }
+
+    private fun updateDownload(
+        downloadId: Long,
+        transform: (AppUpdateDownloadState) -> AppUpdateDownloadState,
+    ) {
+        _state.update { current ->
+            if (current.download.downloadId != downloadId) {
+                current
+            } else {
+                current.copy(download = transform(current.download))
+            }
+        }
+    }
 
     private fun fetchUpdateInfo(): AppUpdateInfo? {
         val connection = (URL(GITEE_RELEASES_URL).openConnection() as? HttpURLConnection)
@@ -153,6 +382,8 @@ object AppUpdateManager {
     private const val KEY_IGNORED_VERSION_NAME = "ignored_version_name"
     private const val NETWORK_TIMEOUT_MILLIS = 5_000
     private const val MAX_RELEASE_RESPONSE_BYTES = 256L * 1024L
+    private const val DOWNLOAD_PROGRESS_POLL_MILLIS = 350L
+    private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
 
     private const val GITEE_REPOSITORY_URL = "https://gitee.com/YanGanYuan/android-codex-server"
     private const val GITEE_RELEASES_URL =
@@ -161,6 +392,13 @@ object AppUpdateManager {
     private fun apkDownloadUrl(update: AppUpdateInfo): String =
         "$GITEE_REPOSITORY_URL/releases/download/v${update.versionName}/CodexRemote-${update.versionName}.apk"
 }
+
+private data class DownloadSnapshot(
+    val status: Int,
+    val reason: Int,
+    val downloadedBytes: Long,
+    val totalBytes: Long?,
+)
 
 /** Returns the newest stable release which has the expected APK attachment. */
 internal fun parseGiteeReleases(value: String, json: Json = Json { ignoreUnknownKeys = true }): AppUpdateInfo? =
@@ -176,6 +414,23 @@ internal fun availableUpdateFor(latestRelease: AppUpdateInfo?, installedVersion:
 
 internal fun shouldPromptUpdate(update: AppUpdateInfo?, ignoredVersion: String?): Boolean =
     update != null && update.versionName != ignoredVersion
+
+internal fun updateDownloadProgressFraction(downloadedBytes: Long, totalBytes: Long?): Float? =
+    totalBytes?.takeIf { it > 0L }?.let { total ->
+        (downloadedBytes.coerceAtLeast(0L).toDouble() / total.toDouble())
+            .toFloat()
+            .coerceIn(0f, 1f)
+    }
+
+internal fun formatUpdateByteSize(bytes: Long): String {
+    if (bytes < 0L) return "未知大小"
+    if (bytes < 1024L) return "$bytes B"
+    val kibibytes = bytes / 1024.0
+    if (kibibytes < 1024.0) return String.format(Locale.ROOT, "%.1f KB", kibibytes)
+    val mebibytes = kibibytes / 1024.0
+    if (mebibytes < 1024.0) return String.format(Locale.ROOT, "%.1f MB", mebibytes)
+    return String.format(Locale.ROOT, "%.1f GB", mebibytes / 1024.0)
+}
 
 internal fun compareSemanticVersions(left: String, right: String): Int {
     val leftVersion = parseSemanticVersion(left) ?: return 0
@@ -264,6 +519,17 @@ private fun comparePreRelease(left: List<String>?, right: List<String>?): Int {
         if (comparison != 0) return comparison
     }
     return 0
+}
+
+private fun updateErrorMessage(error: Throwable): String =
+    error.message?.replace('\n', ' ')?.trim()?.take(120)?.takeIf { it.isNotEmpty() } ?: "操作失败"
+
+private fun downloadFailureMessage(reason: Int): String = when (reason) {
+    DownloadManager.ERROR_INSUFFICIENT_SPACE -> "存储空间不足"
+    DownloadManager.ERROR_DEVICE_NOT_FOUND -> "存储设备不可用"
+    DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "下载地址重定向过多"
+    DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "下载服务器响应异常"
+    else -> "下载失败（错误码 $reason）"
 }
 
 private fun InputStream.readUtf8AtMost(maxBytes: Int): String {

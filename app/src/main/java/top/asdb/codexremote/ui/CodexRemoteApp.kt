@@ -1,6 +1,5 @@
 package top.asdb.codexremote.ui
 
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -266,13 +265,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             if (updateDialogVisible) {
                 AppUpdateDialog(
                     update = update,
+                    download = updateState.download,
                     onDownload = {
-                        if (AppUpdateManager.openDownload(context, update)) {
-                            updateDialogVisible = false
-                        } else {
-                            Toast.makeText(context, "无法打开下载页面", Toast.LENGTH_SHORT).show()
-                        }
+                        AppUpdateManager.startDownload(context, update)
                     },
+                    onInstall = { AppUpdateManager.installDownloadedUpdate(context) },
                     onLater = {
                         deferredUpdateVersionName = update.versionName
                         updateDialogVisible = false

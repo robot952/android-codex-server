@@ -97,4 +97,20 @@ class AppUpdateManagerTest {
         assertTrue(shouldPromptUpdate(available, null))
         assertNull(availableUpdateFor(update, "1.7.57"))
     }
+
+    @Test
+    fun formatsDownloadByteSizesForProgressDisplay() {
+        assertEquals("0 B", formatUpdateByteSize(0L))
+        assertEquals("1.0 KB", formatUpdateByteSize(1024L))
+        assertEquals("1.0 MB", formatUpdateByteSize(1024L * 1024L))
+        assertEquals("未知大小", formatUpdateByteSize(-1L))
+    }
+
+    @Test
+    fun calculatesDownloadProgressOnlyWhenPackageSizeIsKnown() {
+        assertNull(updateDownloadProgressFraction(512L, null))
+        assertEquals(0.5f, requireNotNull(updateDownloadProgressFraction(512L, 1024L)), 0f)
+        assertEquals(0f, requireNotNull(updateDownloadProgressFraction(-1L, 1024L)), 0f)
+        assertEquals(1f, requireNotNull(updateDownloadProgressFraction(2048L, 1024L)), 0f)
+    }
 }
