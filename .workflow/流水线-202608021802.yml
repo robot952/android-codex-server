@@ -1,0 +1,35 @@
+version: "1.0"
+name: 构建
+displayName: 构建
+stages:
+- name: 构建
+  displayName: 构建
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: build@android
+    name: ""
+    displayName: Android 构建
+    jdkVersion: "17"
+    gradleVersion: "8.12"
+    buildToolsVersion: 34.0.0
+    ndkVersion: 28.2.13676358
+    commands:
+    - ./scripts/build-android.sh release
+    artifacts:
+    - name: BUILD_ARTIFACT
+      path:
+      - /app/app/build/outputs/apk/release
+      type: .tar.gz
+    caches:
+    - "~/.gradle/caches"
+    strategy:
+      retry: "0"
+      resource:
+        cpu: "2"
+        memory: "4"
+triggers:
+  trigger: manual
+notify: []
+strategy:
+  blocking: true
