@@ -1136,6 +1136,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         resumeNotificationBuffers[profileId] = resumeBuffer
         val approvalMode = _state.value.approvalMode
         val threadSelection = resolveThreadModelSelection(profileId, thread.id, _state.value.models)
+        // Returning from the thread list keeps the previous WorkScreen in the profile snapshot.
+        // Reuse its start time while thread/resume fetches the authoritative server timestamp.
+        val retainedTurnTiming = initialSnapshot?.turnTiming
+            ?.takeIf { it.threadId == thread.id }
+            ?: sessionSnapshots[profileId]?.turnTiming?.takeIf { it.threadId == thread.id }
         val cached = (client.cachedThread(thread.id) ?: client.cachedThreadStale(thread.id))
             ?.takeIf { it.thread.id == thread.id }
         val rememberedTokenUsage = client.cachedContextUsage(thread.id)
@@ -1166,7 +1171,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     olderTurnsLoading = false,
                     activeTurnId = cachedThread.activeTurnId ?: activeTurn,
                     running = running,
-                    turnTiming = restoredTurnTiming(profileId, cachedThread.id, running),
+                    turnTiming = restoredTurnTiming(
+                        profileId = profileId,
+                        threadId = cachedThread.id,
+                        running = running,
+                        current = retainedTurnTiming,
+                        activeTurnId = cachedThread.activeTurnId ?: activeTurn,
+                    ),
                     aggregateDiff = "",
                     tokenUsage = rememberedTokenUsage,
                     attachments = if (initialSnapshot?.activeThread?.id == cachedThread.id) {
@@ -1196,7 +1207,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         selectedEffort = threadSelection.effort,
                         activeTurnId = snapshotThread.activeTurnId ?: activeTurn,
                         running = running,
-                        turnTiming = restoredTurnTiming(profileId, snapshotThread.id, running, snapshot.turnTiming),
+                        turnTiming = restoredTurnTiming(
+                            profileId = profileId,
+                            threadId = snapshotThread.id,
+                            running = running,
+                            current = retainedTurnTiming,
+                            activeTurnId = snapshotThread.activeTurnId ?: activeTurn,
+                        ),
                         tokenUsage = rememberedTokenUsage,
                         loading = true,
                         error = null,
@@ -1215,7 +1232,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     olderTurnsLoading = false,
                     activeTurnId = thread.activeTurnId,
                     running = running,
-                    turnTiming = restoredTurnTiming(profileId, thread.id, running),
+                    turnTiming = restoredTurnTiming(
+                        profileId = profileId,
+                        threadId = thread.id,
+                        running = running,
+                        current = retainedTurnTiming,
+                        activeTurnId = thread.activeTurnId,
+                    ),
                     aggregateDiff = "",
                     tokenUsage = rememberedTokenUsage,
                     attachments = emptyList(),
@@ -1286,7 +1309,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             olderTurnsLoading = false,
                             activeTurnId = loaded.activeTurnId ?: activeTurn,
                             running = running,
-                            turnTiming = restoredTurnTiming(profileId, loaded.id, running, current.turnTiming),
+                            turnTiming = restoredTurnTiming(
+                                profileId = profileId,
+                                threadId = loaded.id,
+                                running = running,
+                                current = current.turnTiming,
+                                activeTurnId = loaded.activeTurnId ?: activeTurn,
+                                activeTurnStartedAtMillis = resumed.activeTurnStartedAtMillis,
+                            ),
                             aggregateDiff = "",
                             tokenUsage = latestTokenUsage,
                             attachments = if (initialSnapshot?.activeThread?.id == loaded.id) {
@@ -3145,9 +3175,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threadId: String,
         running: Boolean,
         current: TurnTiming? = null,
+        activeTurnId: String? = null,
+        activeTurnStartedAtMillis: Long? = null,
     ): TurnTiming? {
-        if (running || threadId.isBlank()) return null
-        return current?.takeIf { it.threadId == threadId && it.completedAtMillis != null }
+        if (threadId.isBlank()) return null
+        val currentTiming = current?.takeIf { it.threadId == threadId }
+        if (running) {
+            return recoverRunningTurnTiming(
+                threadId = threadId,
+                activeTurnId = activeTurnId,
+                activeTurnStartedAtMillis = activeTurnStartedAtMillis,
+                current = currentTiming,
+            )
+        }
+        return currentTiming?.takeIf { it.completedAtMillis != null }
             ?: completedTurnTimings[threadStorageKey(profileId, threadId)]
                 ?.takeIf { it.threadId == threadId && it.completedAtMillis != null }
     }
@@ -3413,6 +3454,24 @@ private fun composerDraftKey(profileId: String, threadId: String): String =
 
 private fun threadStorageKey(profileId: String, threadId: String): String =
     "$profileId\u0000$threadId"
+
+internal fun recoverRunningTurnTiming(
+    threadId: String,
+    activeTurnId: String?,
+    activeTurnStartedAtMillis: Long?,
+    current: TurnTiming?,
+): TurnTiming? {
+    if (threadId.isBlank()) return null
+    val currentTiming = current?.takeIf { it.threadId == threadId && it.completedAtMillis == null }
+    val startedAtMillis = activeTurnStartedAtMillis?.takeIf { it > 0L }
+        ?: currentTiming?.startedAtMillis
+        ?: return null
+    return TurnTiming(
+        threadId = threadId,
+        turnId = activeTurnId?.takeIf { it.isNotBlank() } ?: currentTiming?.turnId,
+        startedAtMillis = startedAtMillis,
+    )
+}
 
 private val ANSI_ESCAPE_REGEX = Regex("\\u001B\\[[0-9;]*[A-Za-z]")
 private val CODEX_ESCAPED_QUOTE_REGEX = Regex("\\\\\"")

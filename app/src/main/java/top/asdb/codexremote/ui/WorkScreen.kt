@@ -336,7 +336,6 @@ fun WorkScreen(
     val runningTurnStartedAtMillis = matchingTurnTiming
         ?.takeIf { it.completedAtMillis == null }
         ?.startedAtMillis
-        ?: turnClockMillis
     val completedTurnTiming = matchingTurnTiming?.takeIf {
         !state.running && it.completedAtMillis != null
     }
@@ -566,16 +565,23 @@ fun WorkScreen(
                 }
                 if (state.running) {
                     item(key = "running-indicator") {
+                        val elapsed = runningTurnStartedAtMillis?.let { startedAtMillis ->
+                            formatTurnElapsed(startedAtMillis, turnClockMillis)
+                        }
                         Row(
                             modifier = Modifier.semantics {
-                                contentDescription = "Codex 正在处理"
+                                contentDescription = if (elapsed == null) {
+                                    "Codex 正在处理"
+                                } else {
+                                    "Codex 正在处理，本次耗时 $elapsed"
+                                }
                             },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(9.dp))
                             Text(
-                                "正在处理  本次耗时 ${formatTurnElapsed(runningTurnStartedAtMillis, turnClockMillis)}",
+                                if (elapsed == null) "正在处理" else "正在处理  本次耗时 $elapsed",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall)
                         }

@@ -119,6 +119,8 @@ data class ResumedThread(
     val timeline: List<TimelineEntry>,
     /** Last wire message included in the thread/resume response snapshot. */
     val responseSequence: Long,
+    /** Start time supplied by the server for the currently active turn, when available. */
+    val activeTurnStartedAtMillis: Long? = null,
     val nextTurnsCursor: String? = null,
     val turnIds: List<String> = emptyList(),
     val itemsView: String = "full",
@@ -924,12 +926,17 @@ internal fun parseResumedThreadPayload(result: JsonObject, responseSequence: Lon
         thread.subAgentCreatedAtOrNull(),
     )
     val reachedInheritedHistory = visibleTurns.size != chronologicalTurns.size
+    val activeTurnStartedAtMillis = visibleTurns.asReversed()
+        .firstOrNull { it.string("status") == "inProgress" }
+        ?.long("startedAt")
+        ?.takeIf { it > 0L }
     val hydratedThread = JsonObject(thread + ("turns" to JsonArray(visibleTurns)))
     val snapshot = CodexPayloadParser.parseThreadPayload(hydratedThread)
     return ResumedThread(
         thread = snapshot.first,
         timeline = snapshot.second,
         responseSequence = responseSequence,
+        activeTurnStartedAtMillis = activeTurnStartedAtMillis,
         nextTurnsCursor = initialPage?.string("nextCursor")?.takeIf { it.isNotBlank() }
             ?.takeUnless { reachedInheritedHistory },
         turnIds = visibleTurns.mapNotNull { it.string("id").takeIf(String::isNotBlank) },

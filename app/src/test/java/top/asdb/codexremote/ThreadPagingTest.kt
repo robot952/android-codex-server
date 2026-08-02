@@ -12,6 +12,7 @@ import top.asdb.codexremote.codex.parseResumedThreadPayload
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.ApprovalMode
+import top.asdb.codexremote.data.TurnTiming
 
 class ThreadPagingTest {
     private val json = Json { ignoreUnknownKeys = true }
@@ -97,6 +98,66 @@ class ThreadPagingTest {
         assertEquals(listOf("child only"), parsed.timeline.map { it.text })
         assertEquals(listOf("child-turn"), parsed.turnIds)
         assertEquals(null, parsed.nextTurnsCursor)
+    }
+
+    @Test
+    fun resumedActiveTurnRetainsTheServerStartTimeForTimingRecovery() {
+        val response = json.parseToJsonElement(
+            """
+            {
+              "thread": {"id":"thread-1","status":"active"},
+              "initialTurnsPage": {
+                "data": [
+                  {"id":"turn-1","status":"inProgress","startedAt":1722475800123,"items":[]}
+                ]
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val parsed = parseResumedThreadPayload(response, responseSequence = 1)
+
+        assertEquals("turn-1", parsed.thread.activeTurnId)
+        assertEquals(1722475800123L, parsed.activeTurnStartedAtMillis)
+    }
+
+    @Test
+    fun runningTimingRecoveryUsesTheServerTimeOrKeepsTheExistingStart() {
+        val current = TurnTiming(
+            threadId = "thread-1",
+            turnId = "turn-1",
+            startedAtMillis = 1_000L,
+        )
+
+        val resumed = recoverRunningTurnTiming(
+            threadId = "thread-1",
+            activeTurnId = "turn-1",
+            activeTurnStartedAtMillis = 500L,
+            current = current,
+        )
+        val retained = recoverRunningTurnTiming(
+            threadId = "thread-1",
+            activeTurnId = "turn-1",
+            activeTurnStartedAtMillis = null,
+            current = current,
+        )
+        val otherThread = recoverRunningTurnTiming(
+            threadId = "thread-1",
+            activeTurnId = "turn-1",
+            activeTurnStartedAtMillis = null,
+            current = current.copy(threadId = "thread-2"),
+        )
+        val completed = recoverRunningTurnTiming(
+            threadId = "thread-1",
+            activeTurnId = "turn-1",
+            activeTurnStartedAtMillis = null,
+            current = current.copy(completedAtMillis = 2_000L),
+        )
+
+        assertEquals(500L, resumed?.startedAtMillis)
+        assertEquals(1_000L, retained?.startedAtMillis)
+        assertEquals(null, otherThread)
+        assertEquals(null, completed)
     }
 
     @Test
