@@ -994,9 +994,9 @@ private fun AppVersionStatus(
     modifier: Modifier = Modifier,
 ) {
     val contentDescription = when {
-        updateAvailable -> "有新版本，点击查看更新"
-        updateChecking -> "正在检查更新"
-        else -> "点击检查更新"
+        updateAvailable -> "有新版本，查看更新"
+        updateChecking -> "检查更新中"
+        else -> "检查更新"
     }
     Column(
         modifier = modifier
@@ -1018,15 +1018,21 @@ private fun AppVersionStatus(
                 )
             }
         }
-        Text(
-            text = when {
-                updateAvailable -> "有更新"
-                updateChecking -> "正在检查更新"
-                else -> "点击检查更新"
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = if (updateAvailable) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (updateChecking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(11.dp),
+                    strokeWidth = 1.5.dp,
+                    color = CodexGreen,
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                text = if (updateAvailable) "有更新" else "检查更新",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (updateAvailable) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
