@@ -16,8 +16,8 @@ stages:
     ndkVersion: 28.2.13676358
     commands:
     - GRADLE_USER_HOME="$HOME/.gradle" CODEX_BUILD_ONLINE=1
-      GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8
-      -Dorg.gradle.workers.max=8" ./scripts/publish-gitee-release.sh
+      GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+      -Dorg.gradle.workers.max=4" ./scripts/publish-gitee-release.sh
     artifacts:
     - name: BUILD_ARTIFACT
       path:
@@ -29,8 +29,8 @@ stages:
     strategy:
       retry: "0"
       resource:
-        cpu: "8"
-        memory: "16"
+        cpu: "4"
+        memory: "8"
 triggers:
   trigger: auto
   push:
