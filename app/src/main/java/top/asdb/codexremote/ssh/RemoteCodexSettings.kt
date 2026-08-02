@@ -62,9 +62,11 @@ internal object RemoteCodexSettings {
         }
         BASE_URL=
         MODEL=
+        MODEL_REASONING_EFFORT=
         MODEL_PROVIDER=openai
         if [ -r "${'$'}CONFIG_FILE" ]; then
           MODEL="${'$'}(toml_root_value model)"
+          MODEL_REASONING_EFFORT="${'$'}(toml_root_value model_reasoning_effort)"
           MODEL_PROVIDER="${'$'}(toml_root_value model_provider)"
           if [ -z "${'$'}MODEL_PROVIDER" ]; then MODEL_PROVIDER=openai; fi
           BASE_URL="${'$'}(toml_root_value openai_base_url)"
@@ -98,6 +100,7 @@ internal object RemoteCodexSettings {
         if [ -s "${'$'}AUTH_FILE" ]; then AUTH_PRESENT=1; else AUTH_PRESENT=0; fi
         printf '${PREFIX}BASE_URL=%s\n' "${'$'}BASE_URL"
         printf '${PREFIX}MODEL=%s\n' "${'$'}MODEL"
+        printf '${PREFIX}MODEL_REASONING_EFFORT=%s\n' "${'$'}MODEL_REASONING_EFFORT"
         printf '${PREFIX}MODEL_PROVIDER=%s\n' "${'$'}MODEL_PROVIDER"
         printf '${PREFIX}PROXY_URL=%s\n' "${'$'}PROXY_URL"
         printf '${PREFIX}AUTH_PRESENT=%s\n' "${'$'}AUTH_PRESENT"
@@ -113,6 +116,7 @@ internal object RemoteCodexSettings {
         return CodexGlobalSettings(
             baseUrl = values["BASE_URL"].orEmpty(),
             model = values["MODEL"].orEmpty(),
+            reasoningEffort = values["MODEL_REASONING_EFFORT"].orEmpty(),
             modelProvider = values["MODEL_PROVIDER"].orEmpty().ifBlank { "openai" },
             hasStoredAuthentication = values["AUTH_PRESENT"] == "1",
             apiKey = values["API_KEY"].orEmpty(),
@@ -290,12 +294,28 @@ internal object RemoteCodexSettings {
         baseUrl: String,
         apiKey: String,
         proxyUrl: String,
+        defaultModel: String? = null,
+        defaultReasoningEffort: String? = null,
+        preserveCurrentProvider: Boolean = false,
     ): String {
         val normalizedBaseUrl = validateBaseUrl(baseUrl)
         val normalizedApiKey = validateApiKey(apiKey)
         val normalizedProxy = RemoteBootstrap.validateProxyUrl(proxyUrl)
-        val baseLine = normalizedBaseUrl.takeIf { it.isNotBlank() }
-            ?.let { "openai_base_url = \"$it\"" }
+        val normalizedDefaultModel = defaultModel?.let(::normalizeDefaultModel)
+        val normalizedDefaultReasoningEffort = defaultReasoningEffort?.let(::normalizeDefaultReasoningEffort)
+        val baseLine = if (preserveCurrentProvider) {
+            ""
+        } else {
+            normalizedBaseUrl.takeIf { it.isNotBlank() }
+                ?.let { "openai_base_url = \"$it\"" }
+                .orEmpty()
+        }
+        val providerLine = if (preserveCurrentProvider) "" else "model_provider = \"openai\""
+        val defaultModelLine = normalizedDefaultModel?.takeIf { it.isNotBlank() }
+            ?.let { "model = \"$it\"" }
+            .orEmpty()
+        val defaultReasoningEffortLine = normalizedDefaultReasoningEffort?.takeIf { it.isNotBlank() }
+            ?.let { "model_reasoning_effort = \"$it\"" }
             .orEmpty()
         val proxyComment = shellQuote("# codex-remote-proxy: $normalizedProxy")
         val httpProxy = shellQuote("export HTTP_PROXY=$normalizedProxy")
@@ -314,7 +334,12 @@ internal object RemoteCodexSettings {
             API_KEY=${shellQuote(normalizedApiKey)}
             PROXY_URL=${shellQuote(normalizedProxy)}
             BASE_LINE=${shellQuote(baseLine)}
-            PROVIDER_LINE='model_provider = "openai"'
+            PROVIDER_LINE=${shellQuote(providerLine)}
+            DEFAULT_MODEL_LINE=${shellQuote(defaultModelLine)}
+            DEFAULT_REASONING_EFFORT_LINE=${shellQuote(defaultReasoningEffortLine)}
+            REPLACE_MODEL=${if (defaultModel == null) 0 else 1}
+            REPLACE_REASONING_EFFORT=${if (defaultReasoningEffort == null) 0 else 1}
+            PRESERVE_CURRENT_PROVIDER=${if (preserveCurrentProvider) 1 else 0}
             umask 077
             mkdir -p "${'$'}CONFIG_DIR"
             chmod 700 "${'$'}CONFIG_DIR"
@@ -326,16 +351,31 @@ internal object RemoteCodexSettings {
             trap cleanup EXIT HUP INT TERM
 
             if [ -f "${'$'}CONFIG_FILE" ]; then CONFIG_SOURCE="${'$'}CONFIG_FILE"; else CONFIG_SOURCE=/dev/null; fi
-            awk -v provider_line="${'$'}PROVIDER_LINE" -v base_line="${'$'}BASE_LINE" '
+            awk -v provider_line="${'$'}PROVIDER_LINE" -v base_line="${'$'}BASE_LINE" \
+                -v default_model_line="${'$'}DEFAULT_MODEL_LINE" \
+                -v default_reasoning_effort_line="${'$'}DEFAULT_REASONING_EFFORT_LINE" \
+                -v replace_model="${'$'}REPLACE_MODEL" \
+                -v replace_reasoning_effort="${'$'}REPLACE_REASONING_EFFORT" \
+                -v preserve_current_provider="${'$'}PRESERVE_CURRENT_PROVIDER" '
               function inject_root_keys() {
                 if (!injected) {
-                  print provider_line
-                  if (base_line != "") print base_line
+                  if (preserve_current_provider == "0") {
+                    print provider_line
+                    if (base_line != "") print base_line
+                  }
+                  if (replace_model == "1" && default_model_line != "") print default_model_line
+                  if (replace_reasoning_effort == "1" && default_reasoning_effort_line != "") {
+                    print default_reasoning_effort_line
+                  }
                   injected = 1
                 }
               }
               /^[[:space:]]*\[/ { inject_root_keys(); in_table = 1 }
-              !in_table && /^[[:space:]]*(model_provider|openai_base_url)[[:space:]]*=/ { next }
+              !in_table && preserve_current_provider == "0" && \
+                /^[[:space:]]*(model_provider|openai_base_url)[[:space:]]*=/ { next }
+              !in_table && replace_model == "1" && /^[[:space:]]*model[[:space:]]*=/ { next }
+              !in_table && replace_reasoning_effort == "1" && \
+                /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ { next }
               { print }
               END { inject_root_keys() }
             ' "${'$'}CONFIG_SOURCE" > "${'$'}CONFIG_TMP"
@@ -403,11 +443,24 @@ internal object RemoteCodexSettings {
         return baseUrl
     }
 
-    internal fun normalizeTestModel(value: String): String {
+    internal fun normalizeTestModel(value: String): String = normalizeModel(value, "测试模型")
+
+    internal fun normalizeDefaultModel(value: String): String = normalizeModel(value, "默认模型")
+
+    internal fun normalizeDefaultReasoningEffort(value: String): String {
+        val effort = value.trim().lowercase(Locale.ROOT)
+        if (effort.isEmpty()) return ""
+        require(effort in DEFAULT_REASONING_EFFORTS) {
+            "默认思考强度只能为极低、低、中、高或极高"
+        }
+        return effort
+    }
+
+    private fun normalizeModel(value: String, fieldName: String): String {
         val model = value.trim()
         if (model.isEmpty()) return ""
         require(model.length <= 200 && model.matches(Regex("[A-Za-z0-9._:/@+-]+"))) {
-            "测试模型只能包含字母、数字及 . _ - / : @ +"
+            "${fieldName}只能包含字母、数字及 . _ - / : @ +"
         }
         return model
     }
@@ -421,4 +474,6 @@ internal object RemoteCodexSettings {
     }
 
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
+
+    private val DEFAULT_REASONING_EFFORTS = setOf("minimal", "low", "medium", "high", "xhigh")
 }

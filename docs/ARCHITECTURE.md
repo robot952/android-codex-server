@@ -417,7 +417,7 @@ CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，
 
 会话列表的齿轮入口可读取和写入**当前已连接服务器、当前 Unix 用户**的全局 Codex 设置。该入口
 与“选择工作目录”并列；它不是 ServerProfile 的本地字段，也不能按会话保存。读取时必须显示远端
-`model_provider`、默认 `model`、实际生效的模型 URL、代理和登录是否存在，不能只显示本应用曾写入的
+`model_provider`、默认 `model`、默认 `model_reasoning_effort`、实际生效的模型 URL、代理和登录是否存在，不能只显示本应用曾写入的
 `openai_base_url`。对于自定义 provider，模型 URL 来自对应 `[model_providers.<name>].base_url`；API
 密钥默认只显示是否存在；用户在设置弹窗中明确点击显示后，可查看 `OPENAI_API_KEY` 的完整内容。它只在
 当前弹窗和测试请求的内存中存在，关闭弹窗、切换服务器或断线时立即清除，绝不写入 ProfileStore、SavedState、
@@ -427,7 +427,7 @@ CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，
 
 | 文件 | 写入方式和用途 |
 | --- | --- |
-| `$HOME/.codex/config.toml` | 原子保留无关根键和表，仅更新根级 `model_provider = "openai"` 与可选 `openai_base_url`。 |
+| `$HOME/.codex/config.toml` | 原子保留无关根键和表。默认模型和思考强度更新根级 `model`、`model_reasoning_effort`；用户修改模型 URL 时更新 `model_provider = "openai"` 与可选 `openai_base_url`，仅修改默认值时保留现有自定义 Provider。 |
 | `$HOME/.codex/auth.json` | 只有用户填写 API 密钥时，才通过 `codex login --with-api-key` 的标准输入由 CLI 写入；绝不由 App 伪造 JSON。用户打开设置时，可通过既有 SSH 通道仅读取 `OPENAI_API_KEY` 供掩码显示和连通性测试，绝不持久化到手机。 |
 | `$HOME/.codex/codex-remote.env` | App 管理的 `0600` 私有代理环境文件，含 HTTP/HTTPS/ALL_PROXY 的大小写变量；代理留空时删除该文件。 |
 | `$HOME/.local/bin/codex-remote` | managed wrapper 在启动前 source 代理环境文件；SshCodexTransport 启动 app-server 时也 source 一次，兼容既有 wrapper 和自定义 remoteCommand。 |

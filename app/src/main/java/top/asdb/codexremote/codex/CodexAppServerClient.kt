@@ -635,7 +635,18 @@ class CodexAppServerClient(
         baseUrl: String,
         apiKey: String,
         proxyUrl: String,
-    ) = transport.writeCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl)
+        defaultModel: String,
+        defaultReasoningEffort: String,
+        preserveCurrentProvider: Boolean,
+    ) = transport.writeCodexGlobalSettings(
+        profile = profile,
+        baseUrl = baseUrl,
+        apiKey = apiKey,
+        proxyUrl = proxyUrl,
+        defaultModel = defaultModel,
+        defaultReasoningEffort = defaultReasoningEffort,
+        preserveCurrentProvider = preserveCurrentProvider,
+    )
 
     suspend fun testCodexGlobalSettings(
         profile: ServerProfile,

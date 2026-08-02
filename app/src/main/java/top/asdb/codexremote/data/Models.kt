@@ -312,6 +312,8 @@ data class CodexGlobalSettings(
     val baseUrl: String = "",
     /** Default model selected by the remote user's global Codex configuration. */
     val model: String = "",
+    /** Default reasoning effort selected by the remote user's global Codex configuration. */
+    val reasoningEffort: String = "",
     /** Active built-in or custom provider id from the remote global configuration. */
     val modelProvider: String = "openai",
     /** The remote account has a stored Codex credential. */

@@ -57,6 +57,7 @@ class RemoteCodexSettingsTest {
             codexDir.resolve("config.toml").writeText(
                 """
                 model = "gpt-5.4"
+                model_reasoning_effort = "high"
                 model_provider = "relay"
 
                 [model_providers.relay]
@@ -79,6 +80,7 @@ class RemoteCodexSettingsTest {
             val settings = RemoteCodexSettings.parse(process.inputStream.bufferedReader().readLines())
             assertEquals("relay", settings.modelProvider)
             assertEquals("gpt-5.4", settings.model)
+            assertEquals("high", settings.reasoningEffort)
             assertEquals("https://relay.example.com/v1", settings.baseUrl)
             assertEquals("http://127.0.0.1:7890", settings.proxyUrl)
             assertTrue(settings.hasStoredAuthentication)
@@ -275,6 +277,91 @@ class RemoteCodexSettingsTest {
     @Test(expected = IllegalArgumentException::class)
     fun `test model rejects whitespace and shell-like input`() {
         RemoteCodexSettings.normalizeTestModel("gpt-test; rm")
+    }
+
+    @Test
+    fun `default reasoning effort accepts supported Codex values`() {
+        assertEquals("", RemoteCodexSettings.normalizeDefaultReasoningEffort("  "))
+        assertEquals("minimal", RemoteCodexSettings.normalizeDefaultReasoningEffort("minimal"))
+        assertEquals("xhigh", RemoteCodexSettings.normalizeDefaultReasoningEffort(" XHIGH "))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `default reasoning effort rejects unsupported values`() {
+        RemoteCodexSettings.normalizeDefaultReasoningEffort("maximum")
+    }
+
+    @Test
+    fun `script updates defaults while preserving an unchanged custom provider`() {
+        val home = Files.createTempDirectory("codex-remote-preserve-provider").toFile()
+        try {
+            val codexDir = home.resolve(".codex").apply { mkdirs() }
+            val config = codexDir.resolve("config.toml")
+            config.writeText(
+                """
+                model = "gpt-5.4"
+                model_reasoning_effort = "low"
+                model_provider = "relay"
+
+                [model_providers.relay]
+                base_url = "https://relay.example.com/v1"
+
+                [features]
+                web_search = true
+                """.trimIndent() + "\n",
+            )
+
+            val process = ProcessBuilder("sh", "-s")
+                .apply { environment()["HOME"] = home.absolutePath }
+                .start()
+            process.outputStream.bufferedWriter().use {
+                it.write(
+                    RemoteCodexSettings.writeScript(
+                        baseUrl = "https://relay.example.com/v1",
+                        apiKey = "",
+                        proxyUrl = "",
+                        defaultModel = "gpt-5.6-sol",
+                        defaultReasoningEffort = "xhigh",
+                        preserveCurrentProvider = true,
+                    ),
+                )
+            }
+
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+            val updatedConfig = config.readText()
+            assertTrue(updatedConfig.contains("model = \"gpt-5.6-sol\""))
+            assertTrue(updatedConfig.contains("model_reasoning_effort = \"xhigh\""))
+            assertTrue(updatedConfig.contains("model_provider = \"relay\""))
+            assertFalse(updatedConfig.contains("model_provider = \"openai\""))
+            assertTrue(updatedConfig.contains("[model_providers.relay]"))
+            assertTrue(updatedConfig.contains("[features]\nweb_search = true"))
+
+            val clearProcess = ProcessBuilder("sh", "-s")
+                .apply { environment()["HOME"] = home.absolutePath }
+                .start()
+            clearProcess.outputStream.bufferedWriter().use {
+                it.write(
+                    RemoteCodexSettings.writeScript(
+                        baseUrl = "https://relay.example.com/v1",
+                        apiKey = "",
+                        proxyUrl = "",
+                        defaultModel = "",
+                        defaultReasoningEffort = "",
+                        preserveCurrentProvider = true,
+                    ),
+                )
+            }
+
+            assertTrue(clearProcess.waitFor(5, TimeUnit.SECONDS))
+            assertEquals(clearProcess.errorStream.bufferedReader().readText(), 0, clearProcess.exitValue())
+            val clearedConfig = config.readText().lineSequence().map(String::trim).toList()
+            assertFalse(clearedConfig.any { it.startsWith("model =") })
+            assertFalse(clearedConfig.any { it.startsWith("model_reasoning_effort =") })
+            assertTrue(clearedConfig.contains("model_provider = \"relay\""))
+        } finally {
+            home.deleteRecursively()
+        }
     }
 
     @Test

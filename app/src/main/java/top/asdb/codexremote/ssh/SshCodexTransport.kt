@@ -384,10 +384,20 @@ class SshCodexTransport {
         baseUrl: String,
         apiKey: String,
         proxyUrl: String,
+        defaultModel: String,
+        defaultReasoningEffort: String,
+        preserveCurrentProvider: Boolean,
     ) {
         executeScript(
             profile = profile,
-            script = RemoteCodexSettings.writeScript(baseUrl, apiKey, proxyUrl),
+            script = RemoteCodexSettings.writeScript(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                proxyUrl = proxyUrl,
+                defaultModel = defaultModel,
+                defaultReasoningEffort = defaultReasoningEffort,
+                preserveCurrentProvider = preserveCurrentProvider,
+            ),
             timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
             operationName = "保存 Codex 全局配置",
         )

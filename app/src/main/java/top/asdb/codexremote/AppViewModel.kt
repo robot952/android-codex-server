@@ -2407,7 +2407,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveCodexSettings(baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) {
+    fun saveCodexSettings(
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        defaultModel: String,
+        defaultReasoningEffort: String,
+        testModel: String,
+        preserveCurrentProvider: Boolean,
+    ) {
         val profileId = _state.value.selectedProfileId ?: return
         val profile = currentProfile() ?: return
         if (_state.value.codexSettingsTesting) return
@@ -2418,6 +2426,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return
             }
+        val normalizedDefaultModel = runCatching { RemoteCodexSettings.normalizeDefaultModel(defaultModel) }
+            .getOrElse { error ->
+                _state.update {
+                    it.copy(codexSettingsError = error.message ?: "默认模型格式错误")
+                }
+                return
+            }
+        val normalizedDefaultReasoningEffort = runCatching {
+            RemoteCodexSettings.normalizeDefaultReasoningEffort(defaultReasoningEffort)
+        }.getOrElse { error ->
+            _state.update {
+                it.copy(codexSettingsError = error.message ?: "默认思考强度格式错误")
+            }
+            return
+        }
         val client = activeClient()?.takeIf { it.isConnected() } ?: run {
             _state.update { it.copy(codexSettingsError = "服务器未连接，无法保存 Codex 配置") }
             return
@@ -2433,7 +2456,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             var saved = false
             try {
-                client.writeCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl)
+                client.writeCodexGlobalSettings(
+                    profile = profile,
+                    baseUrl = baseUrl,
+                    apiKey = apiKey,
+                    proxyUrl = proxyUrl,
+                    defaultModel = normalizedDefaultModel,
+                    defaultReasoningEffort = normalizedDefaultReasoningEffort,
+                    preserveCurrentProvider = preserveCurrentProvider,
+                )
                 saved = true
                 updateProfileTestModel(profileId, normalizedTestModel)
                 if (isOperationVisible(operation)) {

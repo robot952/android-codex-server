@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Security
@@ -49,6 +50,8 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -735,7 +738,15 @@ private fun setupProgressFraction(message: String): Float {
 @Composable
 private fun CodexSettingsDialog(
     state: AppUiState,
-    onSave: (baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) -> Unit,
+    onSave: (
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        defaultModel: String,
+        defaultReasoningEffort: String,
+        testModel: String,
+        preserveCurrentProvider: Boolean,
+    ) -> Unit,
     onTest: (baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -745,6 +756,11 @@ private fun CodexSettingsDialog(
     var apiKey by remember(remoteSettings) { mutableStateOf(remoteSettings?.apiKey.orEmpty()) }
     var apiKeyVisible by remember(remoteSettings) { mutableStateOf(false) }
     var proxyUrl by remember(remoteSettings) { mutableStateOf(remoteSettings?.proxyUrl.orEmpty()) }
+    var defaultModel by remember(remoteSettings) { mutableStateOf(remoteSettings?.model.orEmpty()) }
+    var defaultReasoningEffort by remember(remoteSettings) {
+        mutableStateOf(remoteSettings?.reasoningEffort.orEmpty())
+    }
+    var defaultReasoningEffortMenuVisible by remember(remoteSettings) { mutableStateOf(false) }
     var testModel by remember(remoteSettings, savedTestModel) {
         mutableStateOf(savedTestModel.ifBlank { remoteSettings?.model.orEmpty() })
     }
@@ -755,6 +771,9 @@ private fun CodexSettingsDialog(
     val testFeedback = testResult?.message ?: state.codexSettingsError?.takeIf { it.isNotBlank() }
     val busy = state.codexSettingsLoading || state.codexSettingsSaving || state.codexSettingsTesting
     val settingsReady = remoteSettings != null
+    val customProviderInUse = remoteSettings?.modelProvider?.let { it != "openai" } == true
+    val preserveCurrentProvider = customProviderInUse &&
+        baseUrl.trim().trimEnd('/') == remoteSettings?.baseUrl.orEmpty().trim().trimEnd('/')
 
     LaunchedEffect(testFeedback) {
         if (testFeedback != null) {
@@ -805,15 +824,76 @@ private fun CodexSettingsDialog(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            if (remoteSettings?.modelProvider?.let { it != "openai" } == true) {
+                            Text(
+                                "默认思考强度：${defaultReasoningEffortLabel(remoteSettings?.reasoningEffort.orEmpty())}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (customProviderInUse) {
                                 Text(
-                                    "当前使用自定义 Provider；保存模型 URL 会切换到内置 OpenAI Provider。",
+                                    if (preserveCurrentProvider) {
+                                        "当前使用自定义 Provider；仅修改默认模型和思考强度会保留该 Provider。"
+                                    } else {
+                                        "修改模型 URL 后会切换到内置 OpenAI Provider。"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error,
                                 )
                             }
                         }
                     }
+                    OutlinedTextField(
+                        value = defaultModel,
+                        onValueChange = { defaultModel = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy && settingsReady,
+                        singleLine = true,
+                        label = { Text("默认模型") },
+                        placeholder = { Text("gpt-5.6-sol") },
+                        supportingText = { Text("留空使用 Codex 默认模型；保存后对新会话生效") },
+                    )
+                    Text(
+                        "默认思考强度",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Box(Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { defaultReasoningEffortMenuVisible = true },
+                            enabled = !busy && settingsReady,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    defaultReasoningEffortLabel(defaultReasoningEffort),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Icon(Icons.Default.ExpandMore, contentDescription = null)
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = defaultReasoningEffortMenuVisible,
+                            onDismissRequest = { defaultReasoningEffortMenuVisible = false },
+                        ) {
+                            DEFAULT_REASONING_EFFORT_OPTIONS.forEach { effort ->
+                                DropdownMenuItem(
+                                    text = { Text(defaultReasoningEffortLabel(effort)) },
+                                    onClick = {
+                                        defaultReasoningEffort = effort
+                                        defaultReasoningEffortMenuVisible = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "留空使用 Codex 默认思考强度。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     OutlinedTextField(
                         value = baseUrl,
                         onValueChange = {
@@ -983,7 +1063,10 @@ private fun CodexSettingsDialog(
                             baseUrl,
                             apiKey.takeUnless { it == remoteSettings?.apiKey }.orEmpty(),
                             proxyUrl,
+                            defaultModel,
+                            defaultReasoningEffort,
                             testModel,
+                            preserveCurrentProvider,
                         )
                     },
                 ) { Text("确认保存") }
@@ -993,6 +1076,18 @@ private fun CodexSettingsDialog(
             },
         )
     }
+}
+
+private val DEFAULT_REASONING_EFFORT_OPTIONS = listOf("", "minimal", "low", "medium", "high", "xhigh")
+
+private fun defaultReasoningEffortLabel(effort: String): String = when (effort) {
+    "" -> "默认（使用 Codex 默认值）"
+    "minimal" -> "极低"
+    "low" -> "低"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "极高"
+    else -> effort
 }
 
 @Composable
