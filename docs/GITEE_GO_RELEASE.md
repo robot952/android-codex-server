@@ -9,14 +9,14 @@ Create a Gitee personal access token with repository project access. In Gitee Go
 pipeline's **Variable Settings** and add the following protected and masked variable:
 
 ```text
-GITEE_RELEASE_TOKEN
+CODEX_RELEASE_TOKEN
 ```
 
 Put only the token value in this variable. Never add it to the workflow YAML, source code, logs,
 or Git commits.
 
 The defaults publish to `YanGanYuan/android-codex-server`. A fork can override the target with
-optional protected variables `GITEE_RELEASE_OWNER` and `GITEE_RELEASE_REPOSITORY`.
+optional protected variables `CODEX_RELEASE_OWNER` and `CODEX_RELEASE_REPOSITORY`.
 
 ## Trigger Rule
 

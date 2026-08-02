@@ -5,15 +5,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-readonly GITEE_API_BASE="${GITEE_API_BASE:-https://gitee.com/api/v5}"
-readonly GITEE_RELEASE_OWNER="${GITEE_RELEASE_OWNER:-YanGanYuan}"
-readonly GITEE_RELEASE_REPOSITORY="${GITEE_RELEASE_REPOSITORY:-android-codex-server}"
+readonly GITEE_API_BASE="${CODEX_GITEE_API_BASE:-https://gitee.com/api/v5}"
+readonly GITEE_RELEASE_OWNER="${CODEX_RELEASE_OWNER:-YanGanYuan}"
+readonly GITEE_RELEASE_REPOSITORY="${CODEX_RELEASE_REPOSITORY:-android-codex-server}"
 readonly EXPECTED_CERTIFICATE_SHA256="72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a"
 readonly APK_PATH="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
 
-release_token="${GITEE_RELEASE_TOKEN:-}"
+release_token="${CODEX_RELEASE_TOKEN:-}"
 if [[ -z "$release_token" ]]; then
-    echo "GITEE_RELEASE_TOKEN must be configured as a protected Gitee Go variable" >&2
+    echo "CODEX_RELEASE_TOKEN must be configured as a protected Gitee Go variable" >&2
     exit 2
 fi
 
