@@ -202,6 +202,15 @@ data class TurnTiming(
     val stopped: Boolean = false,
 )
 
+/** Accept app-server Unix seconds and the milliseconds already used by local UI state. */
+internal fun normalizeEpochMillis(timestamp: Long): Long? = when {
+    timestamp <= 0L -> null
+    timestamp < EPOCH_MILLIS_THRESHOLD -> timestamp * 1_000L
+    else -> timestamp
+}
+
+private const val EPOCH_MILLIS_THRESHOLD = 100_000_000_000L
+
 enum class ApprovalKind { Command, FileChange, Permission, UserInput }
 
 data class InputOption(

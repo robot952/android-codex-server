@@ -167,6 +167,7 @@ import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
+import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.ui.components.MarkdownText
 import top.asdb.codexremote.ui.theme.CodexAmber
 import top.asdb.codexremote.ui.theme.CodexBorder
@@ -2328,11 +2329,7 @@ private fun goalStatusLabel(status: ThreadGoalStatus): String = when (status) {
 }
 
 private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
-    val updatedAtMillis = when {
-        goal.updatedAt <= 0L -> nowMillis
-        goal.updatedAt < 100_000_000_000L -> goal.updatedAt * 1_000L
-        else -> goal.updatedAt
-    }
+    val updatedAtMillis = normalizeEpochMillis(goal.updatedAt) ?: nowMillis
     val secondsSinceUpdate = if (goal.status == ThreadGoalStatus.Active) {
         ((nowMillis - updatedAtMillis).coerceAtLeast(0L) / 1_000L)
     } else {
@@ -2347,7 +2344,8 @@ private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
 }
 
 private fun formatTurnElapsed(startedAtMillis: Long, endedAtMillis: Long): String {
-    val seconds = ((endedAtMillis - startedAtMillis).coerceAtLeast(0L) / 1_000L)
+    val normalizedStart = normalizeEpochMillis(startedAtMillis) ?: endedAtMillis
+    val seconds = ((endedAtMillis - normalizedStart).coerceAtLeast(0L) / 1_000L)
     val hours = seconds / 3_600L
     val minutes = (seconds % 3_600L) / 60L
     val remainderSeconds = seconds % 60L

@@ -34,6 +34,7 @@ import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TokenUsage
+import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.ssh.SshCodexTransport
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshTransportEvent
@@ -928,8 +929,7 @@ internal fun parseResumedThreadPayload(result: JsonObject, responseSequence: Lon
     val reachedInheritedHistory = visibleTurns.size != chronologicalTurns.size
     val activeTurnStartedAtMillis = visibleTurns.asReversed()
         .firstOrNull { it.string("status") == "inProgress" }
-        ?.long("startedAt")
-        ?.takeIf { it > 0L }
+        ?.let { normalizeEpochMillis(it.long("startedAt")) }
     val hydratedThread = JsonObject(thread + ("turns" to JsonArray(visibleTurns)))
     val snapshot = CodexPayloadParser.parseThreadPayload(hydratedThread)
     return ResumedThread(

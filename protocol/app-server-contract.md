@@ -24,3 +24,5 @@ experimental `request_user_input` request. Codex 0.146.0 keeps the corresponding
 only when that workflow is wanted. Unknown notifications are ignored, while unsupported
 server-initiated requests receive a JSON-RPC `-32601` response so a turn cannot wait forever. A
 different CLI version is reported in the connection status and must be validated before release.
+Turn timestamps such as `startedAt` are Unix seconds and must be normalized to milliseconds before
+Android uses them for elapsed-time calculations.

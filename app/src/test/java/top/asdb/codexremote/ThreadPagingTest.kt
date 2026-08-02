@@ -13,6 +13,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.TurnTiming
+import top.asdb.codexremote.data.normalizeEpochMillis
 
 class ThreadPagingTest {
     private val json = Json { ignoreUnknownKeys = true }
@@ -101,14 +102,14 @@ class ThreadPagingTest {
     }
 
     @Test
-    fun resumedActiveTurnRetainsTheServerStartTimeForTimingRecovery() {
+    fun resumedActiveTurnNormalizesTheServerStartTimeForTimingRecovery() {
         val response = json.parseToJsonElement(
             """
             {
               "thread": {"id":"thread-1","status":"active"},
               "initialTurnsPage": {
                 "data": [
-                  {"id":"turn-1","status":"inProgress","startedAt":1722475800123,"items":[]}
+                  {"id":"turn-1","status":"inProgress","startedAt":1722475800,"items":[]}
                 ]
               }
             }
@@ -118,7 +119,14 @@ class ThreadPagingTest {
         val parsed = parseResumedThreadPayload(response, responseSequence = 1)
 
         assertEquals("turn-1", parsed.thread.activeTurnId)
-        assertEquals(1722475800123L, parsed.activeTurnStartedAtMillis)
+        assertEquals(1722475800000L, parsed.activeTurnStartedAtMillis)
+    }
+
+    @Test
+    fun timestampNormalizationAcceptsSecondsAndMilliseconds() {
+        assertEquals(1722475800000L, normalizeEpochMillis(1722475800L))
+        assertEquals(1722475800000L, normalizeEpochMillis(1722475800000L))
+        assertEquals(null, normalizeEpochMillis(0L))
     }
 
     @Test
@@ -126,13 +134,13 @@ class ThreadPagingTest {
         val current = TurnTiming(
             threadId = "thread-1",
             turnId = "turn-1",
-            startedAtMillis = 1_000L,
+            startedAtMillis = 1722000000000L,
         )
 
         val resumed = recoverRunningTurnTiming(
             threadId = "thread-1",
             activeTurnId = "turn-1",
-            activeTurnStartedAtMillis = 500L,
+            activeTurnStartedAtMillis = 1722475800L,
             current = current,
         )
         val retained = recoverRunningTurnTiming(
@@ -153,11 +161,18 @@ class ThreadPagingTest {
             activeTurnStartedAtMillis = null,
             current = current.copy(completedAtMillis = 2_000L),
         )
+        val priorBuggedValue = recoverRunningTurnTiming(
+            threadId = "thread-1",
+            activeTurnId = "turn-1",
+            activeTurnStartedAtMillis = null,
+            current = current.copy(startedAtMillis = 1722000000L),
+        )
 
-        assertEquals(500L, resumed?.startedAtMillis)
-        assertEquals(1_000L, retained?.startedAtMillis)
+        assertEquals(1722475800000L, resumed?.startedAtMillis)
+        assertEquals(1722000000000L, retained?.startedAtMillis)
         assertEquals(null, otherThread)
         assertEquals(null, completed)
+        assertEquals(1722000000000L, priorBuggedValue?.startedAtMillis)
     }
 
     @Test

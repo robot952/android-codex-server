@@ -51,6 +51,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.TurnTiming
 import top.asdb.codexremote.data.hasKnownContextWindow
+import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteCodexSettings
@@ -3463,8 +3464,8 @@ internal fun recoverRunningTurnTiming(
 ): TurnTiming? {
     if (threadId.isBlank()) return null
     val currentTiming = current?.takeIf { it.threadId == threadId && it.completedAtMillis == null }
-    val startedAtMillis = activeTurnStartedAtMillis?.takeIf { it > 0L }
-        ?: currentTiming?.startedAtMillis
+    val startedAtMillis = normalizeEpochMillis(activeTurnStartedAtMillis ?: 0L)
+        ?: normalizeEpochMillis(currentTiming?.startedAtMillis ?: 0L)
         ?: return null
     return TurnTiming(
         threadId = threadId,
