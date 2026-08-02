@@ -222,6 +222,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                     onRollback = viewModel::rollbackActiveThread,
                     onRename = viewModel::renameActiveThread,
                     onUpload = viewModel::uploadAttachment,
+                    onAddDebugLog = viewModel::addDebugLogAttachment,
                     onRemoveAttachment = viewModel::removeAttachment,
                     onComposerChange = viewModel::updateComposerDraft,
                     onSelectModel = viewModel::selectModel,

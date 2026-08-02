@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.50（versionCode 72）
+- Android 应用版本：1.7.51（versionCode 73）
 - 固定 Codex CLI：0.146.0
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -140,7 +140,8 @@ AnimatedContent 做前进/返回的滑动淡入动画，并按页面绑定 AppVi
 - 支持密码和私钥文件导入。私钥读取放在 Dispatchers.IO，并限制文件大小。
 - 首次遇到未知 SSH 主机时显示 SHA-256 指纹确认。
 - 缺失或版本不兼容的 Codex 由用户明确确认后安装，并显示阶段和百分比。
-- 顶部 Codex 图标连续点击 10 次启用 Debug；Debug 页面可分享脱敏日志。
+- 顶部 Codex 图标连续点击 10 次启用 Debug；Debug 页面可分享脱敏日志。开启后，会话右上角菜单
+  可将最新日志作为受 512 KB 限制的文本附件加入输入区，超出时只附带日志末尾并标记截断。
 
 ServerScreen 内部的未保存表单草稿只服务于页面切换。真正持久化仍由 AppViewModel 和
 ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建时从加密存储恢复。

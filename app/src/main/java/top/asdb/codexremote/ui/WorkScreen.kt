@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
@@ -192,6 +193,7 @@ fun WorkScreen(
     onArchive: () -> Unit,
     onRename: (String) -> Unit,
     onUpload: (Context, Uri) -> Unit,
+    onAddDebugLog: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onComposerChange: (String) -> Unit,
     onSelectModel: (String, String?) -> Unit,
@@ -476,6 +478,18 @@ fun WorkScreen(
                                 enabled = !state.loading && !state.submitting,
                                 onClick = { showMenu = false; goalEditorVisible = true },
                             )
+                            if (state.debugModeEnabled) {
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("添加 Debug 日志") },
+                                    leadingIcon = { Icon(Icons.Default.BugReport, contentDescription = null) },
+                                    enabled = !state.loading && !state.submitting,
+                                    onClick = {
+                                        showMenu = false
+                                        onAddDebugLog()
+                                    },
+                                )
+                            }
                         }
                     }
                 },

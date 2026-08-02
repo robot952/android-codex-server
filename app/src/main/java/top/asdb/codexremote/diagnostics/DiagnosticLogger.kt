@@ -76,10 +76,21 @@ object DiagnosticLogger {
         val files = listOfNotNull(previousLog(), currentLog()).filter(File::isFile)
         val bytes = files.sumOf(File::length)
         val updated = files.maxOfOrNull(File::lastModified)?.takeIf { it > 0L }
-        val preview = files.joinToString(separator = "") { file ->
-            runCatching { file.readText(Charsets.UTF_8) }.getOrDefault("")
-        }.takeLast(maxPreviewChars)
+        val preview = readLogs(files).takeLast(maxPreviewChars)
         DiagnosticLogSnapshot(enabled, bytes, updated, preview)
+    }
+
+    /** Returns the newest diagnostic records without ever exceeding a text-attachment byte limit. */
+    fun attachmentText(maxBytes: Int): String {
+        require(maxBytes > 0) { "maxBytes must be positive" }
+        return synchronized(lock) {
+            val logs = readLogs(listOfNotNull(previousLog(), currentLog()).filter(File::isFile))
+            if (logs.toByteArray(Charsets.UTF_8).size <= maxBytes) return@synchronized logs
+            val notice = "[诊断日志过大，仅附带最新记录]\n"
+            val availableBytes = (maxBytes - notice.toByteArray(Charsets.UTF_8).size).coerceAtLeast(0)
+            if (availableBytes == 0) return@synchronized takeLastUtf8Bytes(notice, maxBytes)
+            notice + takeLastUtf8Bytes(logs, availableBytes)
+        }
     }
 
     fun createShareIntent(context: Context): Intent {
@@ -114,6 +125,10 @@ object DiagnosticLogger {
             }
         }
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", output)
+    }
+
+    private fun readLogs(files: List<File>): String = files.joinToString(separator = "") { file ->
+        runCatching { file.readText(Charsets.UTF_8) }.getOrDefault("")
     }
 
     private fun append(level: String, tag: String, message: String, throwable: Throwable?) {
@@ -186,6 +201,26 @@ object DiagnosticLogger {
     private const val MAX_STACK_CHARS = 24_000
     private val FILE_TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
         .withZone(ZoneOffset.UTC)
+}
+
+internal fun takeLastUtf8Bytes(value: String, maxBytes: Int): String {
+    if (maxBytes <= 0 || value.isEmpty()) return ""
+    if (value.toByteArray(Charsets.UTF_8).size <= maxBytes) return value
+    var start = value.length
+    var usedBytes = 0
+    while (start > 0) {
+        val codePoint = value.codePointBefore(start)
+        val byteCount = when {
+            codePoint <= 0x7f -> 1
+            codePoint <= 0x7ff -> 2
+            codePoint <= 0xffff -> 3
+            else -> 4
+        }
+        if (usedBytes + byteCount > maxBytes) break
+        usedBytes += byteCount
+        start -= Character.charCount(codePoint)
+    }
+    return value.substring(start)
 }
 
 internal fun sanitizeDiagnosticText(value: String): String {

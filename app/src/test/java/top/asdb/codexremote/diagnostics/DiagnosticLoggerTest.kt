@@ -1,10 +1,19 @@
 package top.asdb.codexremote.diagnostics
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiagnosticLoggerTest {
+    @Test
+    fun `utf8 log tail keeps complete characters within byte budget`() {
+        val tail = takeLastUtf8Bytes("prefix-你好😀", 7)
+
+        assertEquals("好😀", tail)
+        assertTrue(tail.toByteArray(Charsets.UTF_8).size <= 7)
+    }
+
     @Test
     fun `sanitizer removes common credentials and private keys`() {
         val input = """
