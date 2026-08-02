@@ -555,6 +555,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     remoteSetup = null,
                     setupProgress = "",
                     setupProgressPercent = 0,
+                    setupProgressDetail = "",
+                    setupDownloadPercent = null,
                 )
             }
         }
@@ -613,13 +615,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         persistProfiles()
         val ticket = operations.begin(profileId, "setup")
-        updateSetupState(profileId) { it.copy(inProgress = true, progress = "准备安装", percent = 0) }
+        updateSetupState(profileId) {
+            it.copy(
+                inProgress = true,
+                progress = "准备安装",
+                percent = 0,
+                detail = "",
+                downloadPercent = null,
+            )
+        }
         _state.update {
             it.copy(
                 connection = ConnectionState(ConnectionPhase.Installing, "正在安装远程 Codex"),
                 setupInProgress = true,
                 setupProgress = "准备安装",
                 setupProgressPercent = 0,
+                setupProgressDetail = "",
+                setupDownloadPercent = null,
                 loading = true,
                 error = null,
             )
@@ -630,13 +642,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 connections.installRemoteDetailed(profile) { progress ->
                     if (operations.isCurrent(ticket)) {
                         updateSetupState(profileId) {
-                            it.copy(inProgress = true, progress = progress.message, percent = progress.percent)
+                            it.copy(
+                                inProgress = true,
+                                progress = progress.message,
+                                percent = progress.percent,
+                                detail = progress.detail,
+                                downloadPercent = progress.downloadPercent,
+                            )
                         }
                         if (isActiveProfile(profileId)) {
                             _state.update {
                                 it.copy(
                                     setupProgress = progress.message,
                                     setupProgressPercent = progress.percent,
+                                    setupProgressDetail = progress.detail,
+                                    setupDownloadPercent = progress.downloadPercent,
                                 )
                             }
                         }
@@ -656,6 +676,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             setupInProgress = false,
                             setupProgress = "安装完成",
                             setupProgressPercent = 100,
+                            setupProgressDetail = "",
+                            setupDownloadPercent = null,
                             loading = false,
                         )
                     }
@@ -703,6 +725,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 remoteSetup = null,
                 setupProgress = "",
                 setupProgressPercent = 0,
+                setupProgressDetail = "",
+                setupDownloadPercent = null,
                 loading = false,
                 connection = ConnectionState(ConnectionPhase.Disconnected, "未连接"),
             )
@@ -2525,6 +2549,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             setupInProgress = setup?.inProgress == true,
             setupProgress = setup?.progress.orEmpty(),
             setupProgressPercent = setup?.percent ?: 0,
+            setupProgressDetail = setup?.detail.orEmpty(),
+            setupDownloadPercent = setup?.downloadPercent,
             approvalMode = profile.approvalMode,
             sandbox = profile.approvalMode.sandbox,
             approvalQueue = approvals,
@@ -2558,6 +2584,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         setupInProgress = false,
         setupProgress = "",
         setupProgressPercent = 0,
+        setupProgressDetail = "",
+        setupDownloadPercent = null,
         approvalMode = ApprovalMode.RequestApproval,
         sandbox = ApprovalMode.RequestApproval.sandbox,
     )
@@ -2637,6 +2665,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     setupInProgress = false,
                     setupProgress = "",
                     setupProgressPercent = 0,
+                    setupProgressDetail = "",
+                    setupDownloadPercent = null,
                 )
             }
         }
@@ -2916,6 +2946,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 setupInProgress = false,
                 setupProgress = "",
                 setupProgressPercent = 0,
+                setupProgressDetail = "",
+                setupDownloadPercent = null,
             )
         }
     }
@@ -2954,6 +2986,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     setupInProgress = false,
                     setupProgress = "",
                     setupProgressPercent = 0,
+                    setupProgressDetail = "",
+                    setupDownloadPercent = null,
                     loading = false,
                 )
             }
@@ -3068,6 +3102,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 setupInProgress = false,
                 setupProgress = "",
                 setupProgressPercent = 100,
+                setupProgressDetail = "",
+                setupDownloadPercent = null,
                 diagnostic = if (!pinned) {
                     "服务器 CLI 与客户端固定版本 ${BuildConfig.PINNED_CODEX_VERSION} 不一致"
                 } else it.diagnostic,
@@ -3361,6 +3397,8 @@ private data class SetupUiState(
     val inProgress: Boolean = false,
     val progress: String = "",
     val percent: Int = 0,
+    val detail: String = "",
+    val downloadPercent: Int? = null,
 )
 
 private fun TimelineEntry.sessionIdentity(): String = "$turnId\u0000$kind\u0000$id"

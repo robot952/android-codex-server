@@ -73,6 +73,19 @@ class SshCodexTransportTest {
         assertEquals(RemoteInstallProgress(65, "下载并安装 Codex CLI"), parseInstallProgress("65|下载并安装 Codex CLI"))
         assertEquals(RemoteInstallProgress(100, "完成"), parseInstallProgress("150|完成"))
         assertEquals(RemoteInstallProgress(0, "旧格式进度"), parseInstallProgress("旧格式进度"))
+        assertEquals(
+            RemoteInstallProgress(
+                percent = 72,
+                message = "下载并安装 Codex CLI",
+                detail = "已处理 24 / 36 个组件 · 18.4 MB",
+                downloadPercent = 67,
+            ),
+            parseInstallProgress("72|67|下载并安装 Codex CLI|已处理 24 / 36 个组件 · 18.4 MB"),
+        )
+        assertEquals(
+            RemoteInstallProgress(72, "下载 Node.js", "已下载 2.4 MB", null),
+            parseInstallProgress("72||下载 Node.js|已下载 2.4 MB"),
+        )
     }
 
     @Test

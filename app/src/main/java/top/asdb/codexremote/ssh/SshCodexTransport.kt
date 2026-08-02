@@ -59,6 +59,8 @@ internal data class SshOversizedLineEvent(
 data class RemoteInstallProgress(
     val percent: Int,
     val message: String,
+    val detail: String = "",
+    val downloadPercent: Int? = null,
 )
 
 class SshCodexTransport {
@@ -694,7 +696,7 @@ class SshCodexTransport {
     companion object {
         private const val PROBE_TIMEOUT_MS = 30_000L
         private const val METRICS_TIMEOUT_MS = 15_000L
-        private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
+        private const val INSTALL_TIMEOUT_MS = 30 * 60_000L
         private const val UNINSTALL_TIMEOUT_MS = 60_000L
         internal const val INSTALL_SHELL_COMMAND = "CODEX_REMOTE_SSH_PID=\$PPID setsid --wait sh -s"
         private const val PROGRESS_PREFIX = "::progress::"
@@ -876,9 +878,15 @@ internal fun parseServerMetrics(
 }
 
 internal fun parseInstallProgress(value: String): RemoteInstallProgress {
-    val parts = value.split('|', limit = 2)
+    val parts = value.split('|', limit = 4)
     val percent = parts.firstOrNull()?.toIntOrNull()?.coerceIn(0, 100) ?: 0
-    val message = parts.getOrNull(1)?.trim().orEmpty().ifBlank { value.trim() }
+    if (parts.size == 4) {
+        val downloadPercent = parts[1].trim().toIntOrNull()?.coerceIn(0, 100)
+        val message = parts[2].trim().ifBlank { value.trim() }
+        val detail = parts[3].trim()
+        return RemoteInstallProgress(percent, message, detail, downloadPercent)
+    }
+    val message = value.substringAfter('|', missingDelimiterValue = "").trim().ifBlank { value.trim() }
     return RemoteInstallProgress(percent, message)
 }
 

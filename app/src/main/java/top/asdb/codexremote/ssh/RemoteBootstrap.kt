@@ -123,7 +123,79 @@ object RemoteBootstrap {
         val normalizedProxy = validateProxyUrl(proxyUrl)
         return """
         set -eu
-        progress() { printf '::progress::%s|%s\n' "${'$'}1" "${'$'}2"; }
+        progress() { printf '::progress::%s|%s|%s|%s\n' "${'$'}1" "${'$'}2" "${'$'}3" "${'$'}4"; }
+        format_bytes() {
+          BYTES="${'$'}1"
+          if [ "${'$'}BYTES" -ge 1048576 ]; then
+            awk -v bytes="${'$'}BYTES" 'BEGIN { printf "%.1f MB", bytes / 1048576 }'
+          elif [ "${'$'}BYTES" -ge 1024 ]; then
+            awk -v bytes="${'$'}BYTES" 'BEGIN { printf "%.1f KB", bytes / 1024 }'
+          else
+            printf '%s B' "${'$'}BYTES"
+          fi
+        }
+        file_size() {
+          if [ -f "${'$'}1" ]; then
+            wc -c < "${'$'}1" | tr -d '[:space:]'
+          else
+            printf 0
+          fi
+        }
+        download_size() {
+          DOWNLOAD_URL="${'$'}1"
+          if command -v curl >/dev/null 2>&1; then
+            curl --fail --location --silent --show-error --head --connect-timeout 15 "${'$'}DOWNLOAD_URL" 2>/dev/null |
+              awk 'tolower(${'$'}1) == "content-length:" { size=${'$'}2 } END { gsub(/[^0-9]/, "", size); if (size != "") print size }'
+          elif command -v wget >/dev/null 2>&1; then
+            wget --spider --server-response --timeout=30 "${'$'}DOWNLOAD_URL" 2>&1 |
+              awk 'tolower(${'$'}1) == "content-length:" { size=${'$'}2 } END { gsub(/[^0-9]/, "", size); if (size != "") print size }'
+          fi
+        }
+        download_file() {
+          DOWNLOAD_URL="${'$'}1"
+          DOWNLOAD_DEST="${'$'}2"
+          DOWNLOAD_FROM="${'$'}3"
+          DOWNLOAD_TO="${'$'}4"
+          DOWNLOAD_LABEL="${'$'}5"
+          DOWNLOAD_TOTAL="${'$'}(download_size "${'$'}DOWNLOAD_URL")"
+          case "${'$'}DOWNLOAD_TOTAL" in
+            ''|*[!0-9]*) DOWNLOAD_TOTAL=0 ;;
+          esac
+          progress "${'$'}DOWNLOAD_FROM" 0 "${'$'}DOWNLOAD_LABEL" '正在连接下载服务器'
+          if command -v curl >/dev/null 2>&1; then
+            curl --fail --location --retry 3 --connect-timeout 15 --silent --show-error \
+              --output "${'$'}DOWNLOAD_DEST" "${'$'}DOWNLOAD_URL" &
+          else
+            wget --tries=3 --timeout=30 --no-verbose --output-document="${'$'}DOWNLOAD_DEST" "${'$'}DOWNLOAD_URL" &
+          fi
+          DOWNLOAD_PID="${'$'}!"
+          DOWNLOAD_LAST=-1
+          while kill -0 "${'$'}DOWNLOAD_PID" 2>/dev/null; do
+            DOWNLOAD_BYTES="${'$'}(file_size "${'$'}DOWNLOAD_DEST")"
+            if [ "${'$'}DOWNLOAD_TOTAL" -gt 0 ]; then
+              DOWNLOAD_PERCENT="${'$'}((DOWNLOAD_BYTES * 100 / DOWNLOAD_TOTAL))"
+              if [ "${'$'}DOWNLOAD_PERCENT" -gt 99 ]; then DOWNLOAD_PERCENT=99; fi
+              DOWNLOAD_OVERALL="${'$'}((DOWNLOAD_FROM + (DOWNLOAD_TO - DOWNLOAD_FROM) * DOWNLOAD_PERCENT / 100))"
+              if [ "${'$'}DOWNLOAD_BYTES" != "${'$'}DOWNLOAD_LAST" ]; then
+                progress "${'$'}DOWNLOAD_OVERALL" "${'$'}DOWNLOAD_PERCENT" "${'$'}DOWNLOAD_LABEL" \
+                  "${'$'}(format_bytes "${'$'}DOWNLOAD_BYTES") / ${'$'}(format_bytes "${'$'}DOWNLOAD_TOTAL")"
+                DOWNLOAD_LAST="${'$'}DOWNLOAD_BYTES"
+              fi
+            elif [ "${'$'}DOWNLOAD_BYTES" != "${'$'}DOWNLOAD_LAST" ]; then
+              progress "${'$'}DOWNLOAD_FROM" '' "${'$'}DOWNLOAD_LABEL" \
+                "已下载 ${'$'}(format_bytes "${'$'}DOWNLOAD_BYTES")（服务器未提供总大小）"
+              DOWNLOAD_LAST="${'$'}DOWNLOAD_BYTES"
+            fi
+            sleep 1
+          done
+          if wait "${'$'}DOWNLOAD_PID"; then
+            progress "${'$'}DOWNLOAD_TO" 100 "${'$'}DOWNLOAD_LABEL" \
+              "${'$'}(format_bytes "${'$'}(file_size "${'$'}DOWNLOAD_DEST")") 下载完成"
+          else
+            DOWNLOAD_STATUS="${'$'}?"
+            exit "${'$'}DOWNLOAD_STATUS"
+          fi
+        }
         ROOT="${'$'}HOME/.local/share/codex-remote"
         BIN_DIR="${'$'}HOME/.local/bin"
         LOCK_FILE="${'$'}ROOT/.install.lock"
@@ -157,7 +229,7 @@ object RemoteBootstrap {
           export HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
           export npm_config_proxy npm_config_https_proxy
         fi
-        progress 5 '准备远程安装环境'
+        progress 5 '' '准备远程安装环境' '检查空间、下载器和安装锁'
         mkdir -p "${'$'}ROOT" "${'$'}BIN_DIR" "${'$'}ROOT/runtime" "${'$'}ROOT/releases"
         ssh_parent_alive() {
           kill -0 "${'$'}SSH_PARENT" 2>/dev/null || return 1
@@ -210,18 +282,11 @@ object RemoteBootstrap {
           NODE_OK=1
         fi
         if [ "${'$'}NODE_OK" != 1 ]; then
-          progress 15 '下载独立 Node.js 运行时'
           ARCHIVE="${'$'}WORK/${'$'}NODE_NAME.tar.gz"
-          if command -v curl >/dev/null 2>&1; then
-            curl --fail --location --retry 3 --connect-timeout 15 --output "${'$'}ARCHIVE" "${'$'}NODE_URL"
-          elif command -v wget >/dev/null 2>&1; then
-            wget --tries=3 --timeout=30 --output-document="${'$'}ARCHIVE" "${'$'}NODE_URL"
-          else
-            printf '服务器缺少 curl 或 wget\n' >&2
-            exit 69
-          fi
-          progress 40 '校验 Node.js 下载文件'
+          download_file "${'$'}NODE_URL" "${'$'}ARCHIVE" 15 38 '下载独立 Node.js 运行时'
+          progress 40 '' '校验 Node.js 下载文件' '校验 SHA-256'
           printf '%s  %s\n' "${'$'}NODE_SHA" "${'$'}ARCHIVE" | sha256sum -c -
+          progress 46 '' '解压 Node.js 运行时' '正在准备独立运行环境'
           mkdir -p "${'$'}WORK/node"
           tar -xzf "${'$'}ARCHIVE" -C "${'$'}WORK/node" --strip-components=1
           if [ "${'$'}("${'$'}WORK/node/bin/node" --version 2>/dev/null || true)" != "v$nodeVersion" ] || \
@@ -236,18 +301,71 @@ object RemoteBootstrap {
           NODE_DIR="${'$'}ROOT/runtime/${'$'}NODE_SLOT"
           mv "${'$'}WORK/node" "${'$'}NODE_DIR"
           NEW_NODE_DIR="${'$'}NODE_DIR"
+          progress 52 '' 'Node.js 运行时已就绪' '独立运行环境准备完成'
+        else
+          progress 52 '' '复用现有 Node.js 运行时' '已检测到匹配的独立运行时'
         fi
-        progress 55 '准备 Codex CLI 安装目录'
+        progress 55 '' '准备 Codex CLI 安装目录' '创建隔离发布目录'
         RELEASE_SLOT="$codexVersion-${'$'}${'$'}"
         while [ -e "${'$'}ROOT/releases/${'$'}RELEASE_SLOT" ]; do
           RELEASE_SLOT="${'$'}RELEASE_SLOT-next"
         done
         TEMP_RELEASE="${'$'}ROOT/releases/${'$'}RELEASE_SLOT"
         mkdir "${'$'}TEMP_RELEASE"
-        progress 65 '下载并安装 Codex CLI $codexVersion'
-        PATH="${'$'}NODE_DIR/bin:${'$'}PATH" "${'$'}NODE_DIR/bin/npm" install --global --prefix "${'$'}TEMP_RELEASE" \
-          "@openai/codex@$codexVersion" --omit=dev --no-audit --no-fund --loglevel=error
-        CLI_JS="${'$'}TEMP_RELEASE/lib/node_modules/@openai/codex/bin/codex.js"
+        cat > "${'$'}TEMP_RELEASE/package.json" <<EOF
+        {"private":true,"dependencies":{"@openai/codex":"$codexVersion"}}
+        EOF
+        progress 60 '' '分析 Codex CLI 下载清单' '正在锁定版本和依赖关系'
+        (
+          cd "${'$'}TEMP_RELEASE"
+          PATH="${'$'}NODE_DIR/bin:${'$'}PATH" "${'$'}NODE_DIR/bin/npm" install --package-lock-only \
+            --ignore-scripts --omit=dev --no-audit --no-fund --loglevel=error
+        )
+        PACKAGE_TOTAL="${'$'}(
+          "${'$'}NODE_DIR/bin/node" -e 'const lock = require(process.argv[1]); const packages = lock.packages || {}; console.log(Object.keys(packages).filter((path) => path.startsWith("node_modules/")).length)' \
+            "${'$'}TEMP_RELEASE/package-lock.json"
+        )"
+        case "${'$'}PACKAGE_TOTAL" in
+          ''|*[!0-9]*) PACKAGE_TOTAL=1 ;;
+        esac
+        progress 65 0 '下载并安装 Codex CLI $codexVersion' "共 ${'$'}PACKAGE_TOTAL 个组件"
+        NPM_LOG="${'$'}WORK/npm-install.log"
+        (
+          cd "${'$'}TEMP_RELEASE"
+          PATH="${'$'}NODE_DIR/bin:${'$'}PATH" "${'$'}NODE_DIR/bin/npm" ci \
+            --omit=dev --no-audit --no-fund --loglevel=error
+        ) > "${'$'}NPM_LOG" 2>&1 &
+        NPM_PID="${'$'}!"
+        NPM_LAST=
+        while kill -0 "${'$'}NPM_PID" 2>/dev/null; do
+          NPM_COMPLETE="${'$'}(find "${'$'}TEMP_RELEASE/node_modules" -type f -name package.json 2>/dev/null | wc -l | tr -d '[:space:]')"
+          case "${'$'}NPM_COMPLETE" in
+            ''|*[!0-9]*) NPM_COMPLETE=0 ;;
+          esac
+          if [ "${'$'}NPM_COMPLETE" -gt "${'$'}PACKAGE_TOTAL" ]; then PACKAGE_TOTAL="${'$'}NPM_COMPLETE"; fi
+          NPM_PERCENT="${'$'}((NPM_COMPLETE * 100 / PACKAGE_TOTAL))"
+          if [ "${'$'}NPM_PERCENT" -gt 99 ]; then NPM_PERCENT=99; fi
+          NPM_OVERALL="${'$'}((65 + NPM_PERCENT * 23 / 100))"
+          NPM_SIZE_KB="${'$'}(du -sk "${'$'}TEMP_RELEASE/node_modules" 2>/dev/null | awk 'NR == 1 { print ${'$'}1 }')"
+          case "${'$'}NPM_SIZE_KB" in
+            ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
+          esac
+          NPM_DETAIL="已处理 ${'$'}NPM_COMPLETE / ${'$'}PACKAGE_TOTAL 个组件 · ${'$'}(format_bytes "${'$'}((NPM_SIZE_KB * 1024))")"
+          if [ "${'$'}NPM_DETAIL" != "${'$'}NPM_LAST" ]; then
+            progress "${'$'}NPM_OVERALL" "${'$'}NPM_PERCENT" "下载并安装 Codex CLI $codexVersion" "${'$'}NPM_DETAIL"
+            NPM_LAST="${'$'}NPM_DETAIL"
+          fi
+          sleep 1
+        done
+        if wait "${'$'}NPM_PID"; then
+          progress 88 100 '下载并安装 Codex CLI $codexVersion' "已完成 ${'$'}PACKAGE_TOTAL 个组件"
+        else
+          NPM_STATUS="${'$'}?"
+          cat "${'$'}NPM_LOG" >&2 || true
+          exit "${'$'}NPM_STATUS"
+        fi
+        progress 90 '' '验证 Codex app-server' '检查命令行版本和 app-server'
+        CLI_JS="${'$'}TEMP_RELEASE/node_modules/@openai/codex/bin/codex.js"
         ACTUAL="${'$'}("${'$'}NODE_DIR/bin/node" "${'$'}CLI_JS" --version)"
         if [ "${'$'}ACTUAL" != "codex-cli $codexVersion" ]; then
           printf 'Codex 版本校验失败: %s\n' "${'$'}ACTUAL" >&2
@@ -267,15 +385,14 @@ object RemoteBootstrap {
           ! grep -Fq '"supports_reasoning_summaries"' "\${'$'}MODEL_CACHE"; then
           mv "\${'$'}MODEL_CACHE" "\${'$'}MODEL_CACHE.incompatible.\${'$'}(date +%s)" 2>/dev/null || true
         fi
-        exec "\${'$'}{HOME}/.local/share/codex-remote/runtime/${'$'}NODE_SLOT/bin/node" "\${'$'}{HOME}/.local/share/codex-remote/releases/${'$'}RELEASE_SLOT/lib/node_modules/@openai/codex/bin/codex.js" "\${'$'}@"
+        exec "\${'$'}{HOME}/.local/share/codex-remote/runtime/${'$'}NODE_SLOT/bin/node" "\${'$'}{HOME}/.local/share/codex-remote/releases/${'$'}RELEASE_SLOT/node_modules/@openai/codex/bin/codex.js" "\${'$'}@"
         EOF
         chmod 700 "${'$'}WRAPPER"
         "${'$'}WRAPPER" --version >/dev/null
         INSTALL_COMMITTED=1
         mv -f "${'$'}WRAPPER" "${'$'}BIN_DIR/codex-remote"
-        progress 90 '验证 Codex app-server'
         "${'$'}BIN_DIR/codex-remote" --version
-        progress 100 '安装完成'
+        progress 100 '' '安装完成' 'Codex app-server 已就绪'
         """.trimIndent()
     }
 

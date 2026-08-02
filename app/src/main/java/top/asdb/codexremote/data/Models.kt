@@ -345,6 +345,10 @@ data class AppUiState(
     val setupInProgress: Boolean = false,
     val setupProgress: String = "",
     val setupProgressPercent: Int = 0,
+    /** Detail from the current remote install step, such as downloaded bytes or component count. */
+    val setupProgressDetail: String = "",
+    /** Progress within the active download, separate from the full installation percentage. */
+    val setupDownloadPercent: Int? = null,
     val threads: List<CodexThread> = emptyList(),
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,

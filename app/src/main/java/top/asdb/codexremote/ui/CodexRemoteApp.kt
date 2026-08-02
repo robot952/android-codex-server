@@ -417,6 +417,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                         } else {
                             setupProgressFraction(state.setupProgress)
                         }
+                        val progressPercent = (progress * 100).toInt()
                         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
@@ -424,17 +425,52 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                                 Text(
                                     state.setupProgress.ifBlank { "正在安装" },
                                     modifier = Modifier.weight(1f),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    "${(progress * 100).toInt()}%",
+                                    "$progressPercent%",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
+                            Text(
+                                "总体安装进度",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             LinearProgressIndicator(
                                 progress = { progress },
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 5.dp, max = 6.dp),
                             )
+                            state.setupProgressDetail.takeIf(String::isNotBlank)?.let { detail ->
+                                Text(
+                                    detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            state.setupDownloadPercent?.let { downloadPercent ->
+                                val currentDownload = downloadPercent.coerceIn(0, 100) / 100f
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "当前下载进度",
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        "${downloadPercent.coerceIn(0, 100)}%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { currentDownload },
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 4.dp, max = 5.dp),
+                                    color = CodexGreen,
+                                )
+                            }
                         }
                     }
                 }

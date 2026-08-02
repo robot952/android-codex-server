@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.49（versionCode 71）
+- Android 应用版本：1.7.50（versionCode 72）
 - 固定 Codex CLI：0.146.0
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
@@ -389,11 +389,13 @@ ProfileOperationTracker 把异步任务按 profile、lane、generation 标记。
 
 - 不使用 sudo，不覆盖系统 Node.js，不改 VS Code 扩展内置 Codex。
 - 下载固定 Node.js 并校验 SHA-256。
-- npm 安装精确的 @openai/codex 版本。
+- npm 先锁定精确的 @openai/codex 依赖清单，再按该清单安装，避免依赖解析期间长期无反馈。
 - 验证 codex --version 和 app-server --help 后才原子替换 wrapper。
 - 使用 flock 防并发安装，用 SSH 父进程 watchdog 清理断线安装。
 - 安装前要求用户 home 至少 300 MB 可用空间。
-- 通过 ::progress::百分比|说明 回传可见进度。
+- 通过 ::progress::总体百分比|当前下载百分比|说明|详情 回传可见进度；旧的
+  ::progress::百分比|说明 格式仍可解析。Node.js 下载显示真实字节进度，Codex CLI 下载显示
+  已处理组件数和安装目录大小；安装总超时为 30 分钟。
 
 下载代理由每台 ServerProfile.proxyUrl 单独保存，只用于这次远程 Node/Codex 下载。允许
 http、https、socks5、socks5h；输入必须经过 RemoteBootstrap.validateProxyUrl，禁止直接拼接

@@ -64,7 +64,7 @@ class RemoteBootstrapTest {
     fun `installer is pinned and never requests system privileges`() {
         val script = RemoteBootstrap.installScript("0.146.0", "22.17.0")
 
-        assertTrue(script.contains("@openai/codex@0.146.0"))
+        assertTrue(script.contains("\"@openai/codex\":\"0.146.0\""))
         assertTrue(script.contains("node-v22.17.0-linux-"))
         assertTrue(script.contains("0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a"))
         assertTrue(script.contains("3e99df8b01b27dc8b334a2a30d1cd500442b3b0877d217b308fd61a9ccfc33d4"))
@@ -85,6 +85,12 @@ class RemoteBootstrapTest {
         assertFalse(script.contains("mkdir \"\$LOCK"))
         assertTrue(script.contains("bin/node\" --version"))
         assertTrue(script.contains("bin/npm\" --version"))
+        assertTrue(script.contains("::progress::%s|%s|%s|%s"))
+        assertTrue(script.contains("download_file"))
+        assertTrue(script.contains("--package-lock-only"))
+        assertTrue(script.contains("npm\" ci"))
+        assertTrue(script.contains("共 \$PACKAGE_TOTAL 个组件"))
+        assertTrue(script.contains("node_modules/@openai/codex/bin/codex.js"))
         assertTrue(script.contains("INSTALL_COMMITTED=1"))
         assertFalse(script.contains("rm -rf \"\$NODE_DIR\""))
         assertFalse(script.contains("rm -rf \"\$RELEASE\""))
