@@ -20,6 +20,7 @@ import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.FileChange
 import top.asdb.codexremote.data.InputOption
 import top.asdb.codexremote.data.InputQuestion
+import top.asdb.codexremote.data.MessageAttachment
 import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
@@ -181,15 +182,7 @@ object CodexPayloadParser {
     fun parseItem(item: JsonObject, turnId: String): TimelineEntry? {
         val id = item.string("id").ifBlank { "item-${item.hashCode()}" }
         return when (val type = item.string("type")) {
-            "userMessage" -> TimelineEntry(
-                id = id,
-                kind = TimelineKind.UserMessage,
-                text = item.array("content").orEmpty().mapNotNull { content ->
-                    val value = content as? JsonObject
-                    value?.takeIf { it.string("type") == "text" }?.string("text")
-                }.joinToString("\n").bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER),
-                turnId = turnId,
-            )
+            "userMessage" -> parseUserMessage(item, id, turnId)
 
             "agentMessage" -> TimelineEntry(
                 id = id,
@@ -297,6 +290,69 @@ object CodexPayloadParser {
                 )
             } else null
         }
+    }
+
+    private fun parseUserMessage(item: JsonObject, id: String, turnId: String): TimelineEntry {
+        val textParts = ArrayList<String>()
+        val attachments = ArrayList<MessageAttachment>()
+        item.array("content").orEmpty().forEach { content ->
+            val value = content as? JsonObject ?: return@forEach
+            when (value.string("type")) {
+                "text" -> {
+                    val text = value.string("text")
+                    val attachment = parseTransportAttachment(text)
+                    if (attachment != null) {
+                        attachments += attachment
+                    } else if (text.isNotBlank()) {
+                        textParts += text
+                    }
+                }
+
+                "localImage" -> {
+                    val remotePath = value.string("path")
+                    if (remotePath.isNotBlank()) {
+                        attachments += MessageAttachment(
+                            name = remotePath.substringAfterLast('/').ifBlank { "图片" },
+                            remotePath = remotePath,
+                            mimeType = "image/*",
+                        )
+                    }
+                }
+            }
+        }
+        return TimelineEntry(
+            id = id,
+            kind = TimelineKind.UserMessage,
+            text = textParts.joinToString("\n").bounded(MAX_TIMELINE_TEXT_CHARS, TEXT_TRUNCATION_MARKER),
+            attachments = attachments,
+            turnId = turnId,
+        )
+    }
+
+    private fun parseTransportAttachment(text: String): MessageAttachment? {
+        val inlinePrefix = "文本附件 "
+        if (text.startsWith(inlinePrefix)) {
+            val separator = text.indexOf(":\n", startIndex = inlinePrefix.length)
+            if (separator >= 0) {
+                val name = text.substring(inlinePrefix.length, separator).trim()
+                if (name.isNotBlank()) {
+                    return MessageAttachment(name = name, mimeType = "text/plain")
+                }
+            }
+        }
+
+        val filePrefix = "附件 "
+        if (text.startsWith(filePrefix)) {
+            val separator = text.indexOf(": ", startIndex = filePrefix.length)
+            if (separator >= 0) {
+                val name = text.substring(filePrefix.length, separator).trim()
+                val remotePath = text.substring(separator + 2).trim()
+                if (name.isNotBlank() && remotePath.isNotBlank()) {
+                    return MessageAttachment(name = name, remotePath = remotePath)
+                }
+            }
+        }
+        return null
     }
 
     private fun parseSubAgentActivity(item: JsonObject, id: String, turnId: String): TimelineEntry {
@@ -926,6 +982,7 @@ object CodexEventReducer {
             cwd = value.cwd.ifBlank { old.cwd },
             output = value.output.ifBlank { old.output },
             changes = value.changes.ifEmpty { old.changes },
+            attachments = value.attachments.ifEmpty { old.attachments },
             turnId = value.turnId.ifBlank { old.turnId },
             subAgentPath = value.subAgentPath.ifBlank { old.subAgentPath },
             subAgentThreadId = value.subAgentThreadId.ifBlank { old.subAgentThreadId },

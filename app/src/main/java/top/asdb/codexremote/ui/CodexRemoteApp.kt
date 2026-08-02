@@ -70,6 +70,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -670,8 +671,18 @@ private fun CodexSettingsDialog(
     }
     var confirmSave by remember(remoteSettings) { mutableStateOf(false) }
     var testResultStale by remember(remoteSettings) { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
+    val testResult = state.codexSettingsTestResult?.takeUnless { testResultStale }
+    val testFeedback = testResult?.message ?: state.codexSettingsError?.takeIf { it.isNotBlank() }
     val busy = state.codexSettingsLoading || state.codexSettingsSaving || state.codexSettingsTesting
     val settingsReady = remoteSettings != null
+
+    LaunchedEffect(testFeedback) {
+        if (testFeedback != null) {
+            withFrameNanos { }
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+    }
 
     AlertDialog(
         modifier = Modifier.imePadding(),
@@ -680,7 +691,7 @@ private fun CodexSettingsDialog(
         title = { Text("配置 Codex") },
         text = {
             Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
+                modifier = Modifier.verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(11.dp),
             ) {
                 if (state.codexSettingsLoading) {
@@ -822,12 +833,35 @@ private fun CodexSettingsDialog(
                             Text("测试连接")
                         }
                     }
-                    state.codexSettingsTestResult?.takeUnless { testResultStale }?.let { result ->
-                        Text(
-                            result.message,
-                            color = if (result.successful) CodexGreen else MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                    testFeedback?.let { message ->
+                        val successful = testResult?.successful == true
+                        Surface(
+                            color = if (successful) {
+                                CodexGreen.copy(alpha = 0.14f)
+                            } else {
+                                MaterialTheme.colorScheme.errorContainer
+                            },
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = if (successful) Icons.Default.Check else Icons.Default.Close,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = if (successful) CodexGreen else MaterialTheme.colorScheme.error,
+                                )
+                                Spacer(Modifier.width(9.dp))
+                                Text(
+                                    message,
+                                    color = if (successful) CodexGreen else MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
                     }
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -841,13 +875,6 @@ private fun CodexSettingsDialog(
                             modifier = Modifier.padding(11.dp),
                         )
                     }
-                }
-                state.codexSettingsError?.takeIf { it.isNotBlank() }?.let { message ->
-                    Text(
-                        message,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                 }
             }
         },

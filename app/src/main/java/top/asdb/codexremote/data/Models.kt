@@ -166,6 +166,13 @@ data class FileChange(
     val deletions: Int get() = diff.lineSequence().count { it.startsWith("-") && !it.startsWith("---") }
 }
 
+/** An attachment included with a user message after it has been sent to Codex. */
+data class MessageAttachment(
+    val name: String,
+    val remotePath: String = "",
+    val mimeType: String = "application/octet-stream",
+)
+
 data class TimelineEntry(
     val id: String,
     val kind: TimelineKind,
@@ -176,6 +183,7 @@ data class TimelineEntry(
     val cwd: String = "",
     val output: String = "",
     val changes: List<FileChange> = emptyList(),
+    val attachments: List<MessageAttachment> = emptyList(),
     val turnId: String = "",
     val subAgentPath: String = "",
     val subAgentThreadId: String = "",

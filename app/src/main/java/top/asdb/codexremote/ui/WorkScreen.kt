@@ -162,6 +162,7 @@ import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.FileChange
+import top.asdb.codexremote.data.MessageAttachment
 import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
@@ -986,15 +987,7 @@ private fun TimelineItem(
     canOpenSubAgents: Boolean,
 ) {
     when (entry.kind) {
-        TimelineKind.UserMessage -> Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(6.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            SelectionContainer {
-                Text(entry.text, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
-            }
-        }
+        TimelineKind.UserMessage -> UserMessageBlock(entry, onOpenImage, imageLoadingPath)
 
         TimelineKind.AgentMessage -> MarkdownText(
             text = entry.text,
@@ -1033,6 +1026,81 @@ private fun TimelineItem(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun UserMessageBlock(
+    entry: TimelineEntry,
+    onOpenImage: (String) -> Unit,
+    imageLoadingPath: String?,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (entry.text.isNotBlank()) {
+                SelectionContainer { Text(entry.text) }
+            }
+            if (entry.attachments.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    entry.attachments.forEach { attachment ->
+                        UserMessageAttachment(attachment, onOpenImage, imageLoadingPath)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UserMessageAttachment(
+    attachment: MessageAttachment,
+    onOpenImage: (String) -> Unit,
+    imageLoadingPath: String?,
+) {
+    val isImage = attachment.mimeType.startsWith("image/") && attachment.remotePath.isNotBlank()
+    val displayName = attachment.name.ifBlank { if (isImage) "图片" else "文件" }
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(6.dp),
+        modifier = if (isImage) {
+            Modifier.clickable { onOpenImage(attachment.remotePath) }
+        } else {
+            Modifier
+        },
+    ) {
+        Row(
+            modifier = Modifier.widthIn(max = 260.dp).padding(horizontal = 9.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isImage && imageLoadingPath == attachment.remotePath) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    imageVector = if (isImage) Icons.Default.Photo else Icons.Default.Description,
+                    contentDescription = if (isImage) "查看图片 $displayName" else null,
+                    modifier = Modifier.size(17.dp),
+                    tint = if (isImage) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = displayName,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
