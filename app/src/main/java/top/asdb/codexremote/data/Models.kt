@@ -188,6 +188,7 @@ data class TurnTiming(
     val turnId: String? = null,
     val startedAtMillis: Long,
     val completedAtMillis: Long? = null,
+    val stopped: Boolean = false,
 )
 
 enum class ApprovalKind { Command, FileChange, Permission, UserInput }

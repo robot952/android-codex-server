@@ -23,6 +23,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -118,6 +119,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -315,7 +317,6 @@ fun WorkScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    val lastEntry = state.timeline.lastOrNull()
     val latestFileChangeId = state.timeline.lastOrNull { it.kind == TimelineKind.FileChange }?.id
     val activeThreadId = state.activeThread?.id.orEmpty()
     val matchingTurnTiming = state.turnTiming?.takeIf { it.threadId == activeThreadId }
@@ -369,32 +370,37 @@ fun WorkScreen(
         }
     }
 
-    // Track whether the reader is at the end before a streaming update arrives.
-    // New deltas should not pull a user away from an earlier part of the transcript.
+    // Only a physical drag should pause output following. Programmatic scrolling used to keep
+    // the transcript pinned must not be mistaken for a user navigating away from the end.
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) followOutput = false
+        }
+    }
+
+    // Re-enable following when the user reaches the end manually.
     LaunchedEffect(listState) {
         snapshotFlow {
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val atEnd = layout.totalItemsCount == 0 || lastVisible >= layout.totalItemsCount - 1
-            atEnd to listState.isScrollInProgress
-        }.distinctUntilChanged().collect { (atEnd, userScrolling) ->
-            when {
-                atEnd -> followOutput = true
-                userScrolling -> followOutput = false
-            }
+            layout.totalItemsCount == 0 || lastVisible >= layout.totalItemsCount - 1
+        }.distinctUntilChanged().collect { atEnd ->
+            if (atEnd) followOutput = true
         }
     }
 
     LaunchedEffect(
-        state.timeline.size,
-        lastEntry?.text?.length,
-        lastEntry?.output?.length,
-        lastEntry?.changes?.size,
-        state.aggregateDiff.length,
+        state.timeline,
+        state.aggregateDiff,
+        hasTurnTimingFooter,
+        trailingItemIndex,
     ) {
         if (followOutput && trailingItemIndex > 0) {
-            // Scroll to the fixed spacer after the timeline, aggregate diff, and running indicator.
-            listState.animateScrollToItem(trailingItemIndex)
+            // Stream deltas arrive faster than an animated scroll can finish. Waiting one frame
+            // for the new height and jumping to the fixed trailing spacer keeps an anchored view
+            // at the actual end instead of leaving it stranded above newly appended output.
+            withFrameNanos { }
+            listState.scrollToItem(trailingItemIndex)
         }
     }
 
@@ -576,25 +582,34 @@ fun WorkScreen(
                 } else if (completedTurnTiming != null) {
                     item(key = "turn-completion") {
                         val completedAtMillis = checkNotNull(completedTurnTiming.completedAtMillis)
+                        val elapsed = formatTurnElapsed(
+                            completedTurnTiming.startedAtMillis,
+                            completedAtMillis,
+                        )
+                        val stopped = completedTurnTiming.stopped
                         Row(
                             modifier = Modifier.semantics {
-                                contentDescription = "本次耗时 ${formatTurnElapsed(
-                                    completedTurnTiming.startedAtMillis,
-                                    completedAtMillis,
-                                )}，完成于 ${formatTurnCompletionTime(completedAtMillis)}"
+                                contentDescription = if (stopped) {
+                                    "已停止，已处理 $elapsed"
+                                } else {
+                                    "本次耗时 $elapsed，完成于 ${formatTurnCompletionTime(completedAtMillis)}"
+                                }
                             },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
-                                Icons.Default.CheckCircle,
+                                if (stopped) Icons.Default.Stop else Icons.Default.CheckCircle,
                                 contentDescription = null,
-                                tint = CodexGreen,
+                                tint = if (stopped) CodexAmber else CodexGreen,
                                 modifier = Modifier.size(16.dp),
                             )
                             Spacer(Modifier.width(9.dp))
                             Text(
-                                "本次耗时 ${formatTurnElapsed(completedTurnTiming.startedAtMillis, completedAtMillis)}" +
-                                    "  完成于 ${formatTurnCompletionTime(completedAtMillis)}",
+                                if (stopped) {
+                                    "已停止  已处理 $elapsed"
+                                } else {
+                                    "本次耗时 $elapsed  完成于 ${formatTurnCompletionTime(completedAtMillis)}"
+                                },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall,
                             )

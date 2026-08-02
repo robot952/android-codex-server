@@ -601,6 +601,7 @@ object CodexEventReducer {
                         threadId = timingThreadId,
                         turnId = resolvedTurnId,
                         nowMillis = nowMillis,
+                        stopped = turn?.string("status").orEmpty().isStoppedTurnStatus(),
                     ),
                 ).updateThreadRuntime(threadId.ifBlank { state.activeThread?.id.orEmpty() }, "idle", null)
             }
@@ -642,6 +643,7 @@ object CodexEventReducer {
                                 threadId = timingThreadId,
                                 turnId = state.activeTurnId.orEmpty(),
                                 nowMillis = nowMillis,
+                                stopped = status.isStoppedTurnStatus(),
                             )
                         },
                     )
@@ -875,14 +877,18 @@ object CodexEventReducer {
         threadId: String,
         turnId: String,
         nowMillis: Long,
+        stopped: Boolean,
     ): TurnTiming? {
         if (current == null || threadId.isBlank() || current.threadId != threadId) return current
         if (turnId.isNotBlank() && current.turnId != null && current.turnId != turnId) return current
         return current.copy(
             turnId = current.turnId ?: turnId.takeIf { it.isNotBlank() },
             completedAtMillis = current.completedAtMillis ?: nowMillis,
+            stopped = current.stopped || stopped,
         )
     }
+
+    private fun String.isStoppedTurnStatus(): Boolean = this in STOPPED_TURN_STATUSES
 
     private fun AppUiState.acceptsThreadEvent(method: String, params: JsonObject): Boolean {
         val eventThreadId = params.string("threadId")
@@ -965,6 +971,8 @@ object CodexEventReducer {
         )
     }
 }
+
+private val STOPPED_TURN_STATUSES = setOf("interrupted", "cancelled", "canceled", "aborted", "stopped")
 
 private fun TimelineEntry.sameTimelineIdentity(other: TimelineEntry): Boolean =
     id == other.id && kind == other.kind &&
