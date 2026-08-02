@@ -16,17 +16,17 @@ stages:
         buildToolsVersion: "34.0.0"
         ndkVersion: "28.2.13676358"
         commands:
-  - >-
-    GRADLE_USER_HOME="$HOME/.gradle" CODEX_BUILD_ONLINE=1
-    GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=8"
-    ./scripts/build-android.sh release &&
-    mkdir -p dist &&
-    cp app/build/outputs/apk/release/app-release.apk dist/CodexRemote.apk &&
-    ls -lh dist
+          - >-
+            GRADLE_USER_HOME="$HOME/.gradle" CODEX_BUILD_ONLINE=1
+            GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=8"
+            ./scripts/build-android.sh release &&
+            mkdir -p dist &&
+            cp app/build/outputs/apk/release/app-release.apk dist/CodexRemote.apk &&
+            ls -lh dist
         artifacts:
           - name: BUILD_ARTIFACT
             path:
-              - app/build/outputs/apk/release
+              - dist
             type: .tar.gz
         caches:
           - "~/.gradle/caches"
