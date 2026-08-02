@@ -29,6 +29,8 @@ import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.CodexThread
 import top.asdb.codexremote.data.PendingAttachment
 import top.asdb.codexremote.data.RemoteDirectoryListing
+import top.asdb.codexremote.data.RemoteFileListing
+import top.asdb.codexremote.data.RemoteFileTransferMode
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
@@ -38,6 +40,8 @@ import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.ssh.SshCodexTransport
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshTransportEvent
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -571,6 +575,8 @@ class CodexAppServerClient(
 
     suspend fun listDirectories(path: String?): RemoteDirectoryListing = transport.listDirectories(path)
 
+    suspend fun listFiles(path: String?): RemoteFileListing = transport.listFiles(path)
+
     suspend fun readServerMetrics(profile: ServerProfile) = transport.readServerMetrics(profile)
 
     suspend fun archiveThread(threadId: String) {
@@ -624,6 +630,21 @@ class CodexAppServerClient(
     }
 
     suspend fun upload(name: String, bytes: ByteArray): String = transport.upload(name, bytes)
+
+    suspend fun uploadFile(directory: String, name: String, input: InputStream) =
+        transport.uploadFile(directory, name, input)
+
+    suspend fun downloadFile(path: String, output: OutputStream) = transport.downloadFile(path, output)
+
+    suspend fun renameFile(path: String, newName: String) = transport.renameFile(path, newName)
+
+    suspend fun deleteFiles(paths: List<String>) = transport.deleteFiles(paths)
+
+    suspend fun transferFiles(
+        paths: List<String>,
+        destinationDirectory: String,
+        mode: RemoteFileTransferMode,
+    ) = transport.transferFiles(paths, destinationDirectory, mode)
 
     suspend fun downloadImage(path: String): ByteArray = transport.downloadImage(path)
 

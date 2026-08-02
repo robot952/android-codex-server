@@ -248,7 +248,7 @@ data class PendingAttachment(
     val textContent: String? = null,
 )
 
-enum class AppScreen { Servers, Threads, Work, AgentWork }
+enum class AppScreen { Servers, Threads, Work, AgentWork, FileManager }
 
 enum class SandboxChoice(val wireValue: String, val policyType: String, val label: String) {
     ReadOnly("read-only", "readOnly", "只读"),
@@ -296,6 +296,32 @@ data class RemoteDirectoryListing(
     val currentPath: String,
     val parentPath: String?,
     val directories: List<RemoteDirectory>,
+)
+
+enum class RemoteFileKind { Directory, File, SymbolicLink, Other }
+
+/** A single entry returned from the remote server through the authenticated SFTP channel. */
+data class RemoteFileEntry(
+    val name: String,
+    val path: String,
+    val kind: RemoteFileKind,
+    val sizeBytes: Long = 0L,
+    val modifiedAtEpochMillis: Long? = null,
+    val permissions: String = "",
+)
+
+data class RemoteFileListing(
+    val currentPath: String,
+    val parentPath: String?,
+    val entries: List<RemoteFileEntry>,
+)
+
+enum class RemoteFileTransferMode { Copy, Move }
+
+/** In-memory remote file clipboard. It is scoped to the currently selected server. */
+data class RemoteFileClipboard(
+    val entries: List<RemoteFileEntry>,
+    val mode: RemoteFileTransferMode,
 )
 
 data class RemoteSetupPrompt(
@@ -377,6 +403,15 @@ data class AppUiState(
     val workspaceParentPath: String? = null,
     val workspaceDirectories: List<RemoteDirectory> = emptyList(),
     val workspaceError: String? = null,
+    val fileManagerProfileId: String? = null,
+    val fileManagerLoading: Boolean = false,
+    val fileManagerCurrentPath: String = "",
+    val fileManagerParentPath: String? = null,
+    val fileManagerEntries: List<RemoteFileEntry> = emptyList(),
+    val fileManagerClipboard: RemoteFileClipboard? = null,
+    /** A transfer or destructive operation currently running through SFTP. */
+    val fileManagerOperation: String? = null,
+    val fileManagerError: String? = null,
     val codexSettingsVisible: Boolean = false,
     val codexSettingsLoading: Boolean = false,
     val codexSettingsSaving: Boolean = false,

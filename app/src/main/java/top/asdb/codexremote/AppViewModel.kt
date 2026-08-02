@@ -39,6 +39,10 @@ import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.PendingAttachment
 import top.asdb.codexremote.data.ProfileStore
 import top.asdb.codexremote.data.RemoteDirectoryListing
+import top.asdb.codexremote.data.RemoteFileClipboard
+import top.asdb.codexremote.data.RemoteFileEntry
+import top.asdb.codexremote.data.RemoteFileListing
+import top.asdb.codexremote.data.RemoteFileTransferMode
 import top.asdb.codexremote.data.RemoteSetupPrompt
 import top.asdb.codexremote.data.SandboxChoice
 import top.asdb.codexremote.data.ServerMetrics
@@ -326,6 +330,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // A stale resume can otherwise complete after A -> B -> A and mutate A's
             // sub-agent stack after the user has started a new navigation there.
             invalidateLane(it, "session-navigation")
+            invalidateLane(it, "file-manager-list")
+            invalidateLane(it, "file-manager-operation")
             sessionSnapshots[it] = SessionSnapshot.capture(_state.value)
             subAgentNavigationStacks.clear(it)
         }
@@ -745,6 +751,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             invalidateLane(id, "thread-mutation")
             invalidateLane(id, "thread-list")
             invalidateLane(id, "workspace")
+            invalidateLane(id, "file-manager-list")
+            invalidateLane(id, "file-manager-operation")
             _state.value.activeThread?.let { thread ->
                 rememberContextUsage(id, thread.id, _state.value.tokenUsage)
                 activeClient()?.cacheThread(
@@ -761,6 +769,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 screen = AppScreen.Servers,
                 workspacePickerVisible = false,
+                fileManagerProfileId = null,
+                fileManagerLoading = false,
+                fileManagerCurrentPath = "",
+                fileManagerParentPath = null,
+                fileManagerEntries = emptyList(),
+                fileManagerClipboard = null,
+                fileManagerOperation = null,
+                fileManagerError = null,
                 approval = null,
                 loading = false,
                 submitting = false,
@@ -2297,6 +2313,267 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(workspacePickerVisible = false, workspaceError = null) }
     }
 
+    /** Opens an SFTP-backed browser scoped to the currently selected connected server. */
+    fun showFileManager() {
+        val profileId = _state.value.selectedProfileId ?: return
+        val profile = currentProfile() ?: return
+        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+            _state.update { it.copy(error = "服务器未连接，无法打开文件管理") }
+            return
+        }
+        val previous = _state.value
+        val initialPath = previous.fileManagerCurrentPath
+            .takeIf { previous.fileManagerProfileId == profileId && it.isNotBlank() }
+            ?: profile.workspace.ifBlank { "." }
+        _state.update {
+            it.copy(
+                screen = AppScreen.FileManager,
+                fileManagerProfileId = profileId,
+                fileManagerLoading = true,
+                fileManagerCurrentPath = initialPath,
+                fileManagerParentPath = null,
+                fileManagerEntries = emptyList(),
+                fileManagerClipboard = null,
+                fileManagerOperation = null,
+                fileManagerError = null,
+            )
+        }
+        browseFileManager(initialPath, client)
+    }
+
+    fun closeFileManager() {
+        val profileId = _state.value.fileManagerProfileId ?: _state.value.selectedProfileId
+        profileId?.let {
+            invalidateLane(it, "file-manager-list")
+            invalidateLane(it, "file-manager-operation")
+        }
+        _state.update {
+            it.copy(
+                screen = AppScreen.Threads,
+                fileManagerProfileId = null,
+                fileManagerLoading = false,
+                fileManagerCurrentPath = "",
+                fileManagerParentPath = null,
+                fileManagerEntries = emptyList(),
+                fileManagerClipboard = null,
+                fileManagerOperation = null,
+                fileManagerError = null,
+            )
+        }
+    }
+
+    fun refreshFileManager() {
+        val path = _state.value.fileManagerCurrentPath
+        if (path.isNotBlank()) browseFileManager(path)
+    }
+
+    fun browseFileManager(path: String) {
+        val client = activeClient()?.takeIf { it.isConnected() } ?: return
+        browseFileManager(path, client)
+    }
+
+    private fun browseFileManager(path: String, client: CodexAppServerClient) {
+        val snapshot = _state.value
+        val profileId = snapshot.fileManagerProfileId ?: return
+        if (snapshot.selectedProfileId != profileId || snapshot.screen != AppScreen.FileManager) return
+        val operation = beginClientOperation(profileId, "file-manager-list", client) ?: run {
+            _state.update { it.copy(fileManagerLoading = false, fileManagerError = "服务器连接已断开") }
+            return
+        }
+        _state.update {
+            if (it.fileManagerProfileId == profileId && it.screen == AppScreen.FileManager) {
+                it.copy(fileManagerLoading = true, fileManagerError = null)
+            } else {
+                it
+            }
+        }
+        viewModelScope.launch {
+            try {
+                val listing = client.listFiles(path)
+                if (isFileManagerOperationVisible(operation)) {
+                    publishFileManagerListing(listing)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                publishFileManagerError(operation, error, "无法读取目录")
+            } finally {
+                finishClientOperation(operation)
+            }
+        }
+    }
+
+    fun uploadRemoteFiles(context: Context, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        launchFileManagerOperation("正在上传 ${uris.size} 个文件", "已上传 ${uris.size} 个文件") { client, directory ->
+            withContext(Dispatchers.IO) {
+                uris.forEach { uri ->
+                    val name = remoteUploadFileName(context, uri)
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取 $name")
+                    input.use { client.uploadFile(directory, name, it) }
+                }
+            }
+        }
+    }
+
+    fun downloadRemoteFile(context: Context, path: String, destination: Uri) {
+        if (path.isBlank()) return
+        launchFileManagerOperation("正在下载文件", "已保存到本地") { client, _ ->
+            withContext(Dispatchers.IO) {
+                val output = context.contentResolver.openOutputStream(destination, "w")
+                    ?: throw IllegalStateException("无法创建本地文件")
+                output.use { client.downloadFile(path, it) }
+            }
+        }
+    }
+
+    fun renameRemoteFile(entry: RemoteFileEntry, newName: String) {
+        launchFileManagerOperation("正在重命名", "已重命名") { client, _ ->
+            client.renameFile(entry.path, newName)
+        }
+    }
+
+    fun deleteRemoteFiles(entries: List<RemoteFileEntry>) {
+        val paths = entries.map(RemoteFileEntry::path).distinct()
+        if (paths.isEmpty()) return
+        launchFileManagerOperation("正在删除 ${paths.size} 项", "已删除 ${paths.size} 项") { client, _ ->
+            client.deleteFiles(paths)
+        }
+    }
+
+    fun copyRemoteFiles(entries: List<RemoteFileEntry>) {
+        setRemoteFileClipboard(entries, RemoteFileTransferMode.Copy)
+    }
+
+    fun cutRemoteFiles(entries: List<RemoteFileEntry>) {
+        setRemoteFileClipboard(entries, RemoteFileTransferMode.Move)
+    }
+
+    private fun setRemoteFileClipboard(entries: List<RemoteFileEntry>, mode: RemoteFileTransferMode) {
+        val snapshot = _state.value
+        if (snapshot.screen != AppScreen.FileManager || snapshot.fileManagerProfileId != snapshot.selectedProfileId) return
+        val selected = entries.filter { it.path.isNotBlank() }.distinctBy(RemoteFileEntry::path)
+        if (selected.isEmpty()) return
+        _state.update {
+            if (it.screen == AppScreen.FileManager && it.fileManagerProfileId == snapshot.selectedProfileId) {
+                it.copy(
+                    fileManagerClipboard = RemoteFileClipboard(selected, mode),
+                    fileManagerError = null,
+                )
+            } else {
+                it
+            }
+        }
+    }
+
+    fun pasteRemoteFiles() {
+        val snapshot = _state.value
+        val clipboard = snapshot.fileManagerClipboard ?: return
+        if (snapshot.fileManagerCurrentPath.isBlank()) return
+        launchFileManagerOperation(
+            if (clipboard.mode == RemoteFileTransferMode.Copy) "正在复制 ${clipboard.entries.size} 项" else "正在移动 ${clipboard.entries.size} 项",
+            if (clipboard.mode == RemoteFileTransferMode.Copy) "已复制 ${clipboard.entries.size} 项" else "已移动 ${clipboard.entries.size} 项",
+            onSuccess = { state ->
+                if (clipboard.mode == RemoteFileTransferMode.Move) state.copy(fileManagerClipboard = null) else state
+            },
+        ) { client, directory ->
+            client.transferFiles(clipboard.entries.map(RemoteFileEntry::path), directory, clipboard.mode)
+        }
+    }
+
+    private fun launchFileManagerOperation(
+        label: String,
+        successMessage: String,
+        onSuccess: (AppUiState) -> AppUiState = { it },
+        action: suspend (CodexAppServerClient, String) -> Unit,
+    ) {
+        val snapshot = _state.value
+        val profileId = snapshot.fileManagerProfileId ?: return
+        val directory = snapshot.fileManagerCurrentPath.takeIf { it.isNotBlank() } ?: return
+        if (snapshot.screen != AppScreen.FileManager || snapshot.selectedProfileId != profileId) return
+        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+            _state.update { it.copy(fileManagerError = "服务器连接已断开") }
+            return
+        }
+        val operation = beginClientOperation(profileId, "file-manager-operation", client) ?: run {
+            _state.update { it.copy(fileManagerError = "服务器连接已断开") }
+            return
+        }
+        _state.update {
+            if (it.screen == AppScreen.FileManager && it.fileManagerProfileId == profileId) {
+                it.copy(fileManagerOperation = label, fileManagerError = null)
+            } else {
+                it
+            }
+        }
+        viewModelScope.launch {
+            try {
+                action(client, directory)
+                val listing = client.listFiles(directory)
+                if (isFileManagerOperationVisible(operation)) {
+                    _state.update { current ->
+                        if (current.fileManagerCurrentPath != directory) current else onSuccess(
+                            current.copy(
+                                fileManagerLoading = false,
+                                fileManagerCurrentPath = listing.currentPath,
+                                fileManagerParentPath = listing.parentPath,
+                                fileManagerEntries = listing.entries,
+                                fileManagerError = null,
+                                diagnostic = successMessage,
+                            ),
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                publishFileManagerError(operation, error, "文件操作失败")
+            } finally {
+                if (isFileManagerOperationVisible(operation)) {
+                    _state.update { it.copy(fileManagerOperation = null) }
+                }
+                finishClientOperation(operation)
+            }
+        }
+    }
+
+    private fun isFileManagerOperationVisible(operation: ClientOperation): Boolean =
+        isOperationVisible(operation) &&
+            _state.value.screen == AppScreen.FileManager &&
+            _state.value.fileManagerProfileId == operation.ticket.profileId
+
+    private fun publishFileManagerListing(listing: RemoteFileListing) {
+        _state.update {
+            it.copy(
+                fileManagerLoading = false,
+                fileManagerCurrentPath = listing.currentPath,
+                fileManagerParentPath = listing.parentPath,
+                fileManagerEntries = listing.entries,
+                fileManagerError = null,
+            )
+        }
+    }
+
+    private fun publishFileManagerError(
+        operation: ClientOperation,
+        error: Throwable,
+        fallback: String,
+    ) {
+        val profileId = operation.ticket.profileId
+        val message = userFacingErrorMessage(error, profileId, fallback)
+        DiagnosticLogger.error("FileManager", "failed profile=${profileRef(profileId)} action=${operation.ticket.lane}", error)
+        if (isFileManagerOperationVisible(operation)) {
+            _state.update {
+                it.copy(
+                    fileManagerLoading = false,
+                    fileManagerOperation = null,
+                    fileManagerError = message,
+                )
+            }
+        }
+    }
+
     fun showCodexSettings() {
         val profileId = _state.value.selectedProfileId ?: return
         val profile = currentProfile() ?: return
@@ -2633,6 +2910,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             sandbox = profile.approvalMode.sandbox,
             connection = connection,
             connectionStates = base.connectionStates + (profile.id to connection),
+            fileManagerProfileId = null,
+            fileManagerLoading = false,
+            fileManagerCurrentPath = "",
+            fileManagerParentPath = null,
+            fileManagerEntries = emptyList(),
+            fileManagerClipboard = null,
+            fileManagerOperation = null,
+            fileManagerError = null,
         )
         val restored = sessionSnapshots[profile.id]?.restore(cleanBase) ?: clearSessionFields(cleanBase)
         val approvals = pendingApprovalsByProfile[profile.id].orEmpty()
@@ -2653,6 +2938,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             approval = approvals.firstOrNull(),
             workspacePickerVisible = false,
             workspaceLoading = false,
+            fileManagerProfileId = null,
+            fileManagerLoading = false,
+            fileManagerCurrentPath = "",
+            fileManagerParentPath = null,
+            fileManagerEntries = emptyList(),
+            fileManagerClipboard = null,
+            fileManagerOperation = null,
+            fileManagerError = null,
             codexSettingsVisible = false,
             codexSettingsLoading = false,
             codexSettingsSaving = false,
@@ -3463,6 +3756,23 @@ private val TEXT_ATTACHMENT_EXTENSIONS = setOf(
     "kt", "kts", "log", "markdown", "md", "properties", "py", "sh", "sql", "toml", "ts", "tsx",
     "txt", "xml", "yaml", "yml",
 )
+
+private fun remoteUploadFileName(context: Context, uri: Uri): String {
+    var name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "upload"
+    context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null,
+    )?.use { cursor ->
+        if (cursor.moveToFirst()) {
+            cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }
+                ?.let { index -> cursor.getString(index)?.takeIf { it.isNotBlank() }?.let { name = it } }
+        }
+    }
+    return name
+}
 
 private fun profileRef(value: String): String = value.take(8).ifBlank { "unknown" }
 

@@ -4,8 +4,8 @@
 `./scripts/build-android.sh debug`；只有受保护的 `v<versionName>` 标签才会在 Runner 上构建、验签和
 部署。APK 不提交进 Git 历史。
 
-自建 Runner 优先于云端 Runner，原因是 Android SDK、Gradle 缓存和固定签名 keystore 都留在本机，构建快且
-签名文件不会上传到第三方构建机。
+自建 Runner 优先于云端 Runner，原因是 Android SDK 和 Gradle 缓存都留在本机，构建快且发布目录可由
+Runner 最小权限写入。当前测试签名 keystore 已按本项目约定版本化；不要将其复用于生产应用。
 
 ## 1. 一次性准备 Runner 主机
 
@@ -43,7 +43,7 @@ sudo ln -s codex-releases/codex.apk /var/www/html/codex.apk
 `codex-android-release`。Gitee 页面会生成一次性注册命令；使用 `codexci` 用户在这台构建机执行该命令并按
 页面提示将 Runner 注册为服务。
 
-Runner 只应允许受保护分支和受保护标签使用。不要把注册 token、SSH 私钥或 keystore 提交进仓库或粘贴到 Issue。
+Runner 只应允许受保护分支和受保护标签使用。不要把注册 token 或 SSH 私钥提交进仓库或粘贴到 Issue。
 
 ## 3. 创建 Gitee Go 流水线
 
@@ -61,7 +61,7 @@ export ANDROID_SDK_ROOT=/tmp/android-sdk
 export GRADLE_USER_HOME=/opt/codex-remote-ci/gradle
 export CODEX_SIGNING_KEYSTORE=/opt/codex-remote-ci/codex-remote-stable.keystore
 export CODEX_RELEASE_PUBLISH_DIR=/var/www/html/codex-releases
-export CODEX_RELEASE_VERIFY_URLS=http://192.168.8.109/codex.apk,http://frp.asdb.top:18080/codex.apk
+export CODEX_RELEASE_VERIFY_URLS=http://210.16.163.118:18080/codex.apk
 ./scripts/publish-tag-release.sh
 ~~~
 
@@ -97,9 +97,9 @@ git push origin v1.7.19
 1. 确认 `v1.7.19` 正好指向当前检出提交，且没有未提交的已跟踪文件。
 2. 执行 `all` 门禁：debug/release 单测、Lint、debug/release APK 和 R8。
 3. 验证 release APK 证书 SHA-256 必须为
-   `d252c3936998b520eb482e3220a99188a58599cff9d000900a803204fea4e3f0`。
+   `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 4. 生成 `dist/CodexRemote-1.7.19.apk` 和 `dist/release-metadata.txt`。
-5. 原子替换下载文件，并检查内网与 FRP 地址均返回成功。
+5. 原子替换下载文件，并检查 `http://210.16.163.118:18080/codex.apk` 返回成功。
 
 失败时不要移动或复用标签，也不要重复发布同一 `versionCode`。修复后增加版本号，重新提交并创建新标签，例如
 `v1.7.20`。Gitee 流水线重跑只适用于同一提交的构建环境故障，不应用于内容变更。

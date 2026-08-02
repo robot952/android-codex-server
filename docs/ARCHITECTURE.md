@@ -93,7 +93,8 @@ codex app-server，并把 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插
 │   ├─ ServerScreen       服务器列表、配置、安装进度、Debug 日志               │
 │   ├─ ThreadListScreen   会话列表、工作区、服务器切换、SSH 终端入口            │
 │   ├─ WorkScreen         时间线、审批、目标、模型、权限、输入和分页            │
-│   └─ SshTerminalScreen  独立交互式 shell 覆盖层                              │
+│   ├─ SshTerminalScreen  独立交互式 shell 覆盖层                              │
+│   └─ FileManagerScreen  当前服务器的 SFTP 文件浏览与传输                      │
 │         │ callbacks / StateFlow                                              │
 │         v                                                                    │
 │ AppViewModel                                                                 │
@@ -122,7 +123,7 @@ JSON-RPC 通道相互独立，不能把终端 ANSI 数据送进协议解析器�
 
 ## 5. 页面和导航
 
-AppScreen 只有 Servers、Threads、Work 三个主状态。ui/CodexRemoteApp.kt 使用
+AppScreen 包含 Servers、Threads、Work、AgentWork 和 FileManager。ui/CodexRemoteApp.kt 使用
 AnimatedContent 做前进/返回的滑动淡入动画，并按页面绑定 AppViewModel 回调。
 
 ### 5.1 ServerScreen
@@ -207,6 +208,21 @@ MarkdownText.kt 负责 Markwon 渲染。页面级修改不要把这些逻辑复�
 SshTerminalManager 为每个 profile 维护独立 generation、输入队列、resize 队列和有界输出
 历史。隐藏终端不等于断开；显式关闭、删除服务器或身份改变才释放对应 channel。工作目录存在
 时，终端连接后发送安全 shell-quote 的 cd 命令。
+
+### 5.5 FileManagerScreen
+
+会话列表的设置菜单提供“文件管理”入口，仅对当前已连接服务器可用。它默认打开该 profile
+的工作目录；未配置工作目录时打开当前 Unix 用户的 home，并可逐级进入根目录。目录列举、上传、
+下载、重命名、删除、复制和移动均通过当前已验证 SSH Session 的独立 SFTP channel 完成，绝不拼接
+远程 shell 命令。
+
+- 普通点击目录进入，长按文件或目录弹出下载、重命名、复制、剪切和删除操作；删除目录必须二次确认。
+- 右下角“更多”菜单始终提供多选上传和下载所选文件，剪切/复制后的内存剪贴板通过同一菜单粘贴到
+ 目前目录。剪贴板只在当前文件管理页、当前服务器中有效，不持久化也不跨服务器。
+- 上传和下载使用 Android Storage Access Framework：上传可选择多个文档，下载由用户指定手机上的
+ 目标文件。上传不把完整文件读入内存；下载只允许普通文件，不跟随符号链接。
+- 远程路径必须是绝对、无换行和无 `..` 段的 SFTP 路径；文件名只能是单个叶子名。目标已存在时拒绝
+  覆盖，避免误覆盖服务器文件。列表最多显示 2,000 项，目录优先排序。
 
 ## 6. 状态、持久化和隔离
 
@@ -485,6 +501,8 @@ DiagnosticLogger：
 - app-server 仅走 SSH stdio，不监听公网端口。
 - SFTP 附件依赖服务器 subsystem；远程路径位于应用专用暂存区。图片以 `localImage` 发送；文本附件
   最大 512 KB，并将内容作为 `text` 输入发送给会话。
+- 文件管理使用同一 SSH 账户的 SFTP 权限，产品界面不是文件系统沙箱；用户能看到和操作的范围仍由
+  服务器账户、Unix 权限、chroot 或容器决定。
 
 生产部署推荐非 root 专用账户、每台手机独立 SSH key、forced command、禁用 PTY/forwarding，
 并用 Unix 权限或容器限制工作区。当前产品默认用户名按用户要求是 root，这是便利默认值，不代表
@@ -736,6 +754,7 @@ testDebugUnitTest。
 | 旋转/大字体 | 横竖屏和放大字体 | 无重叠、截断或不可达按钮，表单可滚动 |
 | Debug | Codex 图标连点 10 次并分享 | 日志启用、可预览/分享、敏感值已脱敏 |
 | 终端 | 打开、隐藏、恢复、resize、关闭 | 输出保留且有界，不影响 Codex channel |
+| 文件管理 | 进入目录、长按文件、上传多文件、下载、重命名、删除、复制/剪切再粘贴 | 只操作当前服务器；系统文件选择器可返回；删除有确认；目录、路径和连接状态不串台 |
 
 相关历史截图包括：
 

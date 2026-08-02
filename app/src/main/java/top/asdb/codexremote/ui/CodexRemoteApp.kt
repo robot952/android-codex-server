@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Security
@@ -167,6 +168,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         when (state.screen) {
             AppScreen.Work -> viewModel.backToThreads()
             AppScreen.AgentWork -> viewModel.backFromSubAgentThread()
+            AppScreen.FileManager -> viewModel.closeFileManager()
             AppScreen.Threads -> viewModel.showServers()
             AppScreen.Servers -> Unit
         }
@@ -262,6 +264,20 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                     onOpenSubAgent = viewModel::openSubAgentThread,
                 )
             }
+
+            AppScreen.FileManager -> FileManagerScreen(
+                state = state,
+                onBack = viewModel::closeFileManager,
+                onBrowse = viewModel::browseFileManager,
+                onRefresh = viewModel::refreshFileManager,
+                onUpload = viewModel::uploadRemoteFiles,
+                onDownload = viewModel::downloadRemoteFile,
+                onRename = viewModel::renameRemoteFile,
+                onDelete = viewModel::deleteRemoteFiles,
+                onCopy = viewModel::copyRemoteFiles,
+                onCut = viewModel::cutRemoteFiles,
+                onPaste = viewModel::pasteRemoteFiles,
+            )
             }
         }
         updateState.availableUpdate?.let { update ->
@@ -348,6 +364,10 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             onConfigureCodex = {
                 threadSettingsActionsVisible = false
                 viewModel.showCodexSettings()
+            },
+            onOpenFileManager = {
+                threadSettingsActionsVisible = false
+                viewModel.showFileManager()
             },
             onDismiss = { threadSettingsActionsVisible = false },
         )
@@ -573,6 +593,7 @@ private data class ScreenAnimationTarget(
 private fun ThreadSettingsActionsDialog(
     onSelectWorkspace: () -> Unit,
     onConfigureCodex: () -> Unit,
+    onOpenFileManager: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -598,6 +619,12 @@ private fun ThreadSettingsActionsDialog(
                     title = "配置 Codex",
                     detail = "模型地址、API 密钥和代理",
                     onClick = onConfigureCodex,
+                )
+                SettingsActionRow(
+                    icon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
+                    title = "文件管理",
+                    detail = "浏览和管理服务器文件",
+                    onClick = onOpenFileManager,
                 )
             }
         }

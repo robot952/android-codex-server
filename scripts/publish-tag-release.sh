@@ -6,7 +6,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-readonly EXPECTED_CERTIFICATE_SHA256="d252c3936998b520eb482e3220a99188a58599cff9d000900a803204fea4e3f0"
+readonly EXPECTED_CERTIFICATE_SHA256="72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a"
+readonly DEFAULT_RELEASE_VERIFY_URL="http://210.16.163.118:18080/codex.apk"
 readonly APK_PATH="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
 
 version_name="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts)"
@@ -102,6 +103,9 @@ if [[ -n "$publish_dir" ]]; then
 fi
 
 verify_urls="${CODEX_RELEASE_VERIFY_URLS:-}"
+if [[ -z "$verify_urls" && -n "$publish_dir" ]]; then
+    verify_urls="$DEFAULT_RELEASE_VERIFY_URL"
+fi
 if [[ -n "$verify_urls" ]]; then
     IFS=',' read -r -a urls <<< "$verify_urls"
     for url in "${urls[@]}"; do

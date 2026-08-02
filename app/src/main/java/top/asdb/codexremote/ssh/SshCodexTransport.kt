@@ -5,6 +5,7 @@ import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
+import com.jcraft.jsch.SftpException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,11 +28,16 @@ import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
+import top.asdb.codexremote.data.RemoteFileEntry
+import top.asdb.codexremote.data.RemoteFileKind
+import top.asdb.codexremote.data.RemoteFileListing
+import top.asdb.codexremote.data.RemoteFileTransferMode
 import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.data.ServerProfile
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.PipedInputStream
@@ -318,6 +324,169 @@ class SshCodexTransport {
                 }
                 .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
             RemoteDirectoryListing(current, parent, directories)
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
+    /** Lists both files and directories without invoking a remote shell. */
+    suspend fun listFiles(path: String?): RemoteFileListing = withContext(Dispatchers.IO) {
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            val requested = path?.trim().takeUnless { it.isNullOrBlank() } ?: "."
+            val current = sftp.realpath(requested)
+            check(sftp.stat(current).isDir) { "不是可浏览的目录" }
+            val parent = remoteParentPath(current)
+            val entries = sftp.ls(current)
+                .filterIsInstance<ChannelSftp.LsEntry>()
+                .asSequence()
+                .filter { it.filename !in setOf(".", "..") }
+                .take(MAX_FILE_MANAGER_ENTRIES)
+                .map { entry ->
+                    val attributes = entry.attrs
+                    val kind = when {
+                        attributes.isLink -> RemoteFileKind.SymbolicLink
+                        attributes.isDir -> RemoteFileKind.Directory
+                        else -> RemoteFileKind.File
+                    }
+                    RemoteFileEntry(
+                        name = entry.filename,
+                        path = remoteFileChildPath(current, entry.filename),
+                        kind = kind,
+                        sizeBytes = attributes.size.coerceAtLeast(0L),
+                        modifiedAtEpochMillis = attributes.mTime.takeIf { it > 0 }?.toLong()?.times(1_000L),
+                        permissions = formatRemoteFilePermissions(kind, attributes.permissions),
+                    )
+                }
+                .sortedWith(
+                    compareBy<RemoteFileEntry> { it.kind != RemoteFileKind.Directory }
+                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name },
+                )
+                .toList()
+            RemoteFileListing(current, parent, entries)
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
+    /** Uploads one Android document to an existing remote directory without buffering it in memory. */
+    suspend fun uploadFile(directory: String, name: String, input: InputStream) = withContext(Dispatchers.IO) {
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            val targetDirectory = resolveRemoteDirectory(sftp, directory)
+            val target = remoteFileChildPath(targetDirectory, validateRemoteFileName(name))
+            requireRemotePathMissing(sftp, target)
+            sftp.put(input, target)
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
+    /** Streams one regular remote file into a caller-owned output stream. */
+    suspend fun downloadFile(path: String, output: OutputStream) = withContext(Dispatchers.IO) {
+        val remotePath = validateRemoteFilePath(path, "下载文件")
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            val attributes = sftp.lstat(remotePath)
+            require(!attributes.isDir && !attributes.isLink) { "只能下载普通文件" }
+            sftp.get(remotePath, output)
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
+    suspend fun renameFile(path: String, newName: String) = withContext(Dispatchers.IO) {
+        val source = validateRemoteFilePath(path, "重命名文件")
+        val leafName = validateRemoteFileName(newName)
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            require(source != "/") { "不能重命名服务器根目录" }
+            sftp.lstat(source)
+            val target = remoteFileChildPath(remoteParentPath(source).orEmpty().ifBlank { "/" }, leafName)
+            require(target != source) { "名称没有变化" }
+            requireRemotePathMissing(sftp, target)
+            sftp.rename(source, target)
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
+    suspend fun deleteFiles(paths: List<String>) = withContext(Dispatchers.IO) {
+        val sources = validateRemoteFilePaths(paths, "删除文件")
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            sources.forEach { source ->
+                require(source != "/") { "不能删除服务器根目录" }
+                deleteRemotePathRecursively(sftp, source)
+            }
+        } finally {
+            sftp.disconnect()
+        }
+    }
+
+    suspend fun transferFiles(
+        paths: List<String>,
+        destinationDirectory: String,
+        mode: RemoteFileTransferMode,
+    ) = withContext(Dispatchers.IO) {
+        val sources = validateRemoteFilePaths(paths, if (mode == RemoteFileTransferMode.Copy) "复制文件" else "移动文件")
+        val sshSession = synchronized(connectionStateLock) { session }
+            ?: throw IllegalStateException("SSH 通道尚未连接")
+        val sftp = sshSession.openChannel("sftp") as ChannelSftp
+        try {
+            runCancellableConnect(
+                connect = { sftp.connect(SSH_CHANNEL_TIMEOUT_MS) },
+                disconnect = sftp::disconnect,
+            )
+            val destination = resolveRemoteDirectory(sftp, destinationDirectory)
+            val plans = sources.map { source ->
+                require(source != "/") { "不能操作服务器根目录" }
+                val attributes = sftp.lstat(source)
+                val target = remoteFileChildPath(destination, remoteFileName(source))
+                require(target != source) { "目标目录与来源目录相同" }
+                if (attributes.isDir && !attributes.isLink) {
+                    require(!destination.startsWith("$source/")) { "不能将目录放入它自身的子目录" }
+                }
+                requireRemotePathMissing(sftp, target)
+                RemoteFileTransferPlan(source, target, attributes.isDir && !attributes.isLink)
+            }
+            require(plans.map(RemoteFileTransferPlan::target).distinct().size == plans.size) { "所选文件名称重复" }
+            plans.forEach { plan ->
+                when (mode) {
+                    RemoteFileTransferMode.Copy -> copyRemotePathRecursively(sftp, plan.source, plan.target)
+                    RemoteFileTransferMode.Move -> sftp.rename(plan.source, plan.target)
+                }
+            }
         } finally {
             sftp.disconnect()
         }
@@ -716,9 +885,122 @@ class SshCodexTransport {
         private const val MAX_APP_SERVER_LINE_CHARS = 8 * 1024 * 1024
         private const val MAX_IMAGE_PREVIEW_BYTES = 20L * 1024 * 1024
         private const val MAX_REMOTE_PATH_CHARS = 4_096
+        private const val MAX_REMOTE_FILE_NAME_CHARS = 255
+        private const val MAX_FILE_MANAGER_ENTRIES = 2_000
         private const val GLOBAL_SETTINGS_TIMEOUT_MS = 30_000L
     }
 }
+
+private data class RemoteFileTransferPlan(
+    val source: String,
+    val target: String,
+    val directory: Boolean,
+)
+
+private fun resolveRemoteDirectory(sftp: ChannelSftp, path: String): String {
+    val resolved = sftp.realpath(validateRemoteFilePath(path, "目标目录"))
+    check(sftp.stat(resolved).isDir) { "目标不是目录" }
+    return resolved
+}
+
+private fun requireRemotePathMissing(sftp: ChannelSftp, path: String) {
+    try {
+        sftp.lstat(path)
+        throw IllegalStateException("目标已存在：${remoteFileName(path)}")
+    } catch (error: SftpException) {
+        if (error.id != ChannelSftp.SSH_FX_NO_SUCH_FILE) throw error
+    }
+}
+
+private fun deleteRemotePathRecursively(sftp: ChannelSftp, path: String) {
+    val attributes = sftp.lstat(path)
+    if (attributes.isDir && !attributes.isLink) {
+        sftp.ls(path)
+            .filterIsInstance<ChannelSftp.LsEntry>()
+            .asSequence()
+            .filter { it.filename !in setOf(".", "..") }
+            .forEach { entry -> deleteRemotePathRecursively(sftp, remoteFileChildPath(path, entry.filename)) }
+        sftp.rmdir(path)
+    } else {
+        sftp.rm(path)
+    }
+}
+
+private fun copyRemotePathRecursively(sftp: ChannelSftp, source: String, target: String) {
+    val attributes = sftp.lstat(source)
+    require(!attributes.isLink) { "不支持复制符号链接" }
+    if (attributes.isDir) {
+        sftp.mkdir(target)
+        sftp.ls(source)
+            .filterIsInstance<ChannelSftp.LsEntry>()
+            .asSequence()
+            .filter { it.filename !in setOf(".", "..") }
+            .forEach { entry ->
+                copyRemotePathRecursively(
+                    sftp,
+                    remoteFileChildPath(source, entry.filename),
+                    remoteFileChildPath(target, entry.filename),
+                )
+            }
+    } else {
+        sftp.get(source).use { input ->
+            sftp.put(target).use { output -> input.copyTo(output, FILE_COPY_BUFFER_BYTES) }
+        }
+    }
+}
+
+private fun validateRemoteFilePaths(paths: List<String>, operation: String): List<String> {
+    val normalized = paths.map { validateRemoteFilePath(it, operation) }.distinct()
+    require(normalized.isNotEmpty()) { "请先选择文件" }
+    return normalized
+}
+
+internal fun validateRemoteFilePath(path: String, field: String): String {
+    val normalized = path.trim()
+    require(normalized.startsWith('/') && normalized.length <= MAX_REMOTE_FILE_PATH_CHARS) {
+        "${field}路径无效"
+    }
+    require(normalized.none { it == '\u0000' || it == '\r' || it == '\n' }) { "${field}路径包含无效字符" }
+    require(normalized.split('/').none { it == ".." }) { "${field}路径不能包含上级目录" }
+    return normalized
+}
+
+internal fun validateRemoteFileName(value: String): String {
+    val name = value.trim()
+    require(name.isNotEmpty() && name.length <= MAX_REMOTE_FILE_NAME_CHARS) { "文件名长度无效" }
+    require(name !in setOf(".", "..") && '/' !in name && '\\' !in name) { "文件名不能包含路径分隔符" }
+    require(name.none { it == '\u0000' || it == '\r' || it == '\n' || it.isISOControl() }) {
+        "文件名包含无效字符"
+    }
+    return name
+}
+
+internal fun remoteFileChildPath(directory: String, name: String): String =
+    if (directory == "/") "/$name" else "${directory.trimEnd('/')}/$name"
+
+private fun remoteParentPath(path: String): String? =
+    if (path == "/") null else path.substringBeforeLast('/').ifBlank { "/" }
+
+private fun remoteFileName(path: String): String = path.substringAfterLast('/').ifBlank { "文件" }
+
+internal fun formatRemoteFilePermissions(kind: RemoteFileKind, permissions: Int): String {
+    val prefix = when (kind) {
+        RemoteFileKind.Directory -> 'd'
+        RemoteFileKind.SymbolicLink -> 'l'
+        RemoteFileKind.File -> '-'
+        RemoteFileKind.Other -> '?'
+    }
+    val bits = intArrayOf(0x100, 0x80, 0x40, 0x20, 0x10, 0x8, 0x4, 0x2, 0x1)
+    val characters = charArrayOf('r', 'w', 'x', 'r', 'w', 'x', 'r', 'w', 'x')
+    return buildString(10) {
+        append(prefix)
+        bits.forEachIndexed { index, bit -> append(if (permissions and bit != 0) characters[index] else '-') }
+    }
+}
+
+private const val MAX_REMOTE_FILE_PATH_CHARS = 4_096
+private const val MAX_REMOTE_FILE_NAME_CHARS = 255
+private const val FILE_COPY_BUFFER_BYTES = 64 * 1024
 
 private class BoundedImageOutputStream(private val maximumBytes: Int) : OutputStream() {
     private val output = ByteArrayOutputStream()
