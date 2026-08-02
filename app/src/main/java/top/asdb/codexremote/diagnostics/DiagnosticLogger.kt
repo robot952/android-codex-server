@@ -13,7 +13,7 @@ import java.io.FileOutputStream
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.time.Instant
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 data class DiagnosticLogSnapshot(
@@ -42,6 +42,8 @@ object DiagnosticLogger {
     }
 
     fun isEnabled(): Boolean = enabled
+
+    internal fun formatTimestamp(instant: Instant): String = LOG_TIMESTAMP_FORMATTER.format(instant)
 
     fun setEnabled(value: Boolean) {
         checkNotNull(appContext) { "DiagnosticLogger is not initialized" }
@@ -111,7 +113,7 @@ object DiagnosticLogger {
         val output = File(directory, "codex-diagnostics-$timestamp.txt")
         FileOutputStream(output).bufferedWriter(Charsets.UTF_8).use { writer ->
             writer.appendLine("Codex Android diagnostic log")
-            writer.appendLine("Exported: ${Instant.now()}")
+            writer.appendLine("Exported: ${formatTimestamp(Instant.now())}")
             writer.appendLine("App: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
             writer.appendLine("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
             writer.appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
@@ -137,7 +139,7 @@ object DiagnosticLogger {
         val safeMessage = sanitizeDiagnosticText(message).take(MAX_MESSAGE_CHARS)
         val stack = throwable?.let(::safeStackTrace).orEmpty()
         val entry = buildString {
-            append(Instant.now()).append(' ')
+            append(formatTimestamp(Instant.now())).append(' ')
             append(level).append(' ')
             append(safeTag.ifBlank { "App" }).append(' ')
             append(safeMessage.ifBlank { "(empty)" }).append('\n')
@@ -199,8 +201,11 @@ object DiagnosticLogger {
     private const val MAX_LOG_BYTES = 2L * 1024L * 1024L
     private const val MAX_MESSAGE_CHARS = 4_000
     private const val MAX_STACK_CHARS = 24_000
+    private val CHINA_STANDARD_TIME = ZoneId.of("Asia/Shanghai")
+    private val LOG_TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS XXX")
+        .withZone(CHINA_STANDARD_TIME)
     private val FILE_TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
-        .withZone(ZoneOffset.UTC)
+        .withZone(CHINA_STANDARD_TIME)
 }
 
 internal fun takeLastUtf8Bytes(value: String, maxBytes: Int): String {

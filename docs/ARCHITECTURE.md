@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.51（versionCode 73）
+- Android 应用版本：1.7.52（versionCode 74）
 - 固定 Codex CLI：0.146.0
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34

@@ -1,11 +1,19 @@
 package top.asdb.codexremote.diagnostics
 
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiagnosticLoggerTest {
+    @Test
+    fun `diagnostic timestamps use China standard time`() {
+        val formatted = DiagnosticLogger.formatTimestamp(Instant.parse("2026-08-02T06:33:17.267Z"))
+
+        assertEquals("2026-08-02 14:33:17.267 +08:00", formatted)
+    }
+
     @Test
     fun `utf8 log tail keeps complete characters within byte budget`() {
         val tail = takeLastUtf8Bytes("prefix-你好😀", 7)
