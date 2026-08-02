@@ -43,4 +43,5 @@ notify: []
 strategy:
   blocking: true
 variables:
-  CODEX_RELEASE_TOKEN: 1d428c37e888a3d8ce32f593fa375524
+  global:
+  - CODEX_RELEASE_TOKEN
