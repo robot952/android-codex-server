@@ -15,6 +15,10 @@ CODEX_RELEASE_TOKEN
 Put only the token value in this variable. Never add it to the workflow YAML, source code, logs,
 or Git commits.
 
+Gitee Go resolves common variables only when they are referenced by the workflow command. The
+workflow passes `$CODEX_RELEASE_TOKEN` to the release script; keep the variable marked as secret
+so the resolved value is masked in build logs.
+
 The defaults publish to `YanGanYuan/android-codex-server`. A fork can override the target with
 optional protected variables `CODEX_RELEASE_OWNER` and `CODEX_RELEASE_REPOSITORY`.
 
