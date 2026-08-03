@@ -20,6 +20,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import top.asdb.codexremote.BuildConfig
+import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.ApprovalPrompt
@@ -677,6 +678,13 @@ class CodexAppServerClient(
         testModel: String,
     ): CodexConnectionTestResult =
         transport.testCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl, testModel)
+
+    suspend fun fetchApiModels(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+    ): List<ApiModelOption> = transport.fetchApiModels(profile, baseUrl, apiKey, proxyUrl)
 
     suspend fun answerApproval(
         prompt: ApprovalPrompt,

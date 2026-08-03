@@ -85,13 +85,16 @@ import androidx.compose.material.icons.filled.PauseCircleOutline
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.RateReview
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -168,7 +171,9 @@ import kotlin.math.roundToInt
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.ApprovalMode
+import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.CodexModel
+import top.asdb.codexremote.data.CustomModelDefinition
 import top.asdb.codexremote.data.FileChange
 import top.asdb.codexremote.data.MessageAttachment
 import top.asdb.codexremote.data.ThreadGoal
@@ -205,6 +210,10 @@ fun WorkScreen(
     onComposerChange: (String) -> Unit,
     onSelectModel: (String, String?) -> Unit,
     onSelectEffort: (String) -> Unit,
+    onSaveCustomModel: (String?, CustomModelDefinition) -> Unit,
+    onDeleteCustomModel: (String) -> Unit,
+    onSetModelHidden: (String, Boolean) -> Unit,
+    onFetchApiModelOptions: () -> Unit,
     onSelectApprovalMode: (ApprovalMode) -> Unit,
     onSetGoal: (String) -> Unit,
     onToggleGoalPause: () -> Unit,
@@ -237,6 +246,7 @@ fun WorkScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     var selectedDiff by remember { mutableStateOf<FileChange?>(null) }
     var showModels by remember { mutableStateOf(false) }
+    var showModelManager by remember { mutableStateOf(false) }
     var showPermissions by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var renameRequested by remember { mutableStateOf(false) }
@@ -801,7 +811,33 @@ fun WorkScreen(
             selectedEffort = state.selectedEffort,
             onSelectModel = onSelectModel,
             onSelectEffort = onSelectEffort,
+            onManageModels = {
+                showModels = false
+                showModelManager = true
+            },
             onDismiss = { showModels = false },
+        )
+    }
+
+    if (showModelManager) {
+        val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
+        ModelManagerSheet(
+            models = state.models,
+            customModels = profile?.customModels.orEmpty(),
+            hiddenModelIds = profile?.hiddenModelIds.orEmpty(),
+            apiModelOptions = state.apiModelOptions.takeIf {
+                state.apiModelOptionsProfileId == state.selectedProfileId
+            }.orEmpty(),
+            apiModelOptionsLoading = state.apiModelOptionsLoading &&
+                state.apiModelOptionsProfileId == state.selectedProfileId,
+            apiModelOptionsError = state.apiModelOptionsError.takeIf {
+                state.apiModelOptionsProfileId == state.selectedProfileId
+            },
+            onSaveCustomModel = onSaveCustomModel,
+            onDeleteCustomModel = onDeleteCustomModel,
+            onSetModelHidden = onSetModelHidden,
+            onFetchApiModelOptions = onFetchApiModelOptions,
+            onDismiss = { showModelManager = false },
         )
     }
 
@@ -2450,31 +2486,68 @@ private fun ModelSheet(
     selectedEffort: String?,
     onSelectModel: (String, String?) -> Unit,
     onSelectEffort: (String) -> Unit,
+    onManageModels: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val selected = models.firstOrNull { it.model == selectedModel || it.id == selectedModel }
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Text("模型", style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
-        LazyColumn(Modifier.fillMaxWidth().fillMaxHeight(0.55f)) {
-            items(models, key = { it.id }) { model ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        onSelectModel(model.model, model.defaultEffort)
-                    }.padding(horizontal = 20.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(model.displayName, fontWeight = FontWeight.Medium)
-                        if (model.description.isNotBlank()) {
-                            Text(model.description, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("模型", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            IconButton(onClick = onManageModels) {
+                Icon(Icons.Default.Settings, contentDescription = "管理模型")
+            }
+        }
+        if (models.isEmpty()) {
+            Text(
+                "暂无可用模型",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 28.dp),
+            )
+        } else {
+            LazyColumn(Modifier.fillMaxWidth().fillMaxHeight(0.55f)) {
+                items(models, key = { "${it.id}:${it.model}" }) { model ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            onSelectModel(model.model, model.defaultEffort)
+                        }.padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(model.displayName, fontWeight = FontWeight.Medium)
+                            if (model.model != model.displayName) {
+                                Text(
+                                    model.model,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (model.description.isNotBlank()) {
+                                Text(
+                                    model.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            ModelCapabilityText(
+                                contextWindowTokens = model.contextWindowTokens,
+                                maxOutputTokens = model.maxOutputTokens,
+                            )
                         }
-                    }
-                    if (model == selected) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = CodexGreen,
-                            modifier = Modifier.size(18.dp))
+                        if (model == selected) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = CodexGreen,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -2499,4 +2572,387 @@ private fun ModelSheet(
         }
         Spacer(Modifier.height(22.dp).navigationBarsPadding())
     }
+}
+
+private data class ModelEditorRequest(
+    val originalModelId: String? = null,
+    val definition: CustomModelDefinition = CustomModelDefinition(),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelManagerSheet(
+    models: List<CodexModel>,
+    customModels: List<CustomModelDefinition>,
+    hiddenModelIds: List<String>,
+    apiModelOptions: List<ApiModelOption>,
+    apiModelOptionsLoading: Boolean,
+    apiModelOptionsError: String?,
+    onSaveCustomModel: (String?, CustomModelDefinition) -> Unit,
+    onDeleteCustomModel: (String) -> Unit,
+    onSetModelHidden: (String, Boolean) -> Unit,
+    onFetchApiModelOptions: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var editorRequest by remember { mutableStateOf<ModelEditorRequest?>(null) }
+    var deleteRequested by remember { mutableStateOf<CustomModelDefinition?>(null) }
+    val remoteModels = models.filterNot { it.isCustom }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("模型管理", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "仅影响当前服务器",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(onClick = { editorRequest = ModelEditorRequest() }) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("新增模型")
+            }
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.68f),
+            contentPadding = PaddingValues(bottom = 8.dp),
+        ) {
+            if (customModels.isNotEmpty()) {
+                item(key = "custom-title") {
+                    ModelManagerSectionTitle("自定义模型")
+                }
+                items(customModels, key = { "custom-${it.modelId}" }) { definition ->
+                    ModelManagerCustomRow(
+                        definition = definition,
+                        onEdit = {
+                            editorRequest = ModelEditorRequest(
+                                originalModelId = definition.modelId,
+                                definition = definition,
+                            )
+                        },
+                        onDelete = { deleteRequested = definition },
+                    )
+                }
+            }
+            if (remoteModels.isNotEmpty()) {
+                item(key = "remote-title") {
+                    ModelManagerSectionTitle("远端模型")
+                }
+                items(remoteModels, key = { "remote-${it.id}:${it.model}" }) { model ->
+                    ModelManagerRemoteRow(
+                        model = model,
+                        onHide = { onSetModelHidden(model.model, true) },
+                    )
+                }
+            }
+            if (hiddenModelIds.isNotEmpty()) {
+                item(key = "hidden-title") {
+                    ModelManagerSectionTitle("已隐藏模型")
+                }
+                items(hiddenModelIds, key = { "hidden-$it" }) { modelId ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            modelId,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        IconButton(onClick = { onSetModelHidden(modelId, false) }) {
+                            Icon(Icons.Default.Visibility, contentDescription = "显示模型")
+                        }
+                    }
+                }
+            }
+            if (customModels.isEmpty() && remoteModels.isEmpty() && hiddenModelIds.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        "暂无模型，可新增模型或重新连接服务器刷新远端列表",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp).navigationBarsPadding())
+    }
+    editorRequest?.let { request ->
+        CustomModelEditorDialog(
+            request = request,
+            existingModelIds = customModels.map { it.modelId },
+            apiModelOptions = apiModelOptions,
+            apiModelOptionsLoading = apiModelOptionsLoading,
+            apiModelOptionsError = apiModelOptionsError,
+            onFetchApiModelOptions = onFetchApiModelOptions,
+            onSave = { definition ->
+                onSaveCustomModel(request.originalModelId, definition)
+                editorRequest = null
+            },
+            onDismiss = { editorRequest = null },
+        )
+    }
+    deleteRequested?.let { definition ->
+        AlertDialog(
+            onDismissRequest = { deleteRequested = null },
+            title = { Text("删除自定义模型？") },
+            text = { Text(definition.displayName.ifBlank { definition.modelId }) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteCustomModel(definition.modelId)
+                    deleteRequested = null
+                }) { Text("删除", color = CodexRed) }
+            },
+            dismissButton = { TextButton(onClick = { deleteRequested = null }) { Text("取消") } },
+        )
+    }
+}
+
+@Composable
+private fun ModelManagerSectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+    )
+}
+
+@Composable
+private fun ModelManagerCustomRow(
+    definition: CustomModelDefinition,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(definition.displayName.ifBlank { definition.modelId }, fontWeight = FontWeight.Medium)
+            if (definition.displayName.isNotBlank()) {
+                Text(
+                    definition.modelId,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            ModelCapabilityText(definition.contextWindowTokens, definition.maxOutputTokens)
+        }
+        IconButton(onClick = onEdit) {
+            Icon(Icons.Default.Edit, contentDescription = "编辑自定义模型")
+        }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Default.DeleteOutline, contentDescription = "删除自定义模型", tint = CodexRed)
+        }
+    }
+}
+
+@Composable
+private fun ModelManagerRemoteRow(model: CodexModel, onHide: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(model.displayName, fontWeight = FontWeight.Medium)
+            if (model.model != model.displayName) {
+                Text(
+                    model.model,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            ModelCapabilityText(model.contextWindowTokens, model.maxOutputTokens)
+        }
+        IconButton(onClick = onHide) {
+            Icon(Icons.Default.VisibilityOff, contentDescription = "隐藏模型")
+        }
+    }
+}
+
+@Composable
+private fun ModelCapabilityText(contextWindowTokens: Long, maxOutputTokens: Long) {
+    val details = buildList {
+        if (contextWindowTokens > 0L) add("上下文 ${formatModelTokenLimit(contextWindowTokens)}")
+        if (maxOutputTokens > 0L) add("输出 ${formatModelTokenLimit(maxOutputTokens)}")
+    }
+    if (details.isNotEmpty()) {
+        Text(
+            details.joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun CustomModelEditorDialog(
+    request: ModelEditorRequest,
+    existingModelIds: List<String>,
+    apiModelOptions: List<ApiModelOption>,
+    apiModelOptionsLoading: Boolean,
+    apiModelOptionsError: String?,
+    onFetchApiModelOptions: () -> Unit,
+    onSave: (CustomModelDefinition) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var modelId by remember(request) { mutableStateOf(request.definition.modelId) }
+    var displayName by remember(request) { mutableStateOf(request.definition.displayName) }
+    var contextWindow by remember(request) {
+        mutableStateOf(request.definition.contextWindowTokens.takeIf { it > 0L }?.toString().orEmpty())
+    }
+    var maxOutput by remember(request) {
+        mutableStateOf(request.definition.maxOutputTokens.takeIf { it > 0L }?.toString().orEmpty())
+    }
+    var apiSearch by remember(request) { mutableStateOf("") }
+    val normalizedId = modelId.trim()
+    val contextValue = contextWindow.trim().toLongOrNull()
+    val maxOutputValue = maxOutput.trim().toLongOrNull()
+    val invalidContext = contextWindow.isNotBlank() && (contextValue == null || contextValue < 0L)
+    val invalidMaxOutput = maxOutput.isNotBlank() && (maxOutputValue == null || maxOutputValue < 0L)
+    val duplicateId = normalizedId.isNotBlank() && normalizedId != request.originalModelId &&
+        normalizedId in existingModelIds
+    val modelIdValid = normalizedId.matches(Regex("[A-Za-z0-9._:/@+\\-]+")) && normalizedId.length <= 200
+    val canSave = modelIdValid && !duplicateId && !invalidContext && !invalidMaxOutput
+    val visibleApiOptions = apiModelOptions.asSequence()
+        .filter { option ->
+            val query = apiSearch.trim()
+            query.isBlank() || option.modelId.contains(query, ignoreCase = true) ||
+                option.displayName.contains(query, ignoreCase = true)
+        }
+        .take(80)
+        .toList()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (request.originalModelId == null) "新增模型" else "编辑自定义模型") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onFetchApiModelOptions,
+                    enabled = !apiModelOptionsLoading,
+                ) {
+                    if (apiModelOptionsLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(7.dp))
+                    Text("获取 API 模型列表")
+                }
+                apiModelOptionsError?.let { message ->
+                    Text(message, style = MaterialTheme.typography.bodySmall, color = CodexRed)
+                }
+                if (apiModelOptions.isNotEmpty()) {
+                    Text("从 API 列表选择", style = MaterialTheme.typography.labelLarge)
+                    OutlinedTextField(
+                        value = apiSearch,
+                        onValueChange = { apiSearch = it },
+                        label = { Text("筛选模型") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    visibleApiOptions.forEach { option ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                modelId = option.modelId
+                                if (displayName.isBlank()) displayName = option.displayName
+                                if (option.contextWindowTokens > 0L) {
+                                    contextWindow = option.contextWindowTokens.toString()
+                                }
+                                if (option.maxOutputTokens > 0L) {
+                                    maxOutput = option.maxOutputTokens.toString()
+                                }
+                            }.padding(vertical = 7.dp),
+                        ) {
+                            Column {
+                                Text(option.displayName.ifBlank { option.modelId }, fontWeight = FontWeight.Medium)
+                                if (option.displayName.isNotBlank()) {
+                                    Text(
+                                        option.modelId,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                ModelCapabilityText(option.contextWindowTokens, option.maxOutputTokens)
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(color = CodexBorder)
+                OutlinedTextField(
+                    value = modelId,
+                    onValueChange = { modelId = it },
+                    label = { Text("模型 ID") },
+                    singleLine = true,
+                    isError = modelId.isNotBlank() && (!modelIdValid || duplicateId),
+                    supportingText = {
+                        when {
+                            duplicateId -> Text("已有相同的自定义模型 ID")
+                            modelId.isNotBlank() && !modelIdValid -> Text("仅支持字母、数字及 . _ - / : @ +")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("显示名称（可选）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = contextWindow,
+                    onValueChange = { contextWindow = it },
+                    label = { Text("上下文长度（tokens，可选）") },
+                    singleLine = true,
+                    isError = invalidContext,
+                    supportingText = { if (invalidContext) Text("请输入非负整数") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = maxOutput,
+                    onValueChange = { maxOutput = it },
+                    label = { Text("最大输出长度（tokens，可选）") },
+                    singleLine = true,
+                    isError = invalidMaxOutput,
+                    supportingText = { if (invalidMaxOutput) Text("请输入非负整数") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        CustomModelDefinition(
+                            modelId = normalizedId,
+                            displayName = displayName.trim(),
+                            contextWindowTokens = contextValue ?: 0L,
+                            maxOutputTokens = maxOutputValue ?: 0L,
+                        ),
+                    )
+                },
+                enabled = canSave,
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+private fun formatModelTokenLimit(value: Long): String = when {
+    value >= 1_000L && value % 1_000L == 0L -> "${value / 1_000L}K"
+    else -> value.toString()
 }

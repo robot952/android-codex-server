@@ -30,6 +30,30 @@ data class ServerProfile(
     val preferredEffort: String = "",
     /** Model used only by the non-mutating API settings connection check. */
     val testModel: String = "",
+    /** User-defined models shown alongside the remote Codex App Server model list. */
+    val customModels: List<CustomModelDefinition> = emptyList(),
+    /** Remote model IDs hidden only from this server profile's picker. */
+    val hiddenModelIds: List<String> = emptyList(),
+)
+
+@Serializable
+data class CustomModelDefinition(
+    /** Exact identifier sent to Codex in thread/start and turn/start. */
+    val modelId: String = "",
+    /** Optional label used only by the Android picker. */
+    val displayName: String = "",
+    /** Informational context window size in tokens; zero means unknown. */
+    val contextWindowTokens: Long = 0,
+    /** Informational maximum output size in tokens; zero means unknown. */
+    val maxOutputTokens: Long = 0,
+)
+
+/** A model returned by the configured OpenAI-compatible API's /models endpoint. */
+data class ApiModelOption(
+    val modelId: String,
+    val displayName: String = "",
+    val contextWindowTokens: Long = 0,
+    val maxOutputTokens: Long = 0,
 )
 
 @Serializable
@@ -97,6 +121,10 @@ data class CodexModel(
     val isDefault: Boolean,
     val defaultEffort: String,
     val efforts: List<String>,
+    /** Informational metadata from a custom model or a provider model list. */
+    val contextWindowTokens: Long = 0,
+    val maxOutputTokens: Long = 0,
+    val isCustom: Boolean = false,
 )
 
 /** A durable objective owned by the remote Codex thread. */
@@ -393,6 +421,11 @@ data class AppUiState(
     val submitting: Boolean = false,
     val loading: Boolean = false,
     val models: List<CodexModel> = emptyList(),
+    /** Fresh results from the configured API /models endpoint for the model editor. */
+    val apiModelOptions: List<ApiModelOption> = emptyList(),
+    val apiModelOptionsProfileId: String? = null,
+    val apiModelOptionsLoading: Boolean = false,
+    val apiModelOptionsError: String? = null,
     val selectedModel: String? = null,
     val selectedEffort: String? = null,
     val approvalMode: ApprovalMode = ApprovalMode.RequestApproval,

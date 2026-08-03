@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
+import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
 import top.asdb.codexremote.data.RemoteDirectory
@@ -586,6 +587,21 @@ class SshCodexTransport {
             operationName = "测试 Codex API 连接",
         )
         return RemoteCodexSettings.parseConnectionTest(lines)
+    }
+
+    suspend fun fetchApiModels(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+    ): List<ApiModelOption> {
+        val lines = executeScript(
+            profile = profile,
+            script = RemoteCodexSettings.modelListScript(baseUrl, apiKey, proxyUrl),
+            timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
+            operationName = "获取 API 模型列表",
+        )
+        return RemoteCodexSettings.parseApiModels(lines)
     }
 
     fun isConnected(): Boolean = synchronized(connectionStateLock) {

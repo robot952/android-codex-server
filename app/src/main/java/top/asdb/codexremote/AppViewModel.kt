@@ -30,12 +30,15 @@ import top.asdb.codexremote.codex.ProfiledCodexApproval
 import top.asdb.codexremote.codex.ProfiledCodexConnectionEvent
 import top.asdb.codexremote.codex.ProfiledCodexNotification
 import top.asdb.codexremote.codex.string
+import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalMode
 import top.asdb.codexremote.data.ApprovalPrompt
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
+import top.asdb.codexremote.data.CodexModel
+import top.asdb.codexremote.data.CustomModelDefinition
 import top.asdb.codexremote.data.PendingAttachment
 import top.asdb.codexremote.data.ProfileStore
 import top.asdb.codexremote.data.RemoteDirectoryListing
@@ -123,6 +126,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val pendingFingerprints = mutableMapOf<String, String>()
     /** Resolved executable for a managed profile; keeps later saves from replacing its client. */
     private val effectiveProfiles = mutableMapOf<String, ServerProfile>()
+    /** Raw App Server models stay separate so a hidden item can later be restored without reconnecting. */
+    private val remoteModelsByProfile = mutableMapOf<String, List<CodexModel>>()
     private val operations = ProfileOperationTracker()
     private val surfacedDiagnostics = LinkedHashMap<String, Long>()
     private var fingerprintDialogProfileId: String? = null
@@ -250,6 +255,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 preferredModel = input.preferredModel.ifBlank { existing.preferredModel },
                 preferredEffort = input.preferredEffort.ifBlank { existing.preferredEffort },
                 testModel = input.testModel.ifBlank { existing.testModel },
+                // The server form does not edit model picker preferences. A restored form draft
+                // must not discard models managed from the conversation screen.
+                customModels = input.customModels.ifEmpty { existing.customModels },
+                hiddenModelIds = input.hiddenModelIds.ifEmpty { existing.hiddenModelIds },
             )
         } else input
         val switching = before.selectedProfileId != normalized.id
@@ -394,6 +403,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         setupStates.remove(id)
         setupProfiles.remove(id)
         effectiveProfiles.remove(id)
+        remoteModelsByProfile.remove(id)
         pendingFingerprints.remove(id)
         fingerprintProfiles.remove(id)
         removeComposerDrafts(id)
@@ -2228,6 +2238,124 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         persistThreadModelPreference(model, effort)
     }
 
+    /** Loads the configured OpenAI-compatible API's /models list through the connected server. */
+    fun fetchApiModelOptions() {
+        val profileId = _state.value.selectedProfileId ?: return
+        if (_state.value.apiModelOptionsLoading) return
+        val profile = currentProfile() ?: return
+        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+            _state.update {
+                it.copy(
+                    apiModelOptionsProfileId = profileId,
+                    apiModelOptionsError = "服务器未连接，无法获取模型列表",
+                )
+            }
+            return
+        }
+        val operation = beginClientOperation(profileId, "api-model-list", client) ?: return
+        _state.update {
+            it.copy(
+                apiModelOptions = emptyList(),
+                apiModelOptionsProfileId = profileId,
+                apiModelOptionsLoading = true,
+                apiModelOptionsError = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val settings = client.readCodexGlobalSettings(profile)
+                val models = client.fetchApiModels(
+                    profile = profile,
+                    baseUrl = settings.baseUrl,
+                    apiKey = settings.apiKey,
+                    proxyUrl = settings.proxyUrl,
+                )
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            apiModelOptions = models,
+                            apiModelOptionsProfileId = profileId,
+                            apiModelOptionsLoading = false,
+                            apiModelOptionsError = null,
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) {
+                    _state.update {
+                        it.copy(
+                            apiModelOptions = emptyList(),
+                            apiModelOptionsProfileId = profileId,
+                            apiModelOptionsLoading = false,
+                            apiModelOptionsError = error.message ?: "无法获取 API 模型列表",
+                        )
+                    }
+                }
+            } finally {
+                finishClientOperation(operation)
+            }
+        }
+    }
+
+    fun saveCustomModel(originalModelId: String?, definition: CustomModelDefinition) {
+        val profileId = _state.value.selectedProfileId ?: return
+        val normalized = runCatching { normalizeCustomModelDefinition(definition) }.getOrElse { error ->
+            _state.update { it.copy(error = error.message ?: "自定义模型格式错误") }
+            return
+        }
+        val profile = currentProfile() ?: return
+        val originalId = originalModelId?.trim().takeUnless { it.isNullOrBlank() }
+        val originalIndex = originalId?.let { id -> profile.customModels.indexOfFirst { it.modelId == id } } ?: -1
+        val duplicateIndex = profile.customModels.indexOfFirst { it.modelId == normalized.modelId }
+        if (duplicateIndex >= 0 && duplicateIndex != originalIndex) {
+            _state.update { it.copy(error = "已有相同的自定义模型 ID") }
+            return
+        }
+        if (originalIndex < 0 &&
+            profile.customModels.size >= MAX_CUSTOM_MODELS
+        ) {
+            _state.update { it.copy(error = "自定义模型最多可添加 $MAX_CUSTOM_MODELS 个") }
+            return
+        }
+        updateProfileModelCatalog(profileId) { profile ->
+            val replacementIndex = originalId?.let { id ->
+                profile.customModels.indexOfFirst { it.modelId == id }
+            } ?: profile.customModels.indexOfFirst { it.modelId == normalized.modelId }
+            val customModels = if (replacementIndex >= 0) {
+                profile.customModels.mapIndexed { index, current -> if (index == replacementIndex) normalized else current }
+            } else {
+                profile.customModels + normalized
+            }
+            profile.copy(customModels = customModels)
+        }
+    }
+
+    fun deleteCustomModel(modelId: String) {
+        val profileId = _state.value.selectedProfileId ?: return
+        val normalizedId = modelId.trim()
+        if (normalizedId.isBlank()) return
+        updateProfileModelCatalog(profileId) { profile ->
+            profile.copy(customModels = profile.customModels.filterNot { it.modelId == normalizedId })
+        }
+    }
+
+    /** Hiding affects only the Android picker; it never removes a provider-side model. */
+    fun setModelHidden(modelId: String, hidden: Boolean) {
+        val profileId = _state.value.selectedProfileId ?: return
+        val normalizedId = modelId.trim()
+        if (normalizedId.isBlank()) return
+        updateProfileModelCatalog(profileId) { profile ->
+            val hiddenIds = if (hidden) {
+                (profile.hiddenModelIds + normalizedId).distinct()
+            } else {
+                profile.hiddenModelIds.filterNot { it == normalizedId }
+            }
+            profile.copy(hiddenModelIds = hiddenIds)
+        }
+    }
+
     fun selectApprovalMode(mode: ApprovalMode) {
         _state.update { current ->
             val profiles = current.profiles.map { profile ->
@@ -2958,6 +3086,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             codexSettings = null,
             codexSettingsTestResult = null,
             codexSettingsError = null,
+            apiModelOptions = emptyList(),
+            apiModelOptionsProfileId = null,
+            apiModelOptionsLoading = false,
+            apiModelOptionsError = null,
             submitting = false,
             error = null,
             diagnostic = null,
@@ -2999,6 +3131,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         submitting = false,
         loading = false,
         models = emptyList(),
+        apiModelOptions = emptyList(),
+        apiModelOptionsProfileId = null,
+        apiModelOptionsLoading = false,
+        apiModelOptionsError = null,
         selectedModel = null,
         selectedEffort = null,
         composerDraft = "",
@@ -3038,6 +3174,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         contextUsageFallbacks.clear(profileId)
         subAgentNavigationStacks.clear(profileId)
         effectiveProfiles.remove(profileId)
+        remoteModelsByProfile.remove(profileId)
         pendingApprovalsByProfile.remove(profileId)
         setupProfiles.remove(profileId)
         setupStates.remove(profileId)
@@ -3417,11 +3554,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "Connection",
             "connect_success profile=${profileRef(profile.id)} version=${connected.version} threads=${connected.threads.size} models=${connected.models.size}",
         )
-        val defaultModel = connected.models.firstOrNull { it.isDefault } ?: connected.models.firstOrNull()
+        val configuredProfile = _state.value.profiles.firstOrNull { it.id == profile.id } ?: profile
+        remoteModelsByProfile[profile.id] = connected.models
+        val models = buildModelCatalog(
+            remoteModels = connected.models,
+            customModels = configuredProfile.customModels,
+            hiddenModelIds = configuredProfile.hiddenModelIds,
+        )
+        val defaultModel = models.firstOrNull { it.isDefault } ?: models.firstOrNull()
         val preferredSelection = resolveNewThreadModelSelection(
-            models = connected.models,
-            configuredModel = profile.preferredModel,
-            configuredEffort = profile.preferredEffort,
+            models = models,
+            configuredModel = configuredProfile.preferredModel,
+            configuredEffort = configuredProfile.preferredEffort,
         )
         val pinned = isPinnedVersion(connected.version)
         val versionMessage = if (pinned) {
@@ -3438,10 +3582,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!isActiveProfile(profile.id)) {
             sessionSnapshots[profile.id] = SessionSnapshot(
                 threads = connected.threads,
-                models = connected.models,
+                models = models,
                 selectedModel = preferredSelection.model ?: defaultModel?.model,
                 selectedEffort = preferredSelection.effort ?: defaultModel?.defaultEffort,
-                workspaceCurrentPath = connected.workspace?.currentPath ?: profile.workspace.ifBlank { "/" },
+                workspaceCurrentPath = connected.workspace?.currentPath ?: configuredProfile.workspace.ifBlank { "/" },
                 workspaceParentPath = connected.workspace?.parentPath,
                 workspaceDirectories = connected.workspace?.directories.orEmpty(),
                 workspaceError = connected.workspaceError,
@@ -3451,7 +3595,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         // Keep the resolved command/client created by loadConnectedSession.
         connections.select(profile.id)
-        val showInitialWorkspacePrompt = profile.workspace.isBlank() && !profile.workspacePromptShown
+        val showInitialWorkspacePrompt = configuredProfile.workspace.isBlank() && !configuredProfile.workspacePromptShown
         _state.update {
             val profiles = it.profiles.map { stored ->
                 if (stored.id == profile.id && !stored.workspacePromptShown) {
@@ -3464,15 +3608,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 connection = connectedState,
                 connectionStates = it.connectionStates + (profile.id to connectedState),
                 threads = connected.threads,
-                models = connected.models,
+                models = models,
+                apiModelOptions = emptyList(),
+                apiModelOptionsProfileId = null,
+                apiModelOptionsLoading = false,
+                apiModelOptionsError = null,
                 selectedModel = preferredSelection.model ?: defaultModel?.model,
                 selectedEffort = preferredSelection.effort ?: defaultModel?.defaultEffort,
-                approvalMode = profile.approvalMode,
-                sandbox = profile.approvalMode.sandbox,
+                approvalMode = configuredProfile.approvalMode,
+                sandbox = configuredProfile.approvalMode.sandbox,
                 workspacePickerVisible = showInitialWorkspacePrompt,
                 workspaceLoading = false,
                 workspaceCurrentPath = connected.workspace?.currentPath
-                    ?: profile.workspace.ifBlank { "/" },
+                    ?: configuredProfile.workspace.ifBlank { "/" },
                 workspaceParentPath = connected.workspace?.parentPath,
                 workspaceDirectories = connected.workspace?.directories.orEmpty(),
                 workspaceError = connected.workspaceError,
@@ -3520,7 +3668,53 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         hostFingerprint = profile.hostFingerprint.trim(),
         remoteCommand = profile.remoteCommand.trim().ifBlank { RemoteBootstrap.MANAGED_REMOTE_COMMAND },
         testModel = profile.testModel.trim(),
+        customModels = profile.customModels.mapNotNull {
+            runCatching { normalizeCustomModelDefinition(it) }.getOrNull()
+        }.distinctBy { it.modelId },
+        hiddenModelIds = profile.hiddenModelIds.asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .take(MAX_HIDDEN_MODEL_IDS)
+            .toList(),
     )
+
+    private fun updateProfileModelCatalog(
+        profileId: String,
+        transform: (ServerProfile) -> ServerProfile,
+    ) {
+        val current = _state.value
+        val profile = current.profiles.firstOrNull { it.id == profileId } ?: return
+        val updatedProfile = normalizeProfile(transform(profile))
+        val fallbackModels = if (current.selectedProfileId == profileId) {
+            current.models.filterNot(CodexModel::isCustom)
+        } else {
+            sessionSnapshots[profileId]?.models.orEmpty().filterNot(CodexModel::isCustom)
+        }
+        val remoteModels = remoteModelsByProfile[profileId] ?: fallbackModels
+        val catalog = buildModelCatalog(
+            remoteModels = remoteModels,
+            customModels = updatedProfile.customModels,
+            hiddenModelIds = updatedProfile.hiddenModelIds,
+        )
+        _state.update { latest ->
+            val profiles = latest.profiles.map { candidate ->
+                if (candidate.id == profileId) updatedProfile else candidate
+            }
+            if (latest.selectedProfileId == profileId) {
+                latest.copy(profiles = profiles, models = catalog)
+            } else {
+                latest.copy(profiles = profiles)
+            }
+        }
+        if (_state.value.selectedProfileId == profileId) {
+            sessionSnapshots[profileId] = SessionSnapshot.capture(_state.value)
+        } else {
+            val snapshot = sessionSnapshots[profileId] ?: SessionSnapshot()
+            sessionSnapshots[profileId] = snapshot.copy(models = catalog)
+        }
+        persistProfiles()
+    }
 
     private fun updateProfileCodexDefaults(
         profileId: String,
@@ -3866,6 +4060,74 @@ internal fun resolveNewThreadModelSelection(
     )
 }
 
+/** Merges provider-advertised models with local picker preferences for one server profile. */
+internal fun buildModelCatalog(
+    remoteModels: List<CodexModel>,
+    customModels: List<CustomModelDefinition>,
+    hiddenModelIds: Collection<String>,
+): List<CodexModel> {
+    val hidden = hiddenModelIds.asSequence().map(String::trim).filter(String::isNotBlank).toSet()
+    val models = remoteModels.filterNot { remote ->
+        remote.id in hidden || remote.model in hidden
+    }.distinctBy { it.model.ifBlank { it.id } }.toMutableList()
+    customModels.forEach { custom ->
+        val modelId = custom.modelId.trim()
+        if (modelId.isBlank()) return@forEach
+        val index = models.indexOfFirst { it.model == modelId || it.id == modelId }
+        if (index >= 0) {
+            val remote = models[index]
+            models[index] = remote.copy(
+                model = modelId,
+                displayName = custom.displayName.ifBlank { remote.displayName },
+                contextWindowTokens = custom.contextWindowTokens.takeIf { it > 0L }
+                    ?: remote.contextWindowTokens,
+                maxOutputTokens = custom.maxOutputTokens.takeIf { it > 0L } ?: remote.maxOutputTokens,
+                isCustom = true,
+            )
+        } else {
+            models += CodexModel(
+                id = modelId,
+                model = modelId,
+                displayName = custom.displayName.ifBlank { modelId },
+                description = "自定义模型",
+                isDefault = false,
+                defaultEffort = "",
+                efforts = emptyList(),
+                contextWindowTokens = custom.contextWindowTokens,
+                maxOutputTokens = custom.maxOutputTokens,
+                isCustom = true,
+            )
+        }
+    }
+    return models
+}
+
+internal fun normalizeCustomModelDefinition(value: CustomModelDefinition): CustomModelDefinition {
+    val modelId = value.modelId.trim()
+    require(modelId.isNotBlank()) { "请输入模型 ID" }
+    require(modelId.length <= MAX_CUSTOM_MODEL_ID_CHARS &&
+        modelId.matches(Regex("[A-Za-z0-9._:/@+\\-]+"))
+    ) {
+        "模型 ID 只能包含字母、数字及 . _ - / : @ +"
+    }
+    val displayName = value.displayName.trim()
+    require(displayName.length <= MAX_CUSTOM_MODEL_NAME_CHARS && displayName.none { it.isISOControl() }) {
+        "显示名称不能超过 $MAX_CUSTOM_MODEL_NAME_CHARS 个字符或包含控制字符"
+    }
+    require(value.contextWindowTokens in 0L..MAX_MODEL_TOKEN_LIMIT) {
+        "上下文长度必须在 0 到 $MAX_MODEL_TOKEN_LIMIT 之间"
+    }
+    require(value.maxOutputTokens in 0L..MAX_MODEL_TOKEN_LIMIT) {
+        "最大输出长度必须在 0 到 $MAX_MODEL_TOKEN_LIMIT 之间"
+    }
+    return CustomModelDefinition(
+        modelId = modelId,
+        displayName = displayName,
+        contextWindowTokens = value.contextWindowTokens,
+        maxOutputTokens = value.maxOutputTokens,
+    )
+}
+
 internal fun resolveThreadModelSelection(
     models: List<top.asdb.codexremote.data.CodexModel>,
     preference: ThreadModelPreference?,
@@ -4196,3 +4458,8 @@ private data class SessionSnapshot(
 private const val MAX_PROFILE_SESSION_SNAPSHOTS = 6
 private const val MAX_SESSION_SNAPSHOT_WEIGHT_CHARS = 2 * 1024 * 1024
 private const val MAX_SESSION_SNAPSHOT_ENTRIES = 512
+private const val MAX_CUSTOM_MODELS = 100
+private const val MAX_HIDDEN_MODEL_IDS = 500
+private const val MAX_CUSTOM_MODEL_ID_CHARS = 200
+private const val MAX_CUSTOM_MODEL_NAME_CHARS = 120
+private const val MAX_MODEL_TOKEN_LIMIT = 10_000_000L

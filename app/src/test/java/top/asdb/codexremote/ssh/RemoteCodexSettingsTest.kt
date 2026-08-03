@@ -41,6 +41,48 @@ class RemoteCodexSettingsTest {
     }
 
     @Test
+    fun `model list script has valid POSIX shell syntax`() {
+        val process = ProcessBuilder("sh", "-n").start()
+        process.outputStream.bufferedWriter().use {
+            it.write(
+                RemoteCodexSettings.modelListScript(
+                    "https://gateway.example.com/v1",
+                    "sk-test",
+                    "http://127.0.0.1:7890",
+                ),
+            )
+        }
+
+        assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+    }
+
+    @Test
+    fun `parses compatible API model limits`() {
+        val response = """
+            {"data":[
+              {"id":"gpt-large","display_name":"GPT Large","context_length":128000,"max_output_tokens":16000},
+              {"id":"gpt-small","context_window":"32000","top_provider":{"max_completion_tokens":4096}}
+            ]}
+        """.trimIndent()
+        val encoded = java.util.Base64.getEncoder().encodeToString(response.toByteArray())
+
+        val models = RemoteCodexSettings.parseApiModels(
+            listOf(
+                "__CODEX_API_MODEL_LIST_STATUS=SUCCESS",
+                "__CODEX_API_MODEL_LIST_HTTP_STATUS=200",
+                "__CODEX_API_MODEL_LIST_DATA=$encoded",
+            ),
+        )
+
+        assertEquals(listOf("gpt-large", "gpt-small"), models.map { it.modelId })
+        assertEquals(128_000, models[0].contextWindowTokens)
+        assertEquals(16_000, models[0].maxOutputTokens)
+        assertEquals(32_000, models[1].contextWindowTokens)
+        assertEquals(4_096, models[1].maxOutputTokens)
+    }
+
+    @Test
     fun `read script has valid POSIX shell syntax`() {
         val process = ProcessBuilder("sh", "-n").start()
         process.outputStream.bufferedWriter().use { it.write(RemoteCodexSettings.readScript) }
