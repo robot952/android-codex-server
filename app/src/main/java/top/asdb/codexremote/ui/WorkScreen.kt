@@ -17,6 +17,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -128,6 +134,8 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -156,7 +164,6 @@ import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 import kotlin.math.roundToInt
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.AppScreen
@@ -590,17 +597,14 @@ fun WorkScreen(
                                 contentDescription = if (elapsed == null) {
                                     "Codex 正在处理"
                                 } else {
-                                    "Codex 正在处理，本次耗时 $elapsed"
+                                    "Codex 正在处理，已运行 $elapsed"
                                 }
                             },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(9.dp))
-                            Text(
-                                if (elapsed == null) "正在处理" else "正在处理  本次耗时 $elapsed",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall)
+                            ProcessingStatusText(elapsed = elapsed)
                         }
                     }
                 } else if (completedTurnTiming != null) {
@@ -630,9 +634,9 @@ fun WorkScreen(
                             Spacer(Modifier.width(9.dp))
                             Text(
                                 if (stopped) {
-                                    "已停止  已处理 $elapsed"
+                                    "已停止  $elapsed"
                                 } else {
-                                    "本次耗时 $elapsed  完成于 ${formatTurnCompletionTime(completedAtMillis)}"
+                                    "$elapsed  完成于 ${formatTurnCompletionTime(completedAtMillis)}"
                                 },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall,
@@ -2371,13 +2375,46 @@ private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
     }
 }
 
-private fun formatTurnElapsed(startedAtMillis: Long, endedAtMillis: Long): String {
+@Composable
+private fun ProcessingStatusText(elapsed: String?) {
+    val transition = rememberInfiniteTransition(label = "processing-text-gradient")
+    val gradientOffset by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "processing-text-gradient-offset",
+    )
+    val gradientWidth = with(LocalDensity.current) { 120.dp.toPx() }
+    val gradientTranslation = gradientOffset * gradientWidth * 2f
+    val textBrush = Brush.linearGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
+            CodexAmber,
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f),
+        ),
+        start = Offset(gradientTranslation - gradientWidth, 0f),
+        end = Offset(gradientTranslation, 0f),
+    )
+    Text(
+        text = if (elapsed == null) "正在处理" else "正在处理  $elapsed",
+        style = MaterialTheme.typography.bodySmall.copy(brush = textBrush),
+    )
+}
+
+internal fun formatTurnElapsed(startedAtMillis: Long, endedAtMillis: Long): String {
     val normalizedStart = normalizeEpochMillis(startedAtMillis) ?: endedAtMillis
     val seconds = ((endedAtMillis - normalizedStart).coerceAtLeast(0L) / 1_000L)
     val hours = seconds / 3_600L
     val minutes = (seconds % 3_600L) / 60L
     val remainderSeconds = seconds % 60L
-    return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, remainderSeconds)
+    return when {
+        hours > 0L -> "${hours}h ${minutes}m ${remainderSeconds}s"
+        minutes > 0L -> "${minutes}m ${remainderSeconds}s"
+        else -> "${remainderSeconds}s"
+    }
 }
 
 private fun formatTurnCompletionTime(completedAtMillis: Long): String =
