@@ -220,7 +220,7 @@ internal object RemoteCodexSettings {
 
             printf '${MODEL_LIST_PREFIX}STATUS=SUCCESS\n'
             printf '${MODEL_LIST_PREFIX}HTTP_STATUS=%s\n' "${'$'}HTTP_STATUS"
-            base64 "${'$'}BODY_FILE" | tr -d '\n' | fold -w ${MODEL_LIST_CHUNK_WIDTH} | while IFS= read -r CHUNK; do
+            base64 "${'$'}BODY_FILE" | tr -d '\n' | fold -w ${MODEL_LIST_CHUNK_WIDTH} | while IFS= read -r CHUNK || [ -n "${'$'}CHUNK" ]; do
               printf '${MODEL_LIST_PREFIX}DATA=%s\n' "${'$'}CHUNK"
             done
         """.trimIndent()

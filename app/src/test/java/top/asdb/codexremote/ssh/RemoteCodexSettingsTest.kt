@@ -83,6 +83,58 @@ class RemoteCodexSettingsTest {
     }
 
     @Test
+    fun `model list script emits a short final base64 chunk`() {
+        val home = Files.createTempDirectory("codex-remote-model-list").toFile()
+        try {
+            val bin = home.resolve("bin").apply { mkdirs() }
+            val curl = bin.resolve("curl")
+            curl.writeText(
+                """
+                #!/bin/sh
+                body_file=
+                while [ "${'$'}#" -gt 0 ]; do
+                  case "${'$'}1" in
+                    --output)
+                      body_file="${'$'}2"
+                      shift 2
+                      ;;
+                    *) shift ;;
+                  esac
+                done
+                [ -n "${'$'}body_file" ] || exit 91
+                printf '%s' '{"data":[{"id":"gpt-short"}]}' > "${'$'}body_file"
+                printf '200'
+                """.trimIndent() + "\n",
+            )
+            assertTrue(curl.setExecutable(true))
+
+            val process = ProcessBuilder("sh", "-s")
+                .apply {
+                    environment()["HOME"] = home.absolutePath
+                    environment()["PATH"] = listOf(bin.absolutePath, System.getenv("PATH").orEmpty())
+                        .joinToString(":")
+                }
+                .start()
+            process.outputStream.bufferedWriter().use {
+                it.write(
+                    RemoteCodexSettings.modelListScript(
+                        "https://gateway.example.com/v1",
+                        "sk-short-response",
+                        "",
+                    ),
+                )
+            }
+
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+            val models = RemoteCodexSettings.parseApiModels(process.inputStream.bufferedReader().readLines())
+            assertEquals(listOf("gpt-short"), models.map { it.modelId })
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `read script has valid POSIX shell syntax`() {
         val process = ProcessBuilder("sh", "-n").start()
         process.outputStream.bufferedWriter().use { it.write(RemoteCodexSettings.readScript) }
