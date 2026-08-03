@@ -35,6 +35,18 @@ class PersistedUiPreferenceTest {
     }
 
     @Test
+    fun `new thread keeps configured global default even when model list omits it`() {
+        assertEquals(
+            ResolvedModelSelection("gpt-provider-default", "xhigh"),
+            resolveNewThreadModelSelection(
+                models = models,
+                configuredModel = "gpt-provider-default",
+                configuredEffort = "xhigh",
+            ),
+        )
+    }
+
+    @Test
     fun `each thread resolves its own independent model preference`() {
         val first = resolveThreadModelSelection(
             models,

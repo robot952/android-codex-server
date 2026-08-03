@@ -970,10 +970,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         invalidateLane(profile.id, "session-navigation")
         invalidateLane(profile.id, "thread-history")
         val operation = beginClientOperation(profile.id, "session-navigation", client) ?: return
-        val selection = resolveModelSelection(
+        val selection = resolveNewThreadModelSelection(
             models = _state.value.models,
-            preferredModel = profile.preferredModel,
-            preferredEffort = profile.preferredEffort,
+            configuredModel = profile.preferredModel,
+            configuredEffort = profile.preferredEffort,
         )
         val model = selection.model
         val approvalMode = _state.value.approvalMode
@@ -2743,7 +2743,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     preserveCurrentProvider = preserveCurrentProvider,
                 )
                 saved = true
-                updateProfileTestModel(profileId, normalizedTestModel)
+                updateProfileCodexDefaults(
+                    profileId = profileId,
+                    testModel = normalizedTestModel,
+                    defaultModel = normalizedDefaultModel,
+                    defaultEffort = normalizedDefaultReasoningEffort,
+                )
                 if (isOperationVisible(operation)) {
                     _state.update {
                         it.copy(
@@ -3413,10 +3418,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "connect_success profile=${profileRef(profile.id)} version=${connected.version} threads=${connected.threads.size} models=${connected.models.size}",
         )
         val defaultModel = connected.models.firstOrNull { it.isDefault } ?: connected.models.firstOrNull()
-        val preferredSelection = resolveModelSelection(
+        val preferredSelection = resolveNewThreadModelSelection(
             models = connected.models,
-            preferredModel = profile.preferredModel,
-            preferredEffort = profile.preferredEffort,
+            configuredModel = profile.preferredModel,
+            configuredEffort = profile.preferredEffort,
         )
         val pinned = isPinnedVersion(connected.version)
         val versionMessage = if (pinned) {
@@ -3517,11 +3522,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         testModel = profile.testModel.trim(),
     )
 
-    private fun updateProfileTestModel(profileId: String, testModel: String) {
+    private fun updateProfileCodexDefaults(
+        profileId: String,
+        testModel: String,
+        defaultModel: String,
+        defaultEffort: String,
+    ) {
         _state.update { current ->
             current.copy(
                 profiles = current.profiles.map { profile ->
-                    if (profile.id == profileId) profile.copy(testModel = testModel) else profile
+                    if (profile.id == profileId) {
+                        profile.copy(
+                            preferredModel = defaultModel,
+                            preferredEffort = defaultEffort,
+                            testModel = testModel,
+                        )
+                    } else {
+                        profile
+                    }
                 },
             )
         }
@@ -3824,6 +3842,28 @@ internal fun resolveModelSelection(
         it.isNotBlank() && (selected.efforts.isEmpty() || it in selected.efforts)
     } ?: selected.defaultEffort.takeIf(String::isNotBlank)
     return ResolvedModelSelection(selected.model, effort)
+}
+
+/**
+ * New threads must honor the remote user's configured defaults even when a custom provider does
+ * not advertise that model in `model/list`. Existing thread preferences still use the stricter
+ * [resolveModelSelection] fallback so a removed per-thread model cannot trap a conversation.
+ */
+internal fun resolveNewThreadModelSelection(
+    models: List<top.asdb.codexremote.data.CodexModel>,
+    configuredModel: String,
+    configuredEffort: String,
+): ResolvedModelSelection {
+    val fallback = resolveModelSelection(models, configuredModel, configuredEffort)
+    val explicitModel = configuredModel.trim().takeIf { it.isNotEmpty() }
+    val selected = explicitModel?.let { model -> models.firstOrNull { it.model == model } }
+    val explicitEffort = configuredEffort.trim().takeIf { effort ->
+        effort.isNotEmpty() && (selected == null || selected.efforts.isEmpty() || effort in selected.efforts)
+    }
+    return ResolvedModelSelection(
+        model = explicitModel ?: fallback.model,
+        effort = explicitEffort ?: fallback.effort,
+    )
 }
 
 internal fun resolveThreadModelSelection(

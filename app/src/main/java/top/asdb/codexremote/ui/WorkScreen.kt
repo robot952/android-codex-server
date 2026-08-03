@@ -2382,21 +2382,25 @@ private fun ProcessingStatusText(elapsed: String?) {
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1_600, easing = LinearEasing),
+            animation = tween(durationMillis = 2_000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "processing-text-gradient-offset",
     )
-    val baseTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
-    val sweepHalfWidth = with(LocalDensity.current) { 10.dp.toPx() }
+    val baseTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.64f)
+    val softHighlightColor = Color.White.copy(alpha = 0.68f)
+    val brightHighlightColor = Color.White.copy(alpha = 0.92f)
+    val sweepHalfWidth = with(LocalDensity.current) { 24.dp.toPx() }
     val statusTextWidth = with(LocalDensity.current) { 56.dp.toPx() }
     val gradientCenter = -sweepHalfWidth + gradientOffset * (statusTextWidth + sweepHalfWidth * 2f)
     val textBrush = Brush.linearGradient(
         colorStops = arrayOf(
             0f to baseTextColor,
-            0.35f to baseTextColor,
-            0.5f to Color.White,
-            0.65f to baseTextColor,
+            0.16f to baseTextColor,
+            0.34f to softHighlightColor,
+            0.5f to brightHighlightColor,
+            0.66f to softHighlightColor,
+            0.84f to baseTextColor,
             1f to baseTextColor,
         ),
         start = Offset(gradientCenter - sweepHalfWidth, 0f),

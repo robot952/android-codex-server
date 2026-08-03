@@ -25,7 +25,7 @@ data class ServerProfile(
     val remoteCommand: String = "~/.local/bin/codex-remote app-server --listen stdio://",
     /** Whether the automatic first-connection workspace prompt has already been presented. */
     val workspacePromptShown: Boolean = false,
-    /** Per-server model preferences restored after reconnecting or restarting the app. */
+    /** Per-server defaults mirrored from the user's remote Codex configuration for new threads. */
     val preferredModel: String = "",
     val preferredEffort: String = "",
     /** Model used only by the non-mutating API settings connection check. */
