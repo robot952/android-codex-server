@@ -2391,17 +2391,27 @@ private fun ProcessingStatusText(elapsed: String?) {
     val gradientTranslation = gradientOffset * gradientWidth * 2f
     val textBrush = Brush.linearGradient(
         colors = listOf(
-            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
-            CodexAmber,
-            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f),
+            Color.White.copy(alpha = 0.58f),
+            Color.White,
+            Color.White.copy(alpha = 0.82f),
         ),
         start = Offset(gradientTranslation - gradientWidth, 0f),
         end = Offset(gradientTranslation, 0f),
     )
-    Text(
-        text = if (elapsed == null) "正在处理" else "正在处理  $elapsed",
-        style = MaterialTheme.typography.bodySmall.copy(brush = textBrush),
-    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "正在处理",
+            style = MaterialTheme.typography.bodySmall.copy(brush = textBrush),
+        )
+        if (elapsed != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = elapsed,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.82f),
+            )
+        }
+    }
 }
 
 internal fun formatTurnElapsed(startedAtMillis: Long, endedAtMillis: Long): String {
