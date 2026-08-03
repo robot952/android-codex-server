@@ -21,6 +21,10 @@ internal object RemoteCodexSettings {
     private const val DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
     private const val MAX_MODEL_LIST_RESPONSE_BYTES = 256 * 1024
     private const val MODEL_LIST_CHUNK_WIDTH = 4_096
+    private const val MODEL_LIST_CONNECT_TIMEOUT_SECONDS = 10
+    private const val MODEL_LIST_MAX_TIME_SECONDS = 15
+    private const val MODEL_LIST_ATTEMPTS = 2
+    private const val MODEL_LIST_RETRY_DELAY_SECONDS = 1
 
     val readScript: String = """
         set -eu
@@ -185,16 +189,29 @@ internal object RemoteCodexSettings {
               exit 0
             fi
 
-            if [ -n "${'$'}PROXY_URL" ]; then
-              HTTP_STATUS="${'$'}(curl --disable --silent --output "${'$'}BODY_FILE" --write-out '%{http_code}' \
-                --connect-timeout 10 --max-time 25 --proxy "${'$'}PROXY_URL" --request GET \
-                --header "@${'$'}HEADER_FILE" "${'$'}MODELS_ENDPOINT" 2>/dev/null)"
-            else
-              HTTP_STATUS="${'$'}(curl --disable --silent --output "${'$'}BODY_FILE" --write-out '%{http_code}' \
-                --connect-timeout 10 --max-time 25 --request GET --header "@${'$'}HEADER_FILE" \
-                "${'$'}MODELS_ENDPOINT" 2>/dev/null)"
-            fi
-            CURL_EXIT=${'$'}?
+            fetch_models() {
+              if [ -n "${'$'}PROXY_URL" ]; then
+                curl --disable --silent --output "${'$'}BODY_FILE" --write-out '%{http_code}' \
+                  --connect-timeout $MODEL_LIST_CONNECT_TIMEOUT_SECONDS \
+                  --max-time $MODEL_LIST_MAX_TIME_SECONDS --proxy "${'$'}PROXY_URL" --request GET \
+                  --header "@${'$'}HEADER_FILE" "${'$'}MODELS_ENDPOINT" 2>/dev/null
+              else
+                curl --disable --silent --output "${'$'}BODY_FILE" --write-out '%{http_code}' \
+                  --connect-timeout $MODEL_LIST_CONNECT_TIMEOUT_SECONDS \
+                  --max-time $MODEL_LIST_MAX_TIME_SECONDS --request GET --header "@${'$'}HEADER_FILE" \
+                  "${'$'}MODELS_ENDPOINT" 2>/dev/null
+              fi
+            }
+            HTTP_STATUS=
+            CURL_EXIT=1
+            ATTEMPT=1
+            while [ "${'$'}ATTEMPT" -le $MODEL_LIST_ATTEMPTS ]; do
+              HTTP_STATUS="${'$'}(fetch_models)"
+              CURL_EXIT=${'$'}?
+              if [ "${'$'}CURL_EXIT" -eq 0 ]; then break; fi
+              if [ "${'$'}ATTEMPT" -lt $MODEL_LIST_ATTEMPTS ]; then sleep $MODEL_LIST_RETRY_DELAY_SECONDS; fi
+              ATTEMPT=${'$'}((ATTEMPT + 1))
+            done
             if [ "${'$'}CURL_EXIT" -ne 0 ]; then
               printf '${MODEL_LIST_PREFIX}STATUS=NETWORK_ERROR\n'
               printf '${MODEL_LIST_PREFIX}CURL_EXIT=%s\n' "${'$'}CURL_EXIT"

@@ -598,7 +598,7 @@ class SshCodexTransport {
         val lines = executeScript(
             profile = profile,
             script = RemoteCodexSettings.modelListScript(baseUrl, apiKey, proxyUrl),
-            timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
+            timeoutMs = MODEL_LIST_TIMEOUT_MS,
             operationName = "获取 API 模型列表",
         )
         return RemoteCodexSettings.parseApiModels(lines)
@@ -904,6 +904,7 @@ class SshCodexTransport {
         private const val MAX_REMOTE_FILE_NAME_CHARS = 255
         private const val MAX_FILE_MANAGER_ENTRIES = 2_000
         private const val GLOBAL_SETTINGS_TIMEOUT_MS = 30_000L
+        private const val MODEL_LIST_TIMEOUT_MS = 35_000L
     }
 }
 
