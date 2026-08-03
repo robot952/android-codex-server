@@ -182,6 +182,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.ui.components.MarkdownText
+import top.asdb.codexremote.ui.components.remoteFilePathFromLink
 import top.asdb.codexremote.ui.theme.CodexAmber
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
@@ -205,6 +206,7 @@ fun WorkScreen(
     onArchive: () -> Unit,
     onRename: (String) -> Unit,
     onUpload: (Context, List<Uri>) -> Unit,
+    onDownloadLinkedRemoteFile: (Context, String, Uri) -> Unit,
     onAddDebugLog: (List<String>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onComposerChange: (String) -> Unit,
@@ -262,6 +264,7 @@ fun WorkScreen(
     var imageSaveError by remember { mutableStateOf<String?>(null) }
     var imageSaving by remember { mutableStateOf(false) }
     var pendingImageSave by remember { mutableStateOf<RemoteImagePreview?>(null) }
+    var pendingRemoteFileDownloadPath by remember { mutableStateOf<String?>(null) }
     var linkToOpen by remember { mutableStateOf<String?>(null) }
     var linkOpenError by remember { mutableStateOf<String?>(null) }
     var showDebugLogPicker by remember { mutableStateOf(false) }
@@ -272,6 +275,15 @@ fun WorkScreen(
     }
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) onUpload(context, uris)
+    }
+    val remoteFileDownloadPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*"),
+    ) { destination ->
+        val path = pendingRemoteFileDownloadPath
+        pendingRemoteFileDownloadPath = null
+        if (destination != null && path != null) {
+            onDownloadLinkedRemoteFile(context, path, destination)
+        }
     }
     val saveImage: (RemoteImagePreview) -> Unit = saveImage@{ preview ->
         if (imageSaving) return@saveImage
@@ -573,7 +585,19 @@ fun WorkScreen(
                                 onRollback = { rollbackRequested = true },
                                 onOpenImage = ::openImagePreview,
                                 imageLoadingPath = imageLoadingPath,
-                                onOpenLink = { linkToOpen = it },
+                                onOpenLink = { link ->
+                                    val remotePath = remoteFilePathFromLink(link)
+                                    if (remotePath != null) {
+                                        if (pendingRemoteFileDownloadPath == null) {
+                                            pendingRemoteFileDownloadPath = remotePath
+                                            remoteFileDownloadPicker.launch(
+                                                remotePath.substringAfterLast('/').ifBlank { "download" },
+                                            )
+                                        }
+                                    } else {
+                                        linkToOpen = link
+                                    }
+                                },
                                 onOpenSubAgent = onOpenSubAgent,
                                 canOpenSubAgents = canOpenSubAgents,
                             )

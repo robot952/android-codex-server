@@ -29,4 +29,28 @@ class MarkdownTextTest {
             ),
         )
     }
+
+    @Test
+    fun `absolute remote file links become internal clickable links`() {
+        val rendered = markdownWithVisibleLinkDestinations(
+            "[下载 CodexRemote](/home/ygy/android-codex-server/dist/CodexRemote-1.7.80.apk)",
+        )
+
+        assertEquals(
+            "[下载 CodexRemote](https://codex-remote.local/remote-file/"
+                + "L2hvbWUveWd5L2FuZHJvaWQtY29kZXgtc2VydmVyL2Rpc3QvQ29kZXhSZW1vdGUtMS43LjgwLmFwaw)",
+            rendered,
+        )
+        assertEquals(
+            "/home/ygy/android-codex-server/dist/CodexRemote-1.7.80.apk",
+            remoteFilePathFromLink(rendered.substringAfter('(').substringBefore(')')),
+        )
+    }
+
+    @Test
+    fun `invalid internal remote file links are rejected`() {
+        assertEquals(null, remoteFilePathFromLink("https://codex-remote.local/remote-file/not+base64"))
+        assertEquals(null, remoteFilePathFromLink("https://codex-remote.local/remote-file/aGVsbG8"))
+        assertEquals(null, remoteFilePathFromLink("https://example.com/remote-file/L2hvbWUveWd5"))
+    }
 }

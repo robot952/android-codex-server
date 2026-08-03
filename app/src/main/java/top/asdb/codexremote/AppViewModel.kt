@@ -2572,6 +2572,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun downloadLinkedRemoteFile(context: Context, path: String, destination: Uri) {
+        if (!path.startsWith('/')) return
+        val profileId = _state.value.selectedProfileId ?: return
+        val client = connections.client(profileId) ?: return
+        val operation = beginClientOperation(profileId, "remote-link-download", client) ?: return
+        val fileName = path.substringAfterLast('/').ifBlank { "文件" }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(destination, "w")
+                        ?: throw IllegalStateException("无法创建本地文件")
+                    output.use { client.downloadFile(path, it) }
+                }
+                if (isOperationVisible(operation)) {
+                    _state.update { it.copy(diagnostic = "已保存 $fileName") }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isOperationVisible(operation)) showError(error, profileId)
+            } finally {
+                finishClientOperation(operation)
+            }
+        }
+    }
+
     fun renameRemoteFile(entry: RemoteFileEntry, newName: String) {
         launchFileManagerOperation("正在重命名", "已重命名") { client, _ ->
             client.renameFile(entry.path, newName)
