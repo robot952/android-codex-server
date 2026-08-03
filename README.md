@@ -51,6 +51,17 @@ detects and uses the local `127.0.0.1:7890` proxy:
 CODEX_BUILD_ONLINE=1 ./scripts/build-android.sh debug
 ```
 
+When the Android SDK is installed beside this checkout at `../android-sdk`, the scripts detect it
+automatically. To build a signed release locally and publish it to the machine's existing HTTP
+download endpoint without creating a Gitee tag or Release, run:
+
+```bash
+./scripts/publish-local-apk.sh
+```
+
+The command verifies the signing certificate, atomically replaces `/var/www/html/codex.apk`, then
+downloads and checks the published file at `http://210.16.163.118:18080/codex.apk`.
+
 ```bash
 docker run --rm \
   --network host \

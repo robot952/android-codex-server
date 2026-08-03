@@ -23,8 +23,9 @@ sudo install -o codexci -g codexci -m 600 \
   /opt/codex-remote-ci/codex-remote-stable.keystore
 ~~~
 
-Runner 还必须能读取 Android SDK。当前机器使用 `/tmp/android-sdk`；如果新机器不同，安装 SDK 34、build-tools
-34.0.0 和 JDK 17，并在流水线变量中改为实际路径。
+Runner 还必须能读取 Android SDK。构建脚本会优先识别仓库同级的 `../android-sdk`；当前机器使用
+`/home/ygy/android-sdk`。如果新机器不同，安装 SDK 34、build-tools 34.0.0 和 JDK 17，并通过
+`ANDROID_HOME` 或 `ANDROID_SDK_ROOT` 指向实际路径。
 
 为让 Runner 只拥有 APK 发布权限，而不是整个 Web 根目录的写权限，创建一个专用目录并把既有下载文件改为
 软链接：
@@ -59,8 +60,6 @@ Runner 只应允许受保护分支和受保护标签使用。不要把注册 tok
 4. 构件归档：归档 `dist/**`，这样 Gitee 的流水线页面可下载对应版本 APK 和元数据。
 
 ~~~bash
-export ANDROID_HOME=/tmp/android-sdk
-export ANDROID_SDK_ROOT=/tmp/android-sdk
 export GRADLE_USER_HOME=/opt/codex-remote-ci/gradle
 export CODEX_SIGNING_KEYSTORE=/opt/codex-remote-ci/codex-remote-stable.keystore
 export CODEX_RELEASE_PUBLISH_DIR=/var/www/html/codex-releases
@@ -114,8 +113,7 @@ git push origin v1.7.19
 
 ~~~bash
 git tag -a v1.7.19 -m "本地发布验证"
-ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
-  ./scripts/publish-tag-release.sh
+./scripts/publish-tag-release.sh
 git tag -d v1.7.19
 ~~~
 

@@ -5,6 +5,7 @@ set -euo pipefail
 # by any self-hosted Gitee runner without storing the signing key in Git.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/android-sdk.sh"
 
 readonly EXPECTED_CERTIFICATE_SHA256="72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a"
 readonly DEFAULT_RELEASE_VERIFY_URL="http://210.16.163.118:18080/codex.apk"
@@ -29,16 +30,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 1
 fi
 
-if [[ -z "${ANDROID_HOME:-}" && -d /tmp/android-sdk ]]; then
-    export ANDROID_HOME=/tmp/android-sdk
-fi
-if [[ -n "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
-    export ANDROID_SDK_ROOT="$ANDROID_HOME"
-fi
-if [[ -z "${ANDROID_HOME:-}" || ! -d "$ANDROID_HOME" ]]; then
-    echo "ANDROID_HOME must point to an installed Android SDK" >&2
-    exit 1
-fi
+resolve_android_sdk "$ROOT_DIR"
 
 build_mode="${CODEX_RELEASE_BUILD_MODE:-all}"
 case "$build_mode" in

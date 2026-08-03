@@ -4,6 +4,7 @@ set -euo pipefail
 # Publishes a signed release APK from the protected release branch.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/android-sdk.sh"
 
 readonly GITEE_API_BASE="${CODEX_GITEE_API_BASE:-https://gitee.com/api/v5}"
 readonly GITEE_RELEASE_OWNER="${CODEX_RELEASE_OWNER:-YanGanYuan}"
@@ -37,18 +38,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 1
 fi
 
-if [[ -z "${ANDROID_HOME:-}" && -n "${ANDROID_SDK_ROOT:-}" ]]; then
-    export ANDROID_HOME="$ANDROID_SDK_ROOT"
-elif [[ -z "${ANDROID_HOME:-}" && -d /var/lib/docker/volumes/android-sdk/_data ]]; then
-    export ANDROID_HOME=/var/lib/docker/volumes/android-sdk/_data
-fi
-if [[ -n "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
-    export ANDROID_SDK_ROOT="$ANDROID_HOME"
-fi
-if [[ -z "${ANDROID_HOME:-}" || ! -d "$ANDROID_HOME" ]]; then
-    echo "ANDROID_HOME must point to an installed Android SDK" >&2
-    exit 1
-fi
+resolve_android_sdk "$ROOT_DIR"
 
 "$ROOT_DIR/scripts/build-android.sh" release
 

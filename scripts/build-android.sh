@@ -5,6 +5,7 @@ set -euo pipefail
 # from the fast edit loop so Lint and R8 are not paid for every small change.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/android-sdk.sh"
 
 mode="${1:-debug}"
 case "$mode" in
@@ -26,14 +27,7 @@ case "$mode" in
         ;;
 esac
 
-if [[ -z "${ANDROID_HOME:-}" && -n "${ANDROID_SDK_ROOT:-}" ]]; then
-    export ANDROID_HOME="$ANDROID_SDK_ROOT"
-elif [[ -z "${ANDROID_HOME:-}" && -d /var/lib/docker/volumes/android-sdk/_data ]]; then
-    export ANDROID_HOME=/var/lib/docker/volumes/android-sdk/_data
-fi
-if [[ -n "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
-    export ANDROID_SDK_ROOT="$ANDROID_HOME"
-fi
+resolve_android_sdk "$ROOT_DIR"
 
 # Keep the cache on the same writable, persistent disk as the workspace. This
 # also works when HOME is mounted read-only by an agent/container sandbox.

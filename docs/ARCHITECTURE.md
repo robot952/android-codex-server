@@ -31,8 +31,7 @@ protocol/node-version.txt 为准，不要只相信本文顶部的快照。
 6. 最小验证通常是：
 
    ~~~bash
-   ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
-     ./scripts/build-android.sh debug
+   ./scripts/build-android.sh debug
    ~~~
 
 7. 源码变更后更新索引：
@@ -551,11 +550,13 @@ CODEX_BUILD_ONLINE=1 ./scripts/build-android.sh debug
 若 127.0.0.1:7890 正在监听，脚本会自动为 Gradle 和下载环境设置代理。不要把代理硬编码进 APK
 业务网络；远程服务器下载代理由用户在安装弹窗中单独填写。
 
-本机 Android SDK 没有全局配置时使用：
+构建脚本会依次使用显式设置的 `ANDROID_HOME`/`ANDROID_SDK_ROOT`、仓库同级的
+`../android-sdk`、`/tmp/android-sdk` 和 CI Docker SDK 卷。当前机器的 SDK 位于
+`/home/ygy/android-sdk`，因此不需要再手工设置环境变量。本机 SDK 位于其他路径时才需要：
 
 ~~~bash
-export ANDROID_HOME=/tmp/android-sdk
-export ANDROID_SDK_ROOT=/tmp/android-sdk
+export ANDROID_HOME=/your/android-sdk
+export ANDROID_SDK_ROOT=/your/android-sdk
 ~~~
 
 ## 13. 固定签名、版本和发布
@@ -577,10 +578,9 @@ Release APK：
 构建与验签：
 
 ~~~bash
-ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
-  ./scripts/build-android.sh release
+./scripts/build-android.sh release
 
-/tmp/android-sdk/build-tools/34.0.0/apksigner verify \
+../android-sdk/build-tools/34.0.0/apksigner verify \
   --verbose --print-certs app/build/outputs/apk/release/app-release.apk
 ~~~
 
@@ -598,6 +598,16 @@ http://210.16.163.118:18080/codex.apk
 
 下载端口是 18080。地址是部署环境，不是代码常量；报告前需绕过不合适的代理实际验证。不得在文档或提交中写
 访问 token。
+
+不需创建 Gitee Tag 的本机下载发布使用：
+
+~~~bash
+./scripts/publish-local-apk.sh
+~~~
+
+该脚本执行 release 门禁、验签、生成 `dist/CodexRemote-<version>.apk`，随后原子替换
+`/var/www/html/codex.apk` 并下载比对 SHA-256。只在确认要更新本机 HTTP 下载包时执行；它不会推送 Git
+或触发 Gitee Go 流水线。
 
 ### 13.1 Gitee release 分支自动发布
 
@@ -625,35 +635,35 @@ Git 流程：
 ### 14.1 已有环境
 
 ~~~text
-Android SDK：/tmp/android-sdk
-adb：/tmp/android-sdk/platform-tools/adb
-build-tools：/tmp/android-sdk/build-tools/34.0.0
+Android SDK：/home/ygy/android-sdk
+adb：/home/ygy/android-sdk/platform-tools/adb
+build-tools：/home/ygy/android-sdk/build-tools/34.0.0
 模拟器：emulator-5554，Android API 34（运行时以 adb devices -l 为准）
 ~~~
 
 检查设备：
 
 ~~~bash
-/tmp/android-sdk/platform-tools/adb devices -l
+/home/ygy/android-sdk/platform-tools/adb devices -l
 ~~~
 
 安装并冷启动：
 
 ~~~bash
-/tmp/android-sdk/platform-tools/adb install -r \
+/home/ygy/android-sdk/platform-tools/adb install -r \
   app/build/outputs/apk/debug/app-debug.apk
 
-/tmp/android-sdk/platform-tools/adb shell am force-stop top.asdb.codexremote
-/tmp/android-sdk/platform-tools/adb shell monkey \
+/home/ygy/android-sdk/platform-tools/adb shell am force-stop top.asdb.codexremote
+/home/ygy/android-sdk/platform-tools/adb shell monkey \
   -p top.asdb.codexremote -c android.intent.category.LAUNCHER 1
 ~~~
 
 抓取崩溃/ANR：
 
 ~~~bash
-/tmp/android-sdk/platform-tools/adb logcat -c
+/home/ygy/android-sdk/platform-tools/adb logcat -c
 # 复现后：
-/tmp/android-sdk/platform-tools/adb logcat -d \
+/home/ygy/android-sdk/platform-tools/adb logcat -d \
   'AndroidRuntime:E ActivityManager:E CodexRemote:* *:S'
 ~~~
 
@@ -665,28 +675,28 @@ runtime-keyboard-*、runtime-window*.xml、runtime-rotation-stress.png 等文件
 快速编译：
 
 ~~~bash
-ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
+ANDROID_HOME="$PWD/../android-sdk" ANDROID_SDK_ROOT="$PWD/../android-sdk" \
   ./gradlew :app:compileDebugKotlin
 ~~~
 
 JVM 单测：
 
 ~~~bash
-ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
+ANDROID_HOME="$PWD/../android-sdk" ANDROID_SDK_ROOT="$PWD/../android-sdk" \
   ./gradlew :app:testDebugUnitTest
 ~~~
 
 Lint：
 
 ~~~bash
-ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
+ANDROID_HOME="$PWD/../android-sdk" ANDROID_SDK_ROOT="$PWD/../android-sdk" \
   ./gradlew :app:lintDebug
 ~~~
 
 发布编译：
 
 ~~~bash
-ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk \
+ANDROID_HOME="$PWD/../android-sdk" ANDROID_SDK_ROOT="$PWD/../android-sdk" \
   ./gradlew :app:assembleRelease
 ~~~
 
