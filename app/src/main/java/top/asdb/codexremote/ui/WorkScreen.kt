@@ -2387,16 +2387,20 @@ private fun ProcessingStatusText(elapsed: String?) {
         ),
         label = "processing-text-gradient-offset",
     )
-    val gradientWidth = with(LocalDensity.current) { 120.dp.toPx() }
-    val gradientTranslation = gradientOffset * gradientWidth * 2f
+    val baseTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+    val sweepHalfWidth = with(LocalDensity.current) { 10.dp.toPx() }
+    val statusTextWidth = with(LocalDensity.current) { 56.dp.toPx() }
+    val gradientCenter = -sweepHalfWidth + gradientOffset * (statusTextWidth + sweepHalfWidth * 2f)
     val textBrush = Brush.linearGradient(
-        colors = listOf(
-            Color.White.copy(alpha = 0.58f),
-            Color.White,
-            Color.White.copy(alpha = 0.82f),
+        colorStops = arrayOf(
+            0f to baseTextColor,
+            0.35f to baseTextColor,
+            0.5f to Color.White,
+            0.65f to baseTextColor,
+            1f to baseTextColor,
         ),
-        start = Offset(gradientTranslation - gradientWidth, 0f),
-        end = Offset(gradientTranslation, 0f),
+        start = Offset(gradientCenter - sweepHalfWidth, 0f),
+        end = Offset(gradientCenter + sweepHalfWidth, 0f),
     )
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
@@ -2408,7 +2412,7 @@ private fun ProcessingStatusText(elapsed: String?) {
             Text(
                 text = elapsed,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.82f),
+                color = baseTextColor,
             )
         }
     }
