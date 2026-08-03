@@ -197,6 +197,7 @@ internal object RemoteCodexSettings {
             CURL_EXIT=${'$'}?
             if [ "${'$'}CURL_EXIT" -ne 0 ]; then
               printf '${MODEL_LIST_PREFIX}STATUS=NETWORK_ERROR\n'
+              printf '${MODEL_LIST_PREFIX}CURL_EXIT=%s\n' "${'$'}CURL_EXIT"
               exit 0
             fi
             case "${'$'}HTTP_STATUS" in
@@ -234,13 +235,17 @@ internal object RemoteCodexSettings {
         }
         val status = values.firstOrNull { it.first == "STATUS" }?.second
         val httpStatus = values.firstOrNull { it.first == "HTTP_STATUS" }?.second?.trim()
+        val curlExit = values.firstOrNull { it.first == "CURL_EXIT" }?.second?.trim()
         when (status) {
             "SUCCESS" -> Unit
             "MISSING_API_KEY" -> throw IllegalStateException("请先在 Codex 配置中保存 API 密钥")
             "CURL_UNAVAILABLE" -> throw IllegalStateException("服务器未安装 curl，无法获取模型列表")
             "ENCODER_UNAVAILABLE" -> throw IllegalStateException("服务器缺少 base64 或 fold，无法读取模型列表")
             "TEMPORARY_FILE_ERROR" -> throw IllegalStateException("无法安全准备模型列表请求")
-            "NETWORK_ERROR" -> throw IllegalStateException("无法连接模型 API，请检查模型 URL、代理或服务器网络")
+            "NETWORK_ERROR" -> throw IllegalStateException(
+                "无法连接模型 API，请检查模型 URL、代理或服务器网络" +
+                    curlExit?.takeIf(String::isNotBlank)?.let { "（curl exit $it）" }.orEmpty(),
+            )
             "UNAUTHORIZED" -> throw IllegalStateException("API 密钥无效或没有权限${httpStatus?.let { "（HTTP $it）" }.orEmpty()}")
             "HTTP_ERROR" -> throw IllegalStateException("模型 API 返回异常${httpStatus?.let { "（HTTP $it）" }.orEmpty()}")
             "BODY_TOO_LARGE" -> throw IllegalStateException("模型列表响应过大，无法安全加载")

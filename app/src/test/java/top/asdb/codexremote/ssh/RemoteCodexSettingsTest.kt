@@ -83,6 +83,20 @@ class RemoteCodexSettingsTest {
     }
 
     @Test
+    fun `includes curl exit code in model list network errors`() {
+        val error = runCatching {
+            RemoteCodexSettings.parseApiModels(
+                listOf(
+                    "__CODEX_API_MODEL_LIST_STATUS=NETWORK_ERROR",
+                    "__CODEX_API_MODEL_LIST_CURL_EXIT=6",
+                ),
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error?.message?.contains("curl exit 6") == true)
+    }
+
+    @Test
     fun `model list script emits a short final base64 chunk`() {
         val home = Files.createTempDirectory("codex-remote-model-list").toFile()
         try {

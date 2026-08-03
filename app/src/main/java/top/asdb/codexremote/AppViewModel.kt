@@ -2264,6 +2264,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val settings = client.readCodexGlobalSettings(profile)
+                DiagnosticLogger.info(
+                    "ApiModels",
+                    "fetch_start profile=${profileRef(profileId)} provider=${settings.modelProvider} " +
+                        "base_url_configured=${settings.baseUrl.isNotBlank()} " +
+                        "api_key_configured=${settings.apiKey.isNotBlank()} " +
+                        "proxy_configured=${settings.proxyUrl.isNotBlank()}",
+                )
                 val models = client.fetchApiModels(
                     profile = profile,
                     baseUrl = settings.baseUrl,
@@ -2271,6 +2278,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     proxyUrl = settings.proxyUrl,
                 )
                 if (isOperationVisible(operation)) {
+                    DiagnosticLogger.info(
+                        "ApiModels",
+                        "fetch_success profile=${profileRef(profileId)} models=${models.size}",
+                    )
                     _state.update {
                         it.copy(
                             apiModelOptions = models,
@@ -2283,6 +2294,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
+                DiagnosticLogger.warn(
+                    "ApiModels",
+                    "fetch_failed profile=${profileRef(profileId)} " +
+                        "error=${error.message ?: error::class.simpleName}",
+                )
                 if (isOperationVisible(operation)) {
                     _state.update {
                         it.copy(
