@@ -24,10 +24,8 @@ stages:
       - dist
       type: .tar.gz
     caches:
-    - path: "~/.gradle/caches"
-      key: "global-gradle"
-    - path: "~/.gradle/wrapper"
-      key: "global-gradle-wrapper"
+    - "~/.gradle/caches"
+    - "~/.gradle/wrapper"
     strategy:
       retry: "0"
       resource:
