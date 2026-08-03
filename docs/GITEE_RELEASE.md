@@ -1,8 +1,11 @@
-# Gitee Tag 自动发布
+# 自建 Runner 的 Tag 发布（可选）
 
-本项目采用“本地调试 + 自建 Gitee Runner 正式发布”的模式：日常开发仍在本机执行
-`./scripts/build-android.sh debug`；只有受保护的 `v<versionName>` 标签才会在 Runner 上构建、验签和
-部署。APK 不提交进 Git 历史。
+当前标准发布流程是 Gitee Go 的 `release` 分支自动发布，见
+[GITEE_GO_RELEASE.md](GITEE_GO_RELEASE.md)。本文件仅保留给已部署自建 Runner、且需要同时把 APK
+发布到内网 HTTP 地址的旧流程。两套流程不要在同一个版本上同时启用，以免重复创建 Release。
+
+在这套可选方案中，日常开发仍在本机执行 `./scripts/build-android.sh debug`；只有受保护的
+`v<versionName>` 标签才会在自建 Runner 上构建、验签和部署。APK 不提交进 Git 历史。
 
 自建 Runner 优先于云端 Runner，原因是 Android SDK 和 Gradle 缓存都留在本机，构建快且发布目录可由
 Runner 最小权限写入。当前测试签名 keystore 已按本项目约定版本化；不要将其复用于生产应用。

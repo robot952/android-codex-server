@@ -34,10 +34,10 @@ stages:
 triggers:
   trigger: auto
   push:
-    tags:
-      prefix:
-      - v
-      precise: []
+    branches:
+      prefix: []
+      precise:
+      - release
       include: []
 notify: []
 strategy:

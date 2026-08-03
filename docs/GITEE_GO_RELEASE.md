@@ -1,7 +1,9 @@
-# Gitee Go Automatic Releases
+# Gitee Go Release 分支自动发布
 
-Pushing a release tag triggers Gitee Go. The pipeline builds and signs the APK, creates the
-corresponding Gitee Release, and uploads `CodexRemote-<version>.apk` as its attachment.
+推送 `release` 分支会触发 Gitee Go。流水线构建并验签 APK，随后自动创建与
+`versionName` 对应的不可移动 Git 标签、Gitee Release 和
+`CodexRemote-<version>.apk` 附件。Tag 推送不会触发 Android 构建，因此不同版本的
+发布不会因 Tag 触发而重新建立一套 Gradle 缓存。
 
 ## One-Time Variable Setup
 
@@ -24,24 +26,30 @@ optional protected variables `CODEX_RELEASE_OWNER` and `CODEX_RELEASE_REPOSITORY
 
 ## Trigger Rule
 
-In the code source's automatic trigger settings, choose **Tag Push** and **Prefix Match**. The
-prefix input must be `v`, without an asterisk. This produces the workflow configuration below:
+In the code source's automatic trigger settings, choose **Push** and an exact branch match for
+`release`. This is the workflow configuration tracked in the repository:
 
 ```yaml
-tags:
-  prefix:
-    - v
+branches:
+  precise:
+    - release
 ```
 
-The release script only accepts a tag exactly matching the Android `versionName`, such as
-`v1.7.55` for `versionName = "1.7.55"`. Test tags and tags pointing to another commit cannot
-publish a Release.
+The script verifies that the checked-out commit is the current remote `release` head. Once its
+build and signature verification pass, it creates `v<versionName>`. An existing tag is reused
+only when it already points to the same commit; the script never moves a tag. A failed build
+therefore cannot create a release tag.
 
 ## Release Sequence
 
-1. Increase `versionCode` and `versionName`, then commit and push the source changes.
-2. Create and push the matching annotated tag, for example `v1.7.55`.
-3. Gitee Go builds the Release APK and attaches it to the Gitee Release page.
+1. Increase `versionCode` and `versionName`, then commit and push the source changes to `main`.
+2. When the commit is ready to publish, run `git push origin main:release`.
+3. Gitee Go builds the Release APK, creates `v<versionName>`, and attaches it to the Gitee
+   Release page.
+
+The single `main:release` push is the only manual publishing action. Re-running the same
+pipeline is safe: it reuses the matching tag and Release, and only uploads the APK when the
+attachment is missing.
 
 The release body contains up to the latest 12 Git commit subjects and the APK SHA-256 checksum.
 The Android client checks the public Gitee Release list on startup, verifies that the expected APK
