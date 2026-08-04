@@ -124,6 +124,60 @@ assert.deepEqual(bridge.permissionReplyTarget(v2Permission, "reject", "v2"), {
   body: { reply: "reject" },
 });
 
+const question = {
+  id: "question/1",
+  sessionID: "session/1",
+  questions: [{
+    header: "模式",
+    question: "选择运行模式",
+    options: [
+      { label: "快速", description: "少量检查" },
+      { label: "完整", description: "完整检查" },
+    ],
+  }],
+  tool: { messageID: "message-2", callID: "call-2" },
+};
+assert.equal(bridge.questionApiVersion("question.asked"), "v1");
+assert.equal(bridge.questionApiVersion("question.v2.asked"), "v2");
+assert.equal(bridge.questionApiVersion("question.replied"), null);
+assert.deepEqual(bridge.questionPrompt(question, "turn-2"), {
+  threadId: "session/1",
+  turnId: "turn-2",
+  itemId: "call-2",
+  title: "模式",
+  detail: "选择运行模式",
+  cwd: process.cwd(),
+  questions: [{
+    id: "opencode-question-0",
+    header: "模式",
+    question: "选择运行模式",
+    options: [
+      { label: "快速", description: "少量检查" },
+      { label: "完整", description: "完整检查" },
+    ],
+    isSecret: false,
+  }],
+});
+assert.deepEqual(bridge.questionReplyTarget(question, [["快速"]], "v1"), {
+  route: "/question/question%2F1/reply",
+  body: { answers: [["快速"]] },
+});
+assert.deepEqual(bridge.questionReplyTarget(question, [["完整"]], "v2"), {
+  route: "/api/session/session%2F1/question/question%2F1/reply",
+  body: { answers: [["完整"]] },
+});
+assert.equal(
+  bridge.questionRejectTarget(question, "v2"),
+  "/api/session/session%2F1/question/question%2F1/reject",
+);
+assert.deepEqual(
+  bridge.questionAnswersFromResponse(
+    { questions: [{ id: "opencode-question-0" }] },
+    { answers: { "opencode-question-0": { answers: ["快速"] } } },
+  ),
+  [["快速"]],
+);
+
 const turns = bridge.groupMessages([
   {
     info: { id: "user-1", role: "user", time: { created: 1000 } },

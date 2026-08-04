@@ -1,5 +1,6 @@
 package top.asdb.codexremote.agent
 
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -58,6 +59,8 @@ class OpenCodeAgentClient(
     override val capabilities: AgentCapabilities = AgentCapabilities.OpenCode
     @Volatile
     private var settingsProviderId: String = OPENCODE_MANAGED_PROVIDER_ID
+    /** Models added through the app are stable for one bridge generation. */
+    private val ensuredCustomModels = ConcurrentHashMap<String, Long>()
 
     override suspend fun inspectRuntime(profile: ServerProfile): AgentRuntimeInspection {
         val host = delegate.inspectRuntime(profile)
@@ -114,6 +117,7 @@ class OpenCodeAgentClient(
     }
 
     override suspend fun uninstallRuntime(profile: ServerProfile) {
+        ensuredCustomModels.clear()
         delegate.disconnect()
         bootstrapTransport.runBootstrapScript(
             profile = profile,
@@ -127,6 +131,7 @@ class OpenCodeAgentClient(
     }
 
     override suspend fun connect(profile: ServerProfile): String {
+        ensuredCustomModels.clear()
         val command = buildString {
             append(MANAGED_OPENCODE_BRIDGE_COMMAND)
             profile.workspace.takeIf(String::isNotBlank)?.let { workspace ->
@@ -134,6 +139,11 @@ class OpenCodeAgentClient(
             }
         }
         return delegate.connect(profile.copy(remoteCommand = command))
+    }
+
+    override suspend fun disconnect() {
+        ensuredCustomModels.clear()
+        delegate.disconnect()
     }
 
     override suspend fun readGlobalSettings(profile: ServerProfile): AgentGlobalSettings {
@@ -197,6 +207,12 @@ class OpenCodeAgentClient(
         settingsProviderId = result?.string("modelProvider")
             ?.ifBlank { OPENCODE_MANAGED_PROVIDER_ID }
             ?: OPENCODE_MANAGED_PROVIDER_ID
+        ensuredCustomModels.clear()
+        delegate.currentGeneration()?.let { generation ->
+            profile.modelSettings(AgentKind.OpenCode).customModels.forEach { definition ->
+                ensuredCustomModels[customModelKey(definition)] = generation
+            }
+        }
     }
 
     override suspend fun testGlobalSettings(
@@ -231,6 +247,9 @@ class OpenCodeAgentClient(
         profile: ServerProfile,
         definition: CustomModelDefinition,
     ) {
+        val generation = delegate.currentGeneration() ?: return
+        val key = customModelKey(definition)
+        if (ensuredCustomModels[key] == generation) return
         delegate.requestAdapterExtension(
             method = "agent/model/ensure",
             params = buildJsonObject {
@@ -241,9 +260,13 @@ class OpenCodeAgentClient(
             },
             timeoutMs = SETTINGS_TIMEOUT_MS,
         )
+        if (delegate.isGenerationActive(generation)) {
+            ensuredCustomModels[key] = generation
+        }
     }
 
     override fun close() {
+        ensuredCustomModels.clear()
         delegate.close()
         bootstrapTransport.close()
     }
@@ -255,6 +278,13 @@ class OpenCodeAgentClient(
         private const val INSTALL_TIMEOUT_MS = 20 * 60_000L
         private const val UNINSTALL_TIMEOUT_MS = 60_000L
         private const val SETTINGS_TIMEOUT_MS = 30_000L
+
+        private fun customModelKey(definition: CustomModelDefinition): String = listOf(
+            normalizeOpenCodeModelId(definition.modelId),
+            definition.displayName.trim(),
+            definition.contextWindowTokens.toString(),
+            definition.maxOutputTokens.toString(),
+        ).joinToString("\u0000")
 
         private fun parseProgress(line: String): RemoteInstallProgress? {
             if (!line.startsWith("::progress::")) return null

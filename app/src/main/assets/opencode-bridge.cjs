@@ -31,6 +31,7 @@ const activeTurns = new Map();
 const messageInfo = new Map();
 const messageToTurn = new Map();
 const pendingPermissions = new Map();
+const pendingQuestions = new Map();
 
 function send(value) {
   process.stdout.write(JSON.stringify(value) + "\n");
@@ -507,17 +508,13 @@ async function ensureCustomModel(params) {
   const fullModel = normalizeOpenCodeModel(params.modelId, managedProviderID);
   const parsed = parseModel(fullModel);
   if (!parsed) throw new Error("OpenCode 模型 ID 必须包含 provider/model");
-  const providers = await request("/provider") || {};
-  const runtimeProvider = (providers.all || []).find(function (item) {
-    return item && item.id === parsed.providerID;
-  });
-  if (runtimeProvider && runtimeProvider.models && runtimeProvider.models[parsed.modelID]) {
-    return { configured: false, model: fullModel };
-  }
   const config = await request("/global/config") || {};
   const configuredProvider = config.provider && config.provider[parsed.providerID];
   if (!configuredProvider) {
     throw new Error("请先在 OpenCode 设置中配置模型 URL 和 API 密钥");
+  }
+  if (configuredProvider.models && configuredProvider.models[parsed.modelID]) {
+    return { configured: false, model: fullModel };
   }
   const model = modelConfigDefinition(Object.assign({}, params, { modelId: fullModel }), parsed.providerID);
   const providerPatch = { models: {} };
@@ -649,24 +646,11 @@ async function handleRequest(method, params) {
       threadId: params.threadId,
       turn: { id: turnID, status: "inProgress", startedAt: Date.now(), items: [] },
     });
-    try {
-      await sendPrompt(params.threadId, params);
-    } catch (error) {
-      activeTurns.delete(params.threadId);
-      notify("turn/completed", {
-        threadId: params.threadId,
-        turn: {
-          id: turnID,
-          status: "failed",
-          error: { message: error.message || String(error) },
-        },
-      });
-      throw error;
-    }
+    startPrompt(params.threadId, params, turnID);
     return { turn: { id: turnID, status: "inProgress" } };
   }
   if (method === "turn/steer") {
-    await sendPrompt(params.threadId, params);
+    startPrompt(params.threadId, params, activeTurns.get(params.threadId)?.id || "");
     return {};
   }
   if (method === "turn/interrupt") {
@@ -769,6 +753,109 @@ function permissionApiVersion(eventType) {
   return null;
 }
 
+function questionApiVersion(eventType) {
+  if (eventType === "question.asked") return "v1";
+  if (eventType === "question.v2.asked") return "v2";
+  return null;
+}
+
+function questionOptions(value) {
+  return Array.isArray(value) ? value.map(function (option) {
+    if (typeof option === "string") return { label: option, description: "" };
+    if (!option || typeof option !== "object") return null;
+    const label = String(option.label || "").trim();
+    if (!label) return null;
+    return { label: label, description: String(option.description || "").trim() };
+  }).filter(Boolean) : [];
+}
+
+function normalizedQuestions(questions) {
+  return (Array.isArray(questions) ? questions : []).map(function (question, index) {
+    const value = question && typeof question === "object" ? question : {};
+    return {
+      id: "opencode-question-" + String(index),
+      header: String(value.header || "").trim(),
+      question: String(value.question || "").trim(),
+      options: questionOptions(value.options),
+      isSecret: false,
+    };
+  }).filter(function (question) {
+    return question.question || question.options.length || question.header;
+  });
+}
+
+function questionPrompt(question, turnID) {
+  const questions = normalizedQuestions(question.questions);
+  const first = questions[0] || {};
+  const tool = question.tool || {};
+  return {
+    threadId: question.sessionID,
+    turnId: turnID || "",
+    itemId: tool.callID || question.id,
+    title: first.header || "OpenCode 需要信息",
+    detail: first.question || "OpenCode 正在等待你的选择",
+    cwd: directory,
+    questions: questions,
+  };
+}
+
+function questionReplyTarget(question, answers, apiVersion) {
+  const encodedRequest = encodeURIComponent(question.id);
+  if (apiVersion === "v2") {
+    return {
+      route: "/api/session/" + encodeURIComponent(question.sessionID) +
+        "/question/" + encodedRequest + "/reply",
+      body: { answers: answers },
+    };
+  }
+  return {
+    route: "/question/" + encodedRequest + "/reply",
+    body: { answers: answers },
+  };
+}
+
+function questionRejectTarget(question, apiVersion) {
+  const encodedRequest = encodeURIComponent(question.id);
+  if (apiVersion === "v2") {
+    return "/api/session/" + encodeURIComponent(question.sessionID) +
+      "/question/" + encodedRequest + "/reject";
+  }
+  return "/question/" + encodedRequest + "/reject";
+}
+
+function questionAnswersFromResponse(pending, result) {
+  const values = result && result.answers && typeof result.answers === "object"
+    ? result.answers
+    : {};
+  return pending.questions.map(function (question) {
+    const answer = values[question.id];
+    const selected = answer && Array.isArray(answer.answers)
+      ? answer.answers
+      : typeof answer === "string" ? [answer] : [];
+    return selected.map(function (value) { return String(value); }).filter(Boolean);
+  });
+}
+
+async function replyQuestion(question, answers, apiVersion) {
+  const target = questionReplyTarget(question, answers, apiVersion);
+  await request(target.route, { method: "POST", body: target.body });
+}
+
+async function rejectQuestion(question, apiVersion) {
+  await request(questionRejectTarget(question, apiVersion), { method: "POST", body: {} });
+}
+
+function startPrompt(sessionID, params, turnID) {
+  Promise.resolve(sendPrompt(sessionID, params)).catch(async function (error) {
+    const active = activeTurns.get(sessionID);
+    if (!active || !turnID || active.id !== turnID) {
+      notify("warning", { message: error.message || String(error) });
+      return;
+    }
+    await completeSession(sessionID, error.message || String(error));
+  });
+}
+
 async function handlePermission(permission, apiVersion) {
   const sessionID = permission.sessionID;
   const turn = activeTurns.get(sessionID);
@@ -786,8 +873,44 @@ async function handlePermission(permission, apiVersion) {
   });
 }
 
+async function handleQuestion(question, apiVersion) {
+  const normalized = normalizedQuestions(question.questions);
+  if (!normalized.length) {
+    await rejectQuestion(question, apiVersion);
+    return;
+  }
+  const turn = activeTurns.get(question.sessionID);
+  const requestID = "opencode-question-" + apiVersion + "-" + question.id;
+  pendingQuestions.set(requestID, {
+    question: question,
+    apiVersion: apiVersion,
+    questions: normalized,
+  });
+  send({
+    id: requestID,
+    method: "item/tool/requestUserInput",
+    params: Object.assign({}, questionPrompt(question, turn && turn.id), {
+      questions: normalized,
+    }),
+  });
+}
+
 async function handleApprovalResponse(message) {
   const requestID = String(message.id);
+  const question = pendingQuestions.get(requestID);
+  if (question) {
+    pendingQuestions.delete(requestID);
+    const answers = questionAnswersFromResponse(question, message.result || {});
+    const hasAnswer = answers.some(function (answer) { return answer.length > 0; });
+    try {
+      if (hasAnswer) await replyQuestion(question.question, answers, question.apiVersion);
+      else await rejectQuestion(question.question, question.apiVersion);
+    } catch (error) {
+      pendingQuestions.set(requestID, question);
+      throw error;
+    }
+    return true;
+  }
   const pending = pendingPermissions.get(requestID);
   if (!pending) return false;
   pendingPermissions.delete(requestID);
@@ -801,7 +924,7 @@ async function handleApprovalResponse(message) {
 async function handleEvent(rawEvent) {
   const event = rawEvent && rawEvent.payload ? rawEvent.payload : rawEvent;
   if (!event || !event.type) return;
-  const properties = event.properties || {};
+  const properties = event.properties || event.data || {};
   if (event.type === "message.updated") {
     const info = properties.info || {};
     messageInfo.set(info.id, info);
@@ -817,21 +940,20 @@ async function handleEvent(rawEvent) {
     const turn = activeTurns.get(sessionID);
     const turnID = turn && turn.id || messageToTurn.get(part.messageID) || part.messageID;
     if (info.role === "user") {
-      try {
-        const message = await request("/session/" + encodeURIComponent(sessionID) +
-          "/message/" + encodeURIComponent(part.messageID));
+      Promise.resolve(request("/session/" + encodeURIComponent(sessionID) +
+        "/message/" + encodeURIComponent(part.messageID))).then(function (message) {
         notify("item/completed", {
           threadId: sessionID,
           turnId: turnID,
           item: mapUserMessage(message.info || info, message.parts || [part]),
         });
-      } catch (error) {
+      }).catch(function () {
         notify("item/completed", {
           threadId: sessionID,
           turnId: turnID,
           item: mapUserMessage(info, [part]),
         });
-      }
+      });
     } else {
       const item = mapPart(part, "assistant");
       if (item) {
@@ -869,6 +991,21 @@ async function handleEvent(rawEvent) {
       error && error.message || "OpenCode session failed";
     if (properties.sessionID) await completeSession(properties.sessionID, message);
     else notify("error", { message: message });
+    return;
+  }
+  const questionVersion = questionApiVersion(event.type);
+  if (questionVersion) {
+    await handleQuestion(properties, questionVersion);
+    return;
+  }
+  if (event.type === "question.replied" || event.type === "question.rejected" ||
+      event.type === "question.v2.replied" || event.type === "question.v2.rejected") {
+    for (const [requestID, pending] of pendingQuestions.entries()) {
+      if (pending.question.id === properties.requestID &&
+          pending.question.sessionID === properties.sessionID) {
+        pendingQuestions.delete(requestID);
+      }
+    }
     return;
   }
   const permissionVersion = permissionApiVersion(event.type);
@@ -916,7 +1053,9 @@ async function startEventStream() {
           }).join("\n");
           if (data) {
             try {
-              await handleEvent(JSON.parse(data));
+              Promise.resolve(handleEvent(JSON.parse(data))).catch(function (error) {
+                notify("warning", { message: error.message || String(error) });
+              });
             } catch (error) {
               notify("warning", { message: error.message || String(error) });
             }
@@ -1044,6 +1183,11 @@ module.exports = {
   permissionApiVersion: permissionApiVersion,
   permissionPrompt: permissionPrompt,
   permissionReplyTarget: permissionReplyTarget,
+  questionApiVersion: questionApiVersion,
+  questionAnswersFromResponse: questionAnswersFromResponse,
+  questionPrompt: questionPrompt,
+  questionRejectTarget: questionRejectTarget,
+  questionReplyTarget: questionReplyTarget,
   proxyEnvironment: proxyEnvironment,
   settingsProvider: settingsProvider,
   statusType: statusType,

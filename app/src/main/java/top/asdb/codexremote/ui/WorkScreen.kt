@@ -2119,6 +2119,7 @@ private fun WorkComposer(
                     BasicTextField(
                         value = value,
                         onValueChange = onValueChange,
+                        enabled = !state.submitting,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 150.dp)
                             .verticalScroll(composerScroll),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
@@ -2326,7 +2327,12 @@ private fun WorkComposer(
                         Spacer(Modifier.width(6.dp))
                         val canSend = (value.isNotBlank() || state.attachments.isNotEmpty()) &&
                             !state.loading && !state.submitting
-                        val actionEnabled = if (state.running) !state.loading else canSend
+                        val actionEnabled = when {
+                            state.submitting -> false
+                            state.running -> !state.loading
+                            else -> canSend
+                        }
+                        val actionActive = actionEnabled || state.submitting
                         IconButton(
                             onClick = {
                                 if (state.running) onStop() else onSend()
@@ -2334,19 +2340,27 @@ private fun WorkComposer(
                             enabled = actionEnabled,
                             modifier = Modifier.size(36.dp).clip(RoundedCornerShape(18.dp))
                                 .background(
-                                    if (actionEnabled) MaterialTheme.colorScheme.primary else Color(0xFF555555),
+                                    if (actionActive) MaterialTheme.colorScheme.primary else Color(0xFF555555),
                                 ),
                         ) {
-                            Icon(
-                                imageVector = if (state.running) Icons.Default.Stop else Icons.Default.ArrowUpward,
-                                contentDescription = if (state.running) "停止" else "发送",
-                                tint = if (actionEnabled) {
-                                    MaterialTheme.colorScheme.onPrimary
-                                } else {
-                                    Color(0xFFB0B0B0)
-                                },
-                                modifier = Modifier.size(if (state.running) 18.dp else 20.dp),
-                            )
+                            if (state.submitting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = if (state.running) Icons.Default.Stop else Icons.Default.ArrowUpward,
+                                    contentDescription = if (state.running) "停止" else "发送",
+                                    tint = if (actionEnabled) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        Color(0xFFB0B0B0)
+                                    },
+                                    modifier = Modifier.size(if (state.running) 18.dp else 20.dp),
+                                )
+                            }
                         }
                     }
                 }

@@ -5,13 +5,13 @@
 
 文档基线：
 
-- Android 应用版本：1.7.84（versionCode 106）
+- Android 应用版本：1.7.85（versionCode 107）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
 - 主要技术：Kotlin、Jetpack Compose、Coroutines/Flow、JSch、kotlinx.serialization
-- 最后核对日期：2026-08-02
+- 最后核对日期：2026-08-04
 
 版本会变化。发布前必须以 app/build.gradle.kts、protocol/codex-version.txt 和
 protocol/node-version.txt 为准，不要只相信本文顶部的快照。
