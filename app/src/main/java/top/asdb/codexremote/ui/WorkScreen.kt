@@ -2677,6 +2677,7 @@ private fun ModelManagerSheet(
 ) {
     var editorRequest by remember { mutableStateOf<ModelEditorRequest?>(null) }
     var deleteRequested by remember { mutableStateOf<CustomModelDefinition?>(null) }
+    val modelListState = remember(customModels.map(CustomModelDefinition::modelId)) { LazyListState() }
     val remoteModels = models.filterNot { it.isCustom }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Row(
@@ -2698,6 +2699,7 @@ private fun ModelManagerSheet(
             }
         }
         LazyColumn(
+            state = modelListState,
             modifier = Modifier.fillMaxWidth().fillMaxHeight(0.68f),
             contentPadding = PaddingValues(bottom = 8.dp),
         ) {

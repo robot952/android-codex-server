@@ -49,6 +49,7 @@ class StoredProfilesTest {
         assertEquals("gpt-5.2-codex", profile.modelSettings(AgentKind.Codex).preferredModel)
         assertEquals("high", profile.modelSettings(AgentKind.Codex).preferredEffort)
         assertEquals("custom-codex", profile.modelSettings(AgentKind.Codex).customModels.single().modelId)
+        assertEquals(listOf("custom-codex"), profile.modelSettings(AgentKind.Codex).managedModelIds)
         assertEquals(emptyList<CustomModelDefinition>(), profile.modelSettings(AgentKind.OpenCode).customModels)
     }
 
@@ -62,7 +63,12 @@ class StoredProfilesTest {
                 AgentKind.Codex to AgentModelSettings(preferredModel = "gpt-5.2-codex"),
                 AgentKind.OpenCode to AgentModelSettings(
                     preferredModel = "anthropic/claude-sonnet-4",
+                    customModels = listOf(CustomModelDefinition(modelId = "anthropic/claude-sonnet-4")),
                     hiddenModelIds = listOf("openai/gpt-4"),
+                    managedModelIds = listOf(
+                        "anthropic/claude-sonnet-4",
+                        "codex-remote/removed-model",
+                    ),
                 ),
             ),
         )
@@ -76,5 +82,9 @@ class StoredProfilesTest {
         assertEquals("gpt-5.2-codex", restored.modelSettings(AgentKind.Codex).preferredModel)
         assertEquals("anthropic/claude-sonnet-4", restored.modelSettings(AgentKind.OpenCode).preferredModel)
         assertEquals(listOf("openai/gpt-4"), restored.modelSettings(AgentKind.OpenCode).hiddenModelIds)
+        assertEquals(
+            listOf("anthropic/claude-sonnet-4", "codex-remote/removed-model"),
+            restored.modelSettings(AgentKind.OpenCode).managedModelIds,
+        )
     }
 }

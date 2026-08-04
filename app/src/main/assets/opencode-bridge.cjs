@@ -32,6 +32,7 @@ const messageInfo = new Map();
 const messageToTurn = new Map();
 const pendingPermissions = new Map();
 const pendingQuestions = new Map();
+let jsoncParserModule = null;
 
 function send(value) {
   process.stdout.write(JSON.stringify(value) + "\n");
@@ -327,6 +328,173 @@ function openCodeConfigDirectory() {
   return path.join(configHome, "opencode");
 }
 
+function jsoncParser() {
+  if (jsoncParserModule) return jsoncParserModule;
+  const lookupPaths = [];
+  if (process.env.OPENCODE_JSONC_PARSER) {
+    lookupPaths.push(path.resolve(process.env.OPENCODE_JSONC_PARSER));
+  }
+  if (openCodeBin) {
+    lookupPaths.push(path.dirname(path.resolve(openCodeBin)));
+    try {
+      lookupPaths.push(path.dirname(fs.realpathSync(openCodeBin)));
+    } catch (error) {
+      // The executable may be replaced while an installation is being probed.
+    }
+  }
+  for (const lookupPath of lookupPaths) {
+    try {
+      const resolved = require.resolve("jsonc-parser", { paths: [lookupPath] });
+      jsoncParserModule = require(resolved);
+      return jsoncParserModule;
+    } catch (error) {
+      // Try the next installation location.
+    }
+  }
+  throw new Error("OpenCode 配置编辑依赖未安装，请重新安装 OpenCode 运行时");
+}
+
+function openCodeConfigFiles() {
+  if (process.env.OPENCODE_CONFIG) {
+    return [path.resolve(process.env.OPENCODE_CONFIG)];
+  }
+  const directoryPath = openCodeConfigDirectory();
+  return [
+    path.join(directoryPath, "opencode.jsonc"),
+    path.join(directoryPath, "opencode.json"),
+  ];
+}
+
+function parseJsoncDocument(text, filePath) {
+  const errors = [];
+  const value = jsoncParser().parse(text, errors, { allowTrailingComma: true });
+  if (errors.length || !value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("OpenCode 配置文件格式错误: " + filePath);
+  }
+  return value;
+}
+
+function modelKeysInConfig(config, providerID, modelID) {
+  const provider = objectValue(config && config.provider && config.provider[providerID]);
+  const models = objectValue(provider.models);
+  return Object.keys(models).filter(function (key) {
+    const value = objectValue(models[key]);
+    return key === modelID || value.id === modelID;
+  });
+}
+
+function normalizeConfigModelIds(modelIds) {
+  return Array.from(new Set((Array.isArray(modelIds) ? modelIds : []).map(function (value) {
+    return normalizeSyncModel(value).fullModel;
+  })));
+}
+
+/**
+ * Removes model properties from JSONC while leaving comments and unrelated fields intact.
+ * The jsonc-parser edit operation is used instead of regex/string replacement so quoted keys,
+ * trailing commas, and comments are handled according to OpenCode's own config syntax.
+ */
+function removeModelsFromConfigText(text, modelIds, removeDefaultModel) {
+  const parser = jsoncParser();
+  let current = text;
+  let config = parseJsoncDocument(current, "opencode.jsonc");
+  const removed = [];
+  const normalizedIds = normalizeConfigModelIds(modelIds);
+  for (const fullModel of normalizedIds) {
+    const parsed = parseModel(fullModel);
+    if (!parsed) continue;
+    const keys = modelKeysInConfig(config, parsed.providerID, parsed.modelID);
+    const provider = objectValue(config && config.provider && config.provider[parsed.providerID]);
+    const configuredModelKeys = Object.keys(objectValue(provider.models));
+    if (keys.length && keys.length === configuredModelKeys.length) {
+      const edits = parser.modify(
+        current,
+        ["provider", parsed.providerID, "models"],
+        {},
+        { formattingOptions: { insertSpaces: true, tabSize: 2 } },
+      );
+      current = parser.applyEdits(current, edits);
+      removed.push(fullModel);
+      config = parseJsoncDocument(current, "opencode.jsonc");
+      continue;
+    }
+    for (const modelKey of keys) {
+      const edits = parser.modify(
+        current,
+        ["provider", parsed.providerID, "models", modelKey],
+        undefined,
+        { formattingOptions: { insertSpaces: true, tabSize: 2 } },
+      );
+      current = parser.applyEdits(current, edits);
+      removed.push(fullModel);
+      config = parseJsoncDocument(current, "opencode.jsonc");
+    }
+  }
+  if (removeDefaultModel && typeof config.model === "string") {
+    const edits = parser.modify(
+      current,
+      ["model"],
+      undefined,
+      { formattingOptions: { insertSpaces: true, tabSize: 2 } },
+    );
+    if (edits.length) {
+      current = parser.applyEdits(current, edits);
+      config = parseJsoncDocument(current, "opencode.jsonc");
+    }
+  }
+  return { text: current, removedModelIds: Array.from(new Set(removed)), config: config };
+}
+
+function atomicWriteConfig(filePath, text) {
+  const directoryPath = path.dirname(filePath);
+  const temporaryPath = path.join(
+    directoryPath,
+    "." + path.basename(filePath) + "." + process.pid + "." +
+      crypto.randomBytes(6).toString("hex") + ".tmp",
+  );
+  let mode = 0o600;
+  try {
+    mode = fs.statSync(filePath).mode & 0o777;
+  } catch (error) {
+    // Keep the restrictive default for a newly-created config file.
+  }
+  try {
+    fs.writeFileSync(temporaryPath, text, { encoding: "utf8", mode: mode });
+    fs.renameSync(temporaryPath, filePath);
+    try { fs.chmodSync(filePath, mode); } catch (error) { /* best effort */ }
+  } finally {
+    try { fs.unlinkSync(temporaryPath); } catch (error) {
+      if (!error || error.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+function removeModelsFromConfigFile(modelIds, removeDefaultModel) {
+  const normalizedIds = normalizeConfigModelIds(modelIds);
+  if (!normalizedIds.length && !removeDefaultModel) {
+    return { changed: false, removedModelIds: [] };
+  }
+  let changed = false;
+  const removed = [];
+  let existingFile = false;
+  for (const filePath of openCodeConfigFiles()) {
+    if (!fs.existsSync(filePath)) continue;
+    existingFile = true;
+    const original = fs.readFileSync(filePath, "utf8");
+    const result = removeModelsFromConfigText(original, normalizedIds, removeDefaultModel);
+    if (result.text === original) continue;
+    atomicWriteConfig(filePath, result.text);
+    // Re-read and parse after the rename so a partial/corrupt write is never reported as success.
+    parseJsoncDocument(fs.readFileSync(filePath, "utf8"), filePath);
+    changed = true;
+    result.removedModelIds.forEach(function (id) { removed.push(id); });
+  }
+  if (!existingFile && normalizedIds.length) {
+    throw new Error("找不到 OpenCode 全局配置文件，无法删除模型");
+  }
+  return { changed: changed, removedModelIds: Array.from(new Set(removed)) };
+}
+
 function proxySettingsPath() {
   return path.join(openCodeConfigDirectory(), "codex-remote-proxy");
 }
@@ -428,6 +596,161 @@ function configuredModels(models, providerID, defaultModel) {
   return result;
 }
 
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeSyncModel(value) {
+  const fullModel = normalizeOpenCodeModel(value, managedProviderID);
+  const parsed = parseModel(fullModel);
+  if (!parsed) throw new Error("OpenCode 模型 ID 必须包含 provider/model");
+  return { fullModel: fullModel, providerID: parsed.providerID, modelID: parsed.modelID };
+}
+
+function modelDefinitionsByProvider(models) {
+  const result = new Map();
+  for (const value of Array.isArray(models) ? models : []) {
+    const normalized = normalizeSyncModel(value && (value.modelId || value.id));
+    const configured = modelConfigDefinition(
+      Object.assign({}, value || {}, { modelId: normalized.fullModel }),
+      normalized.providerID,
+    );
+    if (!configured) throw new Error("OpenCode 模型 ID 必须包含 provider/model");
+    if (!result.has(normalized.providerID)) result.set(normalized.providerID, new Map());
+    result.get(normalized.providerID).set(configured.modelID, configured.definition);
+  }
+  return result;
+}
+
+function modelIdsByProvider(modelIds) {
+  const result = new Map();
+  for (const value of Array.isArray(modelIds) ? modelIds : []) {
+    const normalized = normalizeSyncModel(value);
+    if (!result.has(normalized.providerID)) result.set(normalized.providerID, new Set());
+    result.get(normalized.providerID).add(normalized.modelID);
+  }
+  return result;
+}
+
+function modelMapsEqual(left, right) {
+  const leftKeys = Object.keys(left || {});
+  const rightKeys = Object.keys(right || {});
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    if (!hasOwn(right, key) || JSON.stringify(left[key]) !== JSON.stringify(right[key])) return false;
+  }
+  return true;
+}
+
+function deleteModelFromMap(models, modelID) {
+  const deletedKeys = [];
+  for (const key of Object.keys(models)) {
+    const value = objectValue(models[key]);
+    if (key === modelID || value.id === modelID) {
+      delete models[key];
+      deletedKeys.push(key);
+    }
+  }
+  return deletedKeys;
+}
+
+function buildModelSyncPatch(config, params) {
+  const currentConfig = objectValue(config);
+  const providers = objectValue(currentConfig.provider);
+  const definitions = modelDefinitionsByProvider(params && params.models);
+  const removals = modelIdsByProvider(params && params.removeModelIds);
+  const providerIDs = new Set([...definitions.keys(), ...removals.keys()]);
+  const nextModelsByProvider = new Map();
+  for (const providerID of Object.keys(providers)) {
+    nextModelsByProvider.set(providerID, Object.assign({}, objectValue(providers[providerID].models)));
+  }
+  const patch = { provider: {} };
+  let changed = false;
+  const addedModelIds = [];
+  const removedModelIds = [];
+
+  for (const providerID of providerIDs) {
+    const hasProvider = hasOwn(providers, providerID) && objectValue(providers[providerID]);
+    const existingProvider = hasProvider ? objectValue(providers[providerID]) : {};
+    const existingModels = Object.assign({}, objectValue(existingProvider.models));
+    const nextModels = Object.assign({}, existingModels);
+    const modelPatch = {};
+    const providerDefinitions = definitions.get(providerID) || new Map();
+    const providerRemovals = removals.get(providerID) || new Set();
+    for (const modelID of providerRemovals) {
+      // An update wins over a removal if both are present in one request.
+      if (providerDefinitions.has(modelID)) continue;
+      const deletedKeys = deleteModelFromMap(nextModels, modelID);
+      if (deletedKeys.length) {
+        removedModelIds.push(providerID + "/" + modelID);
+      }
+    }
+    for (const [modelID, definition] of providerDefinitions.entries()) {
+      const wasPresent = hasOwn(nextModels, modelID);
+      if (!wasPresent || JSON.stringify(nextModels[modelID]) !== JSON.stringify(definition)) {
+        nextModels[modelID] = definition;
+        modelPatch[modelID] = definition;
+        addedModelIds.push(providerID + "/" + modelID);
+      }
+    }
+    nextModelsByProvider.set(providerID, nextModels);
+    if (!modelMapsEqual(existingModels, nextModels)) {
+      const providerPatch = Object.assign({}, existingProvider);
+      if (!hasProvider) {
+        providerPatch.name = managedProviderName;
+        providerPatch.npm = managedProviderPackage;
+      }
+      // OpenCode's config PATCH is recursive. Removed keys are edited in JSONC below because
+      // 1.18.x validates nested values and rejects the usual JSON Merge Patch null marker.
+      if (Object.keys(modelPatch).length || !hasProvider) {
+        providerPatch.models = hasProvider ? modelPatch : nextModels;
+        patch.provider[providerID] = providerPatch;
+        changed = true;
+      }
+    }
+  }
+
+  const configuredDefault = String(currentConfig.model || "").trim();
+  const defaultProviderID = parseModel(configuredDefault)?.providerID || settingsProvider(currentConfig);
+  const defaultParsed = configuredDefault
+    ? parseModel(normalizeOpenCodeModel(configuredDefault, defaultProviderID))
+    : null;
+  const defaultRemovals = removals.get(defaultParsed && defaultParsed.providerID);
+  const defaultWasRemoved = Boolean(
+    defaultParsed && defaultRemovals && defaultRemovals.has(defaultParsed.modelID) &&
+      !(definitions.get(defaultParsed.providerID) || new Map()).has(defaultParsed.modelID),
+  );
+  if (defaultWasRemoved) {
+    const preferredProvider = defaultParsed.providerID;
+    const candidateProviders = [preferredProvider, ...Array.from(nextModelsByProvider.keys())]
+      .filter((value, index, all) => value && all.indexOf(value) === index);
+    let fallback = "";
+    for (const providerID of candidateProviders) {
+      const models = nextModelsByProvider.get(providerID) || {};
+      const modelID = Object.keys(models)[0];
+      if (modelID) {
+        fallback = providerID + "/" + modelID;
+        break;
+      }
+    }
+    patch.model = fallback;
+    changed = true;
+  }
+  const hasPatch = Object.keys(patch.provider).length > 0 || hasOwn(patch, "model");
+  return changed || removedModelIds.length > 0
+    ? {
+      patch: hasPatch ? patch : null,
+      addedModelIds: addedModelIds,
+      removedModelIds: removedModelIds,
+      defaultModel: hasOwn(patch, "model") ? patch.model : configuredDefault,
+    }
+    : { patch: null, addedModelIds: [], removedModelIds: [], defaultModel: configuredDefault };
+}
+
 function settingsProvider(config) {
   const providers = config && config.provider || {};
   const selected = parseModel(config && config.model);
@@ -478,15 +801,20 @@ async function writeGlobalSettings(params) {
   }
   const proxyUrl = normalizeProxyUrl(params.proxyUrl);
   const defaultModel = normalizeOpenCodeModel(params.defaultModel, providerID);
-  const provider = {
-    models: configuredModels(params.customModels, providerID, defaultModel),
-  };
+  const provider = Object.assign({}, configuredProvider || {});
+  const models = Object.assign({}, objectValue(provider.models));
+  for (const [modelID, definition] of Object.entries(
+    configuredModels(params.customModels, providerID, defaultModel),
+  )) {
+    models[modelID] = definition;
+  }
+  provider.models = models;
   if (!configuredProvider || providerID === managedProviderID) {
     provider.name = configuredProvider && configuredProvider.name || managedProviderName;
     provider.npm = configuredProvider && configuredProvider.npm || managedProviderPackage;
   }
   if (Object.prototype.hasOwnProperty.call(params, "baseUrl")) {
-    provider.options = { baseURL: baseURL };
+    provider.options = Object.assign({}, objectValue(provider.options), { baseURL: baseURL });
   }
   const patch = { provider: {} };
   patch.provider[providerID] = provider;
@@ -506,23 +834,106 @@ async function writeGlobalSettings(params) {
 
 async function ensureCustomModel(params) {
   const fullModel = normalizeOpenCodeModel(params.modelId, managedProviderID);
-  const parsed = parseModel(fullModel);
-  if (!parsed) throw new Error("OpenCode 模型 ID 必须包含 provider/model");
+  const result = await syncCustomModels({ models: [Object.assign({}, params, { modelId: fullModel })] });
+  return {
+    configured: result.configured === true,
+    model: fullModel,
+  };
+}
+
+async function syncCustomModels(params) {
+  const models = Array.isArray(params && params.models) ? params.models : [];
+  const removeModelIds = Array.isArray(params && params.removeModelIds)
+    ? params.removeModelIds
+    : [];
+  if (!models.length && !removeModelIds.length) {
+    return { configured: false, addedModelIds: [], removedModelIds: [] };
+  }
   const config = await request("/global/config") || {};
-  const configuredProvider = config.provider && config.provider[parsed.providerID];
-  if (!configuredProvider) {
-    throw new Error("请先在 OpenCode 设置中配置模型 URL 和 API 密钥");
+  const plan = buildModelSyncPatch(config, { models: models, removeModelIds: removeModelIds });
+  const removeDefaultModel = plan.defaultModel === "" && String(config.model || "").trim() !== "";
+  if (plan.patch) {
+    // Apply additions/edits and a valid default-model fallback through OpenCode first. The
+    // subsequent JSONC deletion then cannot be overwritten by a recursive PATCH merge.
+    await request("/global/config", { method: "PATCH", body: plan.patch });
   }
-  if (configuredProvider.models && configuredProvider.models[parsed.modelID]) {
-    return { configured: false, model: fullModel };
+  let fileResult = { changed: false, removedModelIds: [] };
+  let runtimeRefreshed = true;
+  if (plan.removedModelIds.length || removeDefaultModel) {
+    fileResult = removeModelsFromConfigFile(plan.removedModelIds, removeDefaultModel);
+    runtimeRefreshed = await refreshAfterConfigFileEdit(plan.removedModelIds, removeDefaultModel);
   }
-  const model = modelConfigDefinition(Object.assign({}, params, { modelId: fullModel }), parsed.providerID);
-  const providerPatch = { models: {} };
-  providerPatch.models[model.modelID] = model.definition;
-  const patch = { provider: {} };
-  patch.provider[parsed.providerID] = providerPatch;
-  await request("/global/config", { method: "PATCH", body: patch });
-  return { configured: true, model: fullModel };
+  if (!plan.patch && !fileResult.changed) {
+    return {
+      configured: false,
+      addedModelIds: plan.addedModelIds,
+      removedModelIds: plan.removedModelIds,
+      defaultModel: plan.defaultModel,
+      runtimeRefreshed: runtimeRefreshed,
+    };
+  }
+  return {
+    configured: Boolean(plan.patch || fileResult.changed),
+    addedModelIds: plan.addedModelIds,
+    removedModelIds: plan.removedModelIds.length
+      ? plan.removedModelIds
+      : fileResult.removedModelIds,
+    defaultModel: plan.defaultModel,
+    runtimeRefreshed: runtimeRefreshed,
+  };
+}
+
+function configuredModelPresent(config, fullModel) {
+  const parsed = parseModel(fullModel);
+  if (!parsed) return false;
+  const provider = objectValue(config && config.provider && config.provider[parsed.providerID]);
+  const models = objectValue(provider.models);
+  return Object.keys(models).some(function (key) {
+    const value = objectValue(models[key]);
+    return key === parsed.modelID || value.id === parsed.modelID;
+  });
+}
+
+function providerCatalogModelPresent(providers, fullModel) {
+  const parsed = parseModel(fullModel);
+  if (!parsed) return false;
+  const provider = (providers && providers.all || []).find(function (item) {
+    return item && item.id === parsed.providerID;
+  });
+  const models = objectValue(provider && provider.models);
+  return Object.keys(models).some(function (key) {
+    const value = objectValue(models[key]);
+    return key === parsed.modelID || value.id === parsed.modelID;
+  });
+}
+
+async function refreshAfterConfigFileEdit(modelIds, removeDefaultModel) {
+  const normalizedIds = normalizeConfigModelIds(modelIds);
+  if (!normalizedIds.length && !removeDefaultModel) return true;
+  async function isApplied() {
+    const current = await request("/global/config") || {};
+    if (removeDefaultModel && String(current.model || "").trim()) return false;
+    if (normalizedIds.some(function (id) { return configuredModelPresent(current, id); })) return false;
+    const providers = await request("/provider") || {};
+    return normalizedIds.every(function (id) { return !providerCatalogModelPresent(providers, id); });
+  }
+  // Force OpenCode to drop its provider cache after the external JSONC edit. The endpoint
+  // disposes the global instance, not the HTTP server, so subsequent requests rebuild it.
+  try { await request("/global/dispose", { method: "POST", body: {} }); } catch (error) { /* best effort */ }
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (await isApplied()) return true;
+    await new Promise(function (resolve) { setTimeout(resolve, 100); });
+  }
+  // Config watchers normally reload within a few milliseconds. Dispose once more for servers
+  // that raced the first request with their file watcher.
+  try { await request("/global/dispose", { method: "POST", body: {} }); } catch (error) { /* best effort */ }
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (await isApplied()) return true;
+    await new Promise(function (resolve) { setTimeout(resolve, 100); });
+  }
+  // Some long-running OpenCode servers retain a provider snapshot even after global disposal.
+  // The atomically-written JSONC is authoritative and will be loaded on the next connection.
+  return false;
 }
 
 function mapModels(providers) {
@@ -602,6 +1013,9 @@ async function handleRequest(method, params) {
   }
   if (method === "agent/settings/write") {
     return writeGlobalSettings(params);
+  }
+  if (method === "agent/models/sync") {
+    return syncCustomModels(params);
   }
   if (method === "agent/model/ensure") {
     return ensureCustomModel(params);
@@ -1176,7 +1590,9 @@ module.exports = {
   mapModels: mapModels,
   mapPart: mapPart,
   mapSession: mapSession,
+  buildModelSyncPatch: buildModelSyncPatch,
   modelConfigDefinition: modelConfigDefinition,
+  modelDefinitionsByProvider: modelDefinitionsByProvider,
   normalizeOpenCodeModel: normalizeOpenCodeModel,
   normalizeProxyUrl: normalizeProxyUrl,
   parseModel: parseModel,
@@ -1189,6 +1605,7 @@ module.exports = {
   questionRejectTarget: questionRejectTarget,
   questionReplyTarget: questionReplyTarget,
   proxyEnvironment: proxyEnvironment,
+  removeModelsFromConfigText: removeModelsFromConfigText,
   settingsProvider: settingsProvider,
   statusType: statusType,
 };

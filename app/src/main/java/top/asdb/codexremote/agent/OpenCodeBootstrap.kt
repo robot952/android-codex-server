@@ -77,7 +77,7 @@ internal object OpenCodeBootstrap {
             export npm_config_registry
             mkdir -p "__SHELL_DOLLAR__OPENCODE_ROOT/releases" "__SHELL_DOLLAR__BIN_DIR" "__SHELL_DOLLAR__WORK"
             cat > "__SHELL_DOLLAR__WORK/package.json" <<'EOF'
-            {"private":true,"dependencies":{"opencode-ai":"$openCodeVersion"}}
+            {"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"$openCodeVersion"}}
             EOF
             progress 74 '' '分析 OpenCode 下载清单' '锁定 OpenCode $openCodeVersion'
             (

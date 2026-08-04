@@ -20,6 +20,7 @@ class OpenCodeBootstrapTest {
         )
 
         assertTrue(script.contains("opencode-ai\":\"1.18.11"))
+        assertTrue(script.contains("jsonc-parser\":\"3.3.1"))
         assertTrue(script.contains("npm_config_registry=https://registry.npmmirror.com"))
         assertTrue(script.contains("--omit=optional"))
         assertTrue(script.contains("HTTP_PROXY=\"\$PROXY\""))

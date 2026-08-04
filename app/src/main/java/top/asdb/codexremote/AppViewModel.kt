@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -19,6 +20,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import top.asdb.codexremote.agent.AgentConnectionManager
 import top.asdb.codexremote.agent.AgentClientRegistry
@@ -108,6 +111,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val sessionNavigationJobs = mutableMapOf<String, Job>()
     private val threadHistoryJobs = mutableMapOf<String, Job>()
     private val threadMutationJobs = mutableMapOf<String, Job>()
+    private val customModelSyncJobs = mutableMapOf<AgentConnectionKey, Job>()
+    private val customModelSyncRevisions = mutableMapOf<AgentConnectionKey, Long>()
+    private val customModelSyncMutexes = mutableMapOf<AgentConnectionKey, Mutex>()
     private var draftPersistJob: Job? = null
     private val sessionSnapshots =
         object : LinkedHashMap<AgentConnectionKey, SessionSnapshot>(8, 0.75f, true) {
@@ -284,6 +290,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         sessionNavigationJobs.values.forEach(Job::cancel)
         threadHistoryJobs.values.forEach(Job::cancel)
         threadMutationJobs.values.forEach(Job::cancel)
+        customModelSyncJobs.values.forEach(Job::cancel)
+        customModelSyncJobs.clear()
+        customModelSyncRevisions.clear()
+        customModelSyncMutexes.clear()
         terminals.closeAll()
         hosts.close()
         connections.close()
@@ -311,7 +321,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 customModels = input.customModels.ifEmpty { existing.customModels },
                 hiddenModelIds = input.hiddenModelIds.ifEmpty { existing.hiddenModelIds },
                 agentModelSettings = if (formIncludedAgentModelSettings) {
-                    input.agentModelSettings
+                    input.agentModelSettings.mapValues { (agent, settings) ->
+                        settings.copy(
+                            managedModelIds = (
+                                existing.modelSettings(agent).managedModelIds + settings.managedModelIds
+                            ).distinct(),
+                        )
+                    }
                 } else {
                     existing.agentModelSettings.ifEmpty { input.agentModelSettings }
                 },
@@ -325,6 +341,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (identityChanged) {
             terminals.closeProfile(normalized.id)
             invalidateProfile(normalized.id)
+            cancelCustomModelSync(normalized.id)
             fingerprintJobs.remove(normalized.id)?.cancel()
             connectionJobs.remove(normalized.id)?.cancel()
             setupJobs.remove(normalized.id)?.cancel()
@@ -559,6 +576,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         hosts.remove(id)
         val wasSelected = _state.value.selectedProfileId == id
         invalidateProfile(id)
+        cancelCustomModelSync(id)
         sessionSnapshots.keys.removeAll { it.profileId == id }
         contextUsageFallbacks.clear(id)
         clearSubAgentNavigation(id)
@@ -1065,7 +1083,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ?: if (current.selectedProfileId == profileId) current.connection else ConnectionState()
         if (connection.phase != ConnectionPhase.Connected) return
         val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: return
-        val job = viewModelScope.launch(Dispatchers.IO) {
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
                 val effectiveProfile = hosts.profile(profileId) ?: profile
                 val metrics = client.readServerMetrics(effectiveProfile)
@@ -1110,6 +1128,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         serverMetricsJobs[profileId] = job
+        job.start()
     }
 
     fun refreshThreads(silent: Boolean = false) {
@@ -1806,10 +1825,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val thread = current.activeThread ?: return
         val client = activeClient() ?: return
         val profile = current.profiles.firstOrNull { it.id == profileId }
+        val selectedModelSettings = profile?.modelSettings(current.activeAgent)
         val selectedCustomModel = current.selectedModel?.let { selected ->
-            profile?.modelSettings(current.activeAgent)?.customModels
+            selectedModelSettings?.customModels
                 ?.firstOrNull { it.modelId == selected }
         }
+        val pendingModelRemovals = selectedModelSettings?.let(::pendingManagedModelRemovals).orEmpty()
+        val modelSyncRequired = selectedCustomModel != null || pendingModelRemovals.isNotEmpty()
         if (clean.isBlank() && current.attachments.isEmpty()) return
         if (current.loading || current.submitting) return
         if (current.running && current.activeTurnId == null) {
@@ -1831,8 +1853,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     client.steerTurn(thread.id, activeTurn, clean, current.attachments)
                     activeTurn
                 } else {
-                    if (profile != null && selectedCustomModel != null) {
-                        client.ensureCustomModel(profile, selectedCustomModel)
+                    if (profile != null && modelSyncRequired) {
+                        if (current.activeAgent == AgentKind.OpenCode) {
+                            syncCustomModelsNow(
+                                profileId = profileId,
+                                agent = current.activeAgent,
+                                requireConnected = true,
+                            )
+                        } else if (selectedCustomModel != null) {
+                            client.ensureCustomModel(profile, selectedCustomModel)
+                        }
                     }
                     client.startTurn(
                         threadId = thread.id,
@@ -2576,23 +2606,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 currentSettings.customModels + normalized
             }
-            currentSettings.copy(customModels = customModels)
+            currentSettings.copy(
+                customModels = customModels,
+                managedModelIds = (
+                    currentSettings.managedModelIds + originalId.orEmpty() + normalized.modelId
+                ).filter(String::isNotBlank).distinct(),
+            )
         }
     }
 
     fun deleteCustomModel(modelId: String) {
         val profileId = _state.value.selectedProfileId ?: return
-        val normalizedId = modelId.trim()
+        val agent = _state.value.activeAgent
+        val normalizedId = modelId.trim().let { id ->
+            if (agent == AgentKind.OpenCode) normalizeOpenCodeModelId(id) else id
+        }
         if (normalizedId.isBlank()) return
         updateProfileModelCatalog(profileId) { settings ->
-            settings.copy(customModels = settings.customModels.filterNot { it.modelId == normalizedId })
+            if (settings.customModels.none { it.modelId == normalizedId }) return@updateProfileModelCatalog settings
+            settings.copy(
+                preferredModel = settings.preferredModel.takeUnless { it == normalizedId }.orEmpty(),
+                testModel = settings.testModel.takeUnless { it == normalizedId }.orEmpty(),
+                customModels = settings.customModels.filterNot { it.modelId == normalizedId },
+                managedModelIds = (settings.managedModelIds + normalizedId).distinct(),
+            )
         }
     }
 
     /** Hiding affects only the Android picker; it never removes a provider-side model. */
     fun setModelHidden(modelId: String, hidden: Boolean) {
         val profileId = _state.value.selectedProfileId ?: return
-        val normalizedId = modelId.trim()
+        val agent = _state.value.activeAgent
+        val normalizedId = modelId.trim().let { id ->
+            if (agent == AgentKind.OpenCode) normalizeOpenCodeModelId(id) else id
+        }
         if (normalizedId.isBlank()) return
         updateProfileModelCatalog(profileId) { settings ->
             val hiddenIds = if (hidden) {
@@ -3171,6 +3218,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     defaultModel = normalizedDefaultModel,
                     defaultEffort = normalizedDefaultReasoningEffort,
                 )
+                if (operation.key.agent == AgentKind.OpenCode) {
+                    runCatching {
+                        syncCustomModelsNow(
+                            profileId = profileId,
+                            agent = operation.key.agent,
+                            requireConnected = false,
+                        )
+                    }.onFailure { syncError ->
+                        DiagnosticLogger.warn(
+                            "Models",
+                            "sync_after_settings_failed profile=${profileRef(profileId)} " +
+                                "error=${syncError.message ?: syncError::class.simpleName}",
+                        )
+                    }
+                }
                 if (isOperationVisible(operation)) {
                     _state.update {
                         it.copy(
@@ -3525,6 +3587,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         terminals.closeProfile(profileId)
         DiagnosticLogger.info("Connection", "disconnect_start profile=${profileRef(profileId)}")
         invalidateProfile(profileId)
+        cancelCustomModelSync(profileId)
         fingerprintJobs[profileId]?.cancel()
         connectionJobs[profileId]?.cancel()
         setupJobs[profileId]?.cancel()
@@ -4080,6 +4143,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspaceError = connected.workspaceError,
                 loading = false,
             )
+            scheduleCustomModelSync(profile.id, agent, immediate = true)
             return
         }
         // Keep the resolved command/client created by loadConnectedSession.
@@ -4145,6 +4209,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ).also { updated -> sessionSnapshots[key] = SessionSnapshot.capture(updated) }
         }
         persistProfiles()
+        scheduleCustomModelSync(profile.id, agent, immediate = true)
     }
 
     private fun currentProfile(): ServerProfile? {
@@ -4190,8 +4255,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun normalizeAgentModelSettings(
         agent: AgentKind,
         settings: AgentModelSettings,
-    ): AgentModelSettings =
-        settings.copy(
+    ): AgentModelSettings {
+        val customModels = settings.customModels.mapNotNull {
+            runCatching {
+                normalizeCustomModelDefinition(
+                    if (agent == AgentKind.OpenCode) {
+                        it.copy(modelId = normalizeOpenCodeModelId(it.modelId))
+                    } else {
+                        it
+                    },
+                )
+            }.getOrNull()
+        }.distinctBy { it.modelId }.take(MAX_CUSTOM_MODELS)
+        val managedModelIds = (
+            customModels.map(CustomModelDefinition::modelId) + settings.managedModelIds
+        ).asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .mapNotNull { id ->
+                runCatching {
+                    if (agent == AgentKind.OpenCode) normalizeOpenCodeModelId(id) else id
+                }.getOrNull()
+            }
+            .distinct()
+            .take(MAX_MANAGED_MODEL_IDS)
+            .toList()
+        return settings.copy(
             preferredModel = settings.preferredModel.trim().let { model ->
                 if (agent == AgentKind.OpenCode) normalizeOpenCodeModelId(model) else model
             },
@@ -4199,17 +4288,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             testModel = settings.testModel.trim().let { model ->
                 if (agent == AgentKind.OpenCode) normalizeOpenCodeModelId(model) else model
             },
-            customModels = settings.customModels.mapNotNull {
-                runCatching {
-                    normalizeCustomModelDefinition(
-                        if (agent == AgentKind.OpenCode) {
-                            it.copy(modelId = normalizeOpenCodeModelId(it.modelId))
-                        } else {
-                            it
-                        },
-                    )
-                }.getOrNull()
-            }.distinctBy { it.modelId }.take(MAX_CUSTOM_MODELS),
+            customModels = customModels,
             hiddenModelIds = settings.hiddenModelIds.asSequence()
                 .map(String::trim)
                 .filter(String::isNotBlank)
@@ -4217,7 +4296,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 .distinct()
                 .take(MAX_HIDDEN_MODEL_IDS)
                 .toList(),
+            managedModelIds = managedModelIds,
         )
+    }
 
     private fun updateProfileModelCatalog(
         profileId: String,
@@ -4226,7 +4307,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         val key = sessionKey(profileId)
         val profile = current.profiles.firstOrNull { it.id == profileId } ?: return
-        val updatedSettings = normalizeAgentModelSettings(key.agent, transform(profile.modelSettings(key.agent)))
+        val previousSettings = profile.modelSettings(key.agent)
+        val updatedSettings = normalizeAgentModelSettings(key.agent, transform(previousSettings))
         val updatedProfile = normalizeProfile(profile.withModelSettings(key.agent, updatedSettings))
         val fallbackModels = if (current.selectedProfileId == profileId) {
             current.models.filterNot(CodexModel::isCustom)
@@ -4234,17 +4316,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             sessionSnapshots[key]?.models.orEmpty().filterNot(CodexModel::isCustom)
         }
         val remoteModels = remoteModelsByProfile[key] ?: fallbackModels
+        val pendingRemovals = pendingManagedModelRemovals(updatedSettings)
         val catalog = buildModelCatalog(
             remoteModels = remoteModels,
             customModels = updatedSettings.customModels,
-            hiddenModelIds = updatedSettings.hiddenModelIds,
+            hiddenModelIds = updatedSettings.hiddenModelIds + pendingRemovals,
         )
         _state.update { latest ->
             val profiles = latest.profiles.map { candidate ->
                 if (candidate.id == profileId) updatedProfile else candidate
             }
             if (latest.selectedProfileId == profileId) {
-                latest.copy(profiles = profiles, models = catalog)
+                val selectedIsAvailable = latest.selectedModel?.let { selected ->
+                    catalog.any { model -> model.id == selected || model.model == selected }
+                } == true
+                val fallback = resolveModelSelection(
+                    models = catalog,
+                    preferredModel = updatedSettings.preferredModel,
+                    preferredEffort = updatedSettings.preferredEffort,
+                )
+                latest.copy(
+                    profiles = profiles,
+                    models = catalog,
+                    selectedModel = latest.selectedModel.takeIf { selectedIsAvailable } ?: fallback.model,
+                    selectedEffort = latest.selectedEffort.takeIf { selectedIsAvailable } ?: fallback.effort,
+                )
             } else {
                 latest.copy(profiles = profiles)
             }
@@ -4256,6 +4352,169 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             sessionSnapshots[key] = snapshot.copy(models = catalog)
         }
         persistProfiles()
+        if (key.agent == AgentKind.OpenCode && (
+                previousSettings.customModels != updatedSettings.customModels ||
+                    previousSettings.managedModelIds != updatedSettings.managedModelIds
+            )
+        ) {
+            scheduleCustomModelSync(profileId, key.agent)
+        }
+    }
+
+    private fun pendingManagedModelRemovals(settings: AgentModelSettings): List<String> {
+        val currentIds = settings.customModels.mapTo(HashSet(), CustomModelDefinition::modelId)
+        return settings.managedModelIds
+            .asSequence()
+            .filterNot { it in currentIds }
+            .distinct()
+            .toList()
+    }
+
+    /** Coalesces rapid picker edits and reconciles them on a single bridge request. */
+    private fun scheduleCustomModelSync(
+        profileId: String,
+        agent: AgentKind,
+        immediate: Boolean = false,
+    ) {
+        if (agent != AgentKind.OpenCode) return
+        val key = AgentConnectionKey(profileId, agent)
+        val revision = synchronized(customModelSyncJobs) {
+            val next = (customModelSyncRevisions[key] ?: 0L) + 1L
+            customModelSyncRevisions[key] = next
+            next
+        }
+        synchronized(customModelSyncJobs) {
+            customModelSyncJobs[key]?.cancel()
+        }
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                if (!immediate) delay(MODEL_SYNC_DEBOUNCE_MS)
+                syncCustomModelsNow(
+                    profileId = profileId,
+                    agent = agent,
+                    expectedRevision = revision,
+                    requireConnected = false,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                DiagnosticLogger.warn(
+                    "Models",
+                    "sync_failed profile=${profileRef(profileId)} agent=${agent.label} " +
+                        "error=${error.message ?: error::class.simpleName}",
+                )
+            } finally {
+                val currentJob = currentCoroutineContext()[Job]
+                synchronized(customModelSyncJobs) {
+                    if (customModelSyncJobs[key] === currentJob) {
+                        customModelSyncJobs.remove(key)
+                    }
+                }
+            }
+        }
+        synchronized(customModelSyncJobs) {
+            customModelSyncJobs[key] = job
+        }
+        job.start()
+    }
+
+    private suspend fun syncCustomModelsNow(
+        profileId: String,
+        agent: AgentKind,
+        expectedRevision: Long? = null,
+        requireConnected: Boolean,
+    ) {
+        if (agent != AgentKind.OpenCode) return
+        val key = AgentConnectionKey(profileId, agent)
+        val mutex = synchronized(customModelSyncMutexes) {
+            customModelSyncMutexes.getOrPut(key) { Mutex() }
+        }
+        mutex.withLock {
+            val profile = _state.value.profiles.firstOrNull { it.id == profileId }
+                ?: return@withLock
+            val settings = profile.modelSettings(agent)
+            val removals = pendingManagedModelRemovals(settings)
+            if (settings.customModels.isEmpty() && removals.isEmpty()) return@withLock
+            val client = connections.client(profileId, agent)?.takeIf { it.isConnected() }
+                ?: run {
+                    if (requireConnected) error("OpenCode 连接已断开，无法同步模型")
+                    return@withLock
+                }
+            val generation = client.currentGeneration()
+                ?: run {
+                    if (requireConnected) error("OpenCode 连接尚未就绪，无法同步模型")
+                    return@withLock
+                }
+            DiagnosticLogger.info(
+                "Models",
+                "sync_start profile=${profileRef(profileId)} agent=${agent.label} " +
+                    "models=${settings.customModels.size} removals=${removals.size}",
+            )
+            client.syncCustomModels(profile, settings.customModels, removals)
+            if (!client.isGenerationActive(generation)) return@withLock
+            val revisionIsCurrent = expectedRevision == null || synchronized(customModelSyncJobs) {
+                customModelSyncRevisions[key] == expectedRevision
+            }
+            if (!revisionIsCurrent) return@withLock
+            clearSyncedModelTombstones(profileId, agent, removals)
+            DiagnosticLogger.info(
+                "Models",
+                "sync_success profile=${profileRef(profileId)} agent=${agent.label}",
+            )
+        }
+    }
+
+    private fun clearSyncedModelTombstones(
+        profileId: String,
+        agent: AgentKind,
+        syncedIds: List<String>,
+    ) {
+        if (syncedIds.isEmpty()) return
+        val currentProfile = _state.value.profiles.firstOrNull { it.id == profileId } ?: return
+        val settings = currentProfile.modelSettings(agent)
+        val key = AgentConnectionKey(profileId, agent)
+        val syncedSet = syncedIds.toHashSet()
+        remoteModelsByProfile[key] = remoteModelsByProfile[key].orEmpty().filterNot { model ->
+            model.id in syncedSet || model.model in syncedSet
+        }
+        sessionSnapshots[key]?.let { snapshot ->
+            sessionSnapshots[key] = snapshot.copy(
+                models = snapshot.models.filterNot { model ->
+                    model.id in syncedSet || model.model in syncedSet
+                },
+            )
+        }
+        val currentIds = settings.customModels.mapTo(HashSet(), CustomModelDefinition::modelId)
+        val updatedManagedIds = settings.managedModelIds.filterNot { id ->
+            id in syncedIds && id !in currentIds
+        }
+        if (updatedManagedIds == settings.managedModelIds) return
+        val updatedProfile = normalizeProfile(
+            currentProfile.withModelSettings(
+                agent,
+                settings.copy(managedModelIds = updatedManagedIds),
+            ),
+        )
+        _state.update { current ->
+            current.copy(
+                profiles = current.profiles.map { profile ->
+                    if (profile.id == profileId) updatedProfile else profile
+                },
+            )
+        }
+        persistProfiles()
+    }
+
+    private fun cancelCustomModelSync(profileId: String) {
+        val keys = synchronized(customModelSyncJobs) {
+            customModelSyncJobs.keys.filter { it.profileId == profileId }
+        }
+        synchronized(customModelSyncJobs) {
+            keys.forEach { key ->
+                customModelSyncJobs.remove(key)?.cancel()
+                customModelSyncRevisions.remove(key)
+            }
+        }
     }
 
     private fun updateProfileAgentDefaults(
@@ -4523,6 +4782,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_COMPOSER_DRAFT_CHARS = 100_000
         private const val MAX_THREAD_MODEL_PREFERENCES = 512
         private const val MAX_COMPLETED_TURN_TIMINGS = 512
+        private const val MODEL_SYNC_DEBOUNCE_MS = 180L
         private const val MAX_GOAL_OBJECTIVE_CHARS = 4_000
         private val TURN_TIMING_EVENT_METHODS = setOf(
             "turn/started",
@@ -5061,6 +5321,7 @@ private const val MAX_SESSION_SNAPSHOT_WEIGHT_CHARS = 2 * 1024 * 1024
 private const val MAX_SESSION_SNAPSHOT_ENTRIES = 512
 private const val MAX_CUSTOM_MODELS = 100
 private const val MAX_HIDDEN_MODEL_IDS = 500
+private const val MAX_MANAGED_MODEL_IDS = 512
 private const val MAX_CUSTOM_MODEL_ID_CHARS = 200
 private const val MAX_CUSTOM_MODEL_NAME_CHARS = 120
 private const val MAX_MODEL_TOKEN_LIMIT = 10_000_000L

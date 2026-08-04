@@ -126,6 +126,19 @@ interface RemoteAgentClient {
         profile: ServerProfile,
         definition: CustomModelDefinition,
     ): Unit = Unit
+
+    /**
+     * Reconciles locally-managed models with the remote Agent configuration. Removed IDs are
+     * explicit so an adapter never has to infer ownership from the provider's complete catalog.
+     */
+    suspend fun syncCustomModels(
+        profile: ServerProfile,
+        definitions: List<CustomModelDefinition>,
+        removedModelIds: List<String>,
+    ) {
+        definitions.forEach { ensureCustomModel(profile, it) }
+    }
+
     suspend fun steerTurn(
         threadId: String,
         turnId: String,

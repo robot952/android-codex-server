@@ -86,6 +86,8 @@ data class AgentModelSettings(
     val testModel: String = "",
     val customModels: List<CustomModelDefinition> = emptyList(),
     val hiddenModelIds: List<String> = emptyList(),
+    /** Model IDs previously managed by the app, including tombstones awaiting remote removal. */
+    val managedModelIds: List<String> = emptyList(),
 )
 
 /** Reads the selected Agent lane while retaining compatibility with profiles saved before v2. */
@@ -97,6 +99,7 @@ fun ServerProfile.modelSettings(agent: AgentKind): AgentModelSettings =
             testModel = testModel,
             customModels = customModels,
             hiddenModelIds = hiddenModelIds,
+            managedModelIds = customModels.map(CustomModelDefinition::modelId),
         )
     } else {
         AgentModelSettings()

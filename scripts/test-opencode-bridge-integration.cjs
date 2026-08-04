@@ -24,6 +24,10 @@ if (!openCodeBin) {
   throw new Error("Set OPENCODE_BIN to the OpenCode executable before running this test");
 }
 
+const jsoncParser = require(require.resolve("jsonc-parser", {
+  paths: [path.dirname(path.resolve(openCodeBin)), path.dirname(fs.realpathSync(openCodeBin))],
+}));
+
 function listen(server) {
   return new Promise(function (resolve, reject) {
     server.once("error", reject);
@@ -167,6 +171,23 @@ async function main() {
     const apiPort = await listen(apiServer);
     const configDirectory = path.join(temporaryRoot, "config", "opencode");
     fs.mkdirSync(configDirectory, { recursive: true });
+    const persistedConfigPath = path.join(configDirectory, "opencode.jsonc");
+    fs.writeFileSync(persistedConfigPath, [
+      "{",
+      "  // This comment and the timeout are not managed by Codex Remote.",
+      "  \"provider\": {",
+      "    \"codex-remote\": {",
+      "      \"name\": \"Preserved provider name\",",
+      "      \"npm\": \"@ai-sdk/openai-compatible\",",
+      "      \"options\": { \"timeout\": 30 },",
+      "      \"models\": {",
+      "        \"untouched\": { \"name\": \"Untouched\" },",
+      "      },",
+      "    },",
+      "  },",
+      "}",
+      "",
+    ].join("\n"), { mode: 0o600 });
     bridgeProcess = childProcess.spawn(process.execPath, [bridgePath, "--directory", repository], {
       cwd: repository,
       env: Object.assign({}, process.env, {
@@ -227,15 +248,64 @@ async function main() {
       contextWindowTokens: 128000,
       maxOutputTokens: 16000,
     });
+    await sendRpc("agent/model/ensure", {
+      modelId: "codex-remote/local-only",
+      displayName: "Local Only",
+      contextWindowTokens: 64000,
+      maxOutputTokens: 8000,
+    });
+    await sendRpc("agent/settings/write", {
+      baseUrl: baseUrl,
+      apiKey: expectedKey,
+      proxyUrl: "",
+      defaultModel: "codex-remote/local-only",
+      preserveCurrentProvider: true,
+      customModels: [],
+    });
+    const syncResult = await sendRpc("agent/models/sync", {
+      models: [{
+        modelId: "codex-remote/integration-model",
+        displayName: "Integration Model Updated",
+        contextWindowTokens: 256000,
+        maxOutputTokens: 64000,
+      }],
+      removeModelIds: ["codex-remote/local-only"],
+    });
+    assert.equal(syncResult.defaultModel, "codex-remote/untouched");
+    assert.equal(syncResult.runtimeRefreshed, true);
     const models = await sendRpc("model/list");
+    const managedModels = models.data.filter(function (model) {
+      return model.id.startsWith("codex-remote/");
+    });
     assert(models.data.some(function (model) {
       return model.id === "codex-remote/integration-model" &&
-        model.contextWindowTokens === 200000 && model.maxOutputTokens === 32000;
-    }));
+        model.displayName === "Integration Model Updated" &&
+        model.contextWindowTokens === 256000 && model.maxOutputTokens === 64000;
+    }), "Updated model metadata is missing: " + JSON.stringify(managedModels));
     assert(models.data.some(function (model) {
       return model.id === "codex-remote/integration-extra" &&
         model.contextWindowTokens === 128000 && model.maxOutputTokens === 16000;
-    }));
+    }), "Existing custom model is missing: " + JSON.stringify(managedModels));
+    const persistedConfig = fs.existsSync(persistedConfigPath)
+      ? fs.readFileSync(persistedConfigPath, "utf8")
+      : "<missing opencode.jsonc>";
+    assert(!models.data.some(function (model) {
+      return model.id === "codex-remote/local-only";
+    }), "Deleted model remains configured:\n" + persistedConfig);
+    const parseErrors = [];
+    const parsedConfig = jsoncParser.parse(
+      persistedConfig,
+      parseErrors,
+      { allowTrailingComma: true },
+    );
+    assert.deepEqual(parseErrors, []);
+    assert(!Object.prototype.hasOwnProperty.call(
+      parsedConfig.provider["codex-remote"].models,
+      "local-only",
+    ));
+    assert.equal(parsedConfig.model, "codex-remote/untouched");
+    assert.equal(parsedConfig.provider["codex-remote"].options.timeout, 30);
+    assert(persistedConfig.includes("This comment and the timeout are not managed"));
 
     const started = await sendRpc("thread/start");
     const threadID = started.thread.id;
@@ -260,6 +330,37 @@ async function main() {
         message.params.item && message.params.item.type === "agentMessage" &&
         message.params.item.text.includes("CUSTOM_MODEL_OK");
     }));
+
+    const finalRemoval = await sendRpc("agent/models/sync", {
+      models: [],
+      removeModelIds: [
+        "codex-remote/integration-model",
+        "codex-remote/integration-extra",
+        "codex-remote/untouched",
+      ],
+    });
+    assert.equal(finalRemoval.defaultModel, "");
+    assert.equal(finalRemoval.runtimeRefreshed, true);
+    const finalSettings = await sendRpc("agent/settings/read");
+    assert.equal(finalSettings.model, "");
+    const finalModels = await sendRpc("model/list");
+    assert(!finalModels.data.some(function (model) {
+      return model.id === "codex-remote/integration-model" ||
+        model.id === "codex-remote/integration-extra" ||
+        model.id === "codex-remote/untouched";
+    }));
+    const finalConfigText = fs.readFileSync(persistedConfigPath, "utf8");
+    const finalParseErrors = [];
+    const finalConfig = jsoncParser.parse(
+      finalConfigText,
+      finalParseErrors,
+      { allowTrailingComma: true },
+    );
+    assert.deepEqual(finalParseErrors, []);
+    assert(!Object.prototype.hasOwnProperty.call(finalConfig, "model"));
+    assert.deepEqual(finalConfig.provider["codex-remote"].models, {});
+    assert.equal(finalConfig.provider["codex-remote"].options.timeout, 30);
+    assert(finalConfigText.includes("This comment and the timeout are not managed"));
 
     process.stdout.write("OpenCode bridge integration tests passed\n");
   } finally {

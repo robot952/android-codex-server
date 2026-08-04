@@ -30,6 +30,62 @@ assert.deepEqual(
     definition: { name: "GPT New", limit: { context: 200000, output: 32000 } },
   },
 );
+const syncPlan = bridge.buildModelSyncPatch({
+  model: "codex-remote/legacy",
+  provider: {
+    "codex-remote": {
+      name: "Keep this name",
+      npm: "keep-this-package",
+      options: { baseURL: "https://api.example.com/v1", timeout: 30 },
+      headers: { "x-test": "preserve" },
+      models: {
+        legacy: { name: "Legacy" },
+        untouched: { name: "Untouched" },
+      },
+    },
+  },
+  features: { preserve: true },
+}, {
+  models: [{
+    modelId: "codex-remote/new-model",
+    displayName: "New model",
+    contextWindowTokens: 128000,
+    maxOutputTokens: 16000,
+  }],
+  removeModelIds: ["codex-remote/legacy"],
+});
+assert.deepEqual(syncPlan.patch.provider["codex-remote"].options, {
+  baseURL: "https://api.example.com/v1",
+  timeout: 30,
+});
+assert.deepEqual(syncPlan.patch.provider["codex-remote"].headers, { "x-test": "preserve" });
+assert.deepEqual(syncPlan.patch.provider["codex-remote"].models, {
+  "new-model": { name: "New model", limit: { context: 128000, output: 16000 } },
+});
+assert.equal(syncPlan.patch.model, "codex-remote/untouched");
+assert.deepEqual(syncPlan.removedModelIds, ["codex-remote/legacy"]);
+
+const removalOnlyPlan = bridge.buildModelSyncPatch({
+  provider: {
+    "codex-remote": { models: { removable: { name: "Remove me" } } },
+  },
+}, {
+  models: [],
+  removeModelIds: ["codex-remote/removable"],
+});
+assert.equal(removalOnlyPlan.patch, null);
+assert.deepEqual(removalOnlyPlan.removedModelIds, ["codex-remote/removable"]);
+
+const newProviderPlan = bridge.buildModelSyncPatch({}, {
+  models: [{ modelId: "new-provider/model" }],
+  removeModelIds: [],
+});
+assert.equal(newProviderPlan.patch.provider["new-provider"].models.model.name, "model");
+assert.equal(newProviderPlan.patch.provider["new-provider"].npm, "@ai-sdk/openai-compatible");
+assert.equal(
+  bridge.buildModelSyncPatch(newProviderPlan.patch, { models: [], removeModelIds: [] }).patch,
+  null,
+);
 assert.equal(bridge.healthVersion({ healthy: true, version: " 1.18.11 " }), "1.18.11");
 assert.equal(bridge.healthVersion({ healthy: true }), "opencode");
 

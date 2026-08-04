@@ -208,11 +208,6 @@ class OpenCodeAgentClient(
             ?.ifBlank { OPENCODE_MANAGED_PROVIDER_ID }
             ?: OPENCODE_MANAGED_PROVIDER_ID
         ensuredCustomModels.clear()
-        delegate.currentGeneration()?.let { generation ->
-            profile.modelSettings(AgentKind.OpenCode).customModels.forEach { definition ->
-                ensuredCustomModels[customModelKey(definition)] = generation
-            }
-        }
     }
 
     override suspend fun testGlobalSettings(
@@ -250,18 +245,52 @@ class OpenCodeAgentClient(
         val generation = delegate.currentGeneration() ?: return
         val key = customModelKey(definition)
         if (ensuredCustomModels[key] == generation) return
+        syncCustomModels(profile, listOf(definition), emptyList())
+    }
+
+    override suspend fun syncCustomModels(
+        profile: ServerProfile,
+        definitions: List<CustomModelDefinition>,
+        removedModelIds: List<String>,
+    ) {
+        val generation = delegate.currentGeneration() ?: return
+        val normalizedDefinitions = definitions.map { definition ->
+            definition.copy(modelId = normalizeOpenCodeModelId(definition.modelId))
+        }.distinctBy { customModelKey(it) }
+        val normalizedRemovedIds = removedModelIds.asSequence()
+            .map(::normalizeOpenCodeModelId)
+            .filter(String::isNotBlank)
+            .distinct()
+            .toList()
+        val pendingDefinitions = normalizedDefinitions.filter { definition ->
+            ensuredCustomModels[customModelKey(definition)] != generation
+        }
+        if (pendingDefinitions.isEmpty() && normalizedRemovedIds.isEmpty()) return
         delegate.requestAdapterExtension(
-            method = "agent/model/ensure",
+            method = "agent/models/sync",
             params = buildJsonObject {
-                put("modelId", normalizeOpenCodeModelId(definition.modelId))
-                put("displayName", definition.displayName)
-                put("contextWindowTokens", definition.contextWindowTokens)
-                put("maxOutputTokens", definition.maxOutputTokens)
+                put("models", buildJsonArray {
+                    pendingDefinitions.forEach { definition ->
+                        add(buildJsonObject {
+                            put("modelId", definition.modelId)
+                            put("displayName", definition.displayName)
+                            put("contextWindowTokens", definition.contextWindowTokens)
+                            put("maxOutputTokens", definition.maxOutputTokens)
+                        })
+                    }
+                })
+                put("removeModelIds", buildJsonArray {
+                    normalizedRemovedIds.forEach(::add)
+                })
             },
             timeoutMs = SETTINGS_TIMEOUT_MS,
         )
         if (delegate.isGenerationActive(generation)) {
-            ensuredCustomModels[key] = generation
+            normalizedRemovedIds.forEach(::removeCachedModel)
+            pendingDefinitions.forEach { definition ->
+                removeCachedModel(definition.modelId)
+                ensuredCustomModels[customModelKey(definition)] = generation
+            }
         }
     }
 
@@ -286,6 +315,8 @@ class OpenCodeAgentClient(
             definition.maxOutputTokens.toString(),
         ).joinToString("\u0000")
 
+        private fun modelIdFromCustomModelKey(key: String): String = key.substringBefore('\u0000')
+
         private fun parseProgress(line: String): RemoteInstallProgress? {
             if (!line.startsWith("::progress::")) return null
             val fields = line.removePrefix("::progress::").split('|', limit = 4)
@@ -297,5 +328,9 @@ class OpenCodeAgentClient(
                 detail = fields.getOrElse(3) { "" },
             )
         }
+    }
+
+    private fun removeCachedModel(modelId: String) {
+        ensuredCustomModels.keys.removeIf { key -> modelIdFromCustomModelKey(key) == modelId }
     }
 }

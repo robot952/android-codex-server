@@ -296,7 +296,9 @@ ProfileStore 使用 AndroidX Security：
 并补充兼容旧 JSON 的测试。
 
 输入草稿有长度和条目上限，并做延迟保存，避免每次按键同步写磁盘。发送成功后才清除对应草稿；
-离开会话、切后台或重启应用后仍应恢复。
+离开会话、切后台或重启应用后仍应恢复。`AgentModelSettings.managedModelIds` 记录 App 曾写入远端的
+自定义模型 ID；它既包含仍在使用的模型，也短暂保留等待远端删除的 tombstone。该字段按
+profile + AgentKind 隔离并有数量上限，旧 JSON 缺失时按空列表兼容。
 
 ## 7. SSH 和连接生命周期
 
@@ -440,7 +442,8 @@ SSH 登录本身不会触发安装检查。RemoteBootstrap.probeScript 检查：
 - 使用 flock 防并发安装，用 SSH 父进程 watchdog 清理断线安装。
 - 安装前要求用户 home 至少 300 MB 可用空间。
 - OpenCode 固定版本来自 protocol/opencode-version.txt，使用共享 Node.js，并优先从
-  registry.npmmirror.com 下载；用户配置的安装代理同样传给 npm。
+  registry.npmmirror.com 下载；用户配置的安装代理同样传给 npm。OpenCode release 同时固定安装
+  `jsonc-parser`，供 bridge 在保留注释的前提下结构化编辑全局 JSONC 配置。
 - 通过 ::progress::总体百分比|当前下载百分比|说明|详情 回传可见进度；旧的
   ::progress::百分比|说明 格式仍可解析。Node.js 下载显示真实字节进度，Codex CLI 下载显示
   已处理组件数和安装目录大小；OpenCode 安装提示显示固定版本、
@@ -501,9 +504,18 @@ OpenCode 配置入口与 Codex 共用同一套 Agent 设置 UI，但通过桥接
 设置弹窗内存和 SSH 请求中存在，不写入 Android 持久化或日志。
 
 用户可从兼容 API 的 `/models` 获取模型，也可直接输入 `provider/model` 或裸模型 ID；裸 ID 归入
-`codex-remote`。自定义模型的显示名、上下文长度和最大输出长度按 profile + AgentKind 保存，并在
-选择或发送前同步到 OpenCode Provider。隐藏模型只影响当前 profile 的 Android 选择器，不删除服务端
-模型。保存全局设置后断开当前 profile，重连后新会话使用新的默认模型。
+`codex-remote`。自定义模型的显示名、上下文长度和最大输出长度按 profile + AgentKind 保存。新增、
+编辑、删除会由 AppViewModel 按 profile + AgentKind 去抖并串行调用 RemoteAgentClient 的
+`syncCustomModels`；OpenCode adapter 将其映射为 bridge 的 `agent/models/sync`。重连后会全量校准，
+发送前还会兜底同步当前模型及待删除 tombstone，旧连接代次的结果不得清除新状态。
+
+OpenCode 1.18.x 的 `/global/config` PATCH 会递归合并对象，并拒绝用 `null` 删除模型。bridge 因此只用
+PATCH 新增或更新模型；删除使用固定依赖 `jsonc-parser` 直接编辑当前用户的
+`~/.config/opencode/opencode.jsonc`（兼容 `OPENCODE_CONFIG`、XDG 目录和 `.json`），保留注释、
+Provider 其他字段及未由 App 管理的模型，再通过同目录临时文件原子替换、重新解析和 provider 缓存
+刷新确认生效。删除默认模型时优先切换到同 Provider 的剩余模型，再考虑其他 Provider。隐藏模型只
+影响当前 profile 的 Android 选择器，不删除服务端模型。保存全局设置后断开当前 profile，重连后
+新会话使用新的默认模型。
 
 ## 10. 后台运行、完成通知和诊断
 
@@ -758,7 +770,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | CodexConnectionManagerTest | 多 profile 客户端和状态隔离 |
 | AgentConnectionStateTest | 多 Agent lane 的聚合状态与隔离 |
 | agent/OpenCodeAgentClientTest | OpenCode 模型 ID 规范化、能力和输入校验 |
-| agent/OpenCodeBootstrapTest | 固定版本安装、国内 npm 源、代理和 bridge hash |
+| agent/OpenCodeBootstrapTest | 固定版本安装、国内 npm 源、代理、jsonc-parser 和 bridge hash |
 | CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析，以及父子会话事件隔离 |
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
 | ContextUsageTest | 上下文圆环占用计算 |
