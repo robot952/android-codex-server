@@ -6,16 +6,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/android-sdk.sh"
+source "$ROOT_DIR/scripts/apk-lib.sh"
 
-readonly EXPECTED_CERTIFICATE_SHA256="72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a"
 readonly DEFAULT_RELEASE_VERIFY_URL="http://210.16.163.118:18080/codex.apk"
 readonly APK_PATH="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
 
-version_name="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts)"
-if [[ ! "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-    echo "Unable to read a semantic versionName from app/build.gradle.kts" >&2
-    exit 1
-fi
+version_name="$(apk_version_name "$ROOT_DIR")"
 
 expected_tag="v$version_name"
 head_commit="$(git rev-parse HEAD)"
@@ -41,31 +37,8 @@ case "$build_mode" in
         ;;
 esac
 
-"$ROOT_DIR/scripts/build-android.sh" "$build_mode"
-
-if [[ ! -f "$APK_PATH" ]]; then
-    echo "Release APK was not produced: $APK_PATH" >&2
-    exit 1
-fi
-
-apksigner=""
-for build_tools_dir in "$ANDROID_HOME"/build-tools/*; do
-    candidate="$build_tools_dir/apksigner"
-    if [[ -x "$candidate" ]]; then
-        apksigner="$candidate"
-    fi
-done
-if [[ -z "$apksigner" ]]; then
-    echo "apksigner was not found under $ANDROID_HOME/build-tools" >&2
-    exit 1
-fi
-
-certificate_sha256="$("$apksigner" verify --print-certs "$APK_PATH" | \
-    sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9A-Fa-f]+)$/\1/p' | tr '[:upper:]' '[:lower:]')"
-if [[ "$certificate_sha256" != "$EXPECTED_CERTIFICATE_SHA256" ]]; then
-    echo "Unexpected APK signing certificate: ${certificate_sha256:-missing}" >&2
-    exit 1
-fi
+"$ROOT_DIR/scripts/build-android.sh" "$build_mode" --force
+certificate_sha256="$(apk_verify_stable_signature "$ANDROID_HOME" "$APK_PATH")"
 
 output_dir="${CODEX_RELEASE_OUTPUT_DIR:-$ROOT_DIR/dist}"
 artifact_path="$output_dir/CodexRemote-$version_name.apk"

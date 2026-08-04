@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.85（versionCode 107）
+- Android 应用版本：1.7.87（versionCode 109）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -18,7 +18,7 @@ protocol/node-version.txt 为准，不要只相信本文顶部的快照。
 
 ## 1. AI 五分钟入口
 
-1. 确认当前目录是 /home/yan/ygy/codex-remote-android。
+1. 确认当前目录是 /home/ygy/android-codex-server。
 2. 查看 git status，保留所有不属于当前任务的修改和未跟踪文件。
 3. 仓库有 .codegraph/，理解源码前先运行：
 
@@ -29,10 +29,10 @@ protocol/node-version.txt 为准，不要只相信本文顶部的快照。
    当前 shell 可能没有把 /root/.local/bin 加入 PATH，因此绝对路径最可靠。
 4. 先看本文的“目录与职责”“核心数据流”“修改影响图”和“回归矩阵”，再动代码。
 5. 手工编辑使用 apply_patch；不要顺手重构无关模块，不要运行 clean。
-6. 最小验证通常是：
+6. 最小验证通常是高复用快速门禁：
 
    ~~~bash
-   ./scripts/build-android.sh debug
+   ./scripts/dev-workflow.sh quick
    ~~~
 
 7. 源码变更后更新索引：
@@ -41,7 +41,9 @@ protocol/node-version.txt 为准，不要只相信本文顶部的快照。
    /root/.local/bin/codegraph sync
    ~~~
 
-8. Git 提交信息必须使用中文。发布任务还要完成 release 构建、验签、模拟器回归和 APK 部署。
+8. 功能完成使用 `dev-workflow.sh check`，提交/发布前使用 `full` 或 `publish`。完整缓存与模拟器规则见
+   [LOCAL_WORKFLOW.md](LOCAL_WORKFLOW.md)。
+9. Git 提交信息必须使用中文。发布任务还要完成 release 构建、验签、模拟器回归和 APK 部署。
 
 ## 2. 项目边界与目标
 
@@ -51,7 +53,7 @@ OpenCode Agent，并把统一的 JSON-RPC/JSONL 事件渲染成接近 VS Code Co
 
 项目必须保持独立：
 
-- 只在 /home/yan/ygy/codex-remote-android 内开发。
+- 只在 /home/ygy/android-codex-server 内开发。
 - 不修改同级 ssh-client、lobe-android、mihomo-web 或其他人的工作区。
 - .codegraph/ 是本机索引，codex-manual-markdown (8) 是本地资料；两者当前均不是提交内容，
   不要擅自删除、提交或覆盖。
@@ -72,7 +74,7 @@ OpenCode Agent，并把统一的 JSON-RPC/JSONL 事件渲染成接近 VS Code Co
 | app/src/test | JVM 单元测试 | 与改动模块对应的 Test 文件 |
 | protocol | 固定版本和 app-server 契约 | codex-version.txt、node-version.txt |
 | server | 独立服务器安装、限制入口和 smoke test | README.md、install-codex-pinned.sh |
-| scripts | 本机构建和 Gitee Go 发布入口 | build-android.sh、publish-gitee-release.sh |
+| scripts | 高复用本地工作流、构建、模拟器和发布入口 | dev-workflow.sh、build-android.sh、publish-local-apk.sh |
 | docs | UI 契约、本文、模拟器截图和 XML 证据 | UI_SPEC.md、runtime-* |
 | e2e | 由 App 内 Codex 完成的 WebUI 端到端样例 | webui-app-test-20260719 |
 | keystore | 固定 APK 签名身份 | 严禁更换或重新生成 |
@@ -589,16 +591,22 @@ VFS watch 和增量 Kotlin。空间换时间的设计依赖持久 Gradle cache�
 
 - 不运行 ./gradlew clean。
 - 使用 ../.gradle-cache 或显式 GRADLE_USER_HOME。
-- 先 fast/debug，只有发布门禁才跑 release/all。
+- 不同时启动 `/root/.gradle` 和 `/home/ygy/.gradle-cache` 两套 daemon。
+- 不删除 OpenCode 运行时、AVD、App 数据、SSH 测试账号和远端 Agent 安装。
+- 先 quick/check，只有提交或发布门禁才跑 full/publish。
 
 统一入口：
 
 ~~~bash
-./scripts/build-android.sh fast     # 仅编译 debug Kotlin
-./scripts/build-android.sh debug    # debug 单测 + debug APK
-./scripts/build-android.sh release  # release 单测 + release Lint + 签名 APK
-./scripts/build-android.sh all      # 两个变体的测试、Lint 和 APK
+./scripts/dev-workflow.sh quick
+./scripts/dev-workflow.sh check
+./scripts/dev-workflow.sh full
+./scripts/dev-workflow.sh publish
 ~~~
+
+底层 `build-android.sh` 仍支持 fast/debug/release/all 和 `--reuse|--force`。所有门禁按未提交源码在内的
+内容哈希失效，缓存位于 `.workflow-cache/`；具体规则、OpenCode 固定运行时、systemd 模拟器、SSH 测试
+账号和资源错峰见 [LOCAL_WORKFLOW.md](LOCAL_WORKFLOW.md)。
 
 脚本在依赖已缓存时默认离线。确需下载时：
 
@@ -631,13 +639,13 @@ export ANDROID_SDK_ROOT=/your/android-sdk
 Release APK：
 
 ~~~text
-/home/yan/ygy/codex-remote-android/app/build/outputs/apk/release/app-release.apk
+/home/ygy/android-codex-server/app/build/outputs/apk/release/app-release.apk
 ~~~
 
 构建与验签：
 
 ~~~bash
-./scripts/build-android.sh release
+./scripts/build-android.sh release --force
 
 ../android-sdk/build-tools/34.0.0/apksigner verify \
   --verbose --print-certs app/build/outputs/apk/release/app-release.apk
@@ -664,9 +672,10 @@ http://210.16.163.118:18080/codex.apk
 ./scripts/publish-local-apk.sh
 ~~~
 
-该脚本执行 release 门禁、验签、生成 `dist/CodexRemote-<version>.apk`，随后原子替换
+该脚本默认复用内容完全一致且已成功的 release 门禁，随后验签、生成 `dist/CodexRemote-<version>.apk`，原子替换
 `/var/www/html/codex.apk` 并下载比对 SHA-256。只在确认要更新本机 HTTP 下载包时执行；它不会推送 Git
-或触发 Gitee Go 流水线。
+或触发 Gitee Go 流水线。需要无条件重跑使用 `--force`。线上 Gitee 发布脚本始终强制完整构建，不读取
+本机成功 stamp。
 
 ### 13.1 Gitee release 分支自动发布
 
@@ -697,8 +706,20 @@ Git 流程：
 Android SDK：/home/ygy/android-sdk
 adb：/home/ygy/android-sdk/platform-tools/adb
 build-tools：/home/ygy/android-sdk/build-tools/34.0.0
-模拟器：emulator-5554，Android API 34（运行时以 adb devices -l 为准）
+模拟器：Codex_API_34 / emulator-5554，Android API 34（运行时以 adb devices -l 为准）
 ~~~
+
+默认使用长期保留 AVD 和 App 数据的入口：
+
+~~~bash
+./scripts/android-emulator.sh start
+./scripts/emulator-smoke.sh debug
+./scripts/android-emulator.sh status
+~~~
+
+root 环境通过临时 systemd service 托管模拟器，任务/终端退出后仍可复用。相同 APK 按 SHA-256 跳过
+安装；仅首次启动/迁移专项回归才使用 `--reset-data`。8 GB 主机不应让 4 GB Gradle daemon 和约 4 GB
+模拟器并行争用内存；`dev-workflow.sh` 会自动让两者错峰。
 
 检查设备：
 
@@ -797,12 +818,13 @@ testDebugUnitTest。
 OpenCode bridge 还必须运行：
 
 ~~~bash
-node scripts/test-opencode-bridge.cjs
-OPENCODE_BIN=/path/to/opencode node scripts/test-opencode-bridge-integration.cjs
+./scripts/test-opencode.sh quick
+./scripts/test-opencode.sh full
 ~~~
 
-第二项使用隔离的临时配置和本地假 OpenAI 兼容服务，验证 URL/Key、Provider、自定义模型元数据、
-默认模型、真实 prompt 路由与 Authorization，不得访问用户生产 API。
+统一入口自动发现版本完全匹配的持久 OpenCode，只在本机不存在时从国内 npm 源安装一次。`full` 使用
+隔离的临时配置和本地假 OpenAI 兼容服务，验证 URL/Key、Provider、自定义模型元数据、默认模型、真实
+prompt 路由与 Authorization，不得访问用户生产 API。
 
 ### 14.4 模拟器手工回归矩阵
 
@@ -1063,3 +1085,7 @@ LazyList 自动滚动触发时机。键盘上移慢通常是两个独立动画�
 
 README 保持面向使用者，docs/UI_SPEC.md 保持视觉行为契约，本文保持面向维护者。不要在三个文件
 复制大段易过期内容；本文可链接它们，并明确唯一事实来源。
+
+本地构建、测试缓存、模拟器、OpenCode 运行时、SSH 测试账号和 APK HTTP 部署的唯一事实来源是
+[LOCAL_WORKFLOW.md](LOCAL_WORKFLOW.md)。修改相关脚本时必须同步更新该文档，并运行
+`./scripts/test-workflow.sh`。

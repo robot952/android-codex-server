@@ -4,7 +4,7 @@ An Android client for a remote Codex CLI host. The app opens an SSH exec channel
 Codex app-server without a PTY, and renders its structured JSON-RPC events as a native Jetpack
 Compose interface modeled after the VS Code Codex task and work views.
 
-The project is isolated in `/home/yan/ygy/codex-remote-android`. It does not modify the existing
+The project is isolated in `/home/ygy/android-codex-server`. It does not modify the existing
 `ssh-client`, `lobe-android`, or `mihomo-web` workspaces.
 
 ## Features
@@ -37,6 +37,20 @@ cache, task cache, and incremental Kotlin outputs between runs; normal developme
 `clean`. By default the shared dependency cache is stored beside the checkout at
 `../.gradle-cache`; set `GRADLE_USER_HOME` to override it.
 
+The recommended entry point now coordinates Android, OpenCode, the persistent emulator, and local
+APK publishing with content-addressed success caches:
+
+```bash
+./scripts/dev-workflow.sh quick    # edit loop
+./scripts/dev-workflow.sh check    # feature-level tests + debug emulator smoke
+./scripts/dev-workflow.sh full     # full local gate + release emulator smoke
+./scripts/dev-workflow.sh publish  # full gate + local HTTP APK, reusing identical results
+./scripts/dev-workflow.sh status   # reusable environment and artifact status
+```
+
+See [Local reusable development workflow](docs/LOCAL_WORKFLOW.md) for cache invalidation, persistent
+OpenCode/AVD/SSH setup, resource coordination, and `--force` behavior.
+
 ```bash
 ./scripts/build-android.sh fast     # Kotlin compile only
 ./scripts/build-android.sh debug    # unit tests + installable debug APK
@@ -56,7 +70,8 @@ automatically. To build a signed release locally and publish it to the machine's
 download endpoint without creating a Gitee tag or Release, run:
 
 ```bash
-./scripts/publish-local-apk.sh
+./scripts/publish-local-apk.sh          # reuse an identical successful release gate
+./scripts/publish-local-apk.sh --force  # rerun the release gate explicitly
 ```
 
 The command verifies the signing certificate, atomically replaces `/var/www/html/codex.apk`, then
@@ -66,7 +81,7 @@ downloads and checks the published file at `http://210.16.163.118:18080/codex.ap
 docker run --rm \
   --network host \
   -v "$PWD:/project" \
-  -v /home/yan/ygy/.gradle-cache:/gradle-cache \
+  -v /home/ygy/.gradle-cache:/gradle-cache \
   -v android-sdk:/opt/android-sdk \
   -e GRADLE_USER_HOME=/gradle-cache \
   -e CODEX_BUILD_ONLINE=1 \

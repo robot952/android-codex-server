@@ -2,6 +2,7 @@
 local.properties
 **/build/
 dist/
+.workflow-cache/
 *.iml
 .idea/
 .DS_Store

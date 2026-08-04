@@ -4,7 +4,7 @@
 [GITEE_GO_RELEASE.md](GITEE_GO_RELEASE.md)。本文件仅保留给已部署自建 Runner、且需要同时把 APK
 发布到内网 HTTP 地址的旧流程。两套流程不要在同一个版本上同时启用，以免重复创建 Release。
 
-在这套可选方案中，日常开发仍在本机执行 `./scripts/build-android.sh debug`；只有受保护的
+在这套可选方案中，日常开发仍在本机执行 `./scripts/dev-workflow.sh check`；只有受保护的
 `v<versionName>` 标签才会在自建 Runner 上构建、验签和部署。APK 不提交进 Git 历史。
 
 自建 Runner 优先于云端 Runner，原因是 Android SDK 和 Gradle 缓存都留在本机，构建快且发布目录可由
@@ -19,7 +19,7 @@ sudo useradd --create-home --shell /bin/bash codexci
 sudo install -d -o codexci -g codexci -m 700 /opt/codex-remote-ci
 sudo install -d -o codexci -g codexci -m 700 /opt/codex-remote-ci/gradle
 sudo install -o codexci -g codexci -m 600 \
-  /home/yan/ygy/codex-remote-android/keystore/codex-remote-stable.keystore \
+  /home/ygy/android-codex-server/keystore/codex-remote-stable.keystore \
   /opt/codex-remote-ci/codex-remote-stable.keystore
 ~~~
 
@@ -86,7 +86,7 @@ CODEX_SIGNING_KEY_PASSWORD
 必须严格对应。
 
 ~~~bash
-./scripts/build-android.sh debug
+./scripts/dev-workflow.sh check
 git add app/build.gradle.kts <本次源码和文档>
 git commit -m "发布 1.7.19"
 git push origin main
