@@ -13,10 +13,12 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 
 data class TurnCompletion(
     val profileId: String,
+    val agent: AgentKind,
     val profileName: String,
     val threadId: String,
     val threadTitle: String,
@@ -26,6 +28,7 @@ data class TurnCompletion(
 object TurnCompletionNotifier {
     const val ACTION_OPEN_COMPLETED_THREAD = "top.asdb.codexremote.action.OPEN_COMPLETED_THREAD"
     const val EXTRA_PROFILE_ID = "completed_profile_id"
+    const val EXTRA_AGENT = "completed_agent"
     const val EXTRA_THREAD_ID = "completed_thread_id"
 
     private const val CHANNEL_ID = "codex_turn_completion"
@@ -44,13 +47,15 @@ object TurnCompletionNotifier {
                 .scheme("codexremote")
                 .authority("turn-completed")
                 .appendPath(completion.profileId)
+                .appendPath(completion.agent.name)
                 .appendPath(completion.threadId)
                 .build()
             putExtra(EXTRA_PROFILE_ID, completion.profileId)
+            putExtra(EXTRA_AGENT, completion.agent.name)
             putExtra(EXTRA_THREAD_ID, completion.threadId)
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
-        val requestCode = completionNotificationId(completion.profileId, completion.threadId)
+        val requestCode = completionNotificationId(completion.profileId, completion.agent, completion.threadId)
         val pendingIntent = PendingIntent.getActivity(
             context,
             requestCode,
@@ -78,15 +83,16 @@ object TurnCompletionNotifier {
         }.onSuccess {
             DiagnosticLogger.info(
                 "Notification",
-                "turn_completion_posted profile=${completion.profileId.take(8)} thread=${completion.threadId.take(8)}",
+                "turn_completion_posted profile=${completion.profileId.take(8)} " +
+                    "agent=${completion.agent.name} thread=${completion.threadId.take(8)}",
             )
         }.onFailure {
             DiagnosticLogger.error("Notification", "turn_completion_failed", it)
         }
     }
 
-    fun cancel(context: Context, profileId: String, threadId: String) {
-        NotificationManagerCompat.from(context).cancel(completionNotificationId(profileId, threadId))
+    fun cancel(context: Context, profileId: String, agent: AgentKind, threadId: String) {
+        NotificationManagerCompat.from(context).cancel(completionNotificationId(profileId, agent, threadId))
     }
 
     private fun createChannel(context: Context) {
@@ -109,7 +115,8 @@ object TurnCompletionNotifier {
             NotificationManagerCompat.from(context).areNotificationsEnabled()
 }
 
-internal fun completionNotificationId(profileId: String, threadId: String): Int =
-    NOTIFICATION_ID_RANGE_START + ((31 * profileId.hashCode() + threadId.hashCode()) and 0x00ff_ffff)
+internal fun completionNotificationId(profileId: String, agent: AgentKind, threadId: String): Int =
+    NOTIFICATION_ID_RANGE_START +
+        ((31 * (31 * profileId.hashCode() + agent.hashCode()) + threadId.hashCode()) and 0x00ff_ffff)
 
 private const val NOTIFICATION_ID_RANGE_START = 10_000

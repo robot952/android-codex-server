@@ -25,6 +25,33 @@ class CodexPayloadParserTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     @Test
+    fun `parses provider model token limits from an agent adapter`() {
+        val result = json.parseToJsonElement(
+            """
+            {
+              "data": [{
+                "id": "anthropic/claude-sonnet-4",
+                "model": "anthropic/claude-sonnet-4",
+                "displayName": "Claude Sonnet 4",
+                "description": "Anthropic",
+                "isDefault": true,
+                "contextWindowTokens": 200000,
+                "maxOutputTokens": 64000,
+                "supportedReasoningEfforts": []
+              }]
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val model = CodexPayloadParser.parseModels(result).single()
+
+        assertEquals("anthropic/claude-sonnet-4", model.model)
+        assertEquals(200_000L, model.contextWindowTokens)
+        assertEquals(64_000L, model.maxOutputTokens)
+        assertTrue(model.isDefault)
+    }
+
+    @Test
     fun `does not apply unscoped parent item events to an agent page`() {
         val child = AppUiState(
             screen = AppScreen.AgentWork,

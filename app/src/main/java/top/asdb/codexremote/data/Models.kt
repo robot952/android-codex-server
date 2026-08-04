@@ -6,6 +6,31 @@ import java.util.UUID
 @Serializable
 enum class AuthMode { Password, PrivateKey }
 
+/** Remote coding agents that have a concrete adapter in the Android client. */
+@Serializable
+enum class AgentKind(val label: String) {
+    Codex("Codex"),
+    OpenCode("OpenCode"),
+}
+
+/** Agents that should be started for one SSH server profile. */
+@Serializable
+enum class AgentMode(val label: String) {
+    Codex("Codex"),
+    OpenCode("OpenCode"),
+    Both("两者"),
+    ;
+
+    val agents: List<AgentKind>
+        get() = when (this) {
+            Codex -> listOf(AgentKind.Codex)
+            OpenCode -> listOf(AgentKind.OpenCode)
+            Both -> AgentKind.entries
+        }
+
+    fun contains(agent: AgentKind): Boolean = agent in agents
+}
+
 @Serializable
 data class ServerProfile(
     val id: String = UUID.randomUUID().toString(),
@@ -34,6 +59,12 @@ data class ServerProfile(
     val customModels: List<CustomModelDefinition> = emptyList(),
     /** Remote model IDs hidden only from this server profile's picker. */
     val hiddenModelIds: List<String> = emptyList(),
+    /** Which remote agent runtimes are connected for this SSH profile. */
+    val agentMode: AgentMode = AgentMode.Codex,
+    /** Last agent shown when [agentMode] is [AgentMode.Both]. */
+    val activeAgent: AgentKind = AgentKind.Codex,
+    /** Model picker and provider defaults isolated per Agent adapter. */
+    val agentModelSettings: Map<AgentKind, AgentModelSettings> = emptyMap(),
 )
 
 @Serializable
@@ -46,6 +77,42 @@ data class CustomModelDefinition(
     val contextWindowTokens: Long = 0,
     /** Informational maximum output size in tokens; zero means unknown. */
     val maxOutputTokens: Long = 0,
+)
+
+@Serializable
+data class AgentModelSettings(
+    val preferredModel: String = "",
+    val preferredEffort: String = "",
+    val testModel: String = "",
+    val customModels: List<CustomModelDefinition> = emptyList(),
+    val hiddenModelIds: List<String> = emptyList(),
+)
+
+/** Reads the selected Agent lane while retaining compatibility with profiles saved before v2. */
+fun ServerProfile.modelSettings(agent: AgentKind): AgentModelSettings =
+    agentModelSettings[agent] ?: if (agent == AgentKind.Codex) {
+        AgentModelSettings(
+            preferredModel = preferredModel,
+            preferredEffort = preferredEffort,
+            testModel = testModel,
+            customModels = customModels,
+            hiddenModelIds = hiddenModelIds,
+        )
+    } else {
+        AgentModelSettings()
+    }
+
+fun ServerProfile.withModelSettings(
+    agent: AgentKind,
+    settings: AgentModelSettings,
+): ServerProfile = copy(
+    agentModelSettings = agentModelSettings + (agent to settings),
+    // Continue writing legacy Codex fields so older app versions can still open the profile.
+    preferredModel = if (agent == AgentKind.Codex) settings.preferredModel else preferredModel,
+    preferredEffort = if (agent == AgentKind.Codex) settings.preferredEffort else preferredEffort,
+    testModel = if (agent == AgentKind.Codex) settings.testModel else testModel,
+    customModels = if (agent == AgentKind.Codex) settings.customModels else customModels,
+    hiddenModelIds = if (agent == AgentKind.Codex) settings.hiddenModelIds else hiddenModelIds,
 )
 
 /** A model returned by the configured OpenAI-compatible API's /models endpoint. */
@@ -82,6 +149,50 @@ data class ConnectionState(
     val cliVersion: String? = null,
 )
 
+/** Stable key for an independent agent connection and its session state. */
+data class AgentConnectionKey(
+    val profileId: String,
+    val agent: AgentKind,
+)
+
+/** Feature gates supplied by an adapter instead of hard-coded agent-name checks in the UI. */
+data class AgentCapabilities(
+    val models: Boolean = true,
+    val reasoningEffort: Boolean = false,
+    val approvals: Boolean = false,
+    val archiveThread: Boolean = true,
+    val renameThread: Boolean = true,
+    val interruptTurn: Boolean = true,
+    val steerTurn: Boolean = false,
+    val rollbackThread: Boolean = false,
+    val reviewChanges: Boolean = false,
+    val compactThread: Boolean = false,
+    val threadGoals: Boolean = false,
+    val subAgents: Boolean = false,
+    val globalSettings: Boolean = false,
+) {
+    companion object {
+        val Codex = AgentCapabilities(
+            reasoningEffort = true,
+            approvals = true,
+            steerTurn = true,
+            rollbackThread = true,
+            reviewChanges = true,
+            compactThread = true,
+            threadGoals = true,
+            subAgents = true,
+            globalSettings = true,
+        )
+
+        val OpenCode = AgentCapabilities(
+            approvals = true,
+            archiveThread = false,
+            steerTurn = true,
+            globalSettings = true,
+        )
+    }
+}
+
 /** Lightweight read-only resource usage sampled over the active SSH connection. */
 data class ServerMetrics(
     val cpuPercent: Int? = null,
@@ -99,7 +210,7 @@ data class ServerMetrics(
     val error: String? = null,
 )
 
-data class CodexThread(
+data class AgentThread(
     val id: String,
     val title: String,
     val preview: String,
@@ -113,7 +224,10 @@ data class CodexThread(
     val activeTurnId: String? = null,
 )
 
-data class CodexModel(
+/** Compatibility name retained while older UI and parser code migrates to Agent terminology. */
+typealias CodexThread = AgentThread
+
+data class AgentModel(
     val id: String,
     val model: String,
     val displayName: String,
@@ -126,6 +240,9 @@ data class CodexModel(
     val maxOutputTokens: Long = 0,
     val isCustom: Boolean = false,
 )
+
+/** Compatibility name retained while older UI and parser code migrates to Agent terminology. */
+typealias CodexModel = AgentModel
 
 /** A durable objective owned by the remote Codex thread. */
 data class ThreadGoal(
@@ -361,8 +478,8 @@ data class RemoteSetupPrompt(
     val detectedVersion: String? = null,
 )
 
-/** User-level Codex configuration read from the connected remote server. */
-data class CodexGlobalSettings(
+/** User-level provider configuration exposed by an Agent settings adapter. */
+data class AgentGlobalSettings(
     val baseUrl: String = "",
     /** Default model selected by the remote user's global Codex configuration. */
     val model: String = "",
@@ -380,11 +497,15 @@ data class CodexGlobalSettings(
     val proxyUrl: String = "",
 )
 
+typealias CodexGlobalSettings = AgentGlobalSettings
+
 /** Result of a non-mutating API request started from the remote server. */
-data class CodexConnectionTestResult(
+data class AgentConnectionTestResult(
     val successful: Boolean,
     val message: String,
 )
+
+typealias CodexConnectionTestResult = AgentConnectionTestResult
 
 data class AppUiState(
     val screen: AppScreen = AppScreen.Servers,
@@ -395,6 +516,10 @@ data class AppUiState(
     val selectedProfileId: String? = null,
     val connection: ConnectionState = ConnectionState(),
     val connectionStates: Map<String, ConnectionState> = emptyMap(),
+    /** Per-agent states; [connectionStates] remains the aggregate server-card state. */
+    val agentConnectionStates: Map<AgentConnectionKey, ConnectionState> = emptyMap(),
+    val activeAgent: AgentKind = AgentKind.Codex,
+    val activeAgentCapabilities: AgentCapabilities = AgentCapabilities.Codex,
     val serverMetrics: Map<String, ServerMetrics> = emptyMap(),
     val pendingFingerprint: String? = null,
     val remoteSetup: RemoteSetupPrompt? = null,
@@ -445,13 +570,13 @@ data class AppUiState(
     /** A transfer or destructive operation currently running through SFTP. */
     val fileManagerOperation: String? = null,
     val fileManagerError: String? = null,
-    val codexSettingsVisible: Boolean = false,
-    val codexSettingsLoading: Boolean = false,
-    val codexSettingsSaving: Boolean = false,
-    val codexSettingsTesting: Boolean = false,
-    val codexSettings: CodexGlobalSettings? = null,
-    val codexSettingsTestResult: CodexConnectionTestResult? = null,
-    val codexSettingsError: String? = null,
+    val agentSettingsVisible: Boolean = false,
+    val agentSettingsLoading: Boolean = false,
+    val agentSettingsSaving: Boolean = false,
+    val agentSettingsTesting: Boolean = false,
+    val agentSettings: AgentGlobalSettings? = null,
+    val agentSettingsTestResult: AgentConnectionTestResult? = null,
+    val agentSettingsError: String? = null,
     val approval: ApprovalPrompt? = null,
     /** Pending server requests are kept in arrival order; the first one is shown in the dialog. */
     val approvalQueue: List<ApprovalPrompt> = emptyList(),

@@ -181,6 +181,7 @@ import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.normalizeEpochMillis
+import top.asdb.codexremote.data.modelSettings
 import top.asdb.codexremote.ui.components.MarkdownText
 import top.asdb.codexremote.ui.components.remoteFilePathFromLink
 import top.asdb.codexremote.ui.theme.CodexAmber
@@ -226,8 +227,11 @@ fun WorkScreen(
     onOpenSubAgent: (threadId: String, agentName: String) -> Unit = { _, _ -> },
 ) {
     val timelineRows = remember(state.timeline) { state.timeline.toTimelineRenderRows() }
-    val backgroundAgents = remember(state.timeline) { state.timeline.toSubAgentPresentations() }
-    val canOpenSubAgents = !state.loading && !state.submitting && state.approvalQueue.isEmpty()
+    val backgroundAgents = remember(state.timeline, state.activeAgentCapabilities.subAgents) {
+        if (state.activeAgentCapabilities.subAgents) state.timeline.toSubAgentPresentations() else emptyList()
+    }
+    val canOpenSubAgents = state.activeAgentCapabilities.subAgents &&
+        !state.loading && !state.submitting && state.approvalQueue.isEmpty()
     val listState = remember(state.activeThread?.id) { LazyListState() }
     val canLoadOlder by rememberUpdatedState(
         state.olderTurnsCursor != null && !state.loading && !state.olderTurnsLoading,
@@ -489,13 +493,15 @@ fun WorkScreen(
                             Icon(Icons.Default.MoreVert, contentDescription = "更多")
                         }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("重命名") },
-                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                                enabled = !state.loading && !state.submitting,
-                                onClick = { showMenu = false; renameRequested = true },
-                            )
-                            if (state.screen != AppScreen.AgentWork) {
+                            if (state.activeAgentCapabilities.renameThread) {
+                                DropdownMenuItem(
+                                    text = { Text("重命名") },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                    enabled = !state.loading && !state.submitting,
+                                    onClick = { showMenu = false; renameRequested = true },
+                                )
+                            }
+                            if (state.activeAgentCapabilities.archiveThread && state.screen != AppScreen.AgentWork) {
                                 DropdownMenuItem(
                                     text = { Text("归档") },
                                     leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
@@ -503,12 +509,14 @@ fun WorkScreen(
                                     onClick = { showMenu = false; archiveRequested = true },
                                 )
                             }
-                            DropdownMenuItem(
-                                text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
-                                leadingIcon = { Icon(Icons.Default.TrackChanges, contentDescription = null) },
-                                enabled = !state.loading && !state.submitting,
-                                onClick = { showMenu = false; goalEditorVisible = true },
-                            )
+                            if (state.activeAgentCapabilities.threadGoals) {
+                                DropdownMenuItem(
+                                    text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
+                                    leadingIcon = { Icon(Icons.Default.TrackChanges, contentDescription = null) },
+                                    enabled = !state.loading && !state.submitting,
+                                    onClick = { showMenu = false; goalEditorVisible = true },
+                                )
+                            }
                             if (canAddDebugLog) {
                                 HorizontalDivider()
                                 DropdownMenuItem(
@@ -579,8 +587,10 @@ fun WorkScreen(
                                 entry = entry,
                                 onOpenDiff = { selectedDiff = it },
                                 onReview = onReview,
-                                canMutate = !state.loading && !state.submitting && !state.running,
-                                canRollback = !state.loading && !state.submitting &&
+                                canReview = state.activeAgentCapabilities.reviewChanges &&
+                                    !state.loading && !state.submitting && !state.running,
+                                canRollback = state.activeAgentCapabilities.rollbackThread &&
+                                    !state.loading && !state.submitting &&
                                     !state.running && entry.id == latestFileChangeId,
                                 onRollback = { rollbackRequested = true },
                                 onOpenImage = ::openImagePreview,
@@ -828,13 +838,14 @@ fun WorkScreen(
         )
     }
 
-    if (showModels) {
+    if (showModels && state.activeAgentCapabilities.models) {
         ModelSheet(
             models = state.models,
             selectedModel = state.selectedModel,
             selectedEffort = state.selectedEffort,
             onSelectModel = onSelectModel,
             onSelectEffort = onSelectEffort,
+            showReasoningEffort = state.activeAgentCapabilities.reasoningEffort,
             onManageModels = {
                 showModels = false
                 showModelManager = true
@@ -843,12 +854,13 @@ fun WorkScreen(
         )
     }
 
-    if (showModelManager) {
+    if (showModelManager && state.activeAgentCapabilities.models) {
         val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
+        val modelSettings = profile?.modelSettings(state.activeAgent)
         ModelManagerSheet(
             models = state.models,
-            customModels = profile?.customModels.orEmpty(),
-            hiddenModelIds = profile?.hiddenModelIds.orEmpty(),
+            customModels = modelSettings?.customModels.orEmpty(),
+            hiddenModelIds = modelSettings?.hiddenModelIds.orEmpty(),
             apiModelOptions = state.apiModelOptions.takeIf {
                 state.apiModelOptionsProfileId == state.selectedProfileId
             }.orEmpty(),
@@ -857,6 +869,7 @@ fun WorkScreen(
             apiModelOptionsError = state.apiModelOptionsError.takeIf {
                 state.apiModelOptionsProfileId == state.selectedProfileId
             },
+            canFetchApiModels = state.activeAgentCapabilities.globalSettings,
             onSaveCustomModel = onSaveCustomModel,
             onDeleteCustomModel = onDeleteCustomModel,
             onSetModelHidden = onSetModelHidden,
@@ -865,10 +878,10 @@ fun WorkScreen(
         )
     }
 
-    if (showPermissions) {
+    if (showPermissions && state.activeAgentCapabilities.approvals) {
         ModalBottomSheet(onDismissRequest = { showPermissions = false }) {
             Text(
-                "应如何批准 Codex 操作?",
+                "应如何批准 ${state.activeAgent.label} 操作?",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
             )
@@ -929,7 +942,7 @@ fun WorkScreen(
         AlertDialog(
             onDismissRequest = { fullAccessRequested = false },
             title = { Text("启用完全访问") },
-            text = { Text("Codex 将不受工作区沙箱限制。") },
+            text = { Text("${state.activeAgent.label} 将不受工作区沙箱限制。") },
             confirmButton = {
                 TextButton(onClick = {
                     onSelectApprovalMode(ApprovalMode.FullAccess)
@@ -940,7 +953,7 @@ fun WorkScreen(
         )
     }
 
-    if (compactRequested) {
+    if (compactRequested && state.activeAgentCapabilities.compactThread) {
         AlertDialog(
             onDismissRequest = { compactRequested = false },
             title = { Text("压缩会话") },
@@ -957,7 +970,7 @@ fun WorkScreen(
         )
     }
 
-    if (goalEditorVisible) {
+    if (goalEditorVisible && state.activeAgentCapabilities.threadGoals) {
         var objective by remember(state.activeThread?.id, state.activeGoal?.objective) {
             mutableStateOf(state.activeGoal?.objective.orEmpty())
         }
@@ -992,7 +1005,7 @@ fun WorkScreen(
         )
     }
 
-    if (goalDeleteRequested) {
+    if (goalDeleteRequested && state.activeAgentCapabilities.threadGoals) {
         AlertDialog(
             onDismissRequest = { goalDeleteRequested = false },
             icon = { Icon(Icons.Default.DeleteOutline, contentDescription = null) },
@@ -1051,12 +1064,12 @@ fun WorkScreen(
         )
     }
 
-    if (rollbackRequested) {
+    if (rollbackRequested && state.activeAgentCapabilities.rollbackThread) {
         AlertDialog(
             onDismissRequest = { rollbackRequested = false },
             title = { Text("撤销上一轮") },
             text = {
-                Text("这只会回退 Codex 会话历史，不会自动恢复服务器上的本地文件。需要恢复文件时，请使用版本控制或手动编辑。")
+                Text("这只会回退 Agent 会话历史，不会自动恢复服务器上的本地文件。需要恢复文件时，请使用版本控制或手动编辑。")
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -1076,7 +1089,7 @@ private fun TimelineItem(
     entry: TimelineEntry,
     onOpenDiff: (FileChange) -> Unit,
     onReview: () -> Unit,
-    canMutate: Boolean,
+    canReview: Boolean,
     canRollback: Boolean,
     onRollback: () -> Unit,
     onOpenImage: (String) -> Unit,
@@ -1095,7 +1108,14 @@ private fun TimelineItem(
         )
         TimelineKind.Reasoning, TimelineKind.Plan -> CollapsibleText(entry)
         TimelineKind.Command -> CommandBlock(entry)
-        TimelineKind.FileChange -> FileChangeBlock(entry, onOpenDiff, onReview, canMutate, canRollback, onRollback)
+        TimelineKind.FileChange -> FileChangeBlock(
+            entry,
+            onOpenDiff,
+            onReview,
+            canReview,
+            canRollback,
+            onRollback,
+        )
         TimelineKind.Tool -> ToolBlock(entry, onOpenImage, imageLoadingPath)
         TimelineKind.SubAgent -> SubAgentActivityGroupBlock(
             entries = listOf(entry),
@@ -1362,7 +1382,7 @@ private fun FileChangeBlock(
     entry: TimelineEntry,
     onOpenDiff: (FileChange) -> Unit,
     onReview: () -> Unit,
-    canMutate: Boolean,
+    canReview: Boolean,
     canRollback: Boolean,
     onRollback: () -> Unit,
 ) {
@@ -1401,26 +1421,29 @@ private fun FileChangeBlock(
                         Text("-$deletions", color = CodexRed, style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                IconButton(
-                    onClick = onRollback,
-                    enabled = canRollback && entry.status != "inProgress" && entry.changes.isNotEmpty(),
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Undo,
-                        contentDescription = "撤销上一轮会话",
-                        modifier = Modifier.size(19.dp),
-                    )
+                if (canRollback) {
+                    IconButton(
+                        onClick = onRollback,
+                        enabled = entry.status != "inProgress" && entry.changes.isNotEmpty(),
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = "撤销上一轮会话",
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
                 }
-                Spacer(Modifier.width(4.dp))
-                OutlinedButton(
-                    onClick = onReview,
-                    enabled = canMutate,
-                    modifier = Modifier.height(36.dp),
-                    shape = RoundedCornerShape(7.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                ) {
-                    Text("审核", style = MaterialTheme.typography.labelLarge)
+                if (canReview) {
+                    Spacer(Modifier.width(4.dp))
+                    OutlinedButton(
+                        onClick = onReview,
+                        modifier = Modifier.height(36.dp),
+                        shape = RoundedCornerShape(7.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                    ) {
+                        Text("审核", style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
             visibleChanges.forEach { change ->
@@ -2068,7 +2091,7 @@ private fun WorkComposer(
                 }
                 Spacer(Modifier.height(6.dp))
             }
-            state.activeGoal?.let { goal ->
+            state.activeGoal?.takeIf { state.activeAgentCapabilities.threadGoals }?.let { goal ->
                 ThreadGoalBar(
                     goal = goal,
                     mutationInProgress = state.submitting,
@@ -2164,18 +2187,22 @@ private fun WorkComposer(
                                 onDismissRequest = { actionMenuVisible = false },
                             ) {
                                 val canMutateGoal = !state.loading && !state.submitting
-                                DropdownMenuItem(
-                                    text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
-                                    leadingIcon = {
-                                        Icon(Icons.Default.TrackChanges, contentDescription = null)
-                                    },
-                                    enabled = canMutateGoal,
-                                    onClick = {
-                                        actionMenuVisible = false
-                                        onEditGoal()
-                                    },
-                                )
-                                state.activeGoal?.let { goal ->
+                                if (state.activeAgentCapabilities.threadGoals) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (state.activeGoal == null) "设置目标" else "编辑目标") },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.TrackChanges, contentDescription = null)
+                                        },
+                                        enabled = canMutateGoal,
+                                        onClick = {
+                                            actionMenuVisible = false
+                                            onEditGoal()
+                                        },
+                                    )
+                                }
+                                state.activeGoal?.takeIf {
+                                    state.activeAgentCapabilities.threadGoals
+                                }?.let { goal ->
                                     if (goal.status == ThreadGoalStatus.Active ||
                                         goal.status == ThreadGoalStatus.Paused
                                     ) {
@@ -2211,41 +2238,52 @@ private fun WorkComposer(
                                         },
                                     )
                                 }
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("压缩会话") },
-                                    leadingIcon = { Icon(Icons.Default.Pending, contentDescription = null) },
-                                    enabled = !state.loading && !state.submitting && !state.running,
-                                    onClick = {
-                                        actionMenuVisible = false
-                                        onCompact()
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("选择模型") },
-                                    leadingIcon = { Icon(Icons.Default.SmartToy, contentDescription = null) },
-                                    enabled = !state.loading,
-                                    onClick = {
-                                        actionMenuVisible = false
-                                        onShowModels()
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("权限") },
-                                    leadingIcon = { Icon(Icons.Default.Shield, contentDescription = null) },
-                                    enabled = !state.loading,
-                                    onClick = {
-                                        actionMenuVisible = false
-                                        onShowPermissions()
-                                    },
-                                )
+                                if (state.activeAgentCapabilities.compactThread ||
+                                    state.activeAgentCapabilities.models || state.activeAgentCapabilities.approvals
+                                ) {
+                                    HorizontalDivider()
+                                }
+                                if (state.activeAgentCapabilities.compactThread) {
+                                    DropdownMenuItem(
+                                        text = { Text("压缩会话") },
+                                        leadingIcon = { Icon(Icons.Default.Pending, contentDescription = null) },
+                                        enabled = !state.loading && !state.submitting && !state.running,
+                                        onClick = {
+                                            actionMenuVisible = false
+                                            onCompact()
+                                        },
+                                    )
+                                }
+                                if (state.activeAgentCapabilities.models) {
+                                    DropdownMenuItem(
+                                        text = { Text("选择模型") },
+                                        leadingIcon = { Icon(Icons.Default.SmartToy, contentDescription = null) },
+                                        enabled = !state.loading,
+                                        onClick = {
+                                            actionMenuVisible = false
+                                            onShowModels()
+                                        },
+                                    )
+                                }
+                                if (state.activeAgentCapabilities.approvals) {
+                                    DropdownMenuItem(
+                                        text = { Text("权限") },
+                                        leadingIcon = { Icon(Icons.Default.Shield, contentDescription = null) },
+                                        enabled = !state.loading,
+                                        onClick = {
+                                            actionMenuVisible = false
+                                            onShowPermissions()
+                                        },
+                                    )
+                                }
                             }
                         }
-                        TextButton(
-                            onClick = onShowPermissions,
-                            modifier = Modifier.widthIn(max = 82.dp),
-                            contentPadding = PaddingValues(horizontal = 5.dp),
-                        ) {
+                        if (state.activeAgentCapabilities.approvals) {
+                            TextButton(
+                                onClick = onShowPermissions,
+                                modifier = Modifier.widthIn(max = 82.dp),
+                                contentPadding = PaddingValues(horizontal = 5.dp),
+                            ) {
                             val permissionColor = if (state.approvalMode == ApprovalMode.FullAccess) {
                                 CodexAmber
                             } else MaterialTheme.colorScheme.onSurfaceVariant
@@ -2263,17 +2301,19 @@ private fun WorkComposer(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            }
                         }
                         Spacer(Modifier.weight(1f))
                         ContextUsageRing(
                             usage = contextUsageSummary(state.tokenUsage),
                         )
                         Spacer(Modifier.width(2.dp))
-                        TextButton(
-                            onClick = onShowModels,
-                            modifier = Modifier.widthIn(max = 116.dp),
-                            contentPadding = PaddingValues(horizontal = 5.dp),
-                        ) {
+                        if (state.activeAgentCapabilities.models) {
+                            TextButton(
+                                onClick = onShowModels,
+                                modifier = Modifier.widthIn(max = 116.dp),
+                                contentPadding = PaddingValues(horizontal = 5.dp),
+                            ) {
                             Text(
                                 modelLabel,
                                 style = MaterialTheme.typography.labelMedium,
@@ -2281,6 +2321,7 @@ private fun WorkComposer(
                                 overflow = TextOverflow.Ellipsis,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            }
                         }
                         Spacer(Modifier.width(6.dp))
                         val canSend = (value.isNotBlank() || state.attachments.isNotEmpty()) &&
@@ -2510,6 +2551,7 @@ private fun ModelSheet(
     selectedEffort: String?,
     onSelectModel: (String, String?) -> Unit,
     onSelectEffort: (String) -> Unit,
+    showReasoningEffort: Boolean,
     onManageModels: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -2576,7 +2618,7 @@ private fun ModelSheet(
                 }
             }
         }
-        selected?.efforts?.takeIf { it.isNotEmpty() }?.let { efforts ->
+        selected?.efforts?.takeIf { showReasoningEffort && it.isNotEmpty() }?.let { efforts ->
             HorizontalDivider(color = CodexBorder)
             Text("推理强度", style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
@@ -2612,6 +2654,7 @@ private fun ModelManagerSheet(
     apiModelOptions: List<ApiModelOption>,
     apiModelOptionsLoading: Boolean,
     apiModelOptionsError: String?,
+    canFetchApiModels: Boolean,
     onSaveCustomModel: (String?, CustomModelDefinition) -> Unit,
     onDeleteCustomModel: (String) -> Unit,
     onSetModelHidden: (String, Boolean) -> Unit,
@@ -2713,6 +2756,7 @@ private fun ModelManagerSheet(
             apiModelOptions = apiModelOptions,
             apiModelOptionsLoading = apiModelOptionsLoading,
             apiModelOptionsError = apiModelOptionsError,
+            canFetchApiModels = canFetchApiModels,
             onFetchApiModelOptions = onFetchApiModelOptions,
             onSave = { definition ->
                 onSaveCustomModel(request.originalModelId, definition)
@@ -2826,6 +2870,7 @@ private fun CustomModelEditorDialog(
     apiModelOptions: List<ApiModelOption>,
     apiModelOptionsLoading: Boolean,
     apiModelOptionsError: String?,
+    canFetchApiModels: Boolean,
     onFetchApiModelOptions: () -> Unit,
     onSave: (CustomModelDefinition) -> Unit,
     onDismiss: () -> Unit,
@@ -2864,20 +2909,22 @@ private fun CustomModelEditorDialog(
                 modifier = Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                OutlinedButton(
-                    onClick = onFetchApiModelOptions,
-                    enabled = !apiModelOptionsLoading,
-                ) {
-                    if (apiModelOptionsLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                if (canFetchApiModels) {
+                    OutlinedButton(
+                        onClick = onFetchApiModelOptions,
+                        enabled = !apiModelOptionsLoading,
+                    ) {
+                        if (apiModelOptionsLoading) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(Modifier.width(7.dp))
+                        Text("获取 API 模型列表")
                     }
-                    Spacer(Modifier.width(7.dp))
-                    Text("获取 API 模型列表")
-                }
-                apiModelOptionsError?.let { message ->
-                    Text(message, style = MaterialTheme.typography.bodySmall, color = CodexRed)
+                    apiModelOptionsError?.let { message ->
+                        Text(message, style = MaterialTheme.typography.bodySmall, color = CodexRed)
+                    }
                 }
                 if (apiModelOptions.isNotEmpty()) {
                     Text("从 API 列表选择", style = MaterialTheme.typography.labelLarge)

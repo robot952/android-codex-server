@@ -619,6 +619,21 @@ class SshCodexTransport {
         closeResources(invalidateConnection())
     }
 
+    /** Runs an adapter-owned bootstrap script over the same pinned SSH implementation. */
+    internal suspend fun runBootstrapScript(
+        profile: ServerProfile,
+        script: String,
+        timeoutMs: Long,
+        operationName: String,
+        onLine: (String) -> Unit = {},
+    ): List<String> = executeScript(
+        profile = profile,
+        script = script,
+        timeoutMs = timeoutMs,
+        operationName = operationName,
+        onLine = onLine,
+    )
+
     private suspend fun executeScript(
         profile: ServerProfile,
         script: String,

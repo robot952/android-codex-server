@@ -138,6 +138,8 @@ import kotlinx.coroutines.withContext
 import top.asdb.codexremote.BuildConfig
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.AgentKind
+import top.asdb.codexremote.data.AgentMode
 import top.asdb.codexremote.data.AuthMode
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
@@ -521,6 +523,24 @@ fun ServerScreen(
                         modifier = Modifier.fillMaxWidth().bringAboveKeyboard(),
                     )
 
+                    SectionLabel("远程 Agent")
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        AgentMode.entries.forEachIndexed { index, mode ->
+                            SegmentedButton(
+                                selected = draft.agentMode == mode,
+                                onClick = {
+                                    draft = draft.copy(
+                                        agentMode = mode,
+                                        activeAgent = draft.activeAgent.takeIf(mode::contains)
+                                            ?: mode.agents.first(),
+                                    )
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index, AgentMode.entries.size),
+                                label = { Text(mode.label) },
+                            )
+                        }
+                    }
+
                     SectionLabel("身份验证")
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         AuthMode.entries.forEachIndexed { index, mode ->
@@ -623,22 +643,24 @@ fun ServerScreen(
                                 placeholder = "/home/user/project",
                                 modifier = Modifier.fillMaxWidth().bringAboveKeyboard(),
                             )
-                            ServerTextField(
-                                value = draft.remoteCommand,
-                                onValueChange = { draft = draft.copy(remoteCommand = it) },
-                                label = "Codex app-server 命令",
-                                singleLine = false,
-                                minLines = 2,
-                                maxLines = 4,
-                                monospace = true,
-                                modifier = Modifier.fillMaxWidth().bringAboveKeyboard(),
-                            )
+                            if (draft.agentMode.contains(AgentKind.Codex)) {
+                                ServerTextField(
+                                    value = draft.remoteCommand,
+                                    onValueChange = { draft = draft.copy(remoteCommand = it) },
+                                    label = "Codex app-server 命令",
+                                    singleLine = false,
+                                    minLines = 2,
+                                    maxLines = 4,
+                                    monospace = true,
+                                    modifier = Modifier.fillMaxWidth().bringAboveKeyboard(),
+                                )
+                            }
                             ServerTextField(
                                 value = draft.proxyUrl,
                                 onValueChange = { draft = draft.copy(proxyUrl = it) },
                                 label = "下载代理（可选）",
                                 placeholder = "http://127.0.0.1:7890",
-                                supportingText = "仅在安装 Node.js 和 Codex 时使用",
+                                supportingText = "仅在安装远端 Agent 运行时时使用",
                                 modifier = Modifier.fillMaxWidth().bringAboveKeyboard(),
                             )
                         }
@@ -1676,6 +1698,8 @@ private val ServerProfileSaver = Saver<ServerProfile, ArrayList<String>>(
             profile.workspacePromptShown.toString(),
             profile.preferredModel,
             profile.preferredEffort,
+            profile.agentMode.name,
+            profile.activeAgent.name,
         )
     },
     restore = { values ->
@@ -1702,11 +1726,13 @@ private val ServerProfileSaver = Saver<ServerProfile, ArrayList<String>>(
                 workspacePromptShown = values[14].toBooleanStrictOrNull() ?: false,
                 preferredModel = values[15],
                 preferredEffort = values[16],
+                agentMode = runCatching { AgentMode.valueOf(values[17]) }.getOrDefault(AgentMode.Codex),
+                activeAgent = runCatching { AgentKind.valueOf(values[18]) }.getOrDefault(AgentKind.Codex),
             )
         }
     },
 )
 
-private const val SAVED_PROFILE_FIELD_COUNT = 17
+private const val SAVED_PROFILE_FIELD_COUNT = 19
 private const val SAVED_STATE_CREDENTIAL_OMITTED = "\u0000codex-remote-credential-omitted\u0000"
 private const val MAX_PRIVATE_KEY_BYTES = 128 * 1024

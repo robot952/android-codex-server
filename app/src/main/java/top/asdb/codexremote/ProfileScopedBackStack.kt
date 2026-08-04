@@ -2,65 +2,65 @@ package top.asdb.codexremote
 
 import java.util.ArrayDeque
 
-/** Small in-memory back stack that keeps independent navigation chains for each SSH profile. */
+/** Small in-memory back stack that keeps independent navigation chains for each caller scope. */
 internal class ProfileScopedBackStack<T> {
     private val frames = mutableMapOf<String, ArrayDeque<T>>()
     private val pendingPops = mutableMapOf<String, T>()
 
-    fun push(profileId: String, frame: T) {
-        if (profileId.isBlank()) return
-        frames.getOrPut(profileId) { ArrayDeque<T>() }.addLast(frame)
+    fun push(scopeId: String, frame: T) {
+        if (scopeId.isBlank()) return
+        frames.getOrPut(scopeId) { ArrayDeque<T>() }.addLast(frame)
     }
 
-    fun peek(profileId: String): T? = frames[profileId]?.peekLast()
+    fun peek(scopeId: String): T? = frames[scopeId]?.peekLast()
 
-    fun pop(profileId: String): T? {
-        val stack = frames[profileId] ?: return null
+    fun pop(scopeId: String): T? {
+        val stack = frames[scopeId] ?: return null
         val frame = stack.pollLast()
-        if (pendingPops[profileId] === frame) pendingPops.remove(profileId)
-        if (stack.isEmpty()) frames.remove(profileId)
+        if (pendingPops[scopeId] === frame) pendingPops.remove(scopeId)
+        if (stack.isEmpty()) frames.remove(scopeId)
         return frame
     }
 
-    /** Removes a frame only when it is still the active top frame for that profile. */
-    fun popIfTop(profileId: String, expected: T): T? {
-        val stack = frames[profileId] ?: return null
+    /** Removes a frame only when it is still the active top frame for that scope. */
+    fun popIfTop(scopeId: String, expected: T): T? {
+        val stack = frames[scopeId] ?: return null
         if (stack.peekLast() !== expected) return null
-        return pop(profileId)
+        return pop(scopeId)
     }
 
     /** Uses identity so a late async callback cannot match a newer, equal-valued frame. */
-    fun isTop(profileId: String, expected: T): Boolean = frames[profileId]?.peekLast() === expected
+    fun isTop(scopeId: String, expected: T): Boolean = frames[scopeId]?.peekLast() === expected
 
     /**
      * Resuming a parent thread is asynchronous. Keep its frame on the stack until the resume
      * succeeds, while making repeated back presses idempotent during that transition.
      */
-    fun beginPendingPop(profileId: String): T? {
-        if (profileId.isBlank() || pendingPops.containsKey(profileId)) return null
-        return peek(profileId)?.also { pendingPops[profileId] = it }
+    fun beginPendingPop(scopeId: String): T? {
+        if (scopeId.isBlank() || pendingPops.containsKey(scopeId)) return null
+        return peek(scopeId)?.also { pendingPops[scopeId] = it }
     }
 
     /** Completes the pending transition only when the same frame is still on top. */
-    fun completePendingPop(profileId: String, expected: T): T? {
-        if (pendingPops[profileId] !== expected) return null
-        pendingPops.remove(profileId)
-        return popIfTop(profileId, expected)
+    fun completePendingPop(scopeId: String, expected: T): T? {
+        if (pendingPops[scopeId] !== expected) return null
+        pendingPops.remove(scopeId)
+        return popIfTop(scopeId, expected)
     }
 
     /** Leaves the frame available for a retry after a parent resume failure. */
-    fun cancelPendingPop(profileId: String, expected: T): Boolean {
-        if (pendingPops[profileId] !== expected) return false
-        pendingPops.remove(profileId)
+    fun cancelPendingPop(scopeId: String, expected: T): Boolean {
+        if (pendingPops[scopeId] !== expected) return false
+        pendingPops.remove(scopeId)
         return true
     }
 
-    fun isPopPending(profileId: String): Boolean = pendingPops.containsKey(profileId)
+    fun isPopPending(scopeId: String): Boolean = pendingPops.containsKey(scopeId)
 
-    fun clear(profileId: String) {
-        frames.remove(profileId)
-        pendingPops.remove(profileId)
+    fun clear(scopeId: String) {
+        frames.remove(scopeId)
+        pendingPops.remove(scopeId)
     }
 
-    fun size(profileId: String): Int = frames[profileId]?.size ?: 0
+    fun size(scopeId: String): Int = frames[scopeId]?.size ?: 0
 }

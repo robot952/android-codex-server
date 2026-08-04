@@ -45,6 +45,13 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import top.asdb.codexremote.agent.AgentApproval
+import top.asdb.codexremote.agent.AgentConnectionEvent
+import top.asdb.codexremote.agent.AgentNotification
+import top.asdb.codexremote.agent.AgentRuntimeInspection
+import top.asdb.codexremote.agent.RemoteAgentClient
+import top.asdb.codexremote.data.AgentCapabilities
+import top.asdb.codexremote.data.AgentKind
 
 private const val INITIAL_TURNS_PAGE_LIMIT = 4
 private const val OLDER_TURNS_PAGE_LIMIT = 4
@@ -113,35 +120,14 @@ internal fun buildUserInput(
     }
 }
 
-data class CodexNotification(
-    val generation: Long,
-    val method: String,
-    val params: JsonObject,
-    val sequence: Long = 0,
-)
+typealias CodexNotification = AgentNotification
 
-data class ResumedThread(
-    val thread: CodexThread,
-    val timeline: List<TimelineEntry>,
-    /** Last wire message included in the thread/resume response snapshot. */
-    val responseSequence: Long,
-    /** Start time supplied by the server for the currently active turn, when available. */
-    val activeTurnStartedAtMillis: Long? = null,
-    val nextTurnsCursor: String? = null,
-    val turnIds: List<String> = emptyList(),
-    val itemsView: String = "full",
-)
+typealias ResumedThread = top.asdb.codexremote.agent.AgentSession
+typealias ThreadTurnsPage = top.asdb.codexremote.agent.AgentThreadPage
 
-data class ThreadTurnsPage(
-    val timeline: List<TimelineEntry>,
-    val nextCursor: String?,
-    val turnIds: List<String> = emptyList(),
-    val itemsView: String = "full",
-)
+typealias CodexApproval = AgentApproval
 
-data class CodexApproval(val generation: Long, val prompt: ApprovalPrompt)
-
-data class CodexConnectionEvent(val generation: Long, val message: String)
+typealias CodexConnectionEvent = AgentConnectionEvent
 
 private data class ServerRequest(
     val generation: Long,
@@ -161,7 +147,9 @@ class CodexAppServerClient(
     private val requestTimeoutMs: Long = DEFAULT_REQUEST_TIMEOUT_MS,
     private val threadRequestTimeoutMs: Long = DEFAULT_THREAD_REQUEST_TIMEOUT_MS,
     private val threadCache: ThreadSessionCache = ThreadSessionCache(),
-) {
+) : RemoteAgentClient {
+    override val kind: AgentKind = AgentKind.Codex
+    override val capabilities: AgentCapabilities = AgentCapabilities.Codex
     init {
         require(requestTimeoutMs > 0) { "requestTimeoutMs must be positive" }
         require(threadRequestTimeoutMs > 0) { "threadRequestTimeoutMs must be positive" }
@@ -182,16 +170,16 @@ class CodexAppServerClient(
     private val serverRequests = ConcurrentHashMap<String, ServerRequest>()
 
     private val _notifications = MutableSharedFlow<CodexNotification>()
-    val notifications: SharedFlow<CodexNotification> = _notifications.asSharedFlow()
+    override val notifications: SharedFlow<CodexNotification> = _notifications.asSharedFlow()
 
     private val _approvals = MutableSharedFlow<CodexApproval>()
-    val approvals: SharedFlow<CodexApproval> = _approvals.asSharedFlow()
+    override val approvals: SharedFlow<CodexApproval> = _approvals.asSharedFlow()
 
     private val _diagnostics = MutableSharedFlow<CodexConnectionEvent>()
-    val diagnostics: SharedFlow<CodexConnectionEvent> = _diagnostics.asSharedFlow()
+    override val diagnostics: SharedFlow<CodexConnectionEvent> = _diagnostics.asSharedFlow()
 
     private val _closed = MutableSharedFlow<CodexConnectionEvent>()
-    val closed: SharedFlow<CodexConnectionEvent> = _closed.asSharedFlow()
+    override val closed: SharedFlow<CodexConnectionEvent> = _closed.asSharedFlow()
 
     init {
         scope.launch(Dispatchers.Default) {
@@ -240,7 +228,26 @@ class CodexAppServerClient(
         }
     }
 
-    suspend fun probeFingerprint(profile: ServerProfile): String = transport.probeFingerprint(profile)
+    override suspend fun probeFingerprint(profile: ServerProfile): String = transport.probeFingerprint(profile)
+
+    override suspend fun inspectRuntime(profile: ServerProfile): AgentRuntimeInspection {
+        val environment = inspectRemote(profile)
+        return AgentRuntimeInspection(
+            os = environment.os,
+            architecture = environment.architecture,
+            home = environment.home,
+            detectedVersion = environment.detectedVersion(),
+            compatibleCommand = environment.compatibleCommand(BuildConfig.PINNED_CODEX_VERSION),
+            installationProblem = environment.installationProblem(),
+        )
+    }
+
+    override suspend fun installRuntime(
+        profile: ServerProfile,
+        onProgress: (top.asdb.codexremote.ssh.RemoteInstallProgress) -> Unit,
+    ) = installRemoteDetailed(profile, onProgress)
+
+    override suspend fun uninstallRuntime(profile: ServerProfile) = uninstallRemote(profile)
 
     suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment = transport.inspectRemote(profile)
 
@@ -270,7 +277,7 @@ class CodexAppServerClient(
         transport.uninstallRemote(profile)
     }
 
-    suspend fun connect(profile: ServerProfile): String {
+    override suspend fun connect(profile: ServerProfile): String {
         if (connectedProfileId != profile.id) {
             connectedProfileId = profile.id
             activeThreadCache = cacheForProfile(profile.id)
@@ -302,25 +309,25 @@ class CodexAppServerClient(
         }
     }
 
-    suspend fun disconnect() {
+    override suspend fun disconnect() {
         invalidateGeneration("连接已关闭")
         transport.disconnect()
     }
 
-    fun close() {
+    override fun close() {
         invalidateGeneration("连接已关闭")
         transport.close()
     }
 
-    fun isGenerationActive(generation: Long): Boolean = activeGeneration.get() == generation
+    override fun isGenerationActive(generation: Long): Boolean = activeGeneration.get() == generation
 
     /** Captures the app-server generation so UI callbacks cannot publish after reconnect. */
-    fun currentGeneration(): Long? = activeGeneration.get().takeUnless { it == NO_GENERATION }
+    override fun currentGeneration(): Long? = activeGeneration.get().takeUnless { it == NO_GENERATION }
 
-    fun isClosedGenerationCurrent(generation: Long): Boolean =
+    override fun isClosedGenerationCurrent(generation: Long): Boolean =
         activeGeneration.get() == NO_GENERATION && closedGeneration.get() == generation
 
-    suspend fun listThreads(search: String = "", archived: Boolean = false): List<CodexThread> {
+    override suspend fun listThreads(search: String, archived: Boolean): List<CodexThread> {
         val result = request("thread/list", buildJsonObject {
             put("limit", 100)
             put("archived", archived)
@@ -331,12 +338,12 @@ class CodexAppServerClient(
         return CodexPayloadParser.parseThreads(result)
     }
 
-    suspend fun listModels(): List<CodexModel> {
+    override suspend fun listModels(): List<CodexModel> {
         val result = request("model/list", buildJsonObject { put("limit", 100) }).jsonObject
         return CodexPayloadParser.parseModels(result).filterNot { it.id.isBlank() }
     }
 
-    suspend fun openThread(
+    override suspend fun openThread(
         threadId: String,
         approvalMode: ApprovalMode,
     ): ResumedThread {
@@ -371,10 +378,10 @@ class CodexAppServerClient(
         return parseResumedThreadPayload(response.result.jsonObject, response.sequence).copy(itemsView = itemsView)
     }
 
-    suspend fun listThreadTurnsPage(
+    override suspend fun listThreadTurnsPage(
         threadId: String,
         cursor: String,
-        subAgentCreatedAt: Long? = null,
+        subAgentCreatedAt: Long?,
     ): ThreadTurnsPage {
         val (result, itemsView) = try {
             requestThreadTurnsPage(threadId, cursor, itemsView = "full") to "full"
@@ -432,7 +439,7 @@ class CodexAppServerClient(
         timeoutMs = threadRequestTimeoutMs,
     )
 
-    suspend fun readThread(threadId: String): Pair<CodexThread, List<TimelineEntry>> {
+    override suspend fun readThread(threadId: String): Pair<CodexThread, List<TimelineEntry>> {
         val result = request(
             "thread/read",
             buildJsonObject {
@@ -447,24 +454,24 @@ class CodexAppServerClient(
     }
 
     /** Returns a recent snapshot without doing network I/O. */
-    fun cachedThread(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.get(threadId)
+    override fun cachedThread(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.get(threadId)
 
     /** Returns an expired snapshot for a UI fast path while a remote refresh is running. */
-    fun cachedThreadStale(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.getStale(threadId)
+    override fun cachedThreadStale(threadId: String): ThreadSessionCache.Snapshot? = activeThreadCache.getStale(threadId)
 
     /** Latest usable context value is retained independently from the bounded transcript cache. */
-    fun cachedContextUsage(threadId: String): TokenUsage? = activeThreadCache.contextUsage(threadId)
+    override fun cachedContextUsage(threadId: String): TokenUsage? = activeThreadCache.contextUsage(threadId)
 
-    fun cacheThread(
+    override fun cacheThread(
         thread: CodexThread,
         timeline: List<TimelineEntry>,
-        nextTurnsCursor: String? = null,
-        tokenUsage: TokenUsage? = null,
+        nextTurnsCursor: String?,
+        tokenUsage: TokenUsage?,
     ) {
         activeThreadCache.put(thread, timeline, nextTurnsCursor, tokenUsage)
     }
 
-    suspend fun startThread(
+    override suspend fun startThread(
         profile: ServerProfile,
         model: String?,
         approvalMode: ApprovalMode,
@@ -481,7 +488,7 @@ class CodexAppServerClient(
         return snapshot
     }
 
-    suspend fun startTurn(
+    override suspend fun startTurn(
         threadId: String,
         text: String,
         attachments: List<PendingAttachment>,
@@ -504,7 +511,7 @@ class CodexAppServerClient(
             ?: throw CodexRpcException("Codex turn/start 响应缺少 turn.id")
     }
 
-    suspend fun steerTurn(
+    override suspend fun steerTurn(
         threadId: String,
         turnId: String,
         text: String,
@@ -517,7 +524,7 @@ class CodexAppServerClient(
         })
     }
 
-    suspend fun interruptTurn(threadId: String, turnId: String) {
+    override suspend fun interruptTurn(threadId: String, turnId: String) {
         request("turn/interrupt", buildJsonObject {
             put("threadId", threadId)
             put("turnId", turnId)
@@ -525,7 +532,7 @@ class CodexAppServerClient(
     }
 
     /** Starts the app-server's native manual context compaction flow. */
-    suspend fun compactThread(threadId: String) {
+    override suspend fun compactThread(threadId: String) {
         request(
             "thread/compact/start",
             buildJsonObject { put("threadId", threadId) },
@@ -534,7 +541,7 @@ class CodexAppServerClient(
     }
 
     /** Reads the app-server's durable, thread-scoped goal state. */
-    suspend fun getThreadGoal(threadId: String): ThreadGoal? {
+    override suspend fun getThreadGoal(threadId: String): ThreadGoal? {
         val result = request(
             "thread/goal/get",
             buildJsonObject { put("threadId", threadId) },
@@ -546,11 +553,11 @@ class CodexAppServerClient(
     }
 
     /** Creates or updates the app-server's durable, thread-scoped goal. */
-    suspend fun setThreadGoal(
+    override suspend fun setThreadGoal(
         threadId: String,
-        objective: String? = null,
-        status: ThreadGoalStatus? = null,
-        tokenBudget: Long? = null,
+        objective: String?,
+        status: ThreadGoalStatus?,
+        tokenBudget: Long?,
     ): ThreadGoal {
         val result = request(
             "thread/goal/set",
@@ -566,7 +573,7 @@ class CodexAppServerClient(
             ?: throw CodexRpcException("Codex thread/goal/set 响应缺少 goal")
     }
 
-    suspend fun clearThreadGoal(threadId: String) {
+    override suspend fun clearThreadGoal(threadId: String) {
         request(
             "thread/goal/clear",
             buildJsonObject { put("threadId", threadId) },
@@ -574,21 +581,21 @@ class CodexAppServerClient(
         )
     }
 
-    suspend fun listDirectories(path: String?): RemoteDirectoryListing = transport.listDirectories(path)
+    override suspend fun listDirectories(path: String?): RemoteDirectoryListing = transport.listDirectories(path)
 
-    suspend fun listFiles(path: String?): RemoteFileListing = transport.listFiles(path)
+    override suspend fun listFiles(path: String?): RemoteFileListing = transport.listFiles(path)
 
-    suspend fun readServerMetrics(profile: ServerProfile) = transport.readServerMetrics(profile)
+    override suspend fun readServerMetrics(profile: ServerProfile) = transport.readServerMetrics(profile)
 
-    suspend fun archiveThread(threadId: String) {
+    override suspend fun archiveThread(threadId: String) {
         request("thread/archive", buildJsonObject { put("threadId", threadId) })
         activeThreadCache.remove(threadId)
     }
 
-    suspend fun rollbackThread(
+    override suspend fun rollbackThread(
         threadId: String,
         approvalMode: ApprovalMode,
-        turns: Int = 1,
+        turns: Int,
     ): ResumedThread {
         return try {
             val response = requestSequenced(
@@ -607,7 +614,7 @@ class CodexAppServerClient(
         }
     }
 
-    suspend fun setThreadName(threadId: String, name: String) {
+    override suspend fun setThreadName(threadId: String, name: String) {
         request("thread/name/set", buildJsonObject {
             put("threadId", threadId)
             put("name", name)
@@ -622,7 +629,7 @@ class CodexAppServerClient(
         }
     }
 
-    suspend fun startReview(threadId: String) {
+    override suspend fun startReview(threadId: String) {
         request("review/start", buildJsonObject {
             put("threadId", threadId)
             put("target", buildJsonObject { put("type", "uncommittedChanges") })
@@ -630,27 +637,30 @@ class CodexAppServerClient(
         })
     }
 
-    suspend fun upload(name: String, bytes: ByteArray): String = transport.upload(name, bytes)
+    override suspend fun upload(name: String, bytes: ByteArray): String = transport.upload(name, bytes)
 
-    suspend fun uploadFile(directory: String, name: String, input: InputStream) =
+    override suspend fun uploadFile(directory: String, name: String, input: InputStream) =
         transport.uploadFile(directory, name, input)
 
-    suspend fun downloadFile(path: String, output: OutputStream) = transport.downloadFile(path, output)
+    override suspend fun downloadFile(path: String, output: OutputStream) = transport.downloadFile(path, output)
 
-    suspend fun renameFile(path: String, newName: String) = transport.renameFile(path, newName)
+    override suspend fun renameFile(path: String, newName: String) = transport.renameFile(path, newName)
 
-    suspend fun deleteFiles(paths: List<String>) = transport.deleteFiles(paths)
+    override suspend fun deleteFiles(paths: List<String>) = transport.deleteFiles(paths)
 
-    suspend fun transferFiles(
+    override suspend fun transferFiles(
         paths: List<String>,
         destinationDirectory: String,
         mode: RemoteFileTransferMode,
     ) = transport.transferFiles(paths, destinationDirectory, mode)
 
-    suspend fun downloadImage(path: String): ByteArray = transport.downloadImage(path)
+    override suspend fun downloadImage(path: String): ByteArray = transport.downloadImage(path)
 
     suspend fun readCodexGlobalSettings(profile: ServerProfile): CodexGlobalSettings =
         transport.readCodexGlobalSettings(profile)
+
+    override suspend fun readGlobalSettings(profile: ServerProfile): CodexGlobalSettings =
+        readCodexGlobalSettings(profile)
 
     suspend fun writeCodexGlobalSettings(
         profile: ServerProfile,
@@ -670,6 +680,24 @@ class CodexAppServerClient(
         preserveCurrentProvider = preserveCurrentProvider,
     )
 
+    override suspend fun writeGlobalSettings(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        defaultModel: String,
+        defaultReasoningEffort: String,
+        preserveCurrentProvider: Boolean,
+    ) = writeCodexGlobalSettings(
+        profile,
+        baseUrl,
+        apiKey,
+        proxyUrl,
+        defaultModel,
+        defaultReasoningEffort,
+        preserveCurrentProvider,
+    )
+
     suspend fun testCodexGlobalSettings(
         profile: ServerProfile,
         baseUrl: String,
@@ -679,17 +707,26 @@ class CodexAppServerClient(
     ): CodexConnectionTestResult =
         transport.testCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl, testModel)
 
-    suspend fun fetchApiModels(
+    override suspend fun testGlobalSettings(
+        profile: ServerProfile,
+        baseUrl: String,
+        apiKey: String,
+        proxyUrl: String,
+        testModel: String,
+    ): CodexConnectionTestResult =
+        testCodexGlobalSettings(profile, baseUrl, apiKey, proxyUrl, testModel)
+
+    override suspend fun fetchApiModels(
         profile: ServerProfile,
         baseUrl: String,
         apiKey: String,
         proxyUrl: String,
     ): List<ApiModelOption> = transport.fetchApiModels(profile, baseUrl, apiKey, proxyUrl)
 
-    suspend fun answerApproval(
+    override suspend fun answerApproval(
         prompt: ApprovalPrompt,
         accept: Boolean,
-        answers: Map<String, String> = emptyMap(),
+        answers: Map<String, String>,
     ) {
         val stored = serverRequests.remove(prompt.requestId)
             ?: throw IllegalStateException("审批请求已经失效")
@@ -731,7 +768,18 @@ class CodexAppServerClient(
         }
     }
 
-    fun isConnected(): Boolean = transport.isConnected()
+    override fun isConnected(): Boolean = transport.isConnected()
+
+    /**
+     * Adapter extension point for protocol bridges that share this JSONL transport but expose
+     * additional, Agent-specific RPC methods. The generic Agent contract stays above this class;
+     * only concrete adapters should call this method.
+     */
+    internal suspend fun requestAdapterExtension(
+        method: String,
+        params: JsonObject = JsonObject(emptyMap()),
+        timeoutMs: Long = requestTimeoutMs,
+    ): JsonElement = request(method, params, timeoutMs)
 
     private suspend fun request(
         method: String,

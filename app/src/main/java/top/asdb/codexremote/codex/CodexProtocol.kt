@@ -76,6 +76,8 @@ object CodexPayloadParser {
                         else -> null
                     }
                 },
+                contextWindowTokens = value.long("contextWindowTokens"),
+                maxOutputTokens = value.long("maxOutputTokens"),
             )
         }
 

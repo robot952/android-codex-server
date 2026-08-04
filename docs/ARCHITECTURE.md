@@ -5,8 +5,9 @@
 
 文档基线：
 
-- Android 应用版本：1.7.52（versionCode 74）
+- Android 应用版本：1.7.82（versionCode 104）
 - 固定 Codex CLI：0.146.0
+- 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
 - 主要技术：Kotlin、Jetpack Compose、Coroutines/Flow、JSch、kotlinx.serialization
@@ -44,9 +45,9 @@ protocol/node-version.txt 为准，不要只相信本文顶部的快照。
 
 ## 2. 项目边界与目标
 
-应用通过 SSH 登录一台或多台服务器，在非 PTY exec channel 中启动固定版本的
-codex app-server，并把 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插件的原生 Android
-界面。它不是终端 ANSI 输出解析器，也不会把 app-server 暴露到公网 TCP/WebSocket。
+应用通过 SSH 登录一台或多台服务器，在非 PTY exec channel 中启动固定版本的 Codex 或
+OpenCode Agent，并把统一的 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插件的原生 Android
+界面。它不是终端 ANSI 输出解析器，也不会把 Agent 服务暴露到公网 TCP/WebSocket。
 
 项目必须保持独立：
 
@@ -61,11 +62,13 @@ codex app-server，并把 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插
 | 路径 | 职责 | 修改时首先检查 |
 | --- | --- | --- |
 | app/src/main/java/top/asdb/codexremote | Android 入口、主状态、后台服务和通知 | AppViewModel.kt、MainActivity.kt |
+| app/src/main/java/top/asdb/codexremote/agent | Agent 中立接口、连接管理、OpenCode adapter 和安装器 | RemoteAgentClient.kt、AgentConnectionManager.kt、OpenCodeAgentClient.kt |
 | app/src/main/java/top/asdb/codexremote/ui | Compose 页面、导航绑定和交互 | CodexRemoteApp.kt、对应 Screen |
 | app/src/main/java/top/asdb/codexremote/data | 领域模型和加密持久化 | Models.kt、ProfileStore.kt |
 | app/src/main/java/top/asdb/codexremote/codex | JSON-RPC 客户端、协议解析、缓存和多连接 | CodexAppServerClient.kt、CodexProtocol.kt |
 | app/src/main/java/top/asdb/codexremote/ssh | SSH、安全指纹、远程安装、全局 Codex 设置和终端 | SshCodexTransport.kt、RemoteBootstrap.kt、RemoteCodexSettings.kt |
 | app/src/main/assets/terminal | 本地 xterm.js 渲染资源 | terminal.html、terminal-bridge.js |
+| app/src/main/assets/opencode-bridge.cjs | OpenCode REST/SSE 到共享 JSONL 契约的远程桥接 | 修改后同时跑 Node 单测和真实 OpenCode 集成测试 |
 | app/src/test | JVM 单元测试 | 与改动模块对应的 Test 文件 |
 | protocol | 固定版本和 app-server 契约 | codex-version.txt、node-version.txt |
 | server | 独立服务器安装、限制入口和 smoke test | README.md、install-codex-pinned.sh |
@@ -98,23 +101,26 @@ codex app-server，并把 JSON-RPC/JSONL 事件渲染成接近 VS Code Codex 插
 │         v                                                                    │
 │ AppViewModel                                                                 │
 │   ├─ ProfileStore                    加密持久化                               │
-│   ├─ CodexConnectionManager          每个服务器一个独立 Codex 客户端          │
+│   ├─ AgentConnectionManager          每个服务器、每种 Agent 一个独立客户端    │
 │   ├─ SshTerminalManager              每个服务器一个独立终端会话              │
 │   ├─ SessionSnapshot / caches        切换服务器和重进会话的即时恢复           │
 │   └─ operation/generation guards     防止超时、重连和并发结果串台             │
 │         │                                                                    │
 │         v                                                                    │
-│ CodexAppServerClient ── CodexEventReducer ── ThreadSessionCache               │
-│         │ JSON-RPC，每行一个 JSON                                             │
+│ RemoteAgentClient ───── shared reducer/cache/session contract                  │
+│   ├─ CodexAppServerClient            原生 Codex JSON-RPC                      │
+│   └─ OpenCodeAgentClient             OpenCode bridge adapter                  │
+│         │ JSON-RPC/JSONL，每行一个 JSON                                       │
 │         v                                                                    │
 │ SshCodexTransport / PinnedSshSessionFactory                                  │
 └─────────┼────────────────────────────────────────────────────────────────────┘
           │ SSH exec channel（无 PTY）
           v
-~/.local/bin/codex-remote app-server --listen stdio://
+Codex: ~/.local/bin/codex-remote app-server --listen stdio://
+OpenCode: ~/.local/bin/codex-remote-opencode-bridge --directory <workspace>
           │
           v
-固定 Codex CLI + 服务器用户的 CODEX_HOME + 所选工作目录
+固定 Agent CLI + 当前服务器用户的全局配置 + 所选工作目录
 ~~~
 
 交互式终端是另一条 SSH shell channel，使用 xterm-256color 和本地 xterm.js。它与 Codex
@@ -155,7 +161,9 @@ ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建�
 - 正在工作的会话使用固定尺寸的转圈状态，避免列表布局跳动。
 - 从会话页返回时保留服务器级 SessionSnapshot，重复进入优先显示缓存后再远程校准。
 - 提供服务器切换弹窗；切换只改变当前展示，不主动断开其他服务器。
-- 顶部齿轮先显示“选择工作目录”和“配置 Codex”；另保留独立 SSH 终端入口。
+- profile 可选择只连接 Codex、只连接 OpenCode 或同时连接两者；同时连接时，列表顶部的分段控件
+  切换当前 Agent lane，另一条已连接通道保持运行。
+- 顶部齿轮显示“选择工作目录”、当前 Agent 的全局配置和“文件管理”；另保留独立 SSH 终端入口。
 
 工作目录自动弹窗只允许在某台服务器第一次成功连接时出现一次。ServerProfile 的
 workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择时再打开。
@@ -166,7 +174,8 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
 
 - 渲染用户消息、Agent Markdown、思考、计划、命令、文件改动、工具、子 Agent、审核和通知。
 - 输入区固定在底部，适配系统栏和 IME；键盘出现时内容必须同步移动，不能等新消息才校准。
-- 每个会话独立保存输入草稿、模型和推理强度。
+- 每个服务器、Agent 和会话独立保存输入草稿、模型和推理强度。OpenCode 不展示其不支持的
+  Codex 思考强度控件。
 - 正在运行时，主动作显示停止图标；空闲时显示发送图标。
 - 输入区操作顺序维持“小型上下文圆环、模型、发送/停止”这一产品契约。圆环点击显示服务器返回的
   本轮上下文已用/剩余百分比和已用/总标记，不触发压缩确认；手动压缩保留在明确的会话操作菜单。
@@ -247,23 +256,24 @@ data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 
 | 数据 | 隔离维度 | 当前位置 |
 | --- | --- | --- |
-| SSH/Codex 客户端 | profileId | CodexConnectionManager.Entry |
-| 连接状态 | profileId | connectionStates |
-| 页面会话快照 | profileId | AppViewModel.sessionSnapshots |
-| 待审批队列 | profileId | pendingApprovalsByProfile |
-| 恢复期通知缓冲 | profileId + threadId + generation | ResumeNotificationBuffer |
-| 输入草稿 | profileId + threadId | composerDrafts |
-| 模型/推理强度 | profileId + threadId | threadModelPreferences |
-| 线程缓存 | profileId + threadId | CodexAppServerClient/ThreadSessionCache |
-| 上下文用量回退 | profileId + threadId | ProfileScopedContextUsageCache |
+| SSH/Agent 客户端 | profileId + AgentKind | AgentConnectionManager.Entry |
+| 连接状态 | profileId + AgentKind；另聚合到 profileId | agentStates / connectionStates |
+| 页面会话快照 | profileId + AgentKind | AppViewModel.sessionSnapshots |
+| 待审批队列 | profileId + AgentKind | pendingApprovalsByProfile |
+| 恢复期通知缓冲 | profileId + AgentKind + threadId + generation | ResumeNotificationBuffer |
+| 输入草稿 | profileId + AgentKind + threadId | composerDrafts |
+| 模型/推理强度 | profileId + AgentKind + threadId | threadModelPreferences |
+| 线程缓存 | profileId + AgentKind + threadId | RemoteAgentClient/ThreadSessionCache |
+| 上下文用量回退 | profileId + AgentKind + threadId | ProfileScopedContextUsageCache |
 | 终端会话 | profileId | SshTerminalManager |
 
 任何新增会话设置都不能只做成全局字段。用户已明确要求不同服务器、不同会话互不串用。
 修改 profile 的 host、port、username、认证信息、指纹或 remoteCommand 时视为连接身份变化：
 必须关闭旧客户端、终端、缓存、审批和操作；只改名称、工作区等展示字段不应无故断线。
 
-CodexConnectionManager 保持每个 profile 一个稳定 client 和独立 CoroutineScope。select 只切换
-展示，connect/disconnect 只影响目标 profile，因此多台服务器可以同时保持连接。
+AgentConnectionManager 保持每个 profile + AgentKind 一个稳定 client 和独立 CoroutineScope。
+select 只切换展示，connect/disconnect 只影响目标 lane，因此多台服务器和同一服务器的两个 Agent
+可以同时保持连接。CodexConnectionManager 只保留为兼容旧调用方的 typealias。
 
 ### 6.3 加密持久化
 
@@ -295,7 +305,7 @@ ProfileStore 使用 AndroidX Security：
 PinnedSshSessionFactory 统一密码/私钥认证、连接参数、15 秒 keepalive 和断线阈值。不要在不同
 功能里各自创建一套宽松的 JSch 配置。
 
-### 7.2 Codex 通道
+### 7.2 Agent 通道
 
 SshCodexTransport 的正式连接过程：
 
@@ -308,6 +318,11 @@ SshCodexTransport 的正式连接过程：
 
 所有 connect、channel connect、读取和写入都必须可取消。SshCodexTransport 对单行 JSON、
 输出、diff 和时间线都有上限；维护这些边界是防 OOM/闪退要求，不要无上限拼接远程内容。
+
+CodexAppServerClient 直接使用上述 JSON-RPC 通道。OpenCodeAgentClient 复用同一 SSH、SFTP、缓存、
+取消和 generation 防护，但远端先启动 `opencode-bridge.cjs`：桥接只在服务器回环地址启动带随机
+Basic Auth 的 OpenCode HTTP 服务，把 REST/SSE 会话、消息、权限和模型事件转换为共享 JSONL 契约。
+SSH stdin 关闭或桥接收到终止信号时必须同时结束回环 HTTP 子进程。
 
 ### 7.3 App-server 握手
 
@@ -399,6 +414,9 @@ ProfileOperationTracker 把异步任务按 profile、lane、generation 标记。
 ~/.local/share/codex-remote/runtime/
 ~/.local/share/codex-remote/releases/
 ~/.local/bin/codex-remote
+~/.local/share/codex-remote/opencode/releases/
+~/.local/share/codex-remote/opencode/bridge.cjs
+~/.local/bin/codex-remote-opencode-bridge
 ~~~
 
 安装行为：
@@ -409,6 +427,8 @@ ProfileOperationTracker 把异步任务按 profile、lane、generation 标记。
 - 验证 codex --version 和 app-server --help 后才原子替换 wrapper。
 - 使用 flock 防并发安装，用 SSH 父进程 watchdog 清理断线安装。
 - 安装前要求用户 home 至少 300 MB 可用空间。
+- OpenCode 固定版本来自 protocol/opencode-version.txt，使用共享 Node.js，并优先从
+  registry.npmmirror.com 下载；用户配置的安装代理同样传给 npm。
 - 通过 ::progress::总体百分比|当前下载百分比|说明|详情 回传可见进度；旧的
   ::progress::百分比|说明 格式仍可解析。Node.js 下载显示真实字节进度，Codex CLI 下载显示
   已处理组件数和安装目录大小；安装总超时为 30 分钟。
@@ -458,6 +478,18 @@ CLI 二进制不必共用。新账户仍需在服务器上完成 Codex 登录，
 `RemoteCodexSettingsTest` 必须覆盖 URL 校验、读写 POSIX shell 语法、内置和自定义 provider 的模型
 URL 解析、保留 `[features]` 等无关 TOML 表、代理文件 `0600` 权限，以及 fake CLI 接收 API 密钥但不
 回显。`RemoteBootstrapTest` 必须覆盖新 wrapper 仍 source 该环境文件。
+
+### 9.2 用户级 OpenCode 设置
+
+OpenCode 配置入口与 Codex 共用同一套 Agent 设置 UI，但通过桥接读写 OpenCode 的
+`/global/config`、`/provider` 和 `/auth/{providerID}`。App 管理的 OpenAI 兼容 Provider 固定为
+`codex-remote`，可配置模型 URL、API 密钥、HTTP/HTTPS/SOCKS 代理和默认模型。API 密钥仍只在当前
+设置弹窗内存和 SSH 请求中存在，不写入 Android 持久化或日志。
+
+用户可从兼容 API 的 `/models` 获取模型，也可直接输入 `provider/model` 或裸模型 ID；裸 ID 归入
+`codex-remote`。自定义模型的显示名、上下文长度和最大输出长度按 profile + AgentKind 保存，并在
+选择或发送前同步到 OpenCode Provider。隐藏模型只影响当前 profile 的 Android 选择器，不删除服务端
+模型。保存全局设置后断开当前 profile，重连后新会话使用新的默认模型。
 
 ## 10. 后台运行、完成通知和诊断
 
@@ -523,6 +555,7 @@ server/codex-app-server-ssh 是受限入口样例，不是文件系统沙箱。c
 | Java | 17 |
 | SDK | 34 |
 | Codex CLI | protocol/codex-version.txt |
+| OpenCode | protocol/opencode-version.txt |
 | Node.js | protocol/node-version.txt |
 
 gradle.properties 已启用 4 GB JVM heap、daemon、parallel、build cache、configuration cache、
@@ -709,6 +742,9 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | --- | --- |
 | ApprovalModeTest | 权限模式到 approvalPolicy/sandbox 的映射 |
 | CodexConnectionManagerTest | 多 profile 客户端和状态隔离 |
+| AgentConnectionStateTest | 多 Agent lane 的聚合状态与隔离 |
+| agent/OpenCodeAgentClientTest | OpenCode 模型 ID 规范化、能力和输入校验 |
+| agent/OpenCodeBootstrapTest | 固定版本安装、国内 npm 源、代理和 bridge hash |
 | CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析，以及父子会话事件隔离 |
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
 | ContextUsageTest | 上下文圆环占用计算 |
@@ -731,6 +767,16 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 改共享协议、Models、AppViewModel 或连接生命周期时，不能只跑一个测试类，应至少跑完整
 testDebugUnitTest。
 
+OpenCode bridge 还必须运行：
+
+~~~bash
+node scripts/test-opencode-bridge.cjs
+OPENCODE_BIN=/path/to/opencode node scripts/test-opencode-bridge-integration.cjs
+~~~
+
+第二项使用隔离的临时配置和本地假 OpenAI 兼容服务，验证 URL/Key、Provider、自定义模型元数据、
+默认模型、真实 prompt 路由与 Authorization，不得访问用户生产 API。
+
 ### 14.4 模拟器手工回归矩阵
 
 每个发布版本至少执行：
@@ -744,6 +790,9 @@ testDebugUnitTest。
 | 已有 Codex | 版本匹配 | 复用可执行文件，不覆盖 VS Code/系统安装 |
 | 工作目录 | 第一次成功连接 | 自动弹一次，确认后记住；后续连接不再自动弹 |
 | 多服务器 | A、B 同时连接并切换 | A 不因选择 B 断开；状态、审批、线程不串台 |
+| Agent 模式 | 分别选择 Codex、OpenCode、两者并重连 | 只启动所选 Agent；双模式可即时切换且会话、模型、运行态不串 lane |
+| OpenCode 设置 | 配置工作目录、URL、Key、代理、默认模型并重连 | 新会话使用新配置；文件管理复用当前 SSH；Key 不进入持久化或日志 |
+| OpenCode 模型 | 获取 API 列表、手输模型、填写上下文/输出长度、隐藏/恢复并发送 | 选择器状态保留，实际请求使用选中的模型 ID 和限制信息 |
 | 连接动画 | 从服务器列表连接 | 全屏半透明转圈，结束后直接进入会话列表，无空白等待 |
 | 会话缓存 | 重复进入较大历史会话 | 先显示缓存，后台校准；不轻易超时或闪白 |
 | 会话运行态 | 会话仍生成时返回列表 | 列表固定尺寸转圈，返回会话继续流式更新 |
@@ -824,6 +873,17 @@ ServerProfile / ServerScreen
   -> 指纹、多服务器、后台、重连、安装回归
 ~~~
 
+### 新增 Agent adapter
+
+~~~text
+AgentKind / AgentCapabilities / RemoteAgentClient
+  -> AgentConnectionManager registry 与 profile+agent 隔离
+  -> adapter 的运行时探测、安装、协议转换和能力降级
+  -> AppViewModel sessionKey / snapshot / operation generation
+  -> ThreadListScreen / WorkScreen 的动态能力 UI
+  -> adapter 单测 + 真实协议集成 + 双 Agent 模拟器回归
+~~~
+
 ### 修改会话 UI
 
 ~~~text
@@ -882,6 +942,8 @@ Serializable data class（必须给默认值）
     明确提示用户。
 24. 任何回复中的 HTTP/HTTPS Markdown 链接都必须既可点击又可复制，并显示完整目标 URL；不得只
     渲染无法辨认或复制的链接标题。
+25. Agent 接入必须通过 RemoteAgentClient 和 AgentCapabilities，不得在共享 UI/状态层复制一套
+    OpenCode 专用会话流程；所有缓存、草稿、审批、模型偏好和异步结果都按 profile + AgentKind 隔离。
 
 若实现与上述约束冲突，先修实现；如确需改变产品契约，必须得到用户明确确认并同步更新本文。
 
@@ -949,6 +1011,8 @@ LazyList 自动滚动触发时机。键盘上移慢通常是两个独立动画�
 ## 18. 已知限制
 
 - Codex app-server API 仍是实验接口，升级 CLI 可能破坏字段或方法。
+- OpenCode REST/SSE API 同样可能随版本变化；升级 protocol/opencode-version.txt 时必须重跑真实桥接
+  集成测试并核对权限事件、模型配置和会话历史。
 - direct stdio 模式随 SSH 断开而退出；会话持久，进程不持久。
 - 可选 daemon bootstrap 会启动官方 standalone updater，可能自动升级，因此不属于严格固定版本
   方案。严格 pin 使用本仓库 npm direct 模式。

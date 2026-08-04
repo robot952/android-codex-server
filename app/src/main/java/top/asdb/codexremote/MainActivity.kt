@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.SshTerminalPhase
@@ -139,13 +140,17 @@ class MainActivity : ComponentActivity() {
     private fun handleNavigationIntent(intent: Intent?) {
         if (intent?.action != TurnCompletionNotifier.ACTION_OPEN_COMPLETED_THREAD) return
         val profileId = intent.getStringExtra(TurnCompletionNotifier.EXTRA_PROFILE_ID).orEmpty()
+        val agent = intent.getStringExtra(TurnCompletionNotifier.EXTRA_AGENT)
+            ?.let { value -> AgentKind.entries.firstOrNull { it.name == value } }
+            ?: AgentKind.Codex
         val threadId = intent.getStringExtra(TurnCompletionNotifier.EXTRA_THREAD_ID).orEmpty()
         intent.action = null
         intent.removeExtra(TurnCompletionNotifier.EXTRA_PROFILE_ID)
+        intent.removeExtra(TurnCompletionNotifier.EXTRA_AGENT)
         intent.removeExtra(TurnCompletionNotifier.EXTRA_THREAD_ID)
         if (profileId.isBlank() || threadId.isBlank()) return
-        TurnCompletionNotifier.cancel(this, profileId, threadId)
-        viewModel.openCompletedThread(profileId, threadId)
+        TurnCompletionNotifier.cancel(this, profileId, agent, threadId)
+        viewModel.openCompletedThread(profileId, agent, threadId)
     }
 
     private fun requestNotificationPermission() {

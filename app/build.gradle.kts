@@ -12,6 +12,10 @@ val pinnedNodeVersion = rootProject.file("protocol/node-version.txt").readText()
 require(Regex("\\d+\\.\\d+\\.\\d+").matches(pinnedNodeVersion)) {
     "protocol/node-version.txt must contain a semantic version"
 }
+val pinnedOpenCodeVersion = rootProject.file("protocol/opencode-version.txt").readText().trim()
+require(Regex("\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?").matches(pinnedOpenCodeVersion)) {
+    "protocol/opencode-version.txt must contain a semantic version"
+}
 val configuredSigningPath = providers.gradleProperty("codexSigningKeystore")
     .orElse(providers.environmentVariable("CODEX_SIGNING_KEYSTORE"))
     .orNull
@@ -40,13 +44,14 @@ android {
         applicationId = "top.asdb.codexremote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 103
-        versionName = "1.7.81"
+        versionCode = 104
+        versionName = "1.7.82"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "PINNED_CODEX_VERSION", "\"$pinnedCodexVersion\"")
         buildConfigField("String", "PINNED_NODE_VERSION", "\"$pinnedNodeVersion\"")
+        buildConfigField("String", "PINNED_OPENCODE_VERSION", "\"$pinnedOpenCodeVersion\"")
     }
 
     signingConfigs {

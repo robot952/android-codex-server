@@ -37,6 +37,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -52,7 +55,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.AgentConnectionKey
+import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.data.CodexThread
+import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.ssh.SshTerminalPhase
 import top.asdb.codexremote.ssh.SshTerminalSessionState
 import top.asdb.codexremote.ui.theme.CodexBorder
@@ -75,6 +81,7 @@ fun ThreadListScreen(
     onBackToServers: () -> Unit,
     terminalSession: SshTerminalSessionState?,
     onOpenTerminal: () -> Unit,
+    onSelectAgent: (AgentKind) -> Unit,
 ) {
     val query = state.threadSearch.trim()
     val threads = state.threads.filter { thread ->
@@ -93,7 +100,7 @@ fun ThreadListScreen(
                             .clickable(onClick = onBackToServers)
                             .semantics { contentDescription = "返回服务器列表" },
                     ) {
-                        Text("CODEX", fontWeight = FontWeight.SemiBold)
+                        Text(state.activeAgent.label.uppercase(), fontWeight = FontWeight.SemiBold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 Modifier.size(6.dp).clip(CircleShape).background(CodexGreen),
@@ -131,8 +138,10 @@ fun ThreadListScreen(
                     IconButton(onClick = onCreate) {
                         Icon(Icons.Default.AddComment, contentDescription = "新任务")
                     }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Codex 设置")
+                    if (state.activeAgentCapabilities.globalSettings) {
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "${state.activeAgent.label} 设置")
+                        }
                     }
                     IconButton(onClick = onShowServers) {
                         Icon(Icons.Default.Dns, contentDescription = "切换服务器")
@@ -150,6 +159,37 @@ fun ThreadListScreen(
                 modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 1.dp),
                 showResourceDetails = true,
             )
+            if (profile != null && profile.agentMode.agents.size > 1) {
+                SingleChoiceSegmentedButtonRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 7.dp),
+                ) {
+                    profile.agentMode.agents.forEachIndexed { index, agent ->
+                        val phase = state.agentConnectionStates[AgentConnectionKey(profile.id, agent)]?.phase
+                            ?: ConnectionPhase.Disconnected
+                        SegmentedButton(
+                            selected = state.activeAgent == agent,
+                            onClick = { onSelectAgent(agent) },
+                            enabled = phase == ConnectionPhase.Connected,
+                            shape = SegmentedButtonDefaults.itemShape(index, profile.agentMode.agents.size),
+                            label = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        Modifier.size(6.dp).clip(CircleShape).background(
+                                            when (phase) {
+                                                ConnectionPhase.Connected -> CodexGreen
+                                                ConnectionPhase.Failed -> MaterialTheme.colorScheme.error
+                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                        ),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(agent.label)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
             SearchBox(
                 value = state.threadSearch,
                 onValueChange = onSearchChange,

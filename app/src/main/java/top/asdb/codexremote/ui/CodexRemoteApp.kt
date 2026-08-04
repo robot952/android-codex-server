@@ -100,7 +100,9 @@ import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalPrompt
+import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.data.ConnectionPhase
+import top.asdb.codexremote.data.modelSettings
 import top.asdb.codexremote.update.AppUpdateManager
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
@@ -230,6 +232,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                 onBackToServers = viewModel::showServers,
                 terminalSession = state.selectedProfileId?.let(terminalState.sessions::get),
                 onOpenTerminal = viewModel::openTerminal,
+                onSelectAgent = viewModel::selectAgent,
             )
 
             AppScreen.Work, AppScreen.AgentWork -> key(target.threadId) {
@@ -362,13 +365,15 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
 
     if (threadSettingsActionsVisible) {
         ThreadSettingsActionsDialog(
+            agent = state.activeAgent,
+            canConfigureAgent = state.activeAgentCapabilities.globalSettings,
             onSelectWorkspace = {
                 threadSettingsActionsVisible = false
                 viewModel.showWorkspacePicker()
             },
-            onConfigureCodex = {
+            onConfigureAgent = {
                 threadSettingsActionsVisible = false
-                viewModel.showCodexSettings()
+                viewModel.showAgentSettings()
             },
             onOpenFileManager = {
                 threadSettingsActionsVisible = false
@@ -570,12 +575,12 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         )
     }
 
-    if (state.codexSettingsVisible) {
-        CodexSettingsDialog(
+    if (state.agentSettingsVisible) {
+        AgentSettingsDialog(
             state = state,
-            onSave = viewModel::saveCodexSettings,
-            onTest = viewModel::testCodexSettings,
-            onDismiss = viewModel::dismissCodexSettings,
+            onSave = viewModel::saveAgentSettings,
+            onTest = viewModel::testAgentSettings,
+            onDismiss = viewModel::dismissAgentSettings,
         )
     }
 
@@ -596,8 +601,10 @@ private data class ScreenAnimationTarget(
 
 @Composable
 private fun ThreadSettingsActionsDialog(
+    agent: AgentKind,
+    canConfigureAgent: Boolean,
     onSelectWorkspace: () -> Unit,
-    onConfigureCodex: () -> Unit,
+    onConfigureAgent: () -> Unit,
     onOpenFileManager: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -619,12 +626,14 @@ private fun ThreadSettingsActionsDialog(
                     detail = "切换新会话默认使用的目录",
                     onClick = onSelectWorkspace,
                 )
-                SettingsActionRow(
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    title = "配置 Codex",
-                    detail = "模型地址、API 密钥和代理",
-                    onClick = onConfigureCodex,
-                )
+                if (canConfigureAgent) {
+                    SettingsActionRow(
+                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        title = "配置 ${agent.label}",
+                        detail = "模型地址、API 密钥和代理",
+                        onClick = onConfigureAgent,
+                    )
+                }
                 SettingsActionRow(
                     icon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
                     title = "文件管理",
@@ -768,7 +777,7 @@ private fun setupProgressFraction(message: String): Float {
 }
 
 @Composable
-private fun CodexSettingsDialog(
+private fun AgentSettingsDialog(
     state: AppUiState,
     onSave: (
         baseUrl: String,
@@ -782,8 +791,14 @@ private fun CodexSettingsDialog(
     onTest: (baseUrl: String, apiKey: String, proxyUrl: String, testModel: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val remoteSettings = state.codexSettings
-    val savedTestModel = state.profiles.firstOrNull { it.id == state.selectedProfileId }?.testModel.orEmpty()
+    val agent = state.activeAgent
+    val agentName = agent.label
+    val reasoningSettingsAvailable = state.activeAgentCapabilities.reasoningEffort
+    val remoteSettings = state.agentSettings
+    val savedTestModel = state.profiles.firstOrNull { it.id == state.selectedProfileId }
+        ?.modelSettings(agent)
+        ?.testModel
+        .orEmpty()
     var baseUrl by remember(remoteSettings) { mutableStateOf(remoteSettings?.baseUrl.orEmpty()) }
     var apiKey by remember(remoteSettings) { mutableStateOf(remoteSettings?.apiKey.orEmpty()) }
     var apiKeyVisible by remember(remoteSettings) { mutableStateOf(false) }
@@ -799,11 +814,12 @@ private fun CodexSettingsDialog(
     var confirmSave by remember(remoteSettings) { mutableStateOf(false) }
     var testResultStale by remember(remoteSettings) { mutableStateOf(false) }
     val scrollState = rememberScrollState()
-    val testResult = state.codexSettingsTestResult?.takeUnless { testResultStale }
-    val testFeedback = testResult?.message ?: state.codexSettingsError?.takeIf { it.isNotBlank() }
-    val busy = state.codexSettingsLoading || state.codexSettingsSaving || state.codexSettingsTesting
+    val testResult = state.agentSettingsTestResult?.takeUnless { testResultStale }
+    val testFeedback = testResult?.message ?: state.agentSettingsError?.takeIf { it.isNotBlank() }
+    val busy = state.agentSettingsLoading || state.agentSettingsSaving || state.agentSettingsTesting
     val settingsReady = remoteSettings != null
-    val customProviderInUse = remoteSettings?.modelProvider?.let { it != "openai" } == true
+    val defaultProviderId = if (agent == AgentKind.Codex) "openai" else "codex-remote"
+    val customProviderInUse = remoteSettings?.modelProvider?.let { it != defaultProviderId } == true
     val preserveCurrentProvider = customProviderInUse &&
         baseUrl.trim().trimEnd('/') == remoteSettings?.baseUrl.orEmpty().trim().trimEnd('/')
 
@@ -818,13 +834,13 @@ private fun CodexSettingsDialog(
         modifier = Modifier.imePadding(),
         onDismissRequest = { if (!busy) onDismiss() },
         icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-        title = { Text("配置 Codex") },
+        title = { Text("配置 $agentName") },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(11.dp),
             ) {
-                if (state.codexSettingsLoading) {
+                if (state.agentSettingsLoading) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(modifier = Modifier.size(19.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
@@ -832,7 +848,11 @@ private fun CodexSettingsDialog(
                     }
                 } else {
                     Text(
-                        "这些设置作用于当前服务器用户的全部 Codex CLI、IDE 插件和本应用会话。",
+                        if (agent == AgentKind.Codex) {
+                            "这些设置作用于当前服务器用户的全部 Codex CLI、IDE 插件和本应用会话。"
+                        } else {
+                            "这些设置作用于当前服务器用户的 OpenCode CLI 和本应用会话。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -847,26 +867,32 @@ private fun CodexSettingsDialog(
                         ) {
                             Text("服务器当前配置", style = MaterialTheme.typography.labelLarge)
                             Text(
-                                "Provider：${remoteSettings?.modelProvider.orEmpty().ifBlank { "openai" }}",
+                                "Provider：${remoteSettings?.modelProvider.orEmpty().ifBlank { defaultProviderId }}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                "默认模型：${remoteSettings?.model.orEmpty().ifBlank { "未配置，使用 Codex 默认值" }}",
+                                "默认模型：${remoteSettings?.model.orEmpty().ifBlank { "未配置，使用 $agentName 默认值" }}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            Text(
-                                "默认思考强度：${defaultReasoningEffortLabel(remoteSettings?.reasoningEffort.orEmpty())}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            if (reasoningSettingsAvailable) {
+                                Text(
+                                    "默认思考强度：${defaultReasoningEffortLabel(remoteSettings?.reasoningEffort.orEmpty())}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             if (customProviderInUse) {
                                 Text(
                                     if (preserveCurrentProvider) {
-                                        "当前使用自定义 Provider；仅修改默认模型和思考强度会保留该 Provider。"
+                                        "当前使用自定义 Provider；保持模型 URL 不变会继续使用该 Provider。"
                                     } else {
-                                        "修改模型 URL 后会切换到内置 OpenAI Provider。"
+                                        if (agent == AgentKind.Codex) {
+                                            "修改模型 URL 后会切换到内置 OpenAI Provider。"
+                                        } else {
+                                            "修改模型 URL 后会切换到 Codex Remote 管理的 OpenCode Provider。"
+                                        }
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error,
@@ -881,51 +907,55 @@ private fun CodexSettingsDialog(
                         enabled = !busy && settingsReady,
                         singleLine = true,
                         label = { Text("默认模型") },
-                        placeholder = { Text("gpt-5.6-sol") },
-                        supportingText = { Text("留空使用 Codex 默认模型；保存后对新会话生效") },
+                        placeholder = {
+                            Text(if (agent == AgentKind.Codex) "gpt-5.6-sol" else "codex-remote/model-id")
+                        },
+                        supportingText = { Text("留空使用 $agentName 默认模型；保存后对新会话生效") },
                     )
-                    Text(
-                        "默认思考强度",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Box(Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { defaultReasoningEffortMenuVisible = true },
-                            enabled = !busy && settingsReady,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Row(
+                    if (reasoningSettingsAvailable) {
+                        Text(
+                            "默认思考强度",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Box(Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { defaultReasoningEffortMenuVisible = true },
+                                enabled = !busy && settingsReady,
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    defaultReasoningEffortLabel(defaultReasoningEffort),
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Icon(Icons.Default.ExpandMore, contentDescription = null)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        defaultReasoningEffortLabel(defaultReasoningEffort),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Icon(Icons.Default.ExpandMore, contentDescription = null)
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = defaultReasoningEffortMenuVisible,
+                                onDismissRequest = { defaultReasoningEffortMenuVisible = false },
+                            ) {
+                                DEFAULT_REASONING_EFFORT_OPTIONS.forEach { effort ->
+                                    DropdownMenuItem(
+                                        text = { Text(defaultReasoningEffortLabel(effort)) },
+                                        onClick = {
+                                            defaultReasoningEffort = effort
+                                            defaultReasoningEffortMenuVisible = false
+                                        },
+                                    )
+                                }
                             }
                         }
-                        DropdownMenu(
-                            expanded = defaultReasoningEffortMenuVisible,
-                            onDismissRequest = { defaultReasoningEffortMenuVisible = false },
-                        ) {
-                            DEFAULT_REASONING_EFFORT_OPTIONS.forEach { effort ->
-                                DropdownMenuItem(
-                                    text = { Text(defaultReasoningEffortLabel(effort)) },
-                                    onClick = {
-                                        defaultReasoningEffort = effort
-                                        defaultReasoningEffortMenuVisible = false
-                                    },
-                                )
-                            }
-                        }
+                        Text(
+                            "留空使用 Codex 默认思考强度。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    Text(
-                        "留空使用 Codex 默认思考强度。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     OutlinedTextField(
                         value = baseUrl,
                         onValueChange = {
@@ -937,7 +967,15 @@ private fun CodexSettingsDialog(
                         singleLine = true,
                         label = { Text("模型 URL") },
                         placeholder = { Text("https://api.openai.com/v1") },
-                        supportingText = { Text("留空使用 Codex 默认 OpenAI 地址") },
+                        supportingText = {
+                            Text(
+                                if (agent == AgentKind.Codex) {
+                                    "留空使用 Codex 默认 OpenAI 地址"
+                                } else {
+                                    "OpenAI 兼容地址；用于 OpenCode 的 Codex Remote Provider"
+                                },
+                            )
+                        },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     )
                     OutlinedTextField(
@@ -988,9 +1026,9 @@ private fun CodexSettingsDialog(
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !busy && settingsReady,
                         singleLine = true,
-                        label = { Text("Codex 代理（可选）") },
+                        label = { Text("$agentName 代理（可选）") },
                         placeholder = { Text("http://127.0.0.1:7890") },
-                        supportingText = { Text("支持 HTTP/HTTPS；留空会清除 Codex 代理") },
+                        supportingText = { Text("支持 HTTP/HTTPS/SOCKS5；留空会清除 $agentName 代理") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     )
                     OutlinedTextField(
@@ -1003,7 +1041,9 @@ private fun CodexSettingsDialog(
                         enabled = !busy && settingsReady,
                         singleLine = true,
                         label = { Text("测试模型") },
-                        placeholder = { Text("gpt-5.6-sol") },
+                        placeholder = {
+                            Text(if (agent == AgentKind.Codex) "gpt-5.6-sol" else "codex-remote/model-id")
+                        },
                         supportingText = { Text("保存后按当前服务器记住") },
                     )
                     OutlinedButton(
@@ -1014,7 +1054,7 @@ private fun CodexSettingsDialog(
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !busy && settingsReady,
                     ) {
-                        if (state.codexSettingsTesting) {
+                        if (state.agentSettingsTesting) {
                             CircularProgressIndicator(modifier = Modifier.size(17.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                             Text("正在测试")
@@ -1060,7 +1100,7 @@ private fun CodexSettingsDialog(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            "测试不会保存或断开连接。保存后会断开当前服务器；修改 API 密钥才会替换该用户现有的 Codex 登录。",
+                            "测试不会保存或断开连接。保存后会断开当前服务器；修改 API 密钥才会替换该用户现有的 $agentName 登录。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(11.dp),
@@ -1085,7 +1125,7 @@ private fun CodexSettingsDialog(
             onDismissRequest = { confirmSave = false },
             title = { Text("确认保存全局配置") },
             text = {
-                Text("保存会更新此服务器用户的 Codex 配置并断开当前连接。已填写的 API 密钥会替换现有登录。")
+                Text("保存会更新此服务器用户的 $agentName 配置并断开当前连接。已填写的 API 密钥会替换现有登录。")
             },
             confirmButton = {
                 Button(
