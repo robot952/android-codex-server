@@ -18,9 +18,11 @@ const serverPassword = crypto.randomBytes(32).toString("hex");
 const serverAuthorization = "Basic " + Buffer.from(
   serverUsername + ":" + serverPassword,
 ).toString("base64");
-const managedProviderID = "codex-remote";
-const managedProviderName = "Codex Remote";
+const managedProviderID = "custom-api";
+const legacyManagedProviderID = "codex-remote";
+const managedProviderName = "Custom API";
 const managedProviderPackage = "@ai-sdk/openai-compatible";
+const managedReasoningEfforts = ["minimal", "low", "medium", "high", "xhigh"];
 
 let baseUrl = "";
 let serverProcess = null;
@@ -318,6 +320,43 @@ function parseModel(value) {
   return { providerID: value.slice(0, split), modelID: value.slice(split + 1) };
 }
 
+function normalizeManagedModelReference(value) {
+  const parsed = parseModel(value);
+  if (!parsed || parsed.providerID !== legacyManagedProviderID) return String(value || "");
+  return managedProviderID + "/" + parsed.modelID;
+}
+
+function normalizeReasoningEffort(value) {
+  const effort = String(value || "").trim().toLowerCase();
+  if (!effort) return "";
+  if (!managedReasoningEfforts.includes(effort)) {
+    throw new Error("思考强度只能为极低、低、中、高或极高");
+  }
+  return effort;
+}
+
+function reasoningVariants() {
+  const variants = {};
+  for (const effort of managedReasoningEfforts) {
+    variants[effort] = { reasoningEffort: effort };
+  }
+  return variants;
+}
+
+function isReasoningModelID(value) {
+  const modelID = String(value || "").trim().toLowerCase();
+  return /(^|\/)gpt-5(?:[._-]|$)/.test(modelID) ||
+    /(^|\/)o(?:1|3|4)(?:[._-]|$)/.test(modelID);
+}
+
+function withReasoningMetadata(definition, modelID) {
+  const current = Object.assign({}, objectValue(definition));
+  if (!isReasoningModelID(modelID)) return current;
+  current.reasoning = true;
+  current.variants = Object.assign(reasoningVariants(), objectValue(current.variants));
+  return current;
+}
+
 function openCodeConfigDirectory() {
   if (process.env.OPENCODE_CONFIG_DIR) {
     return path.resolve(process.env.OPENCODE_CONFIG_DIR);
@@ -365,6 +404,15 @@ function openCodeConfigFiles() {
   ];
 }
 
+function openCodeDataDirectory() {
+  if (process.env.XDG_DATA_HOME) return path.resolve(process.env.XDG_DATA_HOME, "opencode");
+  return path.join(os.homedir(), ".local", "share", "opencode");
+}
+
+function openCodeAuthPath() {
+  return path.join(openCodeDataDirectory(), "auth.json");
+}
+
 function parseJsoncDocument(text, filePath) {
   const errors = [];
   const value = jsoncParser().parse(text, errors, { allowTrailingComma: true });
@@ -372,6 +420,239 @@ function parseJsoncDocument(text, filePath) {
     throw new Error("OpenCode 配置文件格式错误: " + filePath);
   }
   return value;
+}
+
+function mergedManagedProvider(legacyProvider, currentProvider) {
+  const legacy = objectValue(legacyProvider);
+  const current = objectValue(currentProvider);
+  const merged = Object.assign({}, legacy, current);
+  const legacyName = String(legacy.name || "").trim();
+  merged.name = String(current.name || (
+    !legacyName || legacyName === "Codex Remote" ? managedProviderName : legacyName
+  ));
+  merged.npm = String(current.npm || legacy.npm || managedProviderPackage);
+  if (Object.keys(objectValue(legacy.options)).length || Object.keys(objectValue(current.options)).length) {
+    merged.options = Object.assign({}, objectValue(legacy.options), objectValue(current.options));
+  }
+  const models = Object.assign({}, objectValue(legacy.models), objectValue(current.models));
+  for (const modelKey of Object.keys(models)) {
+    const model = objectValue(models[modelKey]);
+    models[modelKey] = withReasoningMetadata(model, model.id || modelKey);
+  }
+  merged.models = models;
+  return merged;
+}
+
+function buildManagedProviderMigration(config) {
+  const currentConfig = objectValue(config);
+  const providers = objectValue(currentConfig.provider);
+  if (!hasOwn(providers, legacyManagedProviderID)) return null;
+  const patch = { provider: {} };
+  patch.provider[managedProviderID] = mergedManagedProvider(
+    providers[legacyManagedProviderID],
+    providers[managedProviderID],
+  );
+  for (const key of ["model", "small_model"]) {
+    const migrated = normalizeManagedModelReference(currentConfig[key]);
+    if (migrated && migrated !== currentConfig[key]) patch[key] = migrated;
+  }
+  const agentPatch = {};
+  for (const [agentID, agentValue] of Object.entries(objectValue(currentConfig.agent))) {
+    const agent = objectValue(agentValue);
+    const model = normalizeManagedModelReference(agent.model);
+    if (model && model !== agent.model) agentPatch[agentID] = { model: model };
+  }
+  if (Object.keys(agentPatch).length) patch.agent = agentPatch;
+  return { patch: patch };
+}
+
+function replaceJsoncNodeText(text, node, value) {
+  return text.slice(0, node.offset) + JSON.stringify(value) + text.slice(node.offset + node.length);
+}
+
+function modifyJsoncValue(text, configPath, value) {
+  const parser = jsoncParser();
+  const edits = parser.modify(
+    text,
+    configPath,
+    value,
+    { formattingOptions: { insertSpaces: true, tabSize: 2 } },
+  );
+  return parser.applyEdits(text, edits);
+}
+
+function migrateManagedProviderConfigText(text, filePath) {
+  const source = filePath || "opencode.jsonc";
+  let current = text;
+  let config = parseJsoncDocument(current, source);
+  if (!hasOwn(objectValue(config.provider), legacyManagedProviderID)) {
+    return { text: current, changed: false, config: config };
+  }
+  const parser = jsoncParser();
+  const providers = objectValue(config.provider);
+  if (!hasOwn(providers, managedProviderID)) {
+    const tree = parser.parseTree(current);
+    const providerNode = tree && parser.findNodeAtLocation(tree, ["provider"]);
+    const legacyProperty = providerNode && (providerNode.children || []).find(function (property) {
+      return property.children && property.children[0] &&
+        property.children[0].value === legacyManagedProviderID;
+    });
+    if (!legacyProperty || !legacyProperty.children || !legacyProperty.children[0]) {
+      throw new Error("OpenCode 旧模型 Provider 结构无法识别: " + source);
+    }
+    current = replaceJsoncNodeText(current, legacyProperty.children[0], managedProviderID);
+  } else {
+    current = modifyJsoncValue(
+      current,
+      ["provider", managedProviderID],
+      mergedManagedProvider(providers[legacyManagedProviderID], providers[managedProviderID]),
+    );
+    current = modifyJsoncValue(current, ["provider", legacyManagedProviderID], undefined);
+  }
+  config = parseJsoncDocument(current, source);
+  const provider = objectValue(objectValue(config.provider)[managedProviderID]);
+  const providerName = String(provider.name || "").trim();
+  if (!providerName || providerName === "Codex Remote") {
+    current = modifyJsoncValue(current, ["provider", managedProviderID, "name"], managedProviderName);
+    config = parseJsoncDocument(current, source);
+  }
+  for (const key of ["model", "small_model"]) {
+    const migrated = normalizeManagedModelReference(config[key]);
+    if (migrated && migrated !== config[key]) {
+      current = modifyJsoncValue(current, [key], migrated);
+      config = parseJsoncDocument(current, source);
+    }
+  }
+  for (const [agentID, agentValue] of Object.entries(objectValue(config.agent))) {
+    const model = normalizeManagedModelReference(objectValue(agentValue).model);
+    if (model && model !== agentValue.model) {
+      current = modifyJsoncValue(current, ["agent", agentID, "model"], model);
+      config = parseJsoncDocument(current, source);
+    }
+  }
+  const models = objectValue(objectValue(objectValue(config.provider)[managedProviderID]).models);
+  for (const [modelKey, modelValue] of Object.entries(models)) {
+    const model = objectValue(modelValue);
+    if (!isReasoningModelID(model.id || modelKey)) continue;
+    if (model.reasoning !== true) {
+      current = modifyJsoncValue(
+        current,
+        ["provider", managedProviderID, "models", modelKey, "reasoning"],
+        true,
+      );
+      config = parseJsoncDocument(current, source);
+    }
+    const configuredVariants = objectValue(
+      objectValue(objectValue(objectValue(config.provider)[managedProviderID]).models)[modelKey]
+        ?.variants,
+    );
+    for (const effort of managedReasoningEfforts) {
+      if (hasOwn(configuredVariants, effort)) continue;
+      current = modifyJsoncValue(
+        current,
+        ["provider", managedProviderID, "models", modelKey, "variants", effort],
+        { reasoningEffort: effort },
+      );
+      config = parseJsoncDocument(current, source);
+    }
+  }
+  return { text: current, changed: current !== text, config: config };
+}
+
+function migrateManagedProviderConfigFiles() {
+  let changed = false;
+  let existingFile = false;
+  for (const filePath of openCodeConfigFiles()) {
+    if (!fs.existsSync(filePath)) continue;
+    existingFile = true;
+    const original = fs.readFileSync(filePath, "utf8");
+    const result = migrateManagedProviderConfigText(original, filePath);
+    if (!result.changed) continue;
+    atomicWriteConfig(filePath, result.text);
+    const written = parseJsoncDocument(fs.readFileSync(filePath, "utf8"), filePath);
+    if (hasOwn(objectValue(written.provider), legacyManagedProviderID)) {
+      throw new Error("OpenCode 旧模型 Provider 迁移失败");
+    }
+    changed = true;
+  }
+  if (!existingFile) throw new Error("找不到 OpenCode 全局配置文件，无法迁移模型 Provider");
+  return changed;
+}
+
+function migrateManagedProviderAuth() {
+  const authPath = openCodeAuthPath();
+  let text;
+  try {
+    text = fs.readFileSync(authPath, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    throw error;
+  }
+  let auth;
+  try {
+    auth = JSON.parse(text);
+  } catch (error) {
+    throw new Error("OpenCode 认证文件格式错误: " + authPath);
+  }
+  if (!hasOwn(objectValue(auth), legacyManagedProviderID)) return false;
+  const next = Object.assign({}, auth);
+  if (!hasOwn(next, managedProviderID)) next[managedProviderID] = next[legacyManagedProviderID];
+  delete next[legacyManagedProviderID];
+  const directoryPath = path.dirname(authPath);
+  fs.mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
+  atomicWriteConfig(authPath, JSON.stringify(next, null, 2) + "\n");
+  fs.chmodSync(authPath, 0o600);
+  return true;
+}
+
+function migrateLegacyManagedProviderBeforeStart() {
+  let hasLegacyConfig = false;
+  for (const filePath of openCodeConfigFiles()) {
+    if (!fs.existsSync(filePath)) continue;
+    const config = parseJsoncDocument(fs.readFileSync(filePath, "utf8"), filePath);
+    if (hasOwn(objectValue(config.provider), legacyManagedProviderID)) {
+      hasLegacyConfig = true;
+      break;
+    }
+  }
+  const configChanged = hasLegacyConfig ? migrateManagedProviderConfigFiles() : false;
+  const authChanged = migrateManagedProviderAuth();
+  return configChanged || authChanged;
+}
+
+function removeConfigValueFromText(text, configPath) {
+  const config = parseJsoncDocument(text, "opencode.jsonc");
+  const parser = jsoncParser();
+  const tree = parser.parseTree(text);
+  if (!tree || !parser.findNodeAtLocation(tree, configPath)) {
+    return { text: text, changed: false, config: config };
+  }
+  const edits = parser.modify(
+    text,
+    configPath,
+    undefined,
+    { formattingOptions: { insertSpaces: true, tabSize: 2 } },
+  );
+  const updated = parser.applyEdits(text, edits);
+  return {
+    text: updated,
+    changed: updated !== text,
+    config: parseJsoncDocument(updated, "opencode.jsonc"),
+  };
+}
+
+function removeConfigValueFromFiles(configPath) {
+  let changed = false;
+  for (const filePath of openCodeConfigFiles()) {
+    if (!fs.existsSync(filePath)) continue;
+    const original = fs.readFileSync(filePath, "utf8");
+    const result = removeConfigValueFromText(original, configPath);
+    if (!result.changed) continue;
+    atomicWriteConfig(filePath, result.text);
+    parseJsoncDocument(fs.readFileSync(filePath, "utf8"), filePath);
+    changed = true;
+  }
+  return changed;
 }
 
 function modelKeysInConfig(config, providerID, modelID) {
@@ -565,7 +846,9 @@ function normalizeOpenCodeModel(value, providerID) {
   if (model.length > 200 || /\s/.test(model) || /[^A-Za-z0-9._\-/:@+]/.test(model)) {
     throw new Error("模型 ID 格式错误");
   }
-  return parseModel(model) ? model : String(providerID || managedProviderID) + "/" + model;
+  return parseModel(model)
+    ? normalizeManagedModelReference(model)
+    : String(providerID || managedProviderID) + "/" + model;
 }
 
 function modelConfigDefinition(value, providerID) {
@@ -580,7 +863,7 @@ function modelConfigDefinition(value, providerID) {
   if (context > 0 || output > 0) {
     definition.limit = { context: context, output: output };
   }
-  return { modelID: parsed.modelID, definition: definition };
+  return { modelID: parsed.modelID, definition: withReasoningMetadata(definition, parsed.modelID) };
 }
 
 function configuredModels(models, providerID, defaultModel) {
@@ -591,7 +874,10 @@ function configuredModels(models, providerID, defaultModel) {
   }
   const parsedDefault = parseModel(normalizeOpenCodeModel(defaultModel, providerID));
   if (parsedDefault && parsedDefault.providerID === providerID && !result[parsedDefault.modelID]) {
-    result[parsedDefault.modelID] = { name: parsedDefault.modelID };
+    result[parsedDefault.modelID] = withReasoningMetadata(
+      { name: parsedDefault.modelID },
+      parsedDefault.modelID,
+    );
   }
   return result;
 }
@@ -738,9 +1024,21 @@ function buildModelSyncPatch(config, params) {
       }
     }
     patch.model = fallback;
+    const agents = objectValue(currentConfig.agent);
+    for (const [agentID, agentValue] of Object.entries(agents)) {
+      const agent = objectValue(agentValue);
+      if (normalizeManagedModelReference(agent.model) === configuredDefault) {
+        if (!patch.agent) patch.agent = {};
+        patch.agent[agentID] = fallback
+          ? Object.assign({}, agent, { model: fallback })
+          : Object.assign({}, agent);
+        if (!fallback) delete patch.agent[agentID].model;
+      }
+    }
     changed = true;
   }
-  const hasPatch = Object.keys(patch.provider).length > 0 || hasOwn(patch, "model");
+  const hasPatch = Object.keys(patch.provider).length > 0 || hasOwn(patch, "model") ||
+    Object.keys(objectValue(patch.agent)).length > 0;
   return changed || removedModelIds.length > 0
     ? {
       patch: hasPatch ? patch : null,
@@ -756,7 +1054,17 @@ function settingsProvider(config) {
   const selected = parseModel(config && config.model);
   if (selected && providers[selected.providerID]) return selected.providerID;
   if (providers[managedProviderID]) return managedProviderID;
+  if (providers[legacyManagedProviderID]) return legacyManagedProviderID;
   return selected ? selected.providerID : managedProviderID;
+}
+
+function settingsReasoningEffort(config) {
+  const buildAgent = objectValue(objectValue(config && config.agent).build);
+  try {
+    return normalizeReasoningEffort(buildAgent.variant);
+  } catch (error) {
+    return "";
+  }
 }
 
 function mapGlobalSettings(config, providers, proxyUrl) {
@@ -770,9 +1078,9 @@ function mapGlobalSettings(config, providers, proxyUrl) {
   const key = typeof runtime.key === "string" ? runtime.key : "";
   return {
     baseUrl: String(configuredBaseUrl || runtimeBaseUrl || ""),
-    model: String(config && config.model || ""),
-    reasoningEffort: "",
-    modelProvider: providerID,
+    model: normalizeManagedModelReference(config && config.model),
+    reasoningEffort: settingsReasoningEffort(config),
+    modelProvider: providerID === legacyManagedProviderID ? managedProviderID : providerID,
     hasStoredAuthentication: Boolean(key) || (providers && providers.connected || []).includes(providerID),
     apiKey: key,
     proxyUrl: String(proxyUrl || ""),
@@ -801,6 +1109,10 @@ async function writeGlobalSettings(params) {
   }
   const proxyUrl = normalizeProxyUrl(params.proxyUrl);
   const defaultModel = normalizeOpenCodeModel(params.defaultModel, providerID);
+  const writesReasoningEffort = hasOwn(params, "defaultReasoningEffort");
+  const defaultReasoningEffort = writesReasoningEffort
+    ? normalizeReasoningEffort(params.defaultReasoningEffort)
+    : settingsReasoningEffort(config);
   const provider = Object.assign({}, configuredProvider || {});
   const models = Object.assign({}, objectValue(provider.models));
   for (const [modelID, definition] of Object.entries(
@@ -821,6 +1133,18 @@ async function writeGlobalSettings(params) {
   if (Object.prototype.hasOwnProperty.call(params, "defaultModel")) {
     patch.model = defaultModel;
   }
+  const writesBuildAgent = hasOwn(params, "defaultModel") || writesReasoningEffort;
+  if (writesBuildAgent) {
+    const buildAgent = Object.assign({}, objectValue(objectValue(config.agent).build));
+    if (hasOwn(params, "defaultModel")) {
+      if (defaultModel) buildAgent.model = defaultModel;
+      else delete buildAgent.model;
+    }
+    if (writesReasoningEffort && defaultReasoningEffort) {
+      buildAgent.variant = defaultReasoningEffort;
+    }
+    patch.agent = { build: buildAgent };
+  }
   await request("/global/config", { method: "PATCH", body: patch });
   if (apiKey) {
     await request("/auth/" + encodeURIComponent(providerID), {
@@ -829,6 +1153,18 @@ async function writeGlobalSettings(params) {
     });
   }
   writeProxyUrl(proxyUrl);
+  if (hasOwn(params, "defaultModel") && !defaultModel) {
+    removeConfigValueFromFiles(["agent", "build", "model"]);
+  }
+  if (writesReasoningEffort && !defaultReasoningEffort &&
+      removeConfigValueFromFiles(["agent", "build", "variant"])) {
+    try { await request("/global/dispose", { method: "POST", body: {} }); } catch (error) { /* best effort */ }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const refreshed = await request("/global/config") || {};
+      if (!settingsReasoningEffort(refreshed)) break;
+      await new Promise(function (resolve) { setTimeout(resolve, 100); });
+    }
+  }
   return readGlobalSettings();
 }
 
@@ -945,6 +1281,10 @@ function mapModels(providers) {
       const model = provider.models[modelKey] || {};
       const modelID = model.id || modelKey;
       const id = provider.id + "/" + modelID;
+      const variants = objectValue(model.variants);
+      const efforts = managedReasoningEfforts.filter(function (effort) {
+        return hasOwn(variants, effort);
+      });
       data.push({
         id: id,
         model: id,
@@ -952,7 +1292,7 @@ function mapModels(providers) {
         description: provider.name || provider.id,
         isDefault: providers.default && providers.default[provider.id] === modelID,
         defaultReasoningEffort: "",
-        supportedReasoningEfforts: [],
+        supportedReasoningEfforts: efforts,
         contextWindowTokens: Number(model.limit && model.limit.context || 0),
         maxOutputTokens: Number(model.limit && model.limit.output || 0),
       });
@@ -980,8 +1320,10 @@ function inputParts(input) {
 
 async function sendPrompt(sessionID, params) {
   const body = { parts: inputParts(params.input) };
-  const model = parseModel(params.model);
+  const model = parseModel(normalizeManagedModelReference(params.model));
   if (model) body.model = model;
+  const variant = normalizeReasoningEffort(params.effort);
+  if (variant) body.variant = variant;
   await request("/session/" + encodeURIComponent(sessionID) + "/prompt_async", {
     method: "POST",
     body: body,
@@ -1535,6 +1877,7 @@ async function main() {
   if (!openCodeBin) {
     throw new Error("OPENCODE_BIN is not configured");
   }
+  migrateLegacyManagedProviderBeforeStart();
   const port = await reservePort();
   baseUrl = "http://127.0.0.1:" + port;
   serverProcess = childProcess.spawn(openCodeBin, [
@@ -1591,10 +1934,14 @@ module.exports = {
   mapPart: mapPart,
   mapSession: mapSession,
   buildModelSyncPatch: buildModelSyncPatch,
+  buildManagedProviderMigration: buildManagedProviderMigration,
+  isReasoningModelID: isReasoningModelID,
   modelConfigDefinition: modelConfigDefinition,
   modelDefinitionsByProvider: modelDefinitionsByProvider,
   normalizeOpenCodeModel: normalizeOpenCodeModel,
+  normalizeManagedModelReference: normalizeManagedModelReference,
   normalizeProxyUrl: normalizeProxyUrl,
+  normalizeReasoningEffort: normalizeReasoningEffort,
   parseModel: parseModel,
   permissionApiVersion: permissionApiVersion,
   permissionPrompt: permissionPrompt,
@@ -1606,6 +1953,9 @@ module.exports = {
   questionReplyTarget: questionReplyTarget,
   proxyEnvironment: proxyEnvironment,
   removeModelsFromConfigText: removeModelsFromConfigText,
+  migrateManagedProviderConfigText: migrateManagedProviderConfigText,
+  removeConfigValueFromText: removeConfigValueFromText,
+  reasoningVariants: reasoningVariants,
   settingsProvider: settingsProvider,
   statusType: statusType,
 };

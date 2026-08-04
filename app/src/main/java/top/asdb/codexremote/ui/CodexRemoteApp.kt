@@ -860,7 +860,7 @@ private fun AgentSettingsDialog(
     val testFeedback = testResult?.message ?: state.agentSettingsError?.takeIf { it.isNotBlank() }
     val busy = state.agentSettingsLoading || state.agentSettingsSaving || state.agentSettingsTesting
     val settingsReady = remoteSettings != null
-    val defaultProviderId = if (agent == AgentKind.Codex) "openai" else "codex-remote"
+    val defaultProviderId = if (agent == AgentKind.Codex) "openai" else "custom-api"
     val customProviderInUse = remoteSettings?.modelProvider?.let { it != defaultProviderId } == true
     val preserveCurrentProvider = customProviderInUse &&
         baseUrl.trim().trimEnd('/') == remoteSettings?.baseUrl.orEmpty().trim().trimEnd('/')
@@ -950,7 +950,7 @@ private fun AgentSettingsDialog(
                         singleLine = true,
                         label = { Text("默认模型") },
                         placeholder = {
-                            Text(if (agent == AgentKind.Codex) "gpt-5.6-sol" else "codex-remote/model-id")
+                            Text(if (agent == AgentKind.Codex) "gpt-5.6-sol" else "custom-api/model-id")
                         },
                         supportingText = { Text("留空使用 $agentName 默认模型；保存后对新会话生效") },
                     )
@@ -993,7 +993,7 @@ private fun AgentSettingsDialog(
                             }
                         }
                         Text(
-                            "留空使用 Codex 默认思考强度。",
+                            "留空使用当前 Agent 的默认思考强度。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1084,7 +1084,7 @@ private fun AgentSettingsDialog(
                         singleLine = true,
                         label = { Text("测试模型") },
                         placeholder = {
-                            Text(if (agent == AgentKind.Codex) "gpt-5.6-sol" else "codex-remote/model-id")
+                            Text(if (agent == AgentKind.Codex) "gpt-5.6-sol" else "custom-api/model-id")
                         },
                         supportingText = { Text("保存后按当前服务器记住") },
                     )
@@ -1195,7 +1195,7 @@ private fun AgentSettingsDialog(
 private val DEFAULT_REASONING_EFFORT_OPTIONS = listOf("", "minimal", "low", "medium", "high", "xhigh")
 
 private fun defaultReasoningEffortLabel(effort: String): String = when (effort) {
-    "" -> "默认（使用 Codex 默认值）"
+    "" -> "默认（由 Agent 决定）"
     "minimal" -> "极低"
     "low" -> "低"
     "medium" -> "中"

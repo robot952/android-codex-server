@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const bridge = require(path.resolve(__dirname, "../app/src/main/assets/opencode-bridge.cjs"));
 
@@ -13,27 +15,51 @@ assert.deepEqual(bridge.parseModel("openai/gpt-5"), {
   modelID: "gpt-5",
 });
 assert.equal(bridge.parseModel("missing-provider"), null);
-assert.equal(bridge.normalizeOpenCodeModel("gpt-new", "codex-remote"), "codex-remote/gpt-new");
+assert.equal(bridge.normalizeOpenCodeModel("gpt-new", "custom-api"), "custom-api/gpt-new");
 assert.equal(
-  bridge.normalizeOpenCodeModel("existing/model", "codex-remote"),
+  bridge.normalizeOpenCodeModel("existing/model", "custom-api"),
   "existing/model",
+);
+assert.equal(
+  bridge.normalizeOpenCodeModel("codex-remote/gpt-5.6-sol", "custom-api"),
+  "custom-api/gpt-5.6-sol",
 );
 assert.deepEqual(
   bridge.modelConfigDefinition({
-    modelId: "codex-remote/gpt-new",
+    modelId: "custom-api/gpt-new",
     displayName: "GPT New",
     contextWindowTokens: 200000,
     maxOutputTokens: 32000,
-  }, "codex-remote"),
+  }, "custom-api"),
   {
     modelID: "gpt-new",
     definition: { name: "GPT New", limit: { context: 200000, output: 32000 } },
   },
 );
+assert.deepEqual(
+  bridge.modelConfigDefinition({
+    modelId: "custom-api/gpt-5.6-sol",
+    displayName: "GPT 5.6 Sol",
+  }, "custom-api"),
+  {
+    modelID: "gpt-5.6-sol",
+    definition: {
+      name: "GPT 5.6 Sol",
+      reasoning: true,
+      variants: {
+        minimal: { reasoningEffort: "minimal" },
+        low: { reasoningEffort: "low" },
+        medium: { reasoningEffort: "medium" },
+        high: { reasoningEffort: "high" },
+        xhigh: { reasoningEffort: "xhigh" },
+      },
+    },
+  },
+);
 const syncPlan = bridge.buildModelSyncPatch({
-  model: "codex-remote/legacy",
+  model: "custom-api/legacy",
   provider: {
-    "codex-remote": {
+    "custom-api": {
       name: "Keep this name",
       npm: "keep-this-package",
       options: { baseURL: "https://api.example.com/v1", timeout: 30 },
@@ -47,34 +73,102 @@ const syncPlan = bridge.buildModelSyncPatch({
   features: { preserve: true },
 }, {
   models: [{
-    modelId: "codex-remote/new-model",
+    modelId: "custom-api/new-model",
     displayName: "New model",
     contextWindowTokens: 128000,
     maxOutputTokens: 16000,
   }],
-  removeModelIds: ["codex-remote/legacy"],
+  removeModelIds: ["custom-api/legacy"],
 });
-assert.deepEqual(syncPlan.patch.provider["codex-remote"].options, {
+assert.deepEqual(syncPlan.patch.provider["custom-api"].options, {
   baseURL: "https://api.example.com/v1",
   timeout: 30,
 });
-assert.deepEqual(syncPlan.patch.provider["codex-remote"].headers, { "x-test": "preserve" });
-assert.deepEqual(syncPlan.patch.provider["codex-remote"].models, {
+assert.deepEqual(syncPlan.patch.provider["custom-api"].headers, { "x-test": "preserve" });
+assert.deepEqual(syncPlan.patch.provider["custom-api"].models, {
   "new-model": { name: "New model", limit: { context: 128000, output: 16000 } },
 });
-assert.equal(syncPlan.patch.model, "codex-remote/untouched");
-assert.deepEqual(syncPlan.removedModelIds, ["codex-remote/legacy"]);
+assert.equal(syncPlan.patch.model, "custom-api/untouched");
+assert.deepEqual(syncPlan.removedModelIds, ["custom-api/legacy"]);
 
 const removalOnlyPlan = bridge.buildModelSyncPatch({
   provider: {
-    "codex-remote": { models: { removable: { name: "Remove me" } } },
+    "custom-api": { models: { removable: { name: "Remove me" } } },
   },
 }, {
   models: [],
-  removeModelIds: ["codex-remote/removable"],
+  removeModelIds: ["custom-api/removable"],
 });
 assert.equal(removalOnlyPlan.patch, null);
-assert.deepEqual(removalOnlyPlan.removedModelIds, ["codex-remote/removable"]);
+assert.deepEqual(removalOnlyPlan.removedModelIds, ["custom-api/removable"]);
+
+const migration = bridge.buildManagedProviderMigration({
+  model: "codex-remote/gpt-5.6-sol",
+  agent: {
+    build: { model: "codex-remote/gpt-5.6-sol", variant: "high", temperature: 0.2 },
+  },
+  provider: {
+    "codex-remote": {
+      name: "Codex Remote",
+      npm: "@ai-sdk/openai-compatible",
+      options: { baseURL: "https://api.example.com/v1", timeout: 30 },
+      models: { "gpt-5.6-sol": { name: "GPT 5.6 Sol" } },
+    },
+    "custom-api": {
+      headers: { "x-existing": "keep" },
+      models: { untouched: { name: "Untouched" } },
+    },
+  },
+});
+assert.equal(migration.patch.model, "custom-api/gpt-5.6-sol");
+assert.equal(migration.patch.agent.build.model, "custom-api/gpt-5.6-sol");
+assert.equal(migration.patch.provider["custom-api"].name, "Custom API");
+assert.equal(migration.patch.provider["custom-api"].options.timeout, 30);
+assert.equal(migration.patch.provider["custom-api"].headers["x-existing"], "keep");
+assert.equal(
+  migration.patch.provider["custom-api"].models["gpt-5.6-sol"].variants.high.reasoningEffort,
+  "high",
+);
+assert.equal(migration.patch.provider["custom-api"].models.untouched.name, "Untouched");
+
+const parserLookupPaths = [path.dirname(process.execPath)];
+if (process.env.OPENCODE_BIN) parserLookupPaths.push(path.dirname(path.resolve(process.env.OPENCODE_BIN)));
+let jsoncParserPath = "";
+for (const lookupPath of parserLookupPaths) {
+  try {
+    jsoncParserPath = require.resolve("jsonc-parser", { paths: [lookupPath] });
+    break;
+  } catch (error) { /* try the next runtime */ }
+}
+if (jsoncParserPath) {
+  const previousParser = process.env.OPENCODE_JSONC_PARSER;
+  const parserDirectory = path.dirname(jsoncParserPath);
+  process.env.OPENCODE_JSONC_PARSER = parserDirectory;
+  const legacyJsonc = [
+    "{",
+    "  // Preserve this comment.",
+    "  \"provider\": {",
+    "    \"codex-remote\": { \"models\": { \"old\": { \"name\": \"Old\" } } },",
+    "    \"custom-api\": { \"models\": {} },",
+    "  },",
+    "  \"agent\": { \"build\": { \"variant\": \"high\", \"temperature\": 0.2 } },",
+    "}",
+    "",
+  ].join("\n");
+  const removedLegacy = bridge.migrateManagedProviderConfigText(legacyJsonc);
+  assert.equal(removedLegacy.changed, true);
+  assert(!Object.prototype.hasOwnProperty.call(removedLegacy.config.provider, "codex-remote"));
+  assert(removedLegacy.text.includes("Preserve this comment"));
+  const removedVariant = bridge.removeConfigValueFromText(
+    removedLegacy.text,
+    ["agent", "build", "variant"],
+  );
+  assert.equal(removedVariant.changed, true);
+  assert.equal(removedVariant.config.agent.build.variant, undefined);
+  assert.equal(removedVariant.config.agent.build.temperature, 0.2);
+  if (previousParser === undefined) delete process.env.OPENCODE_JSONC_PARSER;
+  else process.env.OPENCODE_JSONC_PARSER = previousParser;
+}
 
 const newProviderPlan = bridge.buildModelSyncPatch({}, {
   models: [{ modelId: "new-provider/model" }],
@@ -126,7 +220,12 @@ const models = bridge.mapModels({
       id: "openai",
       name: "OpenAI",
       models: {
-        "gpt-5": { id: "gpt-5", name: "GPT-5", limit: { context: 400000, output: 128000 } },
+        "gpt-5": {
+          id: "gpt-5",
+          name: "GPT-5",
+          limit: { context: 400000, output: 128000 },
+          variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" } },
+        },
       },
     },
     { id: "disabled", name: "Disabled", models: { unused: { id: "unused" } } },
@@ -140,7 +239,7 @@ assert.deepEqual(models[0], {
   description: "OpenAI",
   isDefault: true,
   defaultReasoningEffort: "",
-  supportedReasoningEfforts: [],
+  supportedReasoningEfforts: ["low", "high"],
   contextWindowTokens: 400000,
   maxOutputTokens: 128000,
 });

@@ -26,12 +26,23 @@ import top.asdb.codexremote.ssh.RemoteCodexSettings
 import top.asdb.codexremote.ssh.RemoteInstallProgress
 import top.asdb.codexremote.ssh.SshCodexTransport
 
-internal const val OPENCODE_MANAGED_PROVIDER_ID = "codex-remote"
+internal const val OPENCODE_MANAGED_PROVIDER_ID = "custom-api"
+internal const val OPENCODE_LEGACY_MANAGED_PROVIDER_ID = "codex-remote"
+internal val OPENCODE_REASONING_EFFORTS = listOf("minimal", "low", "medium", "high", "xhigh")
+private val OPENCODE_REASONING_MODEL_PATTERN =
+    Regex("(^|/)gpt-5(?:[._-]|$)|(^|/)o(?:1|3|4)(?:[._-]|$)", RegexOption.IGNORE_CASE)
+
+internal fun openCodeReasoningEfforts(modelId: String): List<String> =
+    OPENCODE_REASONING_EFFORTS.takeIf { OPENCODE_REASONING_MODEL_PATTERN.containsMatchIn(modelId.trim()) }
+        .orEmpty()
 
 internal fun normalizeOpenCodeModelId(value: String): String {
     val normalized = RemoteCodexSettings.normalizeDefaultModel(value)
     return when {
-        normalized.isBlank() || '/' in normalized -> normalized
+        normalized.isBlank() -> normalized
+        normalized.startsWith("$OPENCODE_LEGACY_MANAGED_PROVIDER_ID/") ->
+            "$OPENCODE_MANAGED_PROVIDER_ID/${normalized.substringAfter('/')}"
+        '/' in normalized -> normalized
         else -> "$OPENCODE_MANAGED_PROVIDER_ID/$normalized"
     }
 }
@@ -155,7 +166,7 @@ class OpenCodeAgentClient(
         return AgentGlobalSettings(
             baseUrl = result.string("baseUrl"),
             model = result.string("model"),
-            reasoningEffort = "",
+            reasoningEffort = result.string("reasoningEffort"),
             modelProvider = settingsProviderId,
             hasStoredAuthentication = (result["hasStoredAuthentication"] as? JsonPrimitive)
                 ?.booleanOrNull == true,
@@ -181,6 +192,8 @@ class OpenCodeAgentClient(
             }
         }
         val normalizedDefaultModel = normalizeOpenCodeModelId(defaultModel)
+        val normalizedDefaultReasoningEffort =
+            RemoteCodexSettings.normalizeDefaultReasoningEffort(defaultReasoningEffort)
         val effectivePreserveCurrentProvider = preserveCurrentProvider &&
             (normalizedDefaultModel.isBlank() || normalizedDefaultModel.startsWith("$settingsProviderId/"))
         val result = delegate.requestAdapterExtension(
@@ -190,6 +203,7 @@ class OpenCodeAgentClient(
                 put("apiKey", normalizedApiKey)
                 put("proxyUrl", normalizedProxy)
                 put("defaultModel", normalizedDefaultModel)
+                put("defaultReasoningEffort", normalizedDefaultReasoningEffort)
                 put("preserveCurrentProvider", effectivePreserveCurrentProvider)
                 put("customModels", buildJsonArray {
                     profile.modelSettings(AgentKind.OpenCode).customModels.forEach { definition ->

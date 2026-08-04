@@ -30,6 +30,7 @@ import top.asdb.codexremote.agent.ProfiledAgentConnectionEvent
 import top.asdb.codexremote.agent.ProfiledAgentNotification
 import top.asdb.codexremote.agent.RemoteAgentClient
 import top.asdb.codexremote.agent.normalizeOpenCodeModelId
+import top.asdb.codexremote.agent.openCodeReasoningEfforts
 import top.asdb.codexremote.codex.CodexEventReducer
 import top.asdb.codexremote.codex.ResumeNotificationBuffer
 import top.asdb.codexremote.codex.estimateTimelineWeightChars
@@ -137,7 +138,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val threadModelPreferences = LinkedHashMap<String, ThreadModelPreference>().apply {
         loaded.threadModelPreferences.entries.toList().takeLast(MAX_THREAD_MODEL_PREFERENCES)
             .forEach { (key, preference) ->
-                if (key.isNotBlank() && preference.model.isNotBlank()) put(key, preference)
+                if (key.isNotBlank() && preference.model.isNotBlank()) {
+                    val normalized = if (key.contains("\u0000${AgentKind.OpenCode.name}\u0000")) {
+                        runCatching {
+                            preference.copy(model = normalizeOpenCodeModelId(preference.model))
+                        }.getOrDefault(preference)
+                    } else {
+                        preference
+                    }
+                    put(key, normalized)
+                }
             }
     }
     private val completedTurnTimings = LinkedHashMap<String, TurnTiming>().apply {
@@ -4105,6 +4115,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             remoteModels = connected.models,
             customModels = modelSettings.customModels,
             hiddenModelIds = modelSettings.hiddenModelIds,
+            customReasoningEfforts = if (agent == AgentKind.OpenCode) {
+                ::openCodeReasoningEfforts
+            } else {
+                { emptyList() }
+            },
         )
         val defaultModel = models.firstOrNull { it.isDefault } ?: models.firstOrNull()
         val preferredSelection = resolveNewThreadModelSelection(
@@ -4321,6 +4336,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             remoteModels = remoteModels,
             customModels = updatedSettings.customModels,
             hiddenModelIds = updatedSettings.hiddenModelIds + pendingRemovals,
+            customReasoningEfforts = if (key.agent == AgentKind.OpenCode) {
+                ::openCodeReasoningEfforts
+            } else {
+                { emptyList() }
+            },
         )
         _state.update { latest ->
             val profiles = latest.profiles.map { candidate ->
@@ -4917,6 +4937,7 @@ internal fun buildModelCatalog(
     remoteModels: List<CodexModel>,
     customModels: List<CustomModelDefinition>,
     hiddenModelIds: Collection<String>,
+    customReasoningEfforts: (String) -> List<String> = { emptyList() },
 ): List<CodexModel> {
     val hidden = hiddenModelIds.asSequence().map(String::trim).filter(String::isNotBlank).toSet()
     val models = remoteModels.filterNot { remote ->
@@ -4925,6 +4946,7 @@ internal fun buildModelCatalog(
     customModels.forEach { custom ->
         val modelId = custom.modelId.trim()
         if (modelId.isBlank()) return@forEach
+        val inferredEfforts = customReasoningEfforts(modelId)
         val index = models.indexOfFirst { it.model == modelId || it.id == modelId }
         if (index >= 0) {
             val remote = models[index]
@@ -4934,6 +4956,7 @@ internal fun buildModelCatalog(
                 contextWindowTokens = custom.contextWindowTokens.takeIf { it > 0L }
                     ?: remote.contextWindowTokens,
                 maxOutputTokens = custom.maxOutputTokens.takeIf { it > 0L } ?: remote.maxOutputTokens,
+                efforts = remote.efforts.ifEmpty { inferredEfforts },
                 isCustom = true,
             )
         } else {
@@ -4944,7 +4967,7 @@ internal fun buildModelCatalog(
                 description = "自定义模型",
                 isDefault = false,
                 defaultEffort = "",
-                efforts = emptyList(),
+                efforts = inferredEfforts,
                 contextWindowTokens = custom.contextWindowTokens,
                 maxOutputTokens = custom.maxOutputTokens,
                 isCustom = true,

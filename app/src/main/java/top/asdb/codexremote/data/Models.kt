@@ -195,6 +195,7 @@ data class AgentCapabilities(
         )
 
         val OpenCode = AgentCapabilities(
+            reasoningEffort = true,
             approvals = true,
             archiveThread = false,
             steerTurn = true,

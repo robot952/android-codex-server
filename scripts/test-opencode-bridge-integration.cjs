@@ -142,8 +142,8 @@ async function main() {
         response.end(JSON.stringify({
           object: "list",
           data: [
-            { id: "integration-model", object: "model" },
-            { id: "integration-extra", object: "model" },
+            { id: "gpt-5-integration", object: "model" },
+            { id: "gpt-5-integration-extra", object: "model" },
           ],
         }));
         return;
@@ -152,10 +152,10 @@ async function main() {
         const body = await readJsonBody(request);
         requests.push({ authorization: request.headers.authorization || "", body: body });
         if (body.stream) {
-          streamCompletion(response, body.model || "integration-extra");
+          streamCompletion(response, body.model || "gpt-5-integration-extra");
         } else {
           response.writeHead(200, { "content-type": "application/json" });
-          response.end(JSON.stringify(completionResponse(body.model || "integration-extra")));
+          response.end(JSON.stringify(completionResponse(body.model || "gpt-5-integration-extra")));
         }
         return;
       }
@@ -174,7 +174,11 @@ async function main() {
     const persistedConfigPath = path.join(configDirectory, "opencode.jsonc");
     fs.writeFileSync(persistedConfigPath, [
       "{",
-      "  // This comment and the timeout are not managed by Codex Remote.",
+      "  // This comment and the timeout are not managed by the app.",
+      "  \"model\": \"codex-remote/untouched\",",
+      "  \"agent\": {",
+      "    \"build\": { \"model\": \"codex-remote/untouched\", \"variant\": \"low\" },",
+      "  },",
       "  \"provider\": {",
       "    \"codex-remote\": {",
       "      \"name\": \"Preserved provider name\",",
@@ -188,6 +192,12 @@ async function main() {
       "}",
       "",
     ].join("\n"), { mode: 0o600 });
+    const authDirectory = path.join(temporaryRoot, "data", "opencode");
+    fs.mkdirSync(authDirectory, { recursive: true });
+    const authPath = path.join(authDirectory, "auth.json");
+    fs.writeFileSync(authPath, JSON.stringify({
+      "codex-remote": { type: "api", key: expectedKey },
+    }, null, 2) + "\n", { mode: 0o600 });
     bridgeProcess = childProcess.spawn(process.execPath, [bridgePath, "--directory", repository], {
       cwd: repository,
       env: Object.assign({}, process.env, {
@@ -221,35 +231,51 @@ async function main() {
     await sendRpc("initialize", {}, 60_000);
     const initial = await sendRpc("agent/settings/read");
     assert.equal(initial.baseUrl, "");
-    assert.equal(initial.model, "");
+    assert.equal(initial.model, "custom-api/untouched");
+    assert.equal(initial.reasoningEffort, "low");
+    const migratedText = fs.readFileSync(persistedConfigPath, "utf8");
+    const migratedErrors = [];
+    const migratedConfig = jsoncParser.parse(migratedText, migratedErrors, { allowTrailingComma: true });
+    assert.deepEqual(migratedErrors, []);
+    assert(!Object.prototype.hasOwnProperty.call(migratedConfig.provider, "codex-remote"));
+    assert.equal(migratedConfig.model, "custom-api/untouched");
+    assert.equal(migratedConfig.agent.build.model, "custom-api/untouched");
+    assert.equal(migratedConfig.agent.build.variant, "low");
+    assert.equal(migratedConfig.provider["custom-api"].options.timeout, 30);
+    assert(migratedText.includes("This comment and the timeout are not managed"));
+    const migratedAuth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    assert.equal(migratedAuth["custom-api"].key, expectedKey);
+    assert(!Object.prototype.hasOwnProperty.call(migratedAuth, "codex-remote"));
 
     const baseUrl = "http://127.0.0.1:" + apiPort + "/v1";
     const saved = await sendRpc("agent/settings/write", {
       baseUrl: baseUrl,
       apiKey: expectedKey,
       proxyUrl: "",
-      defaultModel: "codex-remote/integration-model",
+      defaultModel: "custom-api/gpt-5-integration",
+      defaultReasoningEffort: "high",
       preserveCurrentProvider: false,
       customModels: [{
-        modelId: "codex-remote/integration-model",
+        modelId: "custom-api/gpt-5-integration",
         displayName: "Integration Model",
         contextWindowTokens: 200000,
         maxOutputTokens: 32000,
       }],
     });
     assert.equal(saved.baseUrl, baseUrl);
-    assert.equal(saved.model, "codex-remote/integration-model");
+    assert.equal(saved.model, "custom-api/gpt-5-integration");
+    assert.equal(saved.reasoningEffort, "high");
     assert.equal(saved.apiKey, expectedKey);
     assert.equal(saved.hasStoredAuthentication, true);
 
     await sendRpc("agent/model/ensure", {
-      modelId: "codex-remote/integration-extra",
+      modelId: "custom-api/gpt-5-integration-extra",
       displayName: "Integration Extra",
       contextWindowTokens: 128000,
       maxOutputTokens: 16000,
     });
     await sendRpc("agent/model/ensure", {
-      modelId: "codex-remote/local-only",
+      modelId: "custom-api/local-only",
       displayName: "Local Only",
       contextWindowTokens: 64000,
       maxOutputTokens: 8000,
@@ -258,39 +284,40 @@ async function main() {
       baseUrl: baseUrl,
       apiKey: expectedKey,
       proxyUrl: "",
-      defaultModel: "codex-remote/local-only",
+      defaultModel: "custom-api/local-only",
+      defaultReasoningEffort: "medium",
       preserveCurrentProvider: true,
       customModels: [],
     });
     const syncResult = await sendRpc("agent/models/sync", {
       models: [{
-        modelId: "codex-remote/integration-model",
+        modelId: "custom-api/gpt-5-integration",
         displayName: "Integration Model Updated",
         contextWindowTokens: 256000,
         maxOutputTokens: 64000,
       }],
-      removeModelIds: ["codex-remote/local-only"],
+      removeModelIds: ["custom-api/local-only"],
     });
-    assert.equal(syncResult.defaultModel, "codex-remote/untouched");
+    assert.equal(syncResult.defaultModel, "custom-api/untouched");
     assert.equal(syncResult.runtimeRefreshed, true);
     const models = await sendRpc("model/list");
     const managedModels = models.data.filter(function (model) {
-      return model.id.startsWith("codex-remote/");
+      return model.id.startsWith("custom-api/");
     });
     assert(models.data.some(function (model) {
-      return model.id === "codex-remote/integration-model" &&
+      return model.id === "custom-api/gpt-5-integration" &&
         model.displayName === "Integration Model Updated" &&
         model.contextWindowTokens === 256000 && model.maxOutputTokens === 64000;
     }), "Updated model metadata is missing: " + JSON.stringify(managedModels));
     assert(models.data.some(function (model) {
-      return model.id === "codex-remote/integration-extra" &&
+      return model.id === "custom-api/gpt-5-integration-extra" &&
         model.contextWindowTokens === 128000 && model.maxOutputTokens === 16000;
     }), "Existing custom model is missing: " + JSON.stringify(managedModels));
     const persistedConfig = fs.existsSync(persistedConfigPath)
       ? fs.readFileSync(persistedConfigPath, "utf8")
       : "<missing opencode.jsonc>";
     assert(!models.data.some(function (model) {
-      return model.id === "codex-remote/local-only";
+      return model.id === "custom-api/local-only";
     }), "Deleted model remains configured:\n" + persistedConfig);
     const parseErrors = [];
     const parsedConfig = jsoncParser.parse(
@@ -300,11 +327,11 @@ async function main() {
     );
     assert.deepEqual(parseErrors, []);
     assert(!Object.prototype.hasOwnProperty.call(
-      parsedConfig.provider["codex-remote"].models,
+      parsedConfig.provider["custom-api"].models,
       "local-only",
     ));
-    assert.equal(parsedConfig.model, "codex-remote/untouched");
-    assert.equal(parsedConfig.provider["codex-remote"].options.timeout, 30);
+    assert.equal(parsedConfig.model, "custom-api/untouched");
+    assert.equal(parsedConfig.provider["custom-api"].options.timeout, 30);
     assert(persistedConfig.includes("This comment and the timeout are not managed"));
 
     const started = await sendRpc("thread/start");
@@ -312,7 +339,8 @@ async function main() {
     assert(threadID);
     await sendRpc("turn/start", {
       threadId: threadID,
-      model: "codex-remote/integration-extra",
+      model: "custom-api/gpt-5-integration-extra",
+      effort: "high",
       input: [{ type: "text", text: "Reply exactly CUSTOM_MODEL_OK" }],
       approvalPolicy: "never",
     });
@@ -320,9 +348,18 @@ async function main() {
       return params.threadId === threadID;
     }, 60_000);
     const turnRequest = requests.find(function (request) {
-      return request.body.model === "integration-extra";
+      return request.body.model === "gpt-5-integration-extra" &&
+        request.body.reasoning_effort === "high";
     });
-    assert(turnRequest, "OpenCode did not call the selected custom model");
+    assert(turnRequest, "OpenCode did not call the selected custom model and effort: " +
+      JSON.stringify(requests.map(function (request) {
+        return {
+          model: request.body.model,
+          reasoning_effort: request.body.reasoning_effort,
+          messages: Array.isArray(request.body.messages) ? request.body.messages.length : 0,
+        };
+      })));
+    assert.equal(turnRequest.body.reasoning_effort, "high");
     assert.equal(turnRequest.authorization, "Bearer " + expectedKey);
     assert(notifications.some(function (message) {
       return message.method === "item/completed" &&
@@ -334,9 +371,9 @@ async function main() {
     const finalRemoval = await sendRpc("agent/models/sync", {
       models: [],
       removeModelIds: [
-        "codex-remote/integration-model",
-        "codex-remote/integration-extra",
-        "codex-remote/untouched",
+        "custom-api/gpt-5-integration",
+        "custom-api/gpt-5-integration-extra",
+        "custom-api/untouched",
       ],
     });
     assert.equal(finalRemoval.defaultModel, "");
@@ -345,9 +382,9 @@ async function main() {
     assert.equal(finalSettings.model, "");
     const finalModels = await sendRpc("model/list");
     assert(!finalModels.data.some(function (model) {
-      return model.id === "codex-remote/integration-model" ||
-        model.id === "codex-remote/integration-extra" ||
-        model.id === "codex-remote/untouched";
+      return model.id === "custom-api/gpt-5-integration" ||
+        model.id === "custom-api/gpt-5-integration-extra" ||
+        model.id === "custom-api/untouched";
     }));
     const finalConfigText = fs.readFileSync(persistedConfigPath, "utf8");
     const finalParseErrors = [];
@@ -358,9 +395,8 @@ async function main() {
     );
     assert.deepEqual(finalParseErrors, []);
     assert(!Object.prototype.hasOwnProperty.call(finalConfig, "model"));
-    assert.deepEqual(finalConfig.provider["codex-remote"].models, {});
-    assert.equal(finalConfig.provider["codex-remote"].options.timeout, 30);
-    assert(finalConfigText.includes("This comment and the timeout are not managed"));
+    assert.deepEqual(finalConfig.provider["custom-api"].models, {});
+    assert.equal(finalConfig.provider["custom-api"].options.timeout, 30);
 
     process.stdout.write("OpenCode bridge integration tests passed\n");
   } finally {

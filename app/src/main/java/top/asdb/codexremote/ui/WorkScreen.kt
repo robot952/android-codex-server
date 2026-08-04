@@ -2060,6 +2060,7 @@ private fun WorkComposer(
     val modelName = state.models.firstOrNull { it.model == state.selectedModel }?.displayName
         ?: state.selectedModel ?: "模型"
     val effortName = when (state.selectedEffort) {
+        "minimal" -> "极低"
         "low" -> "低"
         "medium" -> "中"
         "high" -> "高"
@@ -2634,7 +2635,7 @@ private fun ModelSheet(
         }
         selected?.efforts?.takeIf { showReasoningEffort && it.isNotEmpty() }?.let { efforts ->
             HorizontalDivider(color = CodexBorder)
-            Text("推理强度", style = MaterialTheme.typography.labelLarge,
+            Text("思考强度", style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
@@ -2645,13 +2646,22 @@ private fun ModelSheet(
                     FilterChip(
                         selected = effort == selectedEffort,
                         onClick = { onSelectEffort(effort) },
-                        label = { Text(effort) },
+                        label = { Text(reasoningEffortLabel(effort)) },
                     )
                 }
             }
         }
         Spacer(Modifier.height(22.dp).navigationBarsPadding())
     }
+}
+
+private fun reasoningEffortLabel(effort: String): String = when (effort) {
+    "minimal" -> "极低"
+    "low" -> "低"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "极高"
+    else -> effort
 }
 
 private data class ModelEditorRequest(

@@ -80,8 +80,8 @@ const server = http.createServer(async (request, response) => {
   }
   if (request.method === "GET" && url.pathname === "/global/config") {
     json(response, {
-      model: "codex-remote/test-model",
-      provider: { "codex-remote": { models: { "test-model": { name: "Test" } } } },
+      model: "custom-api/test-model",
+      provider: { "custom-api": { models: { "test-model": { name: "Test" } } } },
     });
     return;
   }
@@ -182,7 +182,7 @@ async function main() {
     const startedAt = Date.now();
     const turn = await sendRpc("turn/start", {
       threadId: "session-1",
-      model: "codex-remote/test-model",
+      model: "custom-api/test-model",
       input: [{ type: "text", text: "slow endpoint should not block" }],
     });
     assert.equal(turn.turn.status, "inProgress");

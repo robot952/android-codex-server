@@ -9,8 +9,16 @@ class OpenCodeAgentClientTest {
     @Test
     fun `raw API model IDs use the managed OpenCode provider`() {
         assertEquals(
-            "codex-remote/gpt-new",
+            "custom-api/gpt-new",
             normalizeOpenCodeModelId("gpt-new"),
+        )
+    }
+
+    @Test
+    fun `legacy managed provider model IDs migrate to the neutral provider`() {
+        assertEquals(
+            "custom-api/gpt-5.6-sol",
+            normalizeOpenCodeModelId("codex-remote/gpt-5.6-sol"),
         )
     }
 
@@ -30,5 +38,15 @@ class OpenCodeAgentClientTest {
     @Test
     fun `OpenCode exposes global provider settings`() {
         assertTrue(AgentCapabilities.OpenCode.globalSettings)
+        assertTrue(AgentCapabilities.OpenCode.reasoningEffort)
+    }
+
+    @Test
+    fun `OpenCode reasoning models expose native variants`() {
+        assertEquals(
+            listOf("minimal", "low", "medium", "high", "xhigh"),
+            openCodeReasoningEfforts("custom-api/gpt-5.6-sol"),
+        )
+        assertTrue(openCodeReasoningEfforts("custom-api/gpt-4.1").isEmpty())
     }
 }
