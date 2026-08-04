@@ -242,6 +242,43 @@ class SshCodexTransport {
         }
     }
 
+    /**
+     * Opens only the pinned SSH session.  Host features such as SFTP and resource sampling must
+     * remain available when no coding agent has been selected, so they use this host-only mode
+     * instead of starting an app-server exec channel.
+     */
+    suspend fun connectSsh(profile: ServerProfile): Long = withContext(Dispatchers.IO) {
+        require(profile.host.isNotBlank()) { "服务器地址不能为空" }
+        require(profile.username.isNotBlank()) { "用户名不能为空" }
+        require(profile.hostFingerprint.isNotBlank()) { "请先核对并保存 SSH 主机指纹" }
+
+        connectionMutex.withLock {
+            val attempt = beginConnectionAttempt()
+            closeResources(attempt.previous)
+            val generation = attempt.generation
+            val attemptScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            var sshSession: Session? = null
+            try {
+                sshSession = createPinnedSshSession(profile)
+                check(registerConnectingSession(generation, sshSession)) { "SSH 连接已取消" }
+                runCancellableConnect(
+                    connect = { sshSession.connect(SSH_CONNECT_TIMEOUT_MS) },
+                    disconnect = sshSession::disconnect,
+                )
+                check(isConnectionCurrent(generation)) { "SSH 连接已取消" }
+                check(publishHostConnection(generation, attemptScope, sshSession)) {
+                    "SSH 连接已取消"
+                }
+                generation
+            } catch (error: Throwable) {
+                closeResources(invalidateConnection())
+                sshSession?.disconnect()
+                attemptScope.cancel()
+                throw error
+            }
+        }
+    }
+
     suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment {
         val result = executeScript(profile, RemoteBootstrap.probeScript, PROBE_TIMEOUT_MS)
         return RemoteBootstrap.parseProbe(result)
@@ -608,6 +645,15 @@ class SshCodexTransport {
         session?.isConnected == true && channel?.isConnected == true
     }
 
+    /** True when the pinned SSH session is alive, even if no Agent exec channel exists. */
+    fun isSshConnected(): Boolean = synchronized(connectionStateLock) {
+        session?.isConnected == true
+    }
+
+    fun currentSshGeneration(): Long? = synchronized(connectionStateLock) {
+        connectionGeneration.takeIf { session?.isConnected == true }
+    }
+
     suspend fun disconnect() = withContext(Dispatchers.IO) {
         closeResources(invalidateConnection())
         connectionMutex.withLock {
@@ -863,6 +909,21 @@ class SshCodexTransport {
         session = valueSession
         channel = valueChannel
         writer = valueWriter
+        connectingSession = null
+        connectingChannel = null
+        true
+    }
+
+    private fun publishHostConnection(
+        generation: Long,
+        valueScope: CoroutineScope,
+        valueSession: Session,
+    ): Boolean = synchronized(connectionStateLock) {
+        if (connectionGeneration != generation || connectingSession !== valueSession) {
+            return@synchronized false
+        }
+        scope = valueScope
+        session = valueSession
         connectingSession = null
         connectingChannel = null
         true

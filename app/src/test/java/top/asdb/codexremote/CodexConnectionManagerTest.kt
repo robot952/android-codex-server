@@ -3,7 +3,6 @@ package top.asdb.codexremote
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 import top.asdb.codexremote.codex.CodexConnectionManager
@@ -47,7 +46,7 @@ class CodexConnectionManagerTest {
     }
 
     @Test
-    fun `both mode owns an independent client for each agent`() = runTest {
+    fun `every profile owns an independent client for each on-demand agent`() = runTest {
         val manager = CodexConnectionManager(this)
         val profile = ServerProfile(
             id = "both",
@@ -65,7 +64,7 @@ class CodexConnectionManagerTest {
         assertEquals(AgentKind.OpenCode, manager.activeKey.value?.agent)
 
         manager.registerProfile(profile.copy(agentMode = AgentMode.Codex, activeAgent = AgentKind.Codex))
-        assertNull(manager.client(profile.id, AgentKind.OpenCode))
+        assertSame(openCode, manager.client(profile.id, AgentKind.OpenCode))
         manager.close()
     }
 

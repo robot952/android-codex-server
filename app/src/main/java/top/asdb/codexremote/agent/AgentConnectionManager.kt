@@ -111,24 +111,21 @@ class AgentConnectionManager(
     val closed: SharedFlow<ProfiledAgentConnectionEvent> = _closed.asSharedFlow()
 
     fun registerProfile(profile: ServerProfile) {
-        profile.agentMode.agents.forEach { register(profile, it) }
-        val disabled = AgentKind.entries.filterNot(profile.agentMode::contains)
-        disabled.forEach { removeEntryNow(AgentConnectionKey(profile.id, it)) }
-        val active = profile.activeAgent.takeIf(profile.agentMode::contains) ?: profile.agentMode.agents.first()
-        activeAgents[profile.id] = active
+        // Agent selection is now a page-level action after SSH login. Keep both lanes registered
+        // even for profiles written by older versions that still carry a restrictive agentMode.
+        AgentKind.entries.forEach { register(profile, it) }
+        activeAgents[profile.id] = profile.activeAgent
     }
 
     fun register(
         profile: ServerProfile,
-        agent: AgentKind = profile.activeAgent.takeIf(profile.agentMode::contains)
-            ?: profile.agentMode.agents.first(),
+        agent: AgentKind = profile.activeAgent,
     ): RemoteAgentClient = ensureEntry(profile, agent).client
 
     fun select(profile: ServerProfile, agent: AgentKind = profile.activeAgent): RemoteAgentClient {
-        val selected = agent.takeIf(profile.agentMode::contains) ?: profile.agentMode.agents.first()
-        val client = ensureEntry(profile, selected).client
-        activeAgents[profile.id] = selected
-        setActiveKey(AgentConnectionKey(profile.id, selected))
+        val client = ensureEntry(profile, agent).client
+        activeAgents[profile.id] = agent
+        setActiveKey(AgentConnectionKey(profile.id, agent))
         return client
     }
 
@@ -159,13 +156,15 @@ class AgentConnectionManager(
 
     fun capabilities(profileId: String, agent: AgentKind? = null) = client(profileId, agent)?.capabilities
 
-    fun connectedProfileIds(): List<String> = states.value
+    fun connectedProfileIds(): List<String> = agentStates.value
         .filterValues { it.phase == ConnectionPhase.Connected }
         .keys
+        .map(AgentConnectionKey::profileId)
+        .distinct()
         .toList()
 
     suspend fun probeFingerprint(profile: ServerProfile): String =
-        ensureEntry(profile, profile.agentMode.agents.first()).client.probeFingerprint(profile)
+        ensureEntry(profile, profile.activeAgent).client.probeFingerprint(profile)
 
     suspend fun inspectRuntime(profile: ServerProfile, agent: AgentKind): AgentRuntimeInspection =
         ensureEntry(profile, agent).client.inspectRuntime(profile)
@@ -195,8 +194,7 @@ class AgentConnectionManager(
 
     suspend fun connect(profile: ServerProfile, agent: AgentKind? = null): String {
         val selected = agent ?: activeAgents[profile.id]
-            ?: profile.activeAgent.takeIf(profile.agentMode::contains)
-            ?: profile.agentMode.agents.first()
+            ?: profile.activeAgent
         val entry = ensureEntry(profile, selected)
         return entry.connectMutex.withLock {
             if (entry.client.isConnected()) {
@@ -288,19 +286,11 @@ class AgentConnectionManager(
         val childScope = CoroutineScope(parentScope.coroutineContext + childJob + Dispatchers.IO)
         val entry = Entry(profile, key, childScope, registry.create(agent, childScope))
         entries[key] = entry
-        activeAgents.putIfAbsent(profile.id, profile.activeAgent.takeIf(profile.agentMode::contains) ?: agent)
+        activeAgents.putIfAbsent(profile.id, profile.activeAgent)
         _agentStates.update { current -> current + (key to ConnectionState()) }
         updateAggregateState(profile.id)
         attachEventForwarders(entry)
         entry
-    }
-
-    private fun removeEntryNow(key: AgentConnectionKey) {
-        val entry = synchronized(lock) { entries.remove(key) } ?: return
-        entry.client.close()
-        entry.scope.cancel()
-        _agentStates.update { it - key }
-        updateAggregateState(key.profileId)
     }
 
     private fun attachEventForwarders(entry: Entry) {
@@ -395,12 +385,10 @@ internal fun aggregateAgentConnectionStates(states: List<ConnectionState>): Conn
         ?: states.firstOrNull { it.phase == ConnectionPhase.Connecting }
         ?: states.firstOrNull { it.phase == ConnectionPhase.Probing }
     if (pending != null) return pending
-    if (states.all { it.phase == ConnectionPhase.Connected }) {
-        val versions = states.mapNotNull(ConnectionState::cliVersion).distinct().joinToString(" / ")
+    val connected = states.filter { it.phase == ConnectionPhase.Connected }
+    if (connected.isNotEmpty()) {
+        val versions = connected.mapNotNull(ConnectionState::cliVersion).distinct().joinToString(" / ")
         return ConnectionState(ConnectionPhase.Connected, "已连接", versions.ifBlank { null })
-    }
-    if (states.any { it.phase == ConnectionPhase.Connected }) {
-        return ConnectionState(ConnectionPhase.Failed, "部分 Agent 连接失败")
     }
     return states.firstOrNull { it.phase == ConnectionPhase.Failed } ?: ConnectionState()
 }

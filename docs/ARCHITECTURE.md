@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.82（versionCode 104）
+- Android 应用版本：1.7.84（versionCode 106）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -101,6 +101,7 @@ OpenCode Agent，并把统一的 JSON-RPC/JSONL 事件渲染成接近 VS Code Co
 │         v                                                                    │
 │ AppViewModel                                                                 │
 │   ├─ ProfileStore                    加密持久化                               │
+│   ├─ SshServerConnectionManager      每台服务器一个独立主机连接               │
 │   ├─ AgentConnectionManager          每个服务器、每种 Agent 一个独立客户端    │
 │   ├─ SshTerminalManager              每个服务器一个独立终端会话              │
 │   ├─ SessionSnapshot / caches        切换服务器和重进会话的即时恢复           │
@@ -139,13 +140,14 @@ AnimatedContent 做前进/返回的滑动淡入动画，并按页面绑定 AppVi
 - 服务器列表顶栏提供“低价中转站优选”外部链接；点击通过系统浏览器打开
   https://lowapi.asdb.top，无法处理链接时给出提示且不使应用崩溃。
 - 保存服务器名、主机、端口、用户名、认证方式、凭据、固定指纹、远程命令和代理。
-- 未连接时点击服务器先确认连接；已连接时点击直接进入会话列表。
+- 未连接时点击服务器先确认 SSH 连接；只要 SSH 登录成功就进入服务器页，不探测或启动 Agent。
 - 每台服务器行在名称与用户/连接状态之间显示速度表、内存芯片、存储图标和百分比；未连接或采样失败显示 `--`，不阻塞连接和会话。
 - 资源指标通过独立的只读 SSH exec 采样 `/proc/stat`、`/proc/cpuinfo`、`/proc/meminfo`、`df -P /` 和默认路由网卡的 `/proc/net/dev`，不安装远端 Agent；仅在服务器/会话列表前台轮询，进入后台暂停。会话列表中 CPU、内存、硬盘、网络任一指标均可点按，悬浮显示 CPU 占用/核心数、内存总量/已用量、根分区总量/已用量以及网络下载/上传速率。
 - 设置只通过齿轮按钮进入；连接中显示半透明阻塞层和进度，禁止重复操作。
 - 支持密码和私钥文件导入。私钥读取放在 Dispatchers.IO，并限制文件大小。
 - 首次遇到未知 SSH 主机时显示 SHA-256 指纹确认。
-- 缺失或版本不兼容的 Codex 由用户明确确认后安装，并显示阶段和百分比。
+- Agent 依赖不在服务器表单或 SSH 登录阶段检查；用户在服务器页点击对应 Agent 后才探测，缺失或
+  版本不兼容时由用户明确确认安装，并显示阶段和百分比。
 - 顶部 Codex 图标连续点击 10 次启用 Debug；Debug 页面可分享脱敏日志。开启后，会话右上角菜单
   可将最新日志作为受 512 KB 限制的文本附件加入输入区，超出时只附带日志末尾并标记截断。
 
@@ -161,11 +163,13 @@ ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建�
 - 正在工作的会话使用固定尺寸的转圈状态，避免列表布局跳动。
 - 从会话页返回时保留服务器级 SessionSnapshot，重复进入优先显示缓存后再远程校准。
 - 提供服务器切换弹窗；切换只改变当前展示，不主动断开其他服务器。
-- profile 可选择只连接 Codex、只连接 OpenCode 或同时连接两者；同时连接时，列表顶部的分段控件
-  切换当前 Agent lane，另一条已连接通道保持运行。
+- 列表顶部始终提供 Codex 和 OpenCode 分段控件。点击未连接的 Agent 时按需探测并启动该 lane；
+  点击已连接的 Agent 只切换展示，另一条已连接通道保持运行。Agent 启动失败不影响 SSH 主机连接。
 - 顶部齿轮显示“选择工作目录”、当前 Agent 的全局配置和“文件管理”；另保留独立 SSH 终端入口。
+- 未连接任何 Agent 时，“选择工作目录”和 Agent 模型配置灰显且不可点击；文件管理和 SSH 终端
+  仍可使用。此处工作目录指 Agent 新会话的默认 workspace，不限制文件管理浏览路径。
 
-工作目录自动弹窗只允许在某台服务器第一次成功连接时出现一次。ServerProfile 的
+工作目录自动弹窗只允许在某台服务器第一次成功连接 Agent 时出现一次。ServerProfile 的
 workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择时再打开。
 
 ### 5.3 WorkScreen
@@ -219,7 +223,7 @@ SshTerminalManager 为每个 profile 维护独立 generation、输入队列、re
 
 ### 5.5 FileManagerScreen
 
-会话列表的设置菜单提供“文件管理”入口，仅对当前已连接服务器可用。它默认打开该 profile
+会话列表的设置菜单提供“文件管理”入口，仅依赖当前 SSH 主机连接，不要求 Agent 已连接。它默认打开该 profile
 的工作目录；未配置工作目录时打开当前 Unix 用户的 home，并可逐级进入根目录。目录列举、上传、
 下载、重命名、删除、复制和移动均通过当前已验证 SSH Session 的独立 SFTP channel 完成，绝不拼接
 远程 shell 命令。
@@ -256,8 +260,9 @@ data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 
 | 数据 | 隔离维度 | 当前位置 |
 | --- | --- | --- |
-| SSH/Agent 客户端 | profileId + AgentKind | AgentConnectionManager.Entry |
-| 连接状态 | profileId + AgentKind；另聚合到 profileId | agentStates / connectionStates |
+| SSH 主机客户端 | profileId | SshServerConnectionManager.Entry |
+| Agent 客户端 | profileId + AgentKind | AgentConnectionManager.Entry |
+| 连接状态 | 主机按 profileId；Agent 按 profileId + AgentKind | connectionStates / agentConnectionStates |
 | 页面会话快照 | profileId + AgentKind | AppViewModel.sessionSnapshots |
 | 待审批队列 | profileId + AgentKind | pendingApprovalsByProfile |
 | 恢复期通知缓冲 | profileId + AgentKind + threadId + generation | ResumeNotificationBuffer |
@@ -271,9 +276,11 @@ data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 修改 profile 的 host、port、username、认证信息、指纹或 remoteCommand 时视为连接身份变化：
 必须关闭旧客户端、终端、缓存、审批和操作；只改名称、工作区等展示字段不应无故断线。
 
-AgentConnectionManager 保持每个 profile + AgentKind 一个稳定 client 和独立 CoroutineScope。
-select 只切换展示，connect/disconnect 只影响目标 lane，因此多台服务器和同一服务器的两个 Agent
-可以同时保持连接。CodexConnectionManager 只保留为兼容旧调用方的 typealias。
+SshServerConnectionManager 保持每个 profile 一个不启动远程 Agent 的固定指纹 SSH Session，供
+SFTP、资源采样和服务器页生命周期使用。AgentConnectionManager 保持每个 profile + AgentKind
+一个稳定 client 和独立 CoroutineScope。select 只切换展示，connect/disconnect 只影响目标 lane，
+因此多台服务器和同一服务器的两个 Agent 可以同时保持连接。CodexConnectionManager 只保留为
+兼容旧调用方的 typealias。
 
 ### 6.3 加密持久化
 
@@ -305,7 +312,11 @@ ProfileStore 使用 AndroidX Security：
 PinnedSshSessionFactory 统一密码/私钥认证、连接参数、15 秒 keepalive 和断线阈值。不要在不同
 功能里各自创建一套宽松的 JSch 配置。
 
-### 7.2 Agent 通道
+### 7.2 主机与 Agent 通道
+
+SSH 登录首先由 SshServerConnectionManager 建立纯主机会话，不执行远程命令。该会话成功后页面立即
+可用；SFTP 文件管理、目录浏览和资源采样均不依赖 Agent。用户点击 Codex 或 OpenCode 后，才由
+AgentConnectionManager 为对应 lane 建立独立的 exec channel。
 
 SshCodexTransport 的正式连接过程：
 
@@ -395,7 +406,8 @@ ProfileOperationTracker 把异步任务按 profile、lane、generation 标记。
 
 ## 9. 远程环境探测、安装和卸载
 
-仅当 profile 使用默认 managed command 时自动探测。RemoteBootstrap.probeScript 检查：
+仅当用户在已连接的服务器页点击 Agent，且该 Agent 使用默认 managed command 时才探测。
+SSH 登录本身不会触发安装检查。RemoteBootstrap.probeScript 检查：
 
 - Linux、glibc、x86_64/amd64 或 aarch64/arm64。
 - /bin/sh、tar、sha256sum、flock、setsid --wait。
@@ -431,9 +443,11 @@ ProfileOperationTracker 把异步任务按 profile、lane、generation 标记。
   registry.npmmirror.com 下载；用户配置的安装代理同样传给 npm。
 - 通过 ::progress::总体百分比|当前下载百分比|说明|详情 回传可见进度；旧的
   ::progress::百分比|说明 格式仍可解析。Node.js 下载显示真实字节进度，Codex CLI 下载显示
-  已处理组件数和安装目录大小；安装总超时为 30 分钟。
+  已处理组件数和安装目录大小；OpenCode 安装提示显示固定版本、
+  `opencode/releases/<version>` 目录和 `codex-remote-opencode-bridge` wrapper，不能沿用
+  Codex 的版本或路径文案；安装总超时为 30 分钟。
 
-下载代理由每台 ServerProfile.proxyUrl 单独保存，只用于这次远程 Node/Codex 下载。允许
+下载代理由每台 ServerProfile.proxyUrl 单独保存，只用于这次远程 Node/Codex/OpenCode 下载。允许
 http、https、socks5、socks5h；输入必须经过 RemoteBootstrap.validateProxyUrl，禁止直接拼接
 未经验证的 shell 文本。国内网络下载慢时允许填写服务器能访问的代理；本机构建需要下载依赖时
 优先探测 127.0.0.1:7890。
@@ -756,6 +770,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | RemoteProxyTest | 代理校验及 shell 注入防护 |
 | ResumeNotificationBufferTest | resume 期间通知缓冲和合并 |
 | SshFingerprintTest | SHA-256 指纹和严格匹配 |
+| ssh/SshServerConnectionManagerTest | SSH 主机与 Agent 解耦、身份替换和主机状态生命周期 |
 | SshTerminalHelpersTest | 终端队列、resize、输出和 shell quote |
 | ssh/SshCodexTransportTest | JSONL 边界、超大响应、取消和进度 |
 | ThreadPagingTest | cursor、分页、去重、顺序、降级重试，以及子 Agent 继承父历史的边界过滤 |
@@ -786,11 +801,12 @@ OPENCODE_BIN=/path/to/opencode node scripts/test-opencode-bridge-integration.cjs
 | 首次启动 | 冷启动，无配置 | 只显示服务器列表，无异常白框 |
 | 新服务器 | 添加，默认值不改 | 默认用户 root，私钥模式可选，表单可滚动 |
 | 指纹 | 第一次连接 | 显示 SHA-256 指纹；取消不保存，信任后固定 |
-| 自动安装 | 远端缺 Codex | 显示代理输入、阶段、百分比和阻塞遮罩 |
+| SSH-only | 远端无 Codex/OpenCode，完成 SSH 登录 | 仍进入服务器页；终端和文件管理可用，Agent 设置灰显 |
+| 自动安装 | 点击远端缺失的 Codex/OpenCode | 显示对应 Agent、代理输入、阶段和百分比；取消后 SSH 仍连接 |
 | 已有 Codex | 版本匹配 | 复用可执行文件，不覆盖 VS Code/系统安装 |
-| 工作目录 | 第一次成功连接 | 自动弹一次，确认后记住；后续连接不再自动弹 |
+| 工作目录 | 第一次成功连接任一 Agent | 自动弹一次，确认后记住；仅 SSH 登录时不弹 |
 | 多服务器 | A、B 同时连接并切换 | A 不因选择 B 断开；状态、审批、线程不串台 |
-| Agent 模式 | 分别选择 Codex、OpenCode、两者并重连 | 只启动所选 Agent；双模式可即时切换且会话、模型、运行态不串 lane |
+| 按需 Agent | 顶部依次点击 Codex、OpenCode 并切换 | 只在点击时启动；双 lane 可即时切换且会话、模型、运行态不串 |
 | OpenCode 设置 | 配置工作目录、URL、Key、代理、默认模型并重连 | 新会话使用新配置；文件管理复用当前 SSH；Key 不进入持久化或日志 |
 | OpenCode 模型 | 获取 API 列表、手输模型、填写上下文/输出长度、隐藏/恢复并发送 | 选择器状态保留，实际请求使用选中的模型 ID 和限制信息 |
 | 连接动画 | 从服务器列表连接 | 全屏半透明转圈，结束后直接进入会话列表，无空白等待 |
@@ -910,7 +926,7 @@ Serializable data class（必须给默认值）
 
 1. 首页是服务器列表，设置按需展开；默认 SSH 用户是 root。
 2. 多台服务器可保存、同时连接和快速切换，任何状态不得串台。
-3. 工作目录第一次连接自动选择一次并记住，之后不重复打扰。
+3. 工作目录第一次连接 Agent 后自动选择一次并记住；仅 SSH 登录时不弹，之后不重复打扰。
 4. 输入草稿、模型、思考强度按服务器+会话独立、持久保存。
 5. App 从后台回来不能自动弹键盘；IME 出现时输入框和消息内容同步上移。
 6. 会话重进优先用缓存，较大历史允许更长的后台恢复，不让页面长期空白。
@@ -944,6 +960,8 @@ Serializable data class（必须给默认值）
     渲染无法辨认或复制的链接标题。
 25. Agent 接入必须通过 RemoteAgentClient 和 AgentCapabilities，不得在共享 UI/状态层复制一套
     OpenCode 专用会话流程；所有缓存、草稿、审批、模型偏好和异步结果都按 profile + AgentKind 隔离。
+26. 服务器连接只以 SSH 登录为前置条件；Codex/OpenCode 必须在服务器页按需连接。无 Agent 时 SSH
+    终端和文件管理仍可用，Agent 工作目录与模型配置必须灰显且不可操作。
 
 若实现与上述约束冲突，先修实现；如确需改变产品契约，必须得到用户明确确认并同步更新本文。
 

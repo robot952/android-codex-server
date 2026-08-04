@@ -89,6 +89,9 @@ fun ThreadListScreen(
             thread.preview.contains(query, true) || thread.cwd.contains(query, true)
     }
     val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
+    val availability = serverPageAvailability(state)
+    val hostConnected = availability.hostConnected
+    val activeAgentConnected = availability.agentConnected
 
     Scaffold(
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
@@ -103,7 +106,13 @@ fun ThreadListScreen(
                         Text(state.activeAgent.label.uppercase(), fontWeight = FontWeight.SemiBold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.size(6.dp).clip(CircleShape).background(CodexGreen),
+                                Modifier.size(6.dp).clip(CircleShape).background(
+                                    if (activeAgentConnected) {
+                                        CodexGreen
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                ),
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
@@ -117,7 +126,7 @@ fun ThreadListScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onOpenTerminal, enabled = profile != null) {
+                    IconButton(onClick = onOpenTerminal, enabled = profile != null && availability.terminalEnabled) {
                         val terminalActive = terminalSession?.phase in setOf(
                             SshTerminalPhase.Connecting,
                             SshTerminalPhase.Connected,
@@ -128,20 +137,18 @@ fun ThreadListScreen(
                             tint = if (terminalActive) CodexGreen else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = onRefresh) {
+                    IconButton(onClick = onRefresh, enabled = availability.agentConnected) {
                         if (state.loading) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         } else {
                             Icon(Icons.Default.Refresh, contentDescription = "刷新")
                         }
                     }
-                    IconButton(onClick = onCreate) {
+                    IconButton(onClick = onCreate, enabled = availability.agentConnected) {
                         Icon(Icons.Default.AddComment, contentDescription = "新任务")
                     }
-                    if (state.activeAgentCapabilities.globalSettings) {
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "${state.activeAgent.label} 设置")
-                        }
+                    IconButton(onClick = onOpenSettings, enabled = hostConnected) {
+                        Icon(Icons.Default.Settings, contentDescription = "${state.activeAgent.label} 设置")
                     }
                     IconButton(onClick = onShowServers) {
                         Icon(Icons.Default.Dns, contentDescription = "切换服务器")
@@ -159,18 +166,18 @@ fun ThreadListScreen(
                 modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 1.dp),
                 showResourceDetails = true,
             )
-            if (profile != null && profile.agentMode.agents.size > 1) {
+            if (profile != null) {
                 SingleChoiceSegmentedButtonRow(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 7.dp),
                 ) {
-                    profile.agentMode.agents.forEachIndexed { index, agent ->
+                    AgentKind.entries.forEachIndexed { index, agent ->
                         val phase = state.agentConnectionStates[AgentConnectionKey(profile.id, agent)]?.phase
                             ?: ConnectionPhase.Disconnected
                         SegmentedButton(
                             selected = state.activeAgent == agent,
                             onClick = { onSelectAgent(agent) },
-                            enabled = phase == ConnectionPhase.Connected,
-                            shape = SegmentedButtonDefaults.itemShape(index, profile.agentMode.agents.size),
+                            enabled = availability.agentSelectionEnabled,
+                            shape = SegmentedButtonDefaults.itemShape(index, AgentKind.entries.size),
                             label = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(
@@ -239,7 +246,12 @@ fun ThreadListScreen(
                         )
                         Spacer(Modifier.height(9.dp))
                         Text(
-                            if (query.isBlank()) "暂无任务" else "没有匹配任务",
+                            when {
+                                !hostConnected -> "SSH 尚未连接"
+                                !activeAgentConnected -> "请选择 Codex 或 OpenCode 开始"
+                                query.isBlank() -> "暂无任务"
+                                else -> "没有匹配任务"
+                            },
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -253,6 +265,37 @@ fun ThreadListScreen(
             }
         }
     }
+}
+
+internal data class ServerPageAvailability(
+    val hostConnected: Boolean,
+    val agentConnected: Boolean,
+    val agentBusy: Boolean = false,
+) {
+    val terminalEnabled: Boolean get() = hostConnected
+    val fileManagerEnabled: Boolean get() = hostConnected
+    val workspaceEnabled: Boolean get() = agentConnected
+    val modelSettingsEnabled: Boolean get() = agentConnected
+    val agentSelectionEnabled: Boolean get() = hostConnected && !agentBusy
+}
+
+internal fun serverPageAvailability(state: AppUiState): ServerPageAvailability {
+    val profileId = state.selectedProfileId
+    val hostConnected = profileId != null &&
+        state.connectionStates[profileId]?.phase == ConnectionPhase.Connected
+    val agentConnected = profileId != null &&
+        state.agentConnectionStates[AgentConnectionKey(profileId, state.activeAgent)]?.phase ==
+        ConnectionPhase.Connected
+    val agentBusy = profileId != null && (
+        state.setupInProgress || state.agentConnectionStates.any { (key, connection) ->
+            key.profileId == profileId && connection.phase in setOf(
+                ConnectionPhase.Probing,
+                ConnectionPhase.Connecting,
+                ConnectionPhase.Installing,
+            )
+        }
+    )
+    return ServerPageAvailability(hostConnected, agentConnected, agentBusy)
 }
 
 @Composable

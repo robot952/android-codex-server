@@ -70,6 +70,8 @@ import top.asdb.codexremote.data.withModelSettings
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteCodexSettings
+import top.asdb.codexremote.ssh.RemoteServerClient
+import top.asdb.codexremote.ssh.SshServerConnectionManager
 import top.asdb.codexremote.ssh.SshTerminalManager
 import top.asdb.codexremote.ssh.SshTerminalOutputBatch
 import java.io.ByteArrayOutputStream
@@ -86,6 +88,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             application.assets.open("opencode-bridge.cjs").bufferedReader().use { it.readText() }
         },
     )
+    private val hosts = SshServerConnectionManager(viewModelScope)
     private val terminals = SshTerminalManager(viewModelScope)
     private val loaded = store.load()
     private val saved = loaded.copy(profiles = loaded.profiles.map(::normalizeProfile))
@@ -154,11 +157,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             profiles = saved.profiles,
             selectedProfileId = initialProfileId,
             activeAgent = initialProfile?.activeAgent ?: AgentKind.Codex,
-            activeAgentCapabilities = initialProfile?.activeAgent
-                ?.let { agent ->
-                    if (agent == AgentKind.Codex) AgentCapabilities.Codex else AgentCapabilities.OpenCode
-                }
-                ?: AgentCapabilities.Codex,
+            activeAgentCapabilities = AgentCapabilities.None,
             approvalMode = initialProfile?.approvalMode ?: ApprovalMode.RequestApproval,
             sandbox = (initialProfile?.approvalMode ?: ApprovalMode.RequestApproval).sandbox,
         ),
@@ -172,17 +171,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         DiagnosticLogger.info("ViewModel", "initialized profiles=${saved.profiles.size}")
         if (saved != loaded) store.save(saved)
-        saved.profiles.forEach(connections::registerProfile)
+        saved.profiles.forEach {
+            hosts.registerProfile(it)
+            connections.registerProfile(it)
+        }
         initialProfile?.let { connections.select(it, it.activeAgent) }
         viewModelScope.launch {
-            connections.states.collect { states ->
+            hosts.states.collect { states ->
                 _state.update { current ->
                     val merged = current.connectionStates.toMutableMap()
                     val metrics = current.serverMetrics.toMutableMap()
-                    states.forEach { (profileId, remoteState) ->
+                    states.forEach { (profileId, hostState) ->
                         val localState = merged[profileId]
                         val keepLocalOperation = disconnectJobs[profileId]?.isActive == true ||
-                            (remoteState.phase == ConnectionPhase.Disconnected &&
+                            (hostState.phase == ConnectionPhase.Disconnected &&
                                 localState?.phase in setOf(
                                     ConnectionPhase.Probing,
                                     ConnectionPhase.Connecting,
@@ -190,19 +192,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 )) ||
                             shouldHoldConnectedUntilSessionReady(
                                 local = localState,
-                                remote = remoteState,
+                                remote = hostState,
                                 preparingActiveConnection = connectionJobs[profileId]?.isActive == true &&
                                     current.selectedProfileId == profileId,
                             )
-                        if (!keepLocalOperation) merged[profileId] = remoteState
-                        if (remoteState.phase != ConnectionPhase.Connected) metrics.remove(profileId)
+                        if (!keepLocalOperation) merged[profileId] = hostState
+                        if (hostState.phase != ConnectionPhase.Connected) metrics.remove(profileId)
                     }
                     current.copy(
                         connectionStates = merged,
                         serverMetrics = metrics,
-                        connection = current.selectedProfileId?.let { profileId ->
-                            current.agentConnectionStates[AgentConnectionKey(profileId, current.activeAgent)]
-                        } ?: merged[current.selectedProfileId] ?: current.connection,
+                        connection = current.selectedProfileId?.let(merged::get) ?: current.connection,
                     )
                 }
             }
@@ -210,10 +210,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             connections.agentStates.collect { agentStates ->
                 _state.update { current ->
-                    val key = current.selectedProfileId?.let { AgentConnectionKey(it, current.activeAgent) }
+                    val activeKey = current.selectedProfileId?.let {
+                        AgentConnectionKey(it, current.activeAgent)
+                    }
+                    val activeAgentConnected = activeKey?.let { key ->
+                        agentStates[key]?.phase == ConnectionPhase.Connected
+                    } == true
                     current.copy(
                         agentConnectionStates = agentStates,
-                        connection = key?.let(agentStates::get) ?: current.connection,
+                        activeAgentCapabilities = if (activeAgentConnected) {
+                            connections.capabilities(activeKey!!.profileId, activeKey.agent)
+                                ?: capabilitiesFor(activeKey.agent)
+                        } else {
+                            AgentCapabilities.None
+                        },
+                        connection = current.selectedProfileId?.let(current.connectionStates::get)
+                            ?: current.connection,
                     )
                 }
             }
@@ -273,6 +285,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         threadHistoryJobs.values.forEach(Job::cancel)
         threadMutationJobs.values.forEach(Job::cancel)
         terminals.closeAll()
+        hosts.close()
         connections.close()
         super.onCleared()
     }
@@ -340,6 +353,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             normalized
         }
+        hosts.registerProfile(connectionProfile)
         connections.registerProfile(connectionProfile)
         connections.select(normalized.id, normalized.activeAgent)
         _state.update { current ->
@@ -349,16 +363,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val connection = if (identityChanged) {
                 ConnectionState()
             } else {
-                current.agentConnectionStates[AgentConnectionKey(normalized.id, normalized.activeAgent)]
-                    ?: connections.states.value[normalized.id]
+                hosts.states.value[normalized.id]
+                    ?: current.connectionStates[normalized.id]
                     ?: ConnectionState()
             }
             val base = current.copy(
                 profiles = profiles,
                 selectedProfileId = normalized.id,
                 activeAgent = normalized.activeAgent,
+                // A registered adapter is not necessarily connected.  Keep Agent-only
+                // controls disabled until the user explicitly starts this lane from the
+                // server page.
                 activeAgentCapabilities = connections.capabilities(normalized.id, normalized.activeAgent)
-                    ?: capabilitiesFor(normalized.activeAgent),
+                    ?.takeIf { isAgentConnected(normalized.id, normalized.activeAgent) }
+                    ?: AgentCapabilities.None,
                 serverMetrics = if (identityChanged) current.serverMetrics - normalized.id else current.serverMetrics,
             )
             if (switching || identityChanged || agentChanged) {
@@ -397,42 +415,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // Select the already-connected entry by id; re-registering the original managed command
         // here would replace and close that client immediately after a successful connection.
         connections.select(profile.id, profile.activeAgent)
-        val connection = connections.agentStates.value[AgentConnectionKey(id, profile.activeAgent)]
+        val agentKey = AgentConnectionKey(id, profile.activeAgent)
+        val connection = hosts.states.value[id]
             ?: _state.value.connectionStates[id]
             ?: ConnectionState()
         _state.update { current ->
+            val agentConnected = current.agentConnectionStates[agentKey]?.phase == ConnectionPhase.Connected
             restoreProfileState(
                 current.copy(
                     selectedProfileId = id,
                     activeAgent = profile.activeAgent,
                     activeAgentCapabilities = connections.capabilities(id, profile.activeAgent)
-                        ?: capabilitiesFor(profile.activeAgent),
+                        ?.takeIf { agentConnected }
+                        ?: AgentCapabilities.None,
                 ),
                 profile,
                 connection,
             )
         }
         persistProfiles()
-        if (_state.value.connection.phase == ConnectionPhase.Connected) refreshThreads(silent = true)
+        if (isAgentConnected(id, profile.activeAgent)) refreshThreads(silent = true)
     }
 
     fun selectAgent(agent: AgentKind) {
         val current = _state.value
         val profileId = current.selectedProfileId ?: return
         val profile = current.profiles.firstOrNull { it.id == profileId } ?: return
-        if (!profile.agentMode.contains(agent) || current.activeAgent == agent) return
-        sessionSnapshots[AgentConnectionKey(profileId, current.activeAgent)] = SessionSnapshot.capture(current)
-        invalidateLane(profileId, "session-navigation")
-        invalidateLane(profileId, "thread-history")
-        invalidateLane(profileId, "thread-mutation")
-        clearSubAgentNavigation(profileId)
+        if (connectionJobs[profileId]?.isActive == true || setupJobs[profileId]?.isActive == true) return
+        if (hosts.states.value[profileId]?.phase != ConnectionPhase.Connected) {
+            _state.update { it.copy(error = "SSH 服务器尚未连接") }
+            return
+        }
+        if (current.activeAgent != agent) {
+            sessionSnapshots[AgentConnectionKey(profileId, current.activeAgent)] = SessionSnapshot.capture(current)
+            invalidateLane(profileId, "session-navigation")
+            invalidateLane(profileId, "thread-history")
+            invalidateLane(profileId, "thread-mutation")
+            clearSubAgentNavigation(profileId)
+        }
         val updatedProfile = profile.copy(activeAgent = agent)
         // Agent lanes are already registered and may contain a resolved remote command after
-        // connect. Re-registering the persisted profile here can replace a live Codex client
-        // with the original managed command, tearing down both-agent sessions while switching.
+        // connect. Re-registering the persisted profile here can replace a live Codex client.
         connections.select(profileId, agent)
-        val connection = connections.agentStates.value[AgentConnectionKey(profileId, agent)]
-            ?: ConnectionState()
+        val agentConnected = isAgentConnected(profileId, agent)
+        val hostConnection = hosts.states.value[profileId] ?: ConnectionState()
         _state.update { state ->
             val profiles = state.profiles.map { if (it.id == profileId) updatedProfile else it }
             restoreProfileState(
@@ -440,21 +466,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     profiles = profiles,
                     activeAgent = agent,
                     activeAgentCapabilities = connections.capabilities(profileId, agent)
-                        ?: capabilitiesFor(agent),
+                        ?.takeIf { agentConnected }
+                        ?: AgentCapabilities.None,
                 ),
                 updatedProfile,
-                connection,
+                hostConnection,
             )
         }
         persistProfiles()
-        if (connection.phase == ConnectionPhase.Connected) refreshThreads(silent = true)
+        if (agentConnected) {
+            refreshThreads(silent = true)
+        } else {
+            connectAgent(updatedProfile, agent)
+        }
+    }
+
+    /** Starts exactly one Agent lane after the SSH host page is already available. */
+    private fun connectAgent(profile: ServerProfile, agent: AgentKind) {
+        val profileId = profile.id
+        if (connectionJobs[profileId]?.isActive == true || setupJobs[profileId]?.isActive == true) return
+        if (hosts.states.value[profileId]?.phase != ConnectionPhase.Connected) return
+        val ticket = operations.begin(profileId, "agent-connect")
+        updateAgentConnection(
+            profileId,
+            agent,
+            ConnectionState(ConnectionPhase.Connecting, "正在检测 ${agent.label}"),
+        )
+        if (isActiveProfile(profileId)) {
+            _state.update { it.copy(loading = true, error = null, remoteSetup = null) }
+        }
+        val job = viewModelScope.launch {
+            try {
+                val effectiveProfile = prepareRemote(profile, agent) ?: return@launch
+                effectiveProfiles[profileId] = effectiveProfile
+                val connected = loadConnectedSession(effectiveProfile, agent)
+                if (!isCurrent(ticket)) return@launch
+                clearConnectionJobIfCurrent(profileId)
+                showConnected(profile, agent, connected)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isCurrent(ticket)) showConnectionError(error, profileId, agent)
+            } finally {
+                operations.finish(ticket)
+                if (connectionJobs[profileId] === currentCoroutineContext()[Job]) {
+                    connectionJobs.remove(profileId)
+                }
+            }
+        }
+        connectionJobs[profileId] = job
     }
 
     fun openCompletedThread(profileId: String, agent: AgentKind, threadId: String) {
         if (profileId.isBlank() || threadId.isBlank()) return
         val before = _state.value
         val profile = before.profiles.firstOrNull { it.id == profileId } ?: return
-        if (!profile.agentMode.contains(agent)) return
         if (before.selectedProfileId == profileId && before.activeAgent == agent &&
             before.activeThread?.id == threadId &&
             (before.screen == AppScreen.Work || before.screen == AppScreen.AgentWork)
@@ -490,6 +556,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteProfile(id: String) {
         DiagnosticLogger.info("Profile", "delete profile=${profileRef(id)}")
         terminals.closeProfile(id)
+        hosts.remove(id)
         val wasSelected = _state.value.selectedProfileId == id
         invalidateProfile(id)
         sessionSnapshots.keys.removeAll { it.profileId == id }
@@ -530,7 +597,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     serverMetrics = current.serverMetrics - id,
                 ))
             } else {
-                val connection = connections.states.value[selected]
+                val connection = hosts.states.value[selected]
                     ?: current.connectionStates[selected]
                     ?: ConnectionState()
                 restoreProfileState(
@@ -578,7 +645,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         fingerprintJobs[normalized.id] = viewModelScope.launch {
             try {
-                val fingerprint = connections.probeFingerprint(normalized)
+                val fingerprint = hosts.probeFingerprint(normalized)
                 if (!operations.isCurrent(ticket)) return@launch
                 pendingFingerprints[normalized.id] = fingerprint
                 updateProfileConnection(
@@ -650,10 +717,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (makeActive) {
             saveProfile(normalized)
         } else {
-            val connectionProfile = if (normalized.remoteCommand == RemoteBootstrap.MANAGED_REMOTE_COMMAND) {
-                effectiveProfiles[normalized.id]?.let { normalized.copy(remoteCommand = it.remoteCommand) } ?: normalized
-            } else normalized
-            connections.register(connectionProfile)
+            hosts.registerProfile(normalized)
+            connections.registerProfile(normalized)
         }
         if (normalized.hostFingerprint.isBlank()) {
             if (makeActive) probeFingerprint(normalized)
@@ -662,7 +727,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (makeActive) {
             _state.update {
                 it.copy(
-                    connection = ConnectionState(ConnectionPhase.Connecting, "正在检测远程 Agent"),
+                    connection = ConnectionState(ConnectionPhase.Connecting, "正在连接 SSH"),
                     loading = true,
                     error = null,
                     remoteSetup = null,
@@ -673,67 +738,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        updateProfileConnection(normalized.id, ConnectionState(ConnectionPhase.Connecting, "正在检测远程 Agent"))
+        updateProfileConnection(normalized.id, ConnectionState(ConnectionPhase.Connecting, "正在连接 SSH"))
         val ticket = operations.begin(normalized.id, "connect")
         val job = viewModelScope.launch {
             try {
-                val effectiveProfile = prepareRemote(normalized) ?: return@launch
-                effectiveProfiles[normalized.id] = effectiveProfile
-                val connectedAgents = mutableListOf<AgentKind>()
-                val failures = linkedMapOf<AgentKind, Throwable>()
-                for (agent in normalized.agentMode.agents) {
-                    if (!isCurrent(ticket)) return@launch
-                    if (isActiveAgent(AgentConnectionKey(normalized.id, agent))) {
-                        _state.update {
-                            it.copy(
-                                connection = ConnectionState(
-                                    ConnectionPhase.Connecting,
-                                    "正在启动 ${agent.label}",
-                                ),
-                            )
-                        }
-                    }
-                    try {
-                        val connected = loadConnectedSession(effectiveProfile, agent)
-                        if (!isCurrent(ticket)) return@launch
-                        showConnected(normalized, agent, connected)
-                        connectedAgents += agent
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (error: Throwable) {
-                        failures[agent] = error
-                        val expectedClient = connections.client(normalized.id, agent)
-                        runCatching {
-                            connections.disconnect(normalized.id, agent, expectedClient)
-                        }
-                    }
-                }
+                hosts.connect(normalized)
                 if (!isCurrent(ticket)) return@launch
-                if (connectedAgents.isEmpty()) {
-                    val failedAgent = normalized.activeAgent.takeIf(failures::containsKey)
-                        ?: failures.keys.firstOrNull()
-                        ?: normalized.activeAgent
-                    showConnectionError(
-                        failures[failedAgent] ?: IllegalStateException("无法连接远程 Agent"),
-                        normalized.id,
-                        failedAgent,
-                    )
-                } else {
-                    if (makeActive && normalized.activeAgent !in connectedAgents) {
-                        selectAgent(connectedAgents.first())
-                    }
-                    if (failures.isNotEmpty() && isActiveProfile(normalized.id)) {
-                        val detail = failures.entries.joinToString("；") { (agent, error) ->
-                            "${agent.label}: ${error.message ?: "连接失败"}"
-                        }
-                        _state.update { it.copy(diagnostic = "部分 Agent 未连接：$detail", loading = false) }
-                    }
-                }
+                clearConnectionJobIfCurrent(normalized.id)
+                showHostConnected(normalized)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 if (isCurrent(ticket)) {
-                    showConnectionError(error, normalized.id, normalized.activeAgent)
+                    showHostConnectionError(error, normalized.id)
                 }
             } finally {
                 operations.finish(ticket)
@@ -762,7 +779,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val agentsToInstall = setupAgents[profileId].orEmpty()
         if (agentsToInstall.isEmpty()) return
         setupProfiles[profileId] = profile
-        connections.registerProfile(profile)
         _state.update { current ->
             current.copy(
                 profiles = current.profiles.map { stored ->
@@ -781,9 +797,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 downloadPercent = null,
             )
         }
+        agentsToInstall.forEach { agent ->
+            updateAgentConnection(
+                profileId,
+                agent,
+                ConnectionState(ConnectionPhase.Installing, "正在安装 ${agent.label}"),
+            )
+        }
         _state.update {
             it.copy(
-                connection = ConnectionState(ConnectionPhase.Installing, "正在安装远程 Agent"),
                 setupInProgress = true,
                 setupProgress = "准备安装",
                 setupProgressPercent = 0,
@@ -793,7 +815,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 error = null,
             )
         }
-        updateProfileConnection(profileId, ConnectionState(ConnectionPhase.Installing, "正在安装远程 Agent"))
         val job = viewModelScope.launch {
             try {
                 agentsToInstall.forEachIndexed { index, installAgent ->
@@ -851,7 +872,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 setupJobs.remove(profileId)
-                connectProfile(profile, makeActive = isActiveProfile(profileId))
+                val agent = agentsToInstall.last()
+                connectAgent(profile.copy(activeAgent = agent), agent)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -859,11 +881,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     updateSetupState(profileId) {
                         it.copy(inProgress = false, progress = "安装失败", percent = it.percent)
                     }
-                    updateProfileConnection(profileId, ConnectionState(ConnectionPhase.Failed, "远程 Agent 安装失败"))
+                    agentsToInstall.forEach { agent ->
+                        updateAgentConnection(
+                            profileId,
+                            agent,
+                            ConnectionState(ConnectionPhase.Failed, "${agent.label} 安装失败"),
+                        )
+                    }
                     if (isActiveProfile(profileId)) {
                         _state.update {
                             it.copy(
-                                connection = ConnectionState(ConnectionPhase.Failed, "远程 Agent 安装失败"),
                                 setupInProgress = false,
                                 loading = false,
                                 error = error.message ?: "远程 Agent 安装失败",
@@ -886,9 +913,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (setupJobs[profileId]?.isActive == true) return
         invalidateProfile(profileId)
         setupProfiles.remove(profileId)
-        setupAgents.remove(profileId)
+        val agents = setupAgents.remove(profileId).orEmpty()
         setupStates.remove(profileId)
-        updateProfileConnection(profileId, ConnectionState(ConnectionPhase.Disconnected, "未连接"))
+        agents.forEach { agent -> updateAgentConnection(profileId, agent, ConnectionState()) }
         _state.update {
             it.copy(
                 remoteSetup = null,
@@ -897,7 +924,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 setupProgressDetail = "",
                 setupDownloadPercent = null,
                 loading = false,
-                connection = ConnectionState(ConnectionPhase.Disconnected, "未连接"),
+                connection = hosts.states.value[profileId] ?: it.connection,
             )
         }
     }
@@ -953,6 +980,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     internal fun openTerminal() {
         val profileId = _state.value.selectedProfileId ?: return
         val profile = _state.value.profiles.firstOrNull { it.id == profileId } ?: return
+        if (hosts.states.value[profileId]?.phase != ConnectionPhase.Connected) {
+            _state.update { it.copy(error = "SSH 服务器尚未连接") }
+            return
+        }
         terminals.open(profile)
     }
 
@@ -986,17 +1017,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (uninstallJobs[profileId]?.isActive == true) return
         val storedProfile = _state.value.profiles.firstOrNull { it.id == profileId } ?: return
         val profile = effectiveProfiles[profileId] ?: storedProfile
-        if (_state.value.connectionStates[profileId]?.phase == ConnectionPhase.Installing) {
+        if (setupJobs[profileId]?.isActive == true) {
             showError(IllegalStateException("远程安装正在进行，请完成或取消后再卸载"), profileId)
             return
         }
         val job = viewModelScope.launch {
             try {
-                updateProfileConnection(
-                    profileId,
-                    ConnectionState(ConnectionPhase.Installing, "正在卸载远端 App Service"),
-                )
-                profile.agentMode.agents.forEach { agent ->
+                AgentKind.entries.forEach { agent ->
+                    updateAgentConnection(
+                        profileId,
+                        agent,
+                        ConnectionState(ConnectionPhase.Installing, "正在卸载 ${agent.label}"),
+                    )
+                }
+                AgentKind.entries.forEach { agent ->
                     connections.uninstallRuntime(profile, agent)
                 }
                 if (_state.value.profiles.any { it.id == profileId }) {
@@ -1030,15 +1064,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val connection = current.connectionStates[profileId]
             ?: if (current.selectedProfileId == profileId) current.connection else ConnectionState()
         if (connection.phase != ConnectionPhase.Connected) return
-        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
+        val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: return
         val job = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val effectiveProfile = connections.profile(profileId) ?: profile
+                val effectiveProfile = hosts.profile(profileId) ?: profile
                 val metrics = client.readServerMetrics(effectiveProfile)
                 _state.update { state ->
                     val stateConnection = state.connectionStates[profileId]
                         ?: if (state.selectedProfileId == profileId) state.connection else ConnectionState()
-                    if (connections.client(profileId) !== client ||
+                    if (hosts.client(profileId) !== client ||
                         stateConnection.phase != ConnectionPhase.Connected
                     ) {
                         state
@@ -1243,7 +1277,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 status = "idle",
                 createdAt = 0L,
                 updatedAt = 0L,
-                cliVersion = current.connection.cliVersion.orEmpty(),
+                cliVersion = current.agentConnectionStates[AgentConnectionKey(profileId, current.activeAgent)]
+                    ?.cliVersion.orEmpty(),
             )
         if (!openThreadInternal(child, AppScreen.AgentWork, agentName.ifBlank { null })) {
             subAgentNavigationStacks.pop(navigationScope)
@@ -2594,15 +2629,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun browseWorkspace(path: String) {
         val profileId = _state.value.selectedProfileId ?: return
-        val client = activeClient()?.takeIf { it.isConnected() } ?: return
-        val operation = beginClientOperation(profileId, "workspace", client) ?: return
+        if (!isAgentConnected(profileId, _state.value.activeAgent)) return
+        val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: return
+        val operation = beginHostOperation(profileId, "workspace", client) ?: return
         _state.update {
             it.copy(workspacePickerVisible = true, workspaceLoading = true, workspaceError = null)
         }
         viewModelScope.launch {
             try {
                 val listing = client.listDirectories(path)
-                if (isOperationVisible(operation)) {
+                if (isHostOperationVisible(operation)) {
                     _state.update {
                         it.copy(
                             workspaceLoading = false,
@@ -2613,7 +2649,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
-                if (isOperationCurrent(operation) && !isActiveProfile(profileId)) {
+                if (isHostOperationCurrent(operation) && !isActiveProfile(profileId)) {
                     val snapshotKey = sessionKey(profileId)
                     sessionSnapshots[snapshotKey] = (sessionSnapshots[snapshotKey] ?: SessionSnapshot()).copy(
                         workspaceCurrentPath = listing.currentPath,
@@ -2625,13 +2661,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (isOperationVisible(operation)) {
+                if (isHostOperationVisible(operation)) {
                     _state.update {
                         it.copy(workspaceLoading = false, workspaceError = error.message ?: "无法读取目录")
                     }
                 }
             } finally {
-                finishClientOperation(operation)
+                finishHostOperation(operation)
             }
         }
     }
@@ -2659,7 +2695,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun showFileManager() {
         val profileId = _state.value.selectedProfileId ?: return
         val profile = currentProfile() ?: return
-        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+        val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: run {
             _state.update { it.copy(error = "服务器未连接，无法打开文件管理") }
             return
         }
@@ -2710,15 +2746,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun browseFileManager(path: String) {
-        val client = activeClient()?.takeIf { it.isConnected() } ?: return
+        val profileId = _state.value.fileManagerProfileId ?: return
+        val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: return
         browseFileManager(path, client)
     }
 
-    private fun browseFileManager(path: String, client: RemoteAgentClient) {
+    private fun browseFileManager(path: String, client: RemoteServerClient) {
         val snapshot = _state.value
         val profileId = snapshot.fileManagerProfileId ?: return
         if (snapshot.selectedProfileId != profileId || snapshot.screen != AppScreen.FileManager) return
-        val operation = beginClientOperation(profileId, "file-manager-list", client) ?: run {
+        val operation = beginHostOperation(profileId, "file-manager-list", client) ?: run {
             _state.update { it.copy(fileManagerLoading = false, fileManagerError = "服务器连接已断开") }
             return
         }
@@ -2740,7 +2777,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 publishFileManagerError(operation, error, "无法读取目录")
             } finally {
-                finishClientOperation(operation)
+                finishHostOperation(operation)
             }
         }
     }
@@ -2773,8 +2810,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun downloadLinkedRemoteFile(context: Context, path: String, destination: Uri) {
         if (!path.startsWith('/')) return
         val profileId = _state.value.selectedProfileId ?: return
-        val client = connections.client(profileId) ?: return
-        val operation = beginClientOperation(profileId, "remote-link-download", client) ?: return
+        val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: return
+        val operation = beginHostOperation(profileId, "remote-link-download", client) ?: return
         val fileName = path.substringAfterLast('/').ifBlank { "文件" }
         viewModelScope.launch {
             try {
@@ -2783,15 +2820,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         ?: throw IllegalStateException("无法创建本地文件")
                     output.use { client.downloadFile(path, it) }
                 }
-                if (isOperationVisible(operation)) {
+                if (isHostOperationVisible(operation)) {
                     _state.update { it.copy(diagnostic = "已保存 $fileName") }
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (isOperationVisible(operation)) showError(error, profileId)
+                if (isHostOperationVisible(operation)) showError(error, profileId)
             } finally {
-                finishClientOperation(operation)
+                finishHostOperation(operation)
             }
         }
     }
@@ -2854,17 +2891,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         label: String,
         successMessage: String,
         onSuccess: (AppUiState) -> AppUiState = { it },
-        action: suspend (RemoteAgentClient, String) -> Unit,
+        action: suspend (RemoteServerClient, String) -> Unit,
     ) {
         val snapshot = _state.value
         val profileId = snapshot.fileManagerProfileId ?: return
         val directory = snapshot.fileManagerCurrentPath.takeIf { it.isNotBlank() } ?: return
         if (snapshot.screen != AppScreen.FileManager || snapshot.selectedProfileId != profileId) return
-        val client = activeClient()?.takeIf { it.isConnected() } ?: run {
+        val client = hosts.client(profileId)?.takeIf { it.isConnected() } ?: run {
             _state.update { it.copy(fileManagerError = "服务器连接已断开") }
             return
         }
-        val operation = beginClientOperation(profileId, "file-manager-operation", client) ?: run {
+        val operation = beginHostOperation(profileId, "file-manager-operation", client) ?: run {
             _state.update { it.copy(fileManagerError = "服务器连接已断开") }
             return
         }
@@ -2901,15 +2938,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (isFileManagerOperationVisible(operation)) {
                     _state.update { it.copy(fileManagerOperation = null) }
                 }
-                finishClientOperation(operation)
+                finishHostOperation(operation)
             }
         }
     }
 
-    private fun isFileManagerOperationVisible(operation: ClientOperation): Boolean =
-        isOperationVisible(operation) &&
+    private fun isFileManagerOperationVisible(operation: HostOperation): Boolean =
+        isHostOperationVisible(operation) &&
             _state.value.screen == AppScreen.FileManager &&
-            _state.value.fileManagerProfileId == operation.key.profileId
+            _state.value.fileManagerProfileId == operation.profileId
 
     private fun publishFileManagerListing(listing: RemoteFileListing) {
         _state.update {
@@ -2924,11 +2961,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun publishFileManagerError(
-        operation: ClientOperation,
+        operation: HostOperation,
         error: Throwable,
         fallback: String,
     ) {
-        val profileId = operation.key.profileId
+        val profileId = operation.profileId
         val message = userFacingErrorMessage(error, profileId, fallback)
         DiagnosticLogger.error("FileManager", "failed profile=${profileRef(profileId)} action=${operation.ticket.lane}", error)
         if (isFileManagerOperationVisible(operation)) {
@@ -3220,6 +3257,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun beginHostOperation(
+        profileId: String,
+        lane: String,
+        client: RemoteServerClient,
+        exclusive: Boolean = true,
+    ): HostOperation? {
+        val generation = client.currentGeneration() ?: return null
+        if (hosts.client(profileId) !== client) return null
+        return HostOperation(
+            ticket = operations.begin(profileId, lane, exclusive),
+            profileId = profileId,
+            client = client,
+            generation = generation,
+        )
+    }
+
     private fun isCurrent(ticket: ProfileOperationTracker.Ticket): Boolean = operations.isCurrent(ticket)
 
     private fun isOperationCurrent(operation: ClientOperation): Boolean =
@@ -3230,7 +3283,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun isOperationVisible(operation: ClientOperation): Boolean =
         isOperationCurrent(operation) && isActiveAgent(operation.key)
 
+    private fun isHostOperationCurrent(operation: HostOperation): Boolean =
+        operations.isCurrent(operation.ticket) &&
+            hosts.client(operation.profileId) === operation.client &&
+            operation.client.isConnected() &&
+            operation.client.currentGeneration() == operation.generation
+
+    private fun isHostOperationVisible(operation: HostOperation): Boolean =
+        isHostOperationCurrent(operation) && isActiveProfile(operation.profileId)
+
     private fun finishClientOperation(operation: ClientOperation) {
+        operations.finish(operation.ticket)
+    }
+
+    private fun finishHostOperation(operation: HostOperation) {
         operations.finish(operation.ticket)
     }
 
@@ -3319,11 +3385,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     ): AppUiState {
         val setup = setupState(profile.id)
         val pendingFingerprint = pendingFingerprints[profile.id]
+        val agentConnected = isAgentConnected(profile.id, profile.activeAgent)
         fingerprintDialogProfileId = profile.id.takeIf { pendingFingerprint != null }
         val cleanBase = base.copy(
             activeAgent = profile.activeAgent,
-            activeAgentCapabilities = connections.capabilities(profile.id, profile.activeAgent)
-                ?: capabilitiesFor(profile.activeAgent),
+            activeAgentCapabilities = if (agentConnected) {
+                connections.capabilities(profile.id, profile.activeAgent) ?: capabilitiesFor(profile.activeAgent)
+            } else {
+                AgentCapabilities.None
+            },
             approvalMode = profile.approvalMode,
             sandbox = profile.approvalMode.sandbox,
             connection = connection,
@@ -3337,8 +3407,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             fileManagerOperation = null,
             fileManagerError = null,
         )
-        val restored = sessionSnapshots[AgentConnectionKey(profile.id, profile.activeAgent)]
-            ?.restore(cleanBase) ?: clearSessionFields(cleanBase)
+        val restored = if (agentConnected) {
+            sessionSnapshots[AgentConnectionKey(profile.id, profile.activeAgent)]
+                ?.restore(cleanBase) ?: clearSessionFields(cleanBase)
+        } else {
+            clearSessionFields(cleanBase)
+        }
         val approvals = pendingApprovalsByAgent[AgentConnectionKey(profile.id, profile.activeAgent)].orEmpty()
         return restored.copy(
             selectedProfileId = profile.id,
@@ -3489,6 +3563,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val job = viewModelScope.launch {
             try {
+                hosts.disconnect(profileId)
                 connections.disconnectProfile(profileId)
                 if (_state.value.profiles.any { it.id == profileId }) {
                     updateProfileConnection(profileId, ConnectionState())
@@ -3498,7 +3573,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 throw error
             } catch (error: Throwable) {
                 if (_state.value.profiles.any { it.id == profileId }) {
-                    showConnectionError(error, profileId)
+                    showHostConnectionError(error, profileId)
                 }
             } finally {
                 if (disconnectJobs[profileId] === currentCoroutineContext()[Job]) {
@@ -3533,6 +3608,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun activeClient(): RemoteAgentClient? =
         _state.value.selectedProfileId?.let(connections::client)
+
+    private fun isAgentConnected(profileId: String, agent: AgentKind): Boolean =
+        _state.value.agentConnectionStates[AgentConnectionKey(profileId, agent)]?.phase ==
+            ConnectionPhase.Connected
+
+    private suspend fun clearConnectionJobIfCurrent(profileId: String) {
+        if (connectionJobs[profileId] === currentCoroutineContext()[Job]) {
+            connectionJobs.remove(profileId)
+        }
+    }
+
+    private fun updateAgentConnection(
+        profileId: String,
+        agent: AgentKind,
+        connection: ConnectionState,
+    ) {
+        val key = AgentConnectionKey(profileId, agent)
+        _state.update { current ->
+            current.copy(
+                agentConnectionStates = current.agentConnectionStates + (key to connection),
+                connection = current.connectionStates[profileId] ?: current.connection,
+            )
+        }
+    }
 
     private fun activeAgentFor(profileId: String): AgentKind {
         val state = _state.value
@@ -3786,7 +3885,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!isActiveAgent(key)) return
         _state.update {
             it.copy(
-                connection = ConnectionState(ConnectionPhase.Failed, failureMessage),
+                agentConnectionStates = it.agentConnectionStates + (
+                    key to ConnectionState(ConnectionPhase.Failed, failureMessage)
+                ),
+                activeAgentCapabilities = AgentCapabilities.None,
+                connection = it.connectionStates[key.profileId] ?: it.connection,
                 running = false,
                 loading = false,
                 submitting = false,
@@ -3802,57 +3905,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 setupProgressPercent = 0,
                 setupProgressDetail = "",
                 setupDownloadPercent = null,
+                diagnostic = failureMessage,
             )
         }
     }
 
-    private suspend fun prepareRemote(profile: ServerProfile): ServerProfile? {
-        var effectiveProfile = profile
-        val missing = mutableListOf<Pair<AgentKind, top.asdb.codexremote.agent.AgentRuntimeInspection>>()
-        for (agent in profile.agentMode.agents) {
-            if (agent == AgentKind.Codex && profile.remoteCommand != RemoteBootstrap.MANAGED_REMOTE_COMMAND) {
-                continue
-            }
-            val environment = connections.inspectRuntime(profile, agent)
-            environment.installationProblem?.let { problem ->
-                throw IllegalStateException("${agent.label}: $problem")
-            }
-            val command = environment.compatibleCommand
-            if (command == null) {
-                missing += agent to environment
-            } else if (agent == AgentKind.Codex) {
-                effectiveProfile = effectiveProfile.copy(remoteCommand = command)
-            }
+    private suspend fun prepareRemote(profile: ServerProfile, agent: AgentKind): ServerProfile? {
+        if (agent == AgentKind.Codex && profile.remoteCommand != RemoteBootstrap.MANAGED_REMOTE_COMMAND) {
+            return profile
         }
-        if (missing.isEmpty()) return effectiveProfile
+        val environment = connections.inspectRuntime(profile, agent)
+        environment.installationProblem?.let { problem ->
+            throw IllegalStateException("${agent.label}: $problem")
+        }
+        environment.compatibleCommand?.let { command ->
+            return if (agent == AgentKind.Codex) profile.copy(remoteCommand = command) else profile
+        }
 
         setupProfiles[profile.id] = profile
-        setupAgents[profile.id] = missing.map { it.first }
-        val firstEnvironment = missing.first().second
-        val detail = missing.joinToString("\n") { (agent, environment) ->
-            environment.detectedVersion?.let { version ->
-                "${agent.label}: 检测到 $version，需要安装兼容版本。"
-            } ?: "${agent.label}: 尚未安装，将在当前 SSH 用户目录安装。"
-        }
+        setupAgents[profile.id] = listOf(agent)
+        val detail = environment.detectedVersion?.let { version ->
+            "${agent.label}: 检测到 $version，需要安装兼容版本。"
+        } ?: "${agent.label}: 尚未安装，将在当前 SSH 用户目录安装。"
         val prompt = RemoteSetupPrompt(
-            title = if (missing.size == 1) {
-                "安装远程 ${missing.first().first.label}"
-            } else {
-                "安装远程 Agent"
-            },
+            title = "安装远程 ${agent.label}",
             detail = detail,
-            os = firstEnvironment.os,
-            architecture = firstEnvironment.architecture,
-            home = firstEnvironment.home,
-            detectedVersion = missing.singleOrNull()?.second?.detectedVersion,
+            os = environment.os,
+            architecture = environment.architecture,
+            home = environment.home,
+            detectedVersion = environment.detectedVersion,
+            agent = agent,
         )
-        val missingLabel = missing.joinToString(" / ") { it.first.label }
-        updateProfileConnection(profile.id, ConnectionState(ConnectionPhase.Disconnected, "需要安装 $missingLabel"))
+        updateAgentConnection(
+            profile.id,
+            agent,
+            ConnectionState(ConnectionPhase.Disconnected, "需要安装 ${agent.label}"),
+        )
         setupStates[profile.id] = SetupUiState(prompt = prompt)
         if (isActiveProfile(profile.id)) {
             _state.update {
                 it.copy(
-                    connection = ConnectionState(ConnectionPhase.Disconnected, "需要安装 $missingLabel"),
+                    connection = hosts.states.value[profile.id] ?: it.connection,
                     remoteSetup = prompt,
                     setupInProgress = false,
                     setupProgress = "",
@@ -3874,11 +3967,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val version = connections.connect(profile, agent)
         val models = client.listModels()
         val threads = client.listThreads()
+        val host = hosts.client(profile.id)?.takeIf { it.isConnected() }
+            ?: throw IllegalStateException("SSH 主机连接已断开")
         val preferredListing = runCatching {
-            client.listDirectories(profile.workspace.takeIf { it.isNotBlank() })
+            host.listDirectories(profile.workspace.takeIf { it.isNotBlank() })
         }
         val fallbackListing = if (preferredListing.isFailure && profile.workspace.isNotBlank()) {
-            runCatching { client.listDirectories(null) }
+            runCatching { host.listDirectories(null) }
         } else {
             preferredListing
         }
@@ -3889,6 +3984,44 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             workspace = fallbackListing.getOrNull(),
             workspaceError = preferredListing.exceptionOrNull()?.message,
         )
+    }
+
+    /** Completes SSH login without probing, installing, or starting an Agent. */
+    private fun showHostConnected(profile: ServerProfile) {
+        val profileId = profile.id
+        val hostState = hosts.states.value[profileId]
+            ?: ConnectionState(ConnectionPhase.Connected, "SSH 已连接")
+        DiagnosticLogger.info("Connection", "ssh_connect_success profile=${profileRef(profileId)}")
+        val activeAgent = _state.value.activeAgent.takeIf { it in AgentKind.entries }
+            ?: profile.activeAgent
+        _state.update { current ->
+            val base = clearSessionFields(current)
+            base.copy(
+                screen = AppScreen.Threads,
+                selectedProfileId = profileId,
+                activeAgent = activeAgent,
+                activeAgentCapabilities = if (isAgentConnected(profileId, activeAgent)) {
+                    capabilitiesFor(activeAgent)
+                } else {
+                    AgentCapabilities.None
+                },
+                connection = hostState,
+                connectionStates = current.connectionStates + (profileId to hostState),
+                agentConnectionStates = current.agentConnectionStates,
+                loading = false,
+                workspacePickerVisible = false,
+                remoteSetup = null,
+                setupInProgress = false,
+                setupProgress = "",
+                setupProgressPercent = 0,
+                setupProgressDetail = "",
+                setupDownloadPercent = null,
+                error = null,
+                diagnostic = null,
+            )
+        }
+        sessionSnapshots.remove(AgentConnectionKey(profileId, activeAgent))
+        persistProfiles()
     }
 
     private fun showConnected(
@@ -3927,6 +4060,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "已连接 · ${agent.label} ${connected.version}"
         }
         val connectedState = ConnectionState(ConnectionPhase.Connected, versionMessage, connected.version)
+        val hostState = hosts.states.value[profile.id]
+            ?: ConnectionState(ConnectionPhase.Connected, "SSH 已连接")
         setupStates.remove(profile.id)
         setupProfiles.remove(profile.id)
         setupAgents.remove(profile.id)
@@ -3962,10 +4097,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 activeAgent = agent,
                 activeAgentCapabilities = connections.capabilities(profile.id, agent)
                     ?: capabilitiesFor(agent),
-                connection = connectedState,
-                connectionStates = it.connectionStates + (
-                    profile.id to (connections.states.value[profile.id] ?: connectedState)
-                ),
+                connection = hostState,
+                connectionStates = it.connectionStates + (profile.id to hostState),
                 agentConnectionStates = it.agentConnectionStates + (key to connectedState),
                 threads = connected.threads,
                 models = models,
@@ -4033,8 +4166,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
         val normalizedSettings = settings.mapValues { (agent, value) -> normalizeAgentModelSettings(agent, value) }
         val legacyCodex = normalizedSettings.getValue(AgentKind.Codex)
-        val activeAgent = profile.activeAgent.takeIf(profile.agentMode::contains)
-            ?: profile.agentMode.agents.first()
         return profile.copy(
             name = profile.name.trim().ifBlank { profile.host.trim().ifBlank { "服务器" } },
             host = profile.host.trim(),
@@ -4048,7 +4179,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             testModel = legacyCodex.testModel,
             customModels = legacyCodex.customModels,
             hiddenModelIds = legacyCodex.hiddenModelIds,
-            activeAgent = activeAgent,
+            // The old selector is retained only for JSON compatibility; Agent lanes are chosen
+            // on the connected server page now.
+            agentMode = top.asdb.codexremote.data.AgentMode.Both,
+            activeAgent = profile.activeAgent,
             agentModelSettings = normalizedSettings,
         )
     }
@@ -4334,18 +4468,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { current ->
             current.copy(
                 agentConnectionStates = current.agentConnectionStates + (key to failed),
-                connectionStates = current.connectionStates + (
-                    profileId to (connections.states.value[profileId] ?: failed)
-                ),
-                connection = if (isActiveAgent(key)) failed else current.connection,
+                connection = current.connectionStates[profileId] ?: current.connection,
             )
         }
         applySessionState(profileId, selectedAgent) {
             it.copy(
-                connection = failed,
+                connection = it.connectionStates[profileId] ?: it.connection,
                 loading = false,
                 error = message,
             )
+        }
+    }
+
+    private fun showHostConnectionError(error: Throwable, profileId: String) {
+        val message = presentCodexDiagnostic(error.message.orEmpty(), ConnectionPhase.Failed)
+            .ifBlank { "SSH 连接失败" }
+        DiagnosticLogger.error("Connection", "ssh_connect_failed profile=${profileRef(profileId)}", error)
+        val failed = ConnectionState(ConnectionPhase.Failed, message)
+        updateProfileConnection(profileId, failed)
+        if (isActiveProfile(profileId)) {
+            _state.update { it.copy(connection = failed, loading = false, error = message) }
         }
     }
 
@@ -4450,6 +4592,13 @@ private data class ClientOperation(
     val ticket: ProfileOperationTracker.Ticket,
     val key: AgentConnectionKey,
     val client: RemoteAgentClient,
+    val generation: Long,
+)
+
+private data class HostOperation(
+    val ticket: ProfileOperationTracker.Ticket,
+    val profileId: String,
+    val client: RemoteServerClient,
     val generation: Long,
 )
 

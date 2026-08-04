@@ -78,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
@@ -96,12 +97,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import top.asdb.codexremote.AppViewModel
+import top.asdb.codexremote.BuildConfig
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalPrompt
 import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.data.ConnectionPhase
+import top.asdb.codexremote.data.RemoteSetupPrompt
 import top.asdb.codexremote.data.modelSettings
 import top.asdb.codexremote.update.AppUpdateManager
 import top.asdb.codexremote.ui.theme.CodexBorder
@@ -125,6 +128,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         .filterValues { it.phase == ConnectionPhase.Connected }
         .keys
         .sorted()
+    val connectedPageAvailability = serverPageAvailability(state)
     val lifecycleOwner = LocalLifecycleOwner.current
     val navigationTarget = ScreenAnimationTarget(
         screen = state.screen,
@@ -366,6 +370,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     if (threadSettingsActionsVisible) {
         ThreadSettingsActionsDialog(
             agent = state.activeAgent,
+            agentConnected = connectedPageAvailability.agentConnected,
             canConfigureAgent = state.activeAgentCapabilities.globalSettings,
             onSelectWorkspace = {
                 threadSettingsActionsVisible = false
@@ -431,6 +436,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     }
 
     state.remoteSetup?.let { setup ->
+        val setupDisplay = remoteSetupDisplay(setup)
         val profileId = state.selectedProfileId
         val savedProxy = state.profiles.firstOrNull { it.id == profileId }?.proxyUrl.orEmpty()
         var setupProxy by remember(profileId, setup) { mutableStateOf(savedProxy) }
@@ -464,15 +470,21 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                                         style = MaterialTheme.typography.labelLarge,
                                     )
                                     Text(
-                                        "Codex ${top.asdb.codexremote.BuildConfig.PINNED_CODEX_VERSION} · " +
-                                            "Node ${top.asdb.codexremote.BuildConfig.PINNED_NODE_VERSION}",
+                                        setupDisplay.versionLine,
                                         style = MaterialTheme.typography.bodySmall,
                                     )
                                     Text(
-                                        "${setup.home}/.local/share/codex-remote",
+                                        setupDisplay.installPath,
                                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
+                                    setupDisplay.bridgePath?.let { bridgePath ->
+                                        Text(
+                                            "桥接程序：$bridgePath",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -485,7 +497,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
                         singleLine = true,
                         label = { Text("下载代理（可选）") },
                         placeholder = { Text("http://127.0.0.1:7890") },
-                        supportingText = { Text("仅用于本次远程 Node.js 和 Codex 下载，并保存到此服务器") },
+                        supportingText = { Text(setupDisplay.proxyDescription) },
                     )
                     if (state.setupInProgress) {
                         val progress = if (state.setupProgressPercent > 0) {
@@ -602,6 +614,7 @@ private data class ScreenAnimationTarget(
 @Composable
 private fun ThreadSettingsActionsDialog(
     agent: AgentKind,
+    agentConnected: Boolean,
     canConfigureAgent: Boolean,
     onSelectWorkspace: () -> Unit,
     onConfigureAgent: () -> Unit,
@@ -624,16 +637,16 @@ private fun ThreadSettingsActionsDialog(
                     icon = { Icon(Icons.Default.Folder, contentDescription = null) },
                     title = "选择工作目录",
                     detail = "切换新会话默认使用的目录",
+                    enabled = agentConnected,
                     onClick = onSelectWorkspace,
                 )
-                if (canConfigureAgent) {
-                    SettingsActionRow(
-                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                        title = "配置 ${agent.label}",
-                        detail = "模型地址、API 密钥和代理",
-                        onClick = onConfigureAgent,
-                    )
-                }
+                SettingsActionRow(
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    title = "配置 ${agent.label}",
+                    detail = "模型地址、API 密钥和代理",
+                    enabled = agentConnected && canConfigureAgent,
+                    onClick = onConfigureAgent,
+                )
                 SettingsActionRow(
                     icon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
                     title = "文件管理",
@@ -650,10 +663,12 @@ private fun SettingsActionRow(
     icon: @Composable () -> Unit,
     title: String,
     detail: String,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+        modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.38f)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -757,6 +772,33 @@ private fun ServerSwitcherDialog(
                     TextButton(onClick = onManage) { Text("管理服务器") }
                 }
             }
+        }
+    }
+}
+
+internal data class RemoteSetupDisplay(
+    val versionLine: String,
+    val installPath: String,
+    val bridgePath: String? = null,
+    val proxyDescription: String,
+)
+
+internal fun remoteSetupDisplay(setup: RemoteSetupPrompt): RemoteSetupDisplay {
+    val sharedRoot = "${setup.home}/.local/share/codex-remote"
+    return when (setup.agent) {
+        AgentKind.Codex -> RemoteSetupDisplay(
+            versionLine = "Codex ${BuildConfig.PINNED_CODEX_VERSION} · Node ${BuildConfig.PINNED_NODE_VERSION}",
+            installPath = sharedRoot,
+            proxyDescription = "仅用于本次远程 Node.js 和 Codex 下载，并保存到此服务器",
+        )
+        AgentKind.OpenCode -> {
+            val version = BuildConfig.PINNED_OPENCODE_VERSION
+            RemoteSetupDisplay(
+                versionLine = "OpenCode $version · 共享 Node ${BuildConfig.PINNED_NODE_VERSION}",
+                installPath = "$sharedRoot/opencode/releases/$version",
+                bridgePath = "${setup.home}/.local/bin/codex-remote-opencode-bridge",
+                proxyDescription = "仅用于本次远程 Node.js、共享运行时和 OpenCode 下载，并保存到此服务器",
+            )
         }
     }
 }

@@ -21,7 +21,7 @@ class AgentConnectionStateTest {
     }
 
     @Test
-    fun `one connected and one failed agent reports partial failure`() {
+    fun `one connected agent keeps the optional server lane connected`() {
         val state = aggregateAgentConnectionStates(
             listOf(
                 ConnectionState(ConnectionPhase.Connected),
@@ -29,8 +29,8 @@ class AgentConnectionStateTest {
             ),
         )
 
-        assertEquals(ConnectionPhase.Failed, state.phase)
-        assertEquals("部分 Agent 连接失败", state.message)
+        assertEquals(ConnectionPhase.Connected, state.phase)
+        assertEquals("已连接", state.message)
     }
 
     @Test

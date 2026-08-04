@@ -13,7 +13,7 @@ enum class AgentKind(val label: String) {
     OpenCode("OpenCode"),
 }
 
-/** Agents that should be started for one SSH server profile. */
+/** Legacy persisted selector retained so profiles written by older app versions still decode. */
 @Serializable
 enum class AgentMode(val label: String) {
     Codex("Codex"),
@@ -59,9 +59,9 @@ data class ServerProfile(
     val customModels: List<CustomModelDefinition> = emptyList(),
     /** Remote model IDs hidden only from this server profile's picker. */
     val hiddenModelIds: List<String> = emptyList(),
-    /** Which remote agent runtimes are connected for this SSH profile. */
+    /** Legacy field; current versions expose every registered Agent after SSH login. */
     val agentMode: AgentMode = AgentMode.Codex,
-    /** Last agent shown when [agentMode] is [AgentMode.Both]. */
+    /** Last Agent lane selected on the connected server page. */
     val activeAgent: AgentKind = AgentKind.Codex,
     /** Model picker and provider defaults isolated per Agent adapter. */
     val agentModelSettings: Map<AgentKind, AgentModelSettings> = emptyMap(),
@@ -172,6 +172,13 @@ data class AgentCapabilities(
     val globalSettings: Boolean = false,
 ) {
     companion object {
+        val None = AgentCapabilities(
+            models = false,
+            archiveThread = false,
+            renameThread = false,
+            interruptTurn = false,
+        )
+
         val Codex = AgentCapabilities(
             reasoningEffort = true,
             approvals = true,
@@ -476,6 +483,8 @@ data class RemoteSetupPrompt(
     val architecture: String,
     val home: String,
     val detectedVersion: String? = null,
+    /** Agent whose managed runtime is being installed; defaults preserve older in-memory callers. */
+    val agent: AgentKind = AgentKind.Codex,
 )
 
 /** User-level provider configuration exposed by an Agent settings adapter. */
@@ -514,12 +523,14 @@ data class AppUiState(
     val debugModeEnabled: Boolean = false,
     val profiles: List<ServerProfile> = emptyList(),
     val selectedProfileId: String? = null,
+    /** Host-level SSH state for [selectedProfileId]. */
     val connection: ConnectionState = ConnectionState(),
+    /** Host-level SSH states used by server cards, terminal, metrics, and file management. */
     val connectionStates: Map<String, ConnectionState> = emptyMap(),
-    /** Per-agent states; [connectionStates] remains the aggregate server-card state. */
+    /** Optional Agent-lane states, independent from [connectionStates]. */
     val agentConnectionStates: Map<AgentConnectionKey, ConnectionState> = emptyMap(),
     val activeAgent: AgentKind = AgentKind.Codex,
-    val activeAgentCapabilities: AgentCapabilities = AgentCapabilities.Codex,
+    val activeAgentCapabilities: AgentCapabilities = AgentCapabilities.None,
     val serverMetrics: Map<String, ServerMetrics> = emptyMap(),
     val pendingFingerprint: String? = null,
     val remoteSetup: RemoteSetupPrompt? = null,

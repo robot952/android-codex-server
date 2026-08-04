@@ -44,8 +44,8 @@ android {
         applicationId = "top.asdb.codexremote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 104
-        versionName = "1.7.82"
+        versionCode = 106
+        versionName = "1.7.84"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

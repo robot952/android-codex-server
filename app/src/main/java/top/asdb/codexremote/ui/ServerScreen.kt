@@ -523,24 +523,6 @@ fun ServerScreen(
                         modifier = Modifier.fillMaxWidth().bringAboveKeyboard(),
                     )
 
-                    SectionLabel("远程 Agent")
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        AgentMode.entries.forEachIndexed { index, mode ->
-                            SegmentedButton(
-                                selected = draft.agentMode == mode,
-                                onClick = {
-                                    draft = draft.copy(
-                                        agentMode = mode,
-                                        activeAgent = draft.activeAgent.takeIf(mode::contains)
-                                            ?: mode.agents.first(),
-                                    )
-                                },
-                                shape = SegmentedButtonDefaults.itemShape(index, AgentMode.entries.size),
-                                label = { Text(mode.label) },
-                            )
-                        }
-                    }
-
                     SectionLabel("身份验证")
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         AuthMode.entries.forEachIndexed { index, mode ->
