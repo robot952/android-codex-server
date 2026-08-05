@@ -7,6 +7,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import top.asdb.codexremote.data.MessageAttachment
 import top.asdb.codexremote.data.PendingAttachment
+import top.asdb.codexremote.data.TimelineEntry
+import top.asdb.codexremote.data.TimelineKind
+import top.asdb.codexremote.data.withCompactAttachmentDisplay
 
 class CodexAttachmentInputTest {
     @Test
@@ -73,6 +76,46 @@ class CodexAttachmentInputTest {
                 MessageAttachment("notes.md", mimeType = "text/plain"),
             ),
             entry.attachments,
+        )
+    }
+
+    @Test
+    fun `merged user text and inline attachment are displayed compactly`() {
+        val item = Json.parseToJsonElement(
+            """
+            {
+              "id": "message-merged",
+              "type": "userMessage",
+              "content": [
+                {"type": "text", "text": "请分析日志\n文本附件 debug.txt:\nline one\nline two"}
+              ]
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val entry = requireNotNull(CodexPayloadParser.parseItem(item, "turn-merged"))
+
+        assertEquals("请分析日志", entry.text)
+        assertEquals(
+            listOf(MessageAttachment("debug.txt", mimeType = "text/plain")),
+            entry.attachments,
+        )
+    }
+
+    @Test
+    fun `legacy cached user message is compacted before rendering`() {
+        val entry = TimelineEntry(
+            id = "cached-message",
+            kind = TimelineKind.UserMessage,
+            text = "请分析日志\n  文本附件 debug.txt:\nline one\nline two",
+        )
+
+        val compact = entry.withCompactAttachmentDisplay()
+
+        assertEquals("请分析日志", compact.text)
+        assertEquals(
+            listOf(MessageAttachment("debug.txt", mimeType = "text/plain")),
+            compact.attachments,
         )
     }
 }

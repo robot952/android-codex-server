@@ -41,7 +41,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - File changes show aggregate additions/deletions and a row per changed file
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
-- Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions
+- Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions.
+  The permission action always uses the short visible label `权限`; its icon identifies the selected
+  mode, while the model action consumes the remaining flexible width before the send/stop button.
 - Adjacent collaborator events from one turn retain the compact, horizontally wrapping Agent chip
   layout instead of repeating bulky transcript cards. Each chip grows only enough to place its own
   status after the name: active states use a fixed-size rotating indicator, while terminal states
@@ -67,6 +69,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Approvals are blocking dialogs tied to the exact JSON-RPC request id
 - Stopping a running response and pausing an active goal both require an explicit confirmation dialog;
   cancelling leaves the response or goal running. Resuming an already paused goal remains a direct action.
+- Text attachments remain full inputs to the Agent, but transcript bubbles show them as compact filename
+  chips. This also applies when a backend merges the typed prompt and attachment payload into one text part,
+  and when an older in-memory timeline cache still contains that merged representation.
 - Transient remote diagnostics use a compact, dark, width-bounded Snackbar. Raw stderr, nested JSON,
   request ids, and stack-like text never occupy the work surface; a nonfatal MCP/rmcp 403 explains
   that the main session remains usable while the related tool may be unavailable.

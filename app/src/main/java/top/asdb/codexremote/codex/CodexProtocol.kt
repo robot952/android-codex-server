@@ -29,6 +29,7 @@ import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.TokenUsageBreakdown
 import top.asdb.codexremote.data.TurnTiming
 import top.asdb.codexremote.data.hasKnownContextWindow
+import top.asdb.codexremote.data.parseUserMessageText
 
 internal const val MAX_TIMELINE_TEXT_CHARS = 256 * 1024
 internal const val MAX_COMMAND_OUTPUT_CHARS = 512 * 1024
@@ -301,13 +302,9 @@ object CodexPayloadParser {
             val value = content as? JsonObject ?: return@forEach
             when (value.string("type")) {
                 "text" -> {
-                    val text = value.string("text")
-                    val attachment = parseTransportAttachment(text)
-                    if (attachment != null) {
-                        attachments += attachment
-                    } else if (text.isNotBlank()) {
-                        textParts += text
-                    }
+                    val parsed = parseUserMessageText(value.string("text"))
+                    if (parsed.visibleText.isNotBlank()) textParts += parsed.visibleText
+                    attachments += parsed.attachments
                 }
 
                 "localImage" -> {
@@ -329,32 +326,6 @@ object CodexPayloadParser {
             attachments = attachments,
             turnId = turnId,
         )
-    }
-
-    private fun parseTransportAttachment(text: String): MessageAttachment? {
-        val inlinePrefix = "文本附件 "
-        if (text.startsWith(inlinePrefix)) {
-            val separator = text.indexOf(":\n", startIndex = inlinePrefix.length)
-            if (separator >= 0) {
-                val name = text.substring(inlinePrefix.length, separator).trim()
-                if (name.isNotBlank()) {
-                    return MessageAttachment(name = name, mimeType = "text/plain")
-                }
-            }
-        }
-
-        val filePrefix = "附件 "
-        if (text.startsWith(filePrefix)) {
-            val separator = text.indexOf(": ", startIndex = filePrefix.length)
-            if (separator >= 0) {
-                val name = text.substring(filePrefix.length, separator).trim()
-                val remotePath = text.substring(separator + 2).trim()
-                if (name.isNotBlank() && remotePath.isNotBlank()) {
-                    return MessageAttachment(name = name, remotePath = remotePath)
-                }
-            }
-        }
-        return null
     }
 
     private fun parseSubAgentActivity(item: JsonObject, id: String, turnId: String): TimelineEntry {

@@ -182,6 +182,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.data.modelSettings
+import top.asdb.codexremote.data.withCompactAttachmentDisplay
 import top.asdb.codexremote.ui.components.MarkdownText
 import top.asdb.codexremote.ui.components.remoteFilePathFromLink
 import top.asdb.codexremote.ui.theme.CodexAmber
@@ -1213,6 +1214,7 @@ private fun UserMessageBlock(
     onOpenImage: (String) -> Unit,
     imageLoadingPath: String?,
 ) {
+    val displayEntry = remember(entry) { entry.withCompactAttachmentDisplay() }
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(6.dp),
@@ -1222,15 +1224,15 @@ private fun UserMessageBlock(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (entry.text.isNotBlank()) {
-                SelectionContainer { Text(entry.text) }
+            if (displayEntry.text.isNotBlank()) {
+                SelectionContainer { Text(displayEntry.text) }
             }
-            if (entry.attachments.isNotEmpty()) {
+            if (displayEntry.attachments.isNotEmpty()) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    entry.attachments.forEach { attachment ->
+                    displayEntry.attachments.forEach { attachment ->
                         UserMessageAttachment(attachment, onOpenImage, imageLoadingPath)
                     }
                 }
@@ -2328,7 +2330,9 @@ private fun WorkComposer(
                                 if (state.activeAgentCapabilities.approvals) {
                                     DropdownMenuItem(
                                         text = { Text("权限") },
-                                        leadingIcon = { Icon(Icons.Default.Shield, contentDescription = null) },
+                                        leadingIcon = {
+                                            Icon(approvalModeIcon(state.approvalMode), contentDescription = null)
+                                        },
                                         enabled = !state.loading,
                                         onClick = {
                                             actionMenuVisible = false
@@ -2341,29 +2345,28 @@ private fun WorkComposer(
                         if (state.activeAgentCapabilities.approvals) {
                             TextButton(
                                 onClick = onShowPermissions,
-                                modifier = Modifier.widthIn(max = 82.dp),
-                                contentPadding = PaddingValues(horizontal = 5.dp),
+                                modifier = Modifier.widthIn(max = 64.dp),
+                                contentPadding = PaddingValues(horizontal = 2.dp),
                             ) {
-                            val permissionColor = if (state.approvalMode == ApprovalMode.FullAccess) {
-                                CodexAmber
-                            } else MaterialTheme.colorScheme.onSurfaceVariant
-                            Icon(
-                                Icons.Default.Shield,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = permissionColor,
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                state.approvalMode.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = permissionColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                                val permissionColor = if (state.approvalMode == ApprovalMode.FullAccess) {
+                                    CodexAmber
+                                } else MaterialTheme.colorScheme.onSurfaceVariant
+                                Icon(
+                                    approvalModeIcon(state.approvalMode),
+                                    contentDescription = "权限：${state.approvalMode.label}",
+                                    modifier = Modifier.size(16.dp),
+                                    tint = permissionColor,
+                                )
+                                Spacer(Modifier.width(3.dp))
+                                Text(
+                                    "权限",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = permissionColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
-                        Spacer(Modifier.weight(1f))
                         ContextUsageRing(
                             usage = contextUsageSummary(state.tokenUsage),
                         )
@@ -2371,17 +2374,19 @@ private fun WorkComposer(
                         if (state.activeAgentCapabilities.models) {
                             TextButton(
                                 onClick = onShowModels,
-                                modifier = Modifier.widthIn(max = 116.dp),
-                                contentPadding = PaddingValues(horizontal = 5.dp),
+                                modifier = Modifier.weight(1f).widthIn(min = 0.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp),
                             ) {
-                            Text(
-                                modelLabel,
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                                Text(
+                                    modelLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
+                        } else {
+                            Spacer(Modifier.weight(1f))
                         }
                         Spacer(Modifier.width(6.dp))
                         val canSend = (value.isNotBlank() || state.attachments.isNotEmpty()) &&
@@ -2426,6 +2431,12 @@ private fun WorkComposer(
             }
         }
     }
+}
+
+private fun approvalModeIcon(mode: ApprovalMode) = when (mode) {
+    ApprovalMode.RequestApproval -> Icons.Default.PanTool
+    ApprovalMode.AutoApprove -> Icons.Default.CheckCircle
+    ApprovalMode.FullAccess -> Icons.Default.Shield
 }
 
 @Composable
