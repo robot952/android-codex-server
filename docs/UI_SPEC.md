@@ -51,7 +51,11 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Review is a direct action associated with file changes
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions.
   The permission action always uses the short visible label `权限`; its icon identifies the selected
-  mode, while the model action consumes the remaining flexible width before the send/stop button.
+  mode. Context usage and model form one compact, right-aligned group next to the send/stop button;
+  a long model label expands left only as far as the permission action, then truncates with an ellipsis.
+- The jump-to-latest action is visible only while the transcript can actually scroll toward newer
+  content. Dragging against an already reached bottom keeps output following enabled and never leaves
+  a stale down arrow on screen.
 - Adjacent collaborator events from one turn retain the compact, horizontally wrapping Agent chip
   layout instead of repeating bulky transcript cards. Each chip grows only enough to place its own
   status after the name: active states use a fixed-size rotating indicator, while terminal states

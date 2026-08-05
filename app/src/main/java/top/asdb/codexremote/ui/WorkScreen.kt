@@ -401,6 +401,7 @@ fun WorkScreen(
     }
     val hasTurnTimingFooter = state.running || completedTurnTiming != null
     var followOutput by remember(state.activeThread?.id) { mutableStateOf(true) }
+    var userDraggingTimeline by remember(state.activeThread?.id) { mutableStateOf(false) }
     val trailingItemIndex = timelineRows.size +
         (if (state.aggregateDiff.isNotBlank()) 1 else 0) +
         (if (hasTurnTimingFooter) 1 else 0)
@@ -430,22 +431,30 @@ fun WorkScreen(
         }
     }
 
-    // Only a physical drag should pause output following. Programmatic scrolling used to keep
-    // the transcript pinned must not be mistaken for a user navigating away from the end.
+    // Track physical drags separately so programmatic scrolling cannot disable output following.
     LaunchedEffect(listState) {
         listState.interactionSource.interactions.collect { interaction ->
-            if (interaction is DragInteraction.Start) followOutput = false
+            userDraggingTimeline = when (interaction) {
+                is DragInteraction.Start -> true
+                is DragInteraction.Stop,
+                is DragInteraction.Cancel,
+                -> false
+                else -> userDraggingTimeline
+            }
         }
     }
 
-    // Re-enable following when the user reaches the end manually.
+    // canScrollForward is the authoritative bottom signal. In particular, an overscroll gesture
+    // at the bottom must not leave the jump button visible or disable following indefinitely.
     LaunchedEffect(listState) {
         snapshotFlow {
-            val layout = listState.layoutInfo
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
-            layout.totalItemsCount == 0 || lastVisible >= layout.totalItemsCount - 1
-        }.distinctUntilChanged().collect { atEnd ->
-            if (atEnd) followOutput = true
+            userDraggingTimeline to listState.canScrollForward
+        }.distinctUntilChanged().collect { (userDragging, canScrollForward) ->
+            followOutput = updatedFollowOutput(
+                current = followOutput,
+                userDragging = userDragging,
+                canScrollForward = canScrollForward,
+            )
         }
     }
 
@@ -748,7 +757,11 @@ fun WorkScreen(
                 CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), strokeWidth = 2.dp)
             }
             AnimatedVisibility(
-                visible = !followOutput && state.timeline.isNotEmpty(),
+                visible = shouldShowJumpToLatest(
+                    followOutput = followOutput,
+                    canScrollForward = listState.canScrollForward,
+                    hasTimeline = state.timeline.isNotEmpty(),
+                ),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
             ) {
                 Surface(
@@ -2378,26 +2391,29 @@ private fun WorkComposer(
                                 )
                             }
                         }
-                        ContextUsageRing(
-                            usage = contextUsageSummary(state.tokenUsage),
-                        )
-                        Spacer(Modifier.width(2.dp))
-                        if (state.activeAgentCapabilities.models) {
-                            TextButton(
-                                onClick = onShowModels,
-                                modifier = Modifier.weight(1f).widthIn(min = 0.dp),
-                                contentPadding = PaddingValues(horizontal = 4.dp),
-                            ) {
-                                Text(
-                                    modelLabel,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                        Row(
+                            modifier = Modifier.weight(1f).widthIn(min = 0.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            ContextUsageRing(
+                                usage = contextUsageSummary(state.tokenUsage),
+                            )
+                            if (state.activeAgentCapabilities.models) {
+                                TextButton(
+                                    onClick = onShowModels,
+                                    modifier = Modifier.weight(1f, fill = false).widthIn(min = 0.dp),
+                                    contentPadding = PaddingValues(horizontal = 4.dp),
+                                ) {
+                                    Text(
+                                        modelLabel,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
-                        } else {
-                            Spacer(Modifier.weight(1f))
                         }
                         Spacer(Modifier.width(6.dp))
                         val canSend = (value.isNotBlank() || state.attachments.isNotEmpty()) &&
@@ -2558,6 +2574,22 @@ private fun goalStatusLabel(status: ThreadGoalStatus): String = when (status) {
 
 internal fun shouldConfirmGoalPause(status: ThreadGoalStatus?): Boolean =
     status == ThreadGoalStatus.Active
+
+internal fun updatedFollowOutput(
+    current: Boolean,
+    userDragging: Boolean,
+    canScrollForward: Boolean,
+): Boolean = when {
+    !canScrollForward -> true
+    userDragging -> false
+    else -> current
+}
+
+internal fun shouldShowJumpToLatest(
+    followOutput: Boolean,
+    canScrollForward: Boolean,
+    hasTimeline: Boolean,
+): Boolean = hasTimeline && !followOutput && canScrollForward
 
 private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
     val updatedAtMillis = normalizeEpochMillis(goal.updatedAt) ?: nowMillis

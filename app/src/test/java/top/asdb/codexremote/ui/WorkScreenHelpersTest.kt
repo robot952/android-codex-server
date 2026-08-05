@@ -17,6 +17,43 @@ class WorkScreenHelpersTest {
     }
 
     @Test
+    fun bottomOverscrollKeepsFollowingAndHidesJumpButton() {
+        val followOutput = updatedFollowOutput(
+            current = false,
+            userDragging = true,
+            canScrollForward = false,
+        )
+
+        assertTrue(followOutput)
+        assertFalse(
+            shouldShowJumpToLatest(
+                followOutput = followOutput,
+                canScrollForward = false,
+                hasTimeline = true,
+            ),
+        )
+    }
+
+    @Test
+    fun draggingAwayFromBottomPausesFollowingAndShowsJumpButton() {
+        val followOutput = updatedFollowOutput(
+            current = true,
+            userDragging = true,
+            canScrollForward = true,
+        )
+
+        assertFalse(followOutput)
+        assertTrue(
+            shouldShowJumpToLatest(
+                followOutput = followOutput,
+                canScrollForward = true,
+                hasTimeline = true,
+            ),
+        )
+        assertFalse(updatedFollowOutput(followOutput, userDragging = false, canScrollForward = true))
+    }
+
+    @Test
     fun formatsTurnElapsedWithCompactUnits() {
         val startedAtMillis = 1_700_000_000_000L
 
