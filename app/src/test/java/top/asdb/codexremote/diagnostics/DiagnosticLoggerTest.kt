@@ -70,4 +70,22 @@ class DiagnosticLoggerTest {
         assertFalse(counter.registerTap(2_500L))
         assertTrue(counter.registerTap(3_000L))
     }
+
+    @Test
+    fun `connection timing uses stable fields and a single line`() {
+        val message = formatConnectionTiming(
+            profileId = "1234567890",
+            agent = "OpenCode",
+            stage = "thread_list",
+            elapsedMs = 245L,
+            status = "failed",
+            detail = "request\n timed out",
+        )
+
+        assertEquals(
+            "profile=12345678 agent=OpenCode stage=thread_list elapsed_ms=245 " +
+                "status=failed detail=request timed out",
+            message,
+        )
+    }
 }

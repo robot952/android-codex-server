@@ -23,6 +23,7 @@ const legacyManagedProviderID = "codex-remote";
 const managedProviderName = "Custom API";
 const managedProviderPackage = "@ai-sdk/openai-compatible";
 const managedReasoningEfforts = ["minimal", "low", "medium", "high", "xhigh"];
+const bridgeStartedAt = Date.now();
 
 let baseUrl = "";
 let serverProcess = null;
@@ -1363,8 +1364,9 @@ async function handleRequest(method, params) {
     return ensureCustomModel(params);
   }
   if (method === "thread/list") {
-    const sessions = await request("/session") || [];
-    const statuses = await statusMap();
+    const values = await Promise.all([request("/session"), statusMap()]);
+    const sessions = values[0] || [];
+    const statuses = values[1];
     const search = String(params.searchTerm || "").toLowerCase();
     const data = sessions.map(function (session) {
       return mapSession(session, statuses[session.id]);
@@ -1863,6 +1865,16 @@ async function processLine(line) {
   }
 }
 
+function isConcurrentReadLine(line) {
+  try {
+    const message = JSON.parse(line);
+    return Object.prototype.hasOwnProperty.call(message, "id") &&
+      (message.method === "model/list" || message.method === "thread/list");
+  } catch (error) {
+    return false;
+  }
+}
+
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -1903,12 +1915,29 @@ async function main() {
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   const ready = waitForServer().then(function (health) {
     openCodeVersion = healthVersion(health);
+    process.stderr.write(
+      "__CODEX_REMOTE_TIMING agent=OpenCode stage=server_ready elapsed_ms=" +
+        String(Date.now() - bridgeStartedAt) + "\n",
+    );
   });
-  let chain = ready;
+  let serialChain = ready;
+  const concurrentReads = new Set();
+  function reportLineError(error) {
+    process.stderr.write((error.stack || error.message || String(error)) + "\n");
+  }
   input.on("line", function (line) {
-    chain = chain.then(function () { return processLine(line); }).catch(function (error) {
-      process.stderr.write((error.stack || error.message || String(error)) + "\n");
-    });
+    if (isConcurrentReadLine(line)) {
+      const task = serialChain.then(function () { return processLine(line); }).catch(reportLineError);
+      concurrentReads.add(task);
+      task.finally(function () { concurrentReads.delete(task); });
+      return;
+    }
+    serialChain = serialChain.then(async function () {
+      if (concurrentReads.size) {
+        await Promise.allSettled(Array.from(concurrentReads));
+      }
+      return processLine(line);
+    }).catch(reportLineError);
   });
   input.on("close", function () { shutdown(0); });
   await ready;

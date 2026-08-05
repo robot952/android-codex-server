@@ -24,6 +24,7 @@ import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.ssh.RemoteInstallProgress
+import top.asdb.codexremote.ssh.RemoteShellExecutor
 
 data class ProfiledAgentNotification(
     val key: AgentConnectionKey,
@@ -166,8 +167,11 @@ class AgentConnectionManager(
     suspend fun probeFingerprint(profile: ServerProfile): String =
         ensureEntry(profile, profile.activeAgent).client.probeFingerprint(profile)
 
-    suspend fun inspectRuntime(profile: ServerProfile, agent: AgentKind): AgentRuntimeInspection =
-        ensureEntry(profile, agent).client.inspectRuntime(profile)
+    suspend fun inspectRuntime(
+        profile: ServerProfile,
+        agent: AgentKind,
+        shellExecutor: RemoteShellExecutor? = null,
+    ): AgentRuntimeInspection = ensureEntry(profile, agent).client.inspectRuntime(profile, shellExecutor)
 
     suspend fun installRuntime(
         profile: ServerProfile,

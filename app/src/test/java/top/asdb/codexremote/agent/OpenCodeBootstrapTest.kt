@@ -3,6 +3,8 @@ package top.asdb.codexremote.agent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import top.asdb.codexremote.ssh.RemoteBootstrap
+import java.util.concurrent.TimeUnit
 
 class OpenCodeBootstrapTest {
     @Test
@@ -45,5 +47,23 @@ class OpenCodeBootstrapTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun `combined probe includes host and OpenCode checks with valid shell syntax`() {
+        val script = OpenCodeBootstrap.combinedProbeScript
+
+        assertTrue(script.contains(RemoteBootstrap.probeScript))
+        assertTrue(script.contains(OpenCodeBootstrap.probeScript))
+        assertTrue(script.contains("__CODEX_REMOTE_%s=%s"))
+        assertTrue(script.contains("__CODEX_REMOTE_OPENCODE_%s=%s"))
+        assertTrue(script.contains("value OS "))
+        assertTrue(script.contains("value VERSION "))
+
+        val process = ProcessBuilder("sh", "-n").start()
+        process.outputStream.bufferedWriter().use { it.write(script) }
+
+        assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
     }
 }

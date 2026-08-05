@@ -24,6 +24,7 @@ import top.asdb.codexremote.data.modelSettings
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteCodexSettings
 import top.asdb.codexremote.ssh.RemoteInstallProgress
+import top.asdb.codexremote.ssh.RemoteShellExecutor
 import top.asdb.codexremote.ssh.SshCodexTransport
 
 internal const val OPENCODE_MANAGED_PROVIDER_ID = "custom-api"
@@ -73,27 +74,35 @@ class OpenCodeAgentClient(
     /** Models added through the app are stable for one bridge generation. */
     private val ensuredCustomModels = ConcurrentHashMap<String, Long>()
 
-    override suspend fun inspectRuntime(profile: ServerProfile): AgentRuntimeInspection {
-        val host = delegate.inspectRuntime(profile)
-        if (host.installationProblem != null) return host.copy(compatibleCommand = null)
-        val values = bootstrapTransport.runBootstrapScript(
-            profile = profile,
-            script = OpenCodeBootstrap.probeScript,
+    override suspend fun inspectRuntime(
+        profile: ServerProfile,
+        shellExecutor: RemoteShellExecutor?,
+    ): AgentRuntimeInspection {
+        val lines = shellExecutor?.executeShellScript(
+            script = OpenCodeBootstrap.combinedProbeScript,
             timeoutMs = PROBE_TIMEOUT_MS,
             operationName = "检测 OpenCode 运行时",
-        ).let(OpenCodeBootstrap::parseProbe)
+        ) ?: bootstrapTransport.runBootstrapScript(
+            profile = profile,
+            script = OpenCodeBootstrap.combinedProbeScript,
+            timeoutMs = PROBE_TIMEOUT_MS,
+            operationName = "检测 OpenCode 运行时",
+        )
+        val environment = RemoteBootstrap.parseProbe(lines)
+        val installationProblem = environment.installationProblem()
+        val values = OpenCodeBootstrap.parseProbe(lines)
         val version = values["VERSION"]?.takeIf(String::isNotBlank)
         val bridge = values["BRIDGE"]?.takeIf(String::isNotBlank)
         val bridgeMatches = values["BRIDGE_SHA256"] == OpenCodeBootstrap.bridgeSha256(bridgeSource())
         val compatible = version?.contains(BuildConfig.PINNED_OPENCODE_VERSION) == true &&
-            bridge != null && bridgeMatches
+            bridge != null && bridgeMatches && installationProblem == null
         return AgentRuntimeInspection(
-            os = host.os,
-            architecture = host.architecture,
-            home = host.home,
+            os = environment.os,
+            architecture = environment.architecture,
+            home = environment.home,
             detectedVersion = version,
             compatibleCommand = bridge?.takeIf { compatible }?.let(::quoteShellArgument),
-            installationProblem = host.installationProblem,
+            installationProblem = installationProblem,
         )
     }
 

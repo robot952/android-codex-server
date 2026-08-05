@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.88（versionCode 110）
+- Android 应用版本：1.7.89（versionCode 111）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -288,7 +288,8 @@ data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 必须关闭旧客户端、终端、缓存、审批和操作；只改名称、工作区等展示字段不应无故断线。
 
 SshServerConnectionManager 保持每个 profile 一个不启动远程 Agent 的固定指纹 SSH Session，供
-SFTP、资源采样和服务器页生命周期使用。AgentConnectionManager 保持每个 profile + AgentKind
+SFTP、资源采样、运行时探测和服务器页生命周期使用。短命令通过该已认证 Session 新开 exec channel，
+不再为每次探测或采样重复 SSH 握手。AgentConnectionManager 保持每个 profile + AgentKind
 一个稳定 client 和独立 CoroutineScope。select 只切换展示，connect/disconnect 只影响目标 lane，
 因此多台服务器和同一服务器的两个 Agent 可以同时保持连接。CodexConnectionManager 只保留为
 兼容旧调用方的 typealias。
@@ -354,8 +355,12 @@ CodexAppServerClient 连接后执行：
 
 1. initialize。
 2. 收到响应后发送 initialized notification。
-3. model/list。
-4. AppViewModel 加载 thread/list，并在页面可用后完成连接交接。
+3. AppViewModel 立即恢复该 profile + AgentKind 的模型、会话和工作目录内存缓存并完成页面交接。
+4. 页面可用后，model/list、thread/list 和工作目录读取在三条独立协程中并发刷新；任一路失败保留
+   对应缓存，工作目录绝不阻塞 Agent 显示为已连接。
+
+OpenCode 的主机前置条件和 OpenCode 版本/bridge hash 使用一次合并 shell 探测。bridge 内部把
+`/session` 与 `/session/status` 并发请求，并允许连接首屏的 `model/list` 与 `thread/list` 并发处理。
 
 每个 request 有递增 id、CompletableDeferred 和超时。断线会一次性移除并失败所有 pending
 请求。不要只增加 UI 超时时间而留下 pending；会话恢复较慢时应优先使用缓存即时展示，再由后台
@@ -559,6 +564,11 @@ DiagnosticLogger：
 - 远端 stderr 不是一律致命：rmcp/MCP 辅助工具的 HTTP 403 可能只关闭该工具 worker，主
   app-server 会话仍可继续。页面使用简短说明和紧凑深色 Snackbar，不显示嵌套 JSON、request id
   或原始 Rust 日志；连接真正关闭时仍明确显示失败状态。
+- 连接性能统一记录 `ConnectionTiming`，字段为 `profile`、`agent`、`stage`、`elapsed_ms` 和
+  `status`。阶段包括 `ssh_host_connect`、`runtime_probe`、`agent_ssh_handshake`、
+  `agent_exec_channel`、`rpc_initialize`、`agent_start_initialize`、`agent_visible`、
+  `model_list`、`thread_list`、`workspace_list`、`initial_sync_complete`，以及 OpenCode bridge 的
+  `server_ready`。日志不得包含主机、工作目录、URL、密钥或消息正文。
 
 修改日志格式或新增埋点时，必须补 DiagnosticLoggerTest 并人工检查导出文件无敏感信息。
 

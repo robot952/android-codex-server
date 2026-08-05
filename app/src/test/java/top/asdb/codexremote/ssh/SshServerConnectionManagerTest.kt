@@ -73,15 +73,42 @@ class SshServerConnectionManagerTest {
         assertEquals(ConnectionPhase.Disconnected, manager.states.value[profile.id]?.phase)
         manager.close()
     }
+
+    @Test
+    fun `connected host reuses its client for shell execution`() = runTest {
+        lateinit var client: FakeRemoteServerClient
+        val manager = SshServerConnectionManager(this) {
+            FakeRemoteServerClient().also { client = it }
+        }
+        val profile = ServerProfile(id = "server", host = "host", hostFingerprint = "SHA256:test")
+
+        manager.connect(profile)
+        manager.connect(profile)
+        val output = requireNotNull(manager.client(profile.id)).executeShellScript(
+            script = "printf 'ready\\n'",
+            timeoutMs = 1_000L,
+            operationName = "测试共享通道",
+        )
+
+        assertEquals(1, client.connectCalls)
+        assertEquals(1, client.shellExecutionCalls)
+        assertEquals(listOf("printf 'ready\\n'"), output)
+        manager.close()
+    }
 }
 
 private class FakeRemoteServerClient : RemoteServerClient {
     private var connected = false
     private var generation = 0L
+    var connectCalls = 0
+        private set
+    var shellExecutionCalls = 0
+        private set
 
     override suspend fun probeFingerprint(profile: ServerProfile): String = "SHA256:test"
 
     override suspend fun connect(profile: ServerProfile): String {
+        connectCalls += 1
         connected = true
         generation += 1
         return "SSH"
@@ -102,6 +129,16 @@ private class FakeRemoteServerClient : RemoteServerClient {
     }
 
     override fun currentGeneration(): Long? = generation.takeIf { connected }
+
+    override suspend fun executeShellScript(
+        script: String,
+        timeoutMs: Long,
+        operationName: String,
+    ): List<String> {
+        check(connected) { "SSH host is disconnected" }
+        shellExecutionCalls += 1
+        return listOf(script)
+    }
 
     override suspend fun listDirectories(path: String?): RemoteDirectoryListing =
         RemoteDirectoryListing(path ?: "/", null, emptyList())

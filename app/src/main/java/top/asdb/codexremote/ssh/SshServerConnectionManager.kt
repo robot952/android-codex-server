@@ -24,7 +24,7 @@ import top.asdb.codexremote.data.ServerMetrics
 import top.asdb.codexremote.data.ServerProfile
 
 /** Host-level operations that do not require a Codex/OpenCode Agent. */
-interface RemoteServerClient {
+interface RemoteServerClient : RemoteShellExecutor {
     suspend fun probeFingerprint(profile: ServerProfile): String
     suspend fun connect(profile: ServerProfile): String
     suspend fun disconnect()
@@ -68,13 +68,19 @@ class SshServerClient : RemoteServerClient {
 
     override fun currentGeneration(): Long? = transport.currentSshGeneration()
 
+    override suspend fun executeShellScript(
+        script: String,
+        timeoutMs: Long,
+        operationName: String,
+    ): List<String> = transport.executeConnectedShellScript(script, timeoutMs, operationName)
+
     override suspend fun listDirectories(path: String?): RemoteDirectoryListing =
         transport.listDirectories(path)
 
     override suspend fun listFiles(path: String?): RemoteFileListing = transport.listFiles(path)
 
     override suspend fun readServerMetrics(profile: ServerProfile): ServerMetrics =
-        transport.readServerMetrics(profile)
+        transport.readServerMetrics()
 
     override suspend fun upload(name: String, bytes: ByteArray): String = transport.upload(name, bytes)
 

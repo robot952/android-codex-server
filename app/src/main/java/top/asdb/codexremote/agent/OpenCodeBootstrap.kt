@@ -2,6 +2,7 @@ package top.asdb.codexremote.agent
 
 import java.security.MessageDigest
 import java.util.Base64
+import top.asdb.codexremote.ssh.RemoteBootstrap
 
 internal fun quoteShellArgument(value: String): String = "'${value.replace("'", "'\\''")}'"
 
@@ -27,6 +28,9 @@ internal object OpenCodeBootstrap {
           value VERSION "__SHELL_DOLLAR__("__SHELL_DOLLAR__OPENCODE_BIN" --version 2>/dev/null || true)"
         fi
     """.trimIndent().replace(SHELL_DOLLAR, "\$")
+
+    /** Returns host prerequisites and OpenCode metadata in one remote shell invocation. */
+    val combinedProbeScript: String = RemoteBootstrap.probeScript + "\n" + probeScript
 
     fun parseProbe(lines: List<String>): Map<String, String> = lines.mapNotNull { line ->
         if (!line.startsWith(PREFIX)) return@mapNotNull null

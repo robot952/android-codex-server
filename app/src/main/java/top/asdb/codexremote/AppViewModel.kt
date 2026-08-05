@@ -73,6 +73,7 @@ import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.data.modelSettings
 import top.asdb.codexremote.data.withModelSettings
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
+import top.asdb.codexremote.diagnostics.recordConnectionTiming
 import top.asdb.codexremote.ssh.RemoteBootstrap
 import top.asdb.codexremote.ssh.RemoteCodexSettings
 import top.asdb.codexremote.ssh.RemoteServerClient
@@ -104,6 +105,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val setupProfiles = mutableMapOf<AgentConnectionKey, ServerProfile>()
     private val fingerprintJobs = mutableMapOf<String, Job>()
     private val connectionJobs = mutableMapOf<String, Job>()
+    private val connectionSyncJobs = mutableMapOf<AgentConnectionKey, Job>()
     private val setupJobs = mutableMapOf<AgentConnectionKey, Job>()
     private val setupMutexes = mutableMapOf<String, Mutex>()
     private val disconnectJobs = mutableMapOf<String, Job>()
@@ -257,6 +259,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             connections.diagnostics.collect { event ->
+                if (event.value.message.startsWith(REMOTE_CONNECTION_TIMING_PREFIX)) {
+                    DiagnosticLogger.info(
+                        "ConnectionTiming",
+                        "profile=${profileRef(event.profileId)} " +
+                            event.value.message.removePrefix(REMOTE_CONNECTION_TIMING_PREFIX),
+                    )
+                    return@collect
+                }
                 DiagnosticLogger.warn(
                     "Remote",
                     "diagnostic profile=${profileRef(event.profileId)} ${event.value.message}",
@@ -292,6 +302,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         draftPersistJob?.cancel()
         fingerprintJobs.values.forEach(Job::cancel)
         connectionJobs.values.forEach(Job::cancel)
+        connectionSyncJobs.values.forEach(Job::cancel)
         setupJobs.values.forEach(Job::cancel)
         disconnectJobs.values.forEach(Job::cancel)
         uninstallJobs.values.forEach(Job::cancel)
@@ -353,6 +364,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             cancelCustomModelSync(normalized.id)
             fingerprintJobs.remove(normalized.id)?.cancel()
             connectionJobs.remove(normalized.id)?.cancel()
+            cancelConnectionSync(normalized.id)
             cancelSetupJobs(normalized.id)
             uninstallJobs.remove(normalized.id)?.cancel()
             serverMetricsJobs.remove(normalized.id)?.cancel()
@@ -361,6 +373,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             fingerprintProfiles.remove(normalized.id)
             pendingApprovalsByAgent.keys.removeAll { it.profileId == normalized.id }
             sessionSnapshots.keys.removeAll { it.profileId == normalized.id }
+            remoteModelsByProfile.keys.removeAll { it.profileId == normalized.id }
             effectiveProfiles.remove(normalized.id)
             removeComposerDrafts(normalized.id)
             removeThreadModelPreferences(normalized.id)
@@ -520,6 +533,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun connectAgent(profile: ServerProfile, agent: AgentKind) {
         val profileId = profile.id
         val key = AgentConnectionKey(profileId, agent)
+        val connectionStartedNanos = System.nanoTime()
         if (connectionJobs[profileId]?.isActive == true || setupJobs[key]?.isActive == true ||
             setupState(key)?.prompt != null
         ) return
@@ -535,12 +549,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val job = viewModelScope.launch {
             try {
-                val effectiveProfile = prepareRemote(profile, agent) ?: return@launch
+                val effectiveProfile = timedConnectionStage(profileId, agent, "runtime_probe") {
+                    prepareRemote(profile, agent)
+                } ?: return@launch
                 effectiveProfiles[profileId] = effectiveProfile
-                val connected = loadConnectedSession(effectiveProfile, agent)
+                val connected = timedConnectionStage(profileId, agent, "agent_start_initialize") {
+                    loadConnectedSession(effectiveProfile, agent)
+                }
                 if (!isCurrent(ticket)) return@launch
                 clearConnectionJobIfCurrent(profileId)
                 showConnected(profile, agent, connected)
+                logConnectionTiming(
+                    profileId = profileId,
+                    agent = agent,
+                    stage = "agent_visible",
+                    startedNanos = connectionStartedNanos,
+                    detail = "cached_threads=${connected.threads.size} cached_models=${connected.models.size}",
+                )
+                connections.client(profileId, agent)?.let { client ->
+                    startConnectedSessionRefresh(effectiveProfile, agent, client)
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -614,6 +642,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (fingerprintDialogProfileId == id) fingerprintDialogProfileId = null
         fingerprintJobs.remove(id)?.cancel()
         connectionJobs.remove(id)?.cancel()
+        cancelConnectionSync(id)
         uninstallJobs.remove(id)?.cancel()
         serverMetricsJobs.remove(id)?.cancel()
         disconnectJobs.remove(id)?.cancel()
@@ -776,7 +805,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     setupProgressPercent = 0,
                     setupProgressDetail = "",
                     setupDownloadPercent = null,
-                    agentThreadLists = it.agentThreadLists.filterKeys { key -> key.profileId != normalized.id },
+                    agentThreadLists = it.agentThreadLists,
                 )
             }
         }
@@ -784,7 +813,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val ticket = operations.begin(normalized.id, "connect")
         val job = viewModelScope.launch {
             try {
-                hosts.connect(normalized)
+                timedConnectionStage(normalized.id, null, "ssh_host_connect") {
+                    hosts.connect(normalized)
+                }
                 if (!isCurrent(ticket)) return@launch
                 clearConnectionJobIfCurrent(normalized.id)
                 showHostConnected(normalized)
@@ -881,7 +912,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     }
-                    val verified = connections.inspectRuntime(profile, agent)
+                    val verified = connections.inspectRuntime(profile, agent, hosts.client(profileId))
                     check(verified.compatibleCommand != null) {
                         "安装完成，但未检测到兼容的 ${agent.label}"
                     }
@@ -1145,8 +1176,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshThreads(silent: Boolean = false) {
         val profileId = _state.value.selectedProfileId ?: return
-        val client = connections.client(profileId)?.takeIf { it.isConnected() } ?: return
-        val operation = beginClientOperation(profileId, "thread-list", client) ?: return
+        val key = sessionKey(profileId)
+        val client = connections.client(profileId, key.agent)?.takeIf { it.isConnected() } ?: return
+        val operation = beginClientOperation(key, threadListLane(key.agent), client) ?: return
         val search = _state.value.threadSearch
         viewModelScope.launch {
             if (!silent && isOperationVisible(operation)) {
@@ -3319,12 +3351,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lane: String,
         client: RemoteAgentClient,
         exclusive: Boolean = true,
+    ): ClientOperation? = beginClientOperation(sessionKey(profileId), lane, client, exclusive)
+
+    private fun beginClientOperation(
+        key: AgentConnectionKey,
+        lane: String,
+        client: RemoteAgentClient,
+        exclusive: Boolean = true,
     ): ClientOperation? {
         val generation = client.currentGeneration() ?: return null
-        val key = sessionKey(profileId)
-        if (connections.client(profileId, key.agent) !== client) return null
+        if (connections.client(key.profileId, key.agent) !== client) return null
         return ClientOperation(
-            ticket = operations.begin(profileId, lane, exclusive),
+            ticket = operations.begin(key.profileId, lane, exclusive),
             key = key,
             client = client,
             generation = generation,
@@ -3612,13 +3650,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelCustomModelSync(profileId)
         fingerprintJobs[profileId]?.cancel()
         connectionJobs[profileId]?.cancel()
+        cancelConnectionSync(profileId)
         cancelSetupJobs(profileId)
         serverMetricsJobs.remove(profileId)?.cancel()
-        sessionSnapshots.keys.removeAll { it.profileId == profileId }
         contextUsageFallbacks.clear(profileId)
         clearSubAgentNavigation(profileId)
         effectiveProfiles.remove(profileId)
-        remoteModelsByProfile.keys.removeAll { it.profileId == profileId }
         pendingApprovalsByAgent.keys.removeAll { it.profileId == profileId }
         clearSetupStates(profileId)
         pendingFingerprints.remove(profileId)
@@ -3641,7 +3678,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     setupProgressPercent = 0,
                     setupProgressDetail = "",
                     setupDownloadPercent = null,
-                    agentThreadLists = current.agentThreadLists.filterKeys { it.profileId != profileId },
+                    agentThreadLists = current.agentThreadLists,
                 )
             }
         }
@@ -3751,10 +3788,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun cancelConnectionSync(profileId: String) {
+        connectionSyncJobs.keys.filter { it.profileId == profileId }.forEach { key ->
+            connectionSyncJobs.remove(key)?.cancel()
+        }
+    }
+
     private fun hasActiveSetupJob(profileId: String): Boolean =
         setupJobs.any { (key, job) -> key.profileId == profileId && job.isActive }
 
     private fun setupLane(agent: AgentKind): String = "setup-${agent.name}"
+
+    private fun modelListLane(agent: AgentKind): String = "model-list-${agent.name}"
+
+    private fun threadListLane(agent: AgentKind): String = "thread-list-${agent.name}"
 
     private fun sameConnectionIdentity(left: ServerProfile, right: ServerProfile): Boolean =
         left.host == right.host &&
@@ -4026,6 +4073,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun handleProfileClosed(event: ProfiledAgentConnectionEvent) {
         val key = event.key
+        connectionSyncJobs.remove(key)?.cancel()
         invalidateAgent(key)
         if (isActiveAgent(key)) subAgentNavigationStacks.clear(agentScopeId(key))
         val failureMessage = presentCodexDiagnostic(
@@ -4075,7 +4123,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (agent == AgentKind.Codex && profile.remoteCommand != RemoteBootstrap.MANAGED_REMOTE_COMMAND) {
             return profile
         }
-        val environment = connections.inspectRuntime(profile, agent)
+        val environment = connections.inspectRuntime(profile, agent, hosts.client(profile.id))
         environment.installationProblem?.let { problem ->
             throw IllegalStateException("${agent.label}: $problem")
         }
@@ -4111,27 +4159,197 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         profile: ServerProfile,
         agent: AgentKind,
     ): ConnectedSession {
-        val client = connections.register(profile, agent)
+        connections.register(profile, agent)
         val version = connections.connect(profile, agent)
-        val models = client.listModels()
-        val threads = client.listThreads()
-        val host = hosts.client(profile.id)?.takeIf { it.isConnected() }
-            ?: throw IllegalStateException("SSH 主机连接已断开")
-        val preferredListing = runCatching {
-            host.listDirectories(profile.workspace.takeIf { it.isNotBlank() })
-        }
-        val fallbackListing = if (preferredListing.isFailure && profile.workspace.isNotBlank()) {
-            runCatching { host.listDirectories(null) }
-        } else {
-            preferredListing
+        val key = AgentConnectionKey(profile.id, agent)
+        val snapshot = sessionSnapshots[key]
+        val cachedThreads = _state.value.agentThreadLists[key] ?: snapshot?.threads.orEmpty()
+        val cachedModels = remoteModelsByProfile[key] ?: snapshot?.models.orEmpty()
+        val cachedWorkspace = snapshot?.workspaceCurrentPath?.takeIf(String::isNotBlank)?.let { path ->
+            RemoteDirectoryListing(
+                currentPath = path,
+                parentPath = snapshot.workspaceParentPath,
+                directories = snapshot.workspaceDirectories,
+            )
         }
         return ConnectedSession(
             version = version,
-            models = models,
-            threads = threads,
-            workspace = fallbackListing.getOrNull(),
-            workspaceError = preferredListing.exceptionOrNull()?.message,
+            models = cachedModels,
+            threads = cachedThreads,
+            workspace = cachedWorkspace,
+            workspaceError = snapshot?.workspaceError,
         )
+    }
+
+    private fun startConnectedSessionRefresh(
+        profile: ServerProfile,
+        agent: AgentKind,
+        client: RemoteAgentClient,
+    ) {
+        val key = AgentConnectionKey(profile.id, agent)
+        val generation = client.currentGeneration() ?: return
+        connectionSyncJobs.remove(key)?.cancel()
+        val startedNanos = System.nanoTime()
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val modelRefresh = launch modelRefresh@{
+                    val operation = beginClientOperation(
+                        key = key,
+                        lane = modelListLane(agent),
+                        client = client,
+                    ) ?: return@modelRefresh
+                    try {
+                        val models = timedConnectionStage(profile.id, agent, "model_list") {
+                            client.listModels()
+                        }
+                        if (isOperationCurrent(operation)) {
+                            applyConnectedModels(profile, agent, models)
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Throwable) {
+                        // The timing log contains the failure; cached models remain usable.
+                    } finally {
+                        finishClientOperation(operation)
+                    }
+                }
+                val threadRefresh = launch threadRefresh@{
+                    val operation = beginClientOperation(
+                        key = key,
+                        lane = threadListLane(agent),
+                        client = client,
+                    ) ?: return@threadRefresh
+                    try {
+                        val threads = timedConnectionStage(profile.id, agent, "thread_list") {
+                            client.listThreads()
+                        }
+                        if (isOperationCurrent(operation)) {
+                            applySessionState(profile.id, agent) { current ->
+                                current.copy(
+                                    threads = threads,
+                                    activeThread = current.activeThread?.let { active ->
+                                        threads.firstOrNull { it.id == active.id } ?: active
+                                    },
+                                    loading = false,
+                                )
+                            }
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Throwable) {
+                        // Keep the cached list visible when a background refresh fails.
+                    } finally {
+                        finishClientOperation(operation)
+                    }
+                }
+                val workspaceRefresh = launch workspaceRefresh@{
+                    val host = hosts.client(profile.id)?.takeIf { it.isConnected() }
+                        ?: return@workspaceRefresh
+                    val operation = beginHostOperation(profile.id, "workspace", host)
+                        ?: return@workspaceRefresh
+                    try {
+                        val workspace = timedConnectionStage(profile.id, agent, "workspace_list") {
+                            loadInitialWorkspace(profile, host)
+                        }
+                        if (isHostOperationCurrent(operation)) {
+                            applySessionState(profile.id, agent) { current ->
+                                current.copy(
+                                    workspaceLoading = false,
+                                    workspaceCurrentPath = workspace.listing?.currentPath
+                                        ?: profile.workspace.ifBlank { "/" },
+                                    workspaceParentPath = workspace.listing?.parentPath,
+                                    workspaceDirectories = workspace.listing?.directories.orEmpty(),
+                                    workspaceError = workspace.preferredError,
+                                )
+                            }
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        if (isHostOperationCurrent(operation)) {
+                            applySessionState(profile.id, agent) { current ->
+                                current.copy(workspaceLoading = false, workspaceError = error.message ?: "无法读取目录")
+                            }
+                        }
+                    } finally {
+                        finishHostOperation(operation)
+                    }
+                }
+                listOf(modelRefresh, threadRefresh, workspaceRefresh).forEach { it.join() }
+            } finally {
+                if (client.isGenerationActive(generation)) {
+                    logConnectionTiming(
+                        profileId = profile.id,
+                        agent = agent,
+                        stage = "initial_sync_complete",
+                        startedNanos = startedNanos,
+                    )
+                }
+                if (connectionSyncJobs[key] === currentCoroutineContext()[Job]) {
+                    connectionSyncJobs.remove(key)
+                }
+            }
+        }
+        connectionSyncJobs[key] = job
+        job.start()
+    }
+
+    private suspend fun loadInitialWorkspace(
+        profile: ServerProfile,
+        host: RemoteServerClient,
+    ): InitialWorkspaceResult {
+        val preferred = runCatching {
+            host.listDirectories(profile.workspace.takeIf { it.isNotBlank() })
+        }
+        val fallback = if (preferred.isFailure && profile.workspace.isNotBlank()) {
+            runCatching { host.listDirectories(null) }
+        } else {
+            preferred
+        }
+        return InitialWorkspaceResult(
+            listing = fallback.getOrThrow(),
+            preferredError = preferred.exceptionOrNull()?.message,
+        )
+    }
+
+    private fun applyConnectedModels(
+        profile: ServerProfile,
+        agent: AgentKind,
+        remoteModels: List<CodexModel>,
+    ) {
+        val key = AgentConnectionKey(profile.id, agent)
+        remoteModelsByProfile[key] = remoteModels
+        val configuredProfile = _state.value.profiles.firstOrNull { it.id == profile.id } ?: profile
+        val settings = configuredProfile.modelSettings(agent)
+        val models = buildModelCatalog(
+            remoteModels = remoteModels,
+            customModels = settings.customModels,
+            hiddenModelIds = settings.hiddenModelIds,
+            customReasoningEfforts = if (agent == AgentKind.OpenCode) {
+                ::openCodeReasoningEfforts
+            } else {
+                { emptyList() }
+            },
+        )
+        applySessionState(profile.id, agent) { current ->
+            val preferred = resolveNewThreadModelSelection(
+                models = models,
+                configuredModel = settings.preferredModel,
+                configuredEffort = settings.preferredEffort,
+            )
+            val selectedModel = current.selectedModel?.takeIf { selected ->
+                models.any { it.model == selected }
+            } ?: preferred.model ?: models.firstOrNull()?.model
+            val selected = models.firstOrNull { it.model == selectedModel }
+            val selectedEffort = current.selectedEffort?.takeIf { effort ->
+                selected == null || selected.efforts.isEmpty() || effort in selected.efforts
+            } ?: preferred.effort ?: selected?.defaultEffort
+            current.copy(
+                models = models,
+                selectedModel = selectedModel,
+                selectedEffort = selectedEffort,
+            )
+        }
     }
 
     /** Completes SSH login without probing, installing, or starting an Agent. */
@@ -4168,7 +4386,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 diagnostic = null,
             )
         }
-        sessionSnapshots.remove(AgentConnectionKey(profileId, activeAgent))
         persistProfiles()
     }
 
@@ -4181,7 +4398,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         DiagnosticLogger.info(
             "Connection",
             "connect_success profile=${profileRef(profile.id)} agent=${agent.name} " +
-                "version=${connected.version} threads=${connected.threads.size} models=${connected.models.size}",
+                "version=${connected.version} cached_threads=${connected.threads.size} " +
+                "cached_models=${connected.models.size}",
         )
         val configuredProfile = _state.value.profiles.firstOrNull { it.id == profile.id } ?: profile
         val modelSettings = configuredProfile.modelSettings(agent)
@@ -4267,7 +4485,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 approvalMode = configuredProfile.approvalMode,
                 sandbox = configuredProfile.approvalMode.sandbox,
                 workspacePickerVisible = showInitialWorkspacePrompt,
-                workspaceLoading = false,
+                workspaceLoading = showInitialWorkspacePrompt,
                 workspaceCurrentPath = connected.workspace?.currentPath
                     ?: configuredProfile.workspace.ifBlank { "/" },
                 workspaceParentPath = connected.workspace?.parentPath,
@@ -4929,6 +5147,48 @@ private fun remoteUploadFileName(context: Context, uri: Uri): String {
 
 private fun profileRef(value: String): String = value.take(8).ifBlank { "unknown" }
 
+private suspend fun <T> timedConnectionStage(
+    profileId: String,
+    agent: AgentKind?,
+    stage: String,
+    block: suspend () -> T,
+): T {
+    val startedNanos = System.nanoTime()
+    return try {
+        block().also {
+            logConnectionTiming(profileId, agent, stage, startedNanos)
+        }
+    } catch (error: Throwable) {
+        logConnectionTiming(
+            profileId = profileId,
+            agent = agent,
+            stage = stage,
+            startedNanos = startedNanos,
+            status = "failed",
+            detail = error.message.orEmpty().replace(Regex("\\s+"), " ").take(160),
+        )
+        throw error
+    }
+}
+
+private fun logConnectionTiming(
+    profileId: String,
+    agent: AgentKind?,
+    stage: String,
+    startedNanos: Long,
+    status: String = "success",
+    detail: String = "",
+) {
+    recordConnectionTiming(
+        profileId = profileId,
+        agent = agent?.name ?: "Host",
+        stage = stage,
+        startedNanos = startedNanos,
+        status = status,
+        detail = detail,
+    )
+}
+
 internal fun shouldHoldConnectedUntilSessionReady(
     local: ConnectionState?,
     remote: ConnectionState,
@@ -4943,6 +5203,11 @@ private data class ConnectedSession(
     val threads: List<top.asdb.codexremote.data.CodexThread>,
     val workspace: RemoteDirectoryListing?,
     val workspaceError: String?,
+)
+
+private data class InitialWorkspaceResult(
+    val listing: RemoteDirectoryListing?,
+    val preferredError: String?,
 )
 
 private data class ClientOperation(
@@ -5296,6 +5561,7 @@ private fun mergeSummaryTimeline(
 }
 
 private const val MAX_ACTIVE_TIMELINE_WEIGHT_CHARS = 8 * 1024 * 1024
+private const val REMOTE_CONNECTION_TIMING_PREFIX = "__CODEX_REMOTE_TIMING "
 private const val MAX_ACTIVE_TIMELINE_ENTRIES = 1_024
 private const val MAX_GOAL_NOTIFICATION_VERSIONS = 512
 private const val MAX_SUB_AGENT_NAVIGATION_DEPTH = 8

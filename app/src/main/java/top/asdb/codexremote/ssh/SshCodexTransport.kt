@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
+import top.asdb.codexremote.diagnostics.recordConnectionTiming
 import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
@@ -96,9 +97,8 @@ class SshCodexTransport {
     internal val closed: SharedFlow<SshTransportEvent> = _closed.asSharedFlow()
 
     /** Samples only procfs and the root filesystem; no remote package or daemon is installed. */
-    suspend fun readServerMetrics(profile: ServerProfile): ServerMetrics {
-        val lines = executeScript(
-            profile = profile,
+    suspend fun readServerMetrics(): ServerMetrics {
+        val lines = executeConnectedShellScript(
             script = SERVER_METRICS_SCRIPT,
             timeoutMs = METRICS_TIMEOUT_MS,
             operationName = "读取服务器资源占用",
@@ -151,10 +151,12 @@ class SshCodexTransport {
             try {
                 sshSession = createPinnedSshSession(profile)
                 check(registerConnectingSession(generation, sshSession)) { "SSH 连接已取消" }
+                val sshStartedNanos = System.nanoTime()
                 runCancellableConnect(
                     connect = { sshSession.connect(SSH_CONNECT_TIMEOUT_MS) },
                     disconnect = sshSession::disconnect,
                 )
+                logTransportTiming(profile, profile.activeAgent.name, "agent_ssh_handshake", sshStartedNanos)
                 check(isConnectionCurrent(generation)) { "SSH 连接已取消" }
 
                 val stderrIn = PipedInputStream(16 * 1024)
@@ -166,10 +168,12 @@ class SshCodexTransport {
                 exec.setErrStream(stderrOut)
                 val stdout = exec.inputStream
                 val stdin = exec.outputStream
+                val channelStartedNanos = System.nanoTime()
                 runCancellableConnect(
                     connect = { exec.connect(SSH_CHANNEL_TIMEOUT_MS) },
                     disconnect = exec::disconnect,
                 )
+                logTransportTiming(profile, profile.activeAgent.name, "agent_exec_channel", channelStartedNanos)
                 check(publishConnection(generation, attemptScope, sshSession, exec, stdin)) {
                     "SSH 连接已取消"
                 }
@@ -261,10 +265,12 @@ class SshCodexTransport {
             try {
                 sshSession = createPinnedSshSession(profile)
                 check(registerConnectingSession(generation, sshSession)) { "SSH 连接已取消" }
+                val sshStartedNanos = System.nanoTime()
                 runCancellableConnect(
                     connect = { sshSession.connect(SSH_CONNECT_TIMEOUT_MS) },
                     disconnect = sshSession::disconnect,
                 )
+                logTransportTiming(profile, "Host", "host_ssh_handshake", sshStartedNanos)
                 check(isConnectionCurrent(generation)) { "SSH 连接已取消" }
                 check(publishHostConnection(generation, attemptScope, sshSession)) {
                     "SSH 连接已取消"
@@ -279,8 +285,15 @@ class SshCodexTransport {
         }
     }
 
-    suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment {
-        val result = executeScript(profile, RemoteBootstrap.probeScript, PROBE_TIMEOUT_MS)
+    suspend fun inspectRemote(
+        profile: ServerProfile,
+        shellExecutor: RemoteShellExecutor? = null,
+    ): RemoteEnvironment {
+        val result = shellExecutor?.executeShellScript(
+            script = RemoteBootstrap.probeScript,
+            timeoutMs = PROBE_TIMEOUT_MS,
+            operationName = "检测远程运行时",
+        ) ?: executeScript(profile, RemoteBootstrap.probeScript, PROBE_TIMEOUT_MS)
         return RemoteBootstrap.parseProbe(result)
     }
 
@@ -698,6 +711,39 @@ class SshCodexTransport {
         onLine = onLine,
     )
 
+    /** Opens only an exec channel on the already-authenticated host SSH session. */
+    internal suspend fun executeConnectedShellScript(
+        script: String,
+        timeoutMs: Long,
+        operationName: String,
+    ): List<String> = coroutineScope {
+        val active = synchronized(connectionStateLock) {
+            val connectedSession = session?.takeIf(Session::isConnected)
+                ?: throw IllegalStateException("SSH 主机连接已断开")
+            ConnectedHostSession(connectionGeneration, connectedSession)
+        }
+        val channelRef = AtomicReference<ChannelExec?>()
+        val task = async(Dispatchers.IO) {
+            executeScriptChannelBlocking(
+                sshSession = active.session,
+                script = script,
+                remoteCommand = "sh -s",
+                operationName = operationName,
+                onLine = {},
+                channelRef = channelRef,
+            ).also {
+                check(isConnectionCurrent(active.generation)) { "SSH 主机连接已更改" }
+            }
+        }
+        try {
+            withTimeout(timeoutMs) { task.await() }
+        } catch (error: Throwable) {
+            channelRef.getAndSet(null)?.disconnect()
+            task.cancel()
+            throw error
+        }
+    }
+
     private suspend fun executeScript(
         profile: ServerProfile,
         script: String,
@@ -746,13 +792,36 @@ class SshCodexTransport {
         channelRef: AtomicReference<ChannelExec?>,
     ): List<String> {
         var sshSession: Session? = null
-        var exec: ChannelExec? = null
         try {
             sshSession = createPinnedSshSession(profile).also(sessionRef::set)
             runCancellableConnect(
                 connect = { sshSession.connect(SSH_CONNECT_TIMEOUT_MS) },
                 disconnect = sshSession::disconnect,
             )
+            return executeScriptChannelBlocking(
+                sshSession = sshSession,
+                script = script,
+                remoteCommand = remoteCommand,
+                operationName = operationName,
+                onLine = onLine,
+                channelRef = channelRef,
+            )
+        } finally {
+            sessionRef.compareAndSet(sshSession, null)
+            sshSession?.disconnect()
+        }
+    }
+
+    private suspend fun executeScriptChannelBlocking(
+        sshSession: Session,
+        script: String,
+        remoteCommand: String,
+        operationName: String,
+        onLine: (String) -> Unit,
+        channelRef: AtomicReference<ChannelExec?>,
+    ): List<String> {
+        var exec: ChannelExec? = null
+        try {
             exec = (sshSession.openChannel("exec") as ChannelExec).also(channelRef::set)
             val stderr = LimitedByteArrayOutputStream(MAX_STDERR_BYTES)
             exec.setPty(false)
@@ -792,9 +861,7 @@ class SshCodexTransport {
             return lines
         } finally {
             channelRef.compareAndSet(exec, null)
-            sessionRef.compareAndSet(sshSession, null)
             exec?.disconnect()
-            sshSession?.disconnect()
         }
     }
 
@@ -851,6 +918,11 @@ class SshCodexTransport {
     private data class ConnectionAttempt(
         val generation: Long,
         val previous: ConnectionResources,
+    )
+
+    private data class ConnectedHostSession(
+        val generation: Long,
+        val session: Session,
     )
 
     private fun beginConnectionAttempt(): ConnectionAttempt = synchronized(connectionStateLock) {
@@ -1000,6 +1072,20 @@ class SshCodexTransport {
         private const val GLOBAL_SETTINGS_TIMEOUT_MS = 30_000L
         private const val MODEL_LIST_TIMEOUT_MS = 35_000L
     }
+}
+
+private fun logTransportTiming(
+    profile: ServerProfile,
+    agent: String,
+    stage: String,
+    startedNanos: Long,
+) {
+    recordConnectionTiming(
+        profileId = profile.id,
+        agent = agent,
+        stage = stage,
+        startedNanos = startedNanos,
+    )
 }
 
 private data class RemoteFileTransferPlan(

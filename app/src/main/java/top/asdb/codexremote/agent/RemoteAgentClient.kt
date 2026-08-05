@@ -25,6 +25,7 @@ import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.ssh.RemoteInstallProgress
+import top.asdb.codexremote.ssh.RemoteShellExecutor
 
 /** Protocol-neutral notification consumed by the shared conversation reducer. */
 data class AgentNotification(
@@ -69,7 +70,10 @@ interface RemoteAgentClient {
     val closed: SharedFlow<AgentConnectionEvent>
 
     suspend fun probeFingerprint(profile: ServerProfile): String
-    suspend fun inspectRuntime(profile: ServerProfile): AgentRuntimeInspection
+    suspend fun inspectRuntime(
+        profile: ServerProfile,
+        shellExecutor: RemoteShellExecutor? = null,
+    ): AgentRuntimeInspection
     suspend fun installRuntime(
         profile: ServerProfile,
         onProgress: (RemoteInstallProgress) -> Unit,

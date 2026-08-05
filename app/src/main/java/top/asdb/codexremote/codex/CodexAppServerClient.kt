@@ -20,6 +20,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import top.asdb.codexremote.BuildConfig
+import top.asdb.codexremote.diagnostics.recordConnectionTiming
 import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.ApprovalKind
 import top.asdb.codexremote.data.ApprovalMode
@@ -39,6 +40,7 @@ import top.asdb.codexremote.data.TimelineEntry
 import top.asdb.codexremote.data.TokenUsage
 import top.asdb.codexremote.data.normalizeEpochMillis
 import top.asdb.codexremote.ssh.SshCodexTransport
+import top.asdb.codexremote.ssh.RemoteShellExecutor
 import top.asdb.codexremote.ssh.RemoteEnvironment
 import top.asdb.codexremote.ssh.SshTransportEvent
 import java.io.InputStream
@@ -230,8 +232,11 @@ class CodexAppServerClient(
 
     override suspend fun probeFingerprint(profile: ServerProfile): String = transport.probeFingerprint(profile)
 
-    override suspend fun inspectRuntime(profile: ServerProfile): AgentRuntimeInspection {
-        val environment = inspectRemote(profile)
+    override suspend fun inspectRuntime(
+        profile: ServerProfile,
+        shellExecutor: RemoteShellExecutor?,
+    ): AgentRuntimeInspection {
+        val environment = inspectRemote(profile, shellExecutor)
         return AgentRuntimeInspection(
             os = environment.os,
             architecture = environment.architecture,
@@ -249,7 +254,10 @@ class CodexAppServerClient(
 
     override suspend fun uninstallRuntime(profile: ServerProfile) = uninstallRemote(profile)
 
-    suspend fun inspectRemote(profile: ServerProfile): RemoteEnvironment = transport.inspectRemote(profile)
+    suspend fun inspectRemote(
+        profile: ServerProfile,
+        shellExecutor: RemoteShellExecutor? = null,
+    ): RemoteEnvironment = transport.inspectRemote(profile, shellExecutor)
 
     suspend fun installRemote(
         profile: ServerProfile,
@@ -286,6 +294,7 @@ class CodexAppServerClient(
         val generation = transport.connect(profile)
         activeGeneration.set(generation)
         return try {
+            val initializeStartedNanos = System.nanoTime()
             val initialize = request(
                 "initialize",
                 buildJsonObject {
@@ -300,6 +309,12 @@ class CodexAppServerClient(
                     })
                 },
             ).jsonObject
+            recordConnectionTiming(
+                profileId = profile.id,
+                agent = profile.activeAgent.name,
+                stage = "rpc_initialize",
+                startedNanos = initializeStartedNanos,
+            )
             notify("initialized", JsonObject(emptyMap()))
             initialize.string("userAgent").ifBlank { "codex-cli ${BuildConfig.PINNED_CODEX_VERSION}" }
         } catch (error: Throwable) {
@@ -585,7 +600,7 @@ class CodexAppServerClient(
 
     override suspend fun listFiles(path: String?): RemoteFileListing = transport.listFiles(path)
 
-    override suspend fun readServerMetrics(profile: ServerProfile) = transport.readServerMetrics(profile)
+    override suspend fun readServerMetrics(profile: ServerProfile) = transport.readServerMetrics()
 
     override suspend fun archiveThread(threadId: String) {
         request("thread/archive", buildJsonObject { put("threadId", threadId) })

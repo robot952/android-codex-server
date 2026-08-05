@@ -21,6 +21,9 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
   OpenCode installers have independent jobs and never install the other Agent's package. Requests for
   the same server are queued while retaining separate per-Agent progress; different servers may install
   concurrently.
+- After the Agent handshake succeeds, the task list and model/workspace selections restore from the
+  profile-and-Agent cache immediately. Model, task-list, and workspace refreshes continue in parallel;
+  workspace latency must never keep the Agent page in a loading state.
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 `thread/name/set`, and `thread/archive`.
