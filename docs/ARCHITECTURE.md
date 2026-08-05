@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.92（versionCode 114）
+- Android 应用版本：1.7.93（versionCode 115）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -530,12 +530,18 @@ URL 解析、保留 `[features]` 等无关 TOML 表、代理文件 `0600` 权限
 ### 9.2 用户级 OpenCode 设置
 
 OpenCode 配置入口与 Codex 共用同一套 Agent 设置 UI，但通过桥接读写 OpenCode 的
-`/global/config`、`/provider` 和 `/auth/{providerID}`。App 管理的 OpenAI 兼容 Provider 固定为
-`codex-remote`，可配置模型 URL、API 密钥、HTTP/HTTPS/SOCKS 代理和默认模型。API 密钥仍只在当前
+`/global/config`、`/provider` 和 `/auth/{providerID}`。App 管理的自定义 Provider 固定为
+`custom-api`，可配置模型 URL、API 密钥、HTTP/HTTPS/SOCKS 代理和默认模型；旧的 `codex-remote`
+Provider 会无损迁移。API 密钥仍只在当前
 设置弹窗内存和 SSH 请求中存在，不写入 Android 持久化或日志。
 
 用户可从兼容 API 的 `/models` 获取模型，也可直接输入 `provider/model` 或裸模型 ID；裸 ID 归入
-`codex-remote`。自定义模型的显示名、上下文长度和最大输出长度按 profile + AgentKind 保存。新增、
+`custom-api`。自定义模型的显示名、上下文长度、最大输出长度和 API 协议按 profile + AgentKind 保存；
+旧 Profile 缺少协议字段时默认使用 Chat Completions。Agent adapter 通过
+`AgentCapabilities.modelApiProtocols` 声明可选协议，模型管理 UI 不依赖具体 Agent 名称。OpenCode 的
+`custom-api` Chat Completions 模型在模型级使用 `@ai-sdk/openai-compatible`，Responses 模型使用
+`@ai-sdk/openai`；两者保留同一 `custom-api/model` 标识并共用 Provider 的 URL 和 Key，实际请求分别
+进入 `/v1/chat/completions` 和 `/v1/responses`。已有的第三方 Provider 模型不被覆盖。新增、
 编辑、删除会由 AppViewModel 按 profile + AgentKind 去抖并串行调用 RemoteAgentClient 的
 `syncCustomModels`；OpenCode adapter 将其映射为 bridge 的 `agent/models/sync`。重连后会全量校准，
 发送前还会兜底同步当前模型及待删除 tombstone，旧连接代次的结果不得清除新状态。
@@ -825,7 +831,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | ApprovalModeTest | 权限模式到 approvalPolicy/sandbox 的映射 |
 | CodexConnectionManagerTest | 多 profile 客户端和状态隔离 |
 | AgentConnectionStateTest | 多 Agent lane 的聚合状态与隔离 |
-| agent/OpenCodeAgentClientTest | OpenCode 模型 ID 规范化、能力和输入校验 |
+| agent/OpenCodeAgentClientTest | OpenCode 模型 ID 规范化、协议能力、同步载荷和缓存键 |
 | agent/OpenCodeBootstrapTest | 固定版本安装、国内 npm 源、代理、jsonc-parser 和 bridge hash |
 | CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析，以及父子会话事件隔离 |
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
@@ -858,8 +864,8 @@ OpenCode bridge 还必须运行：
 ~~~
 
 统一入口自动发现版本完全匹配的持久 OpenCode，只在本机不存在时从国内 npm 源安装一次。`full` 使用
-隔离的临时配置和本地假 OpenAI 兼容服务，验证 URL/Key、Provider、自定义模型元数据、默认模型、真实
-prompt 路由与 Authorization，不得访问用户生产 API。
+隔离的临时配置和本地假 OpenAI 服务，验证 URL/Key、Provider、自定义模型元数据、默认模型、真实
+Chat Completions/Responses prompt 路由与 Authorization，不得访问用户生产 API。
 
 ### 14.4 模拟器手工回归矩阵
 

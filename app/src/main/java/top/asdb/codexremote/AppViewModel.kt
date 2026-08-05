@@ -5334,6 +5334,7 @@ internal fun normalizeCustomModelDefinition(value: CustomModelDefinition): Custo
         displayName = displayName,
         contextWindowTokens = value.contextWindowTokens,
         maxOutputTokens = value.maxOutputTokens,
+        apiProtocol = value.apiProtocol,
     )
 }
 

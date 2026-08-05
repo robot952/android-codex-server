@@ -33,7 +33,11 @@ assert.deepEqual(
   }, "custom-api"),
   {
     modelID: "gpt-new",
-    definition: { name: "GPT New", limit: { context: 200000, output: 32000 } },
+    definition: {
+      name: "GPT New",
+      provider: { npm: "@ai-sdk/openai-compatible" },
+      limit: { context: 200000, output: 32000 },
+    },
   },
 );
 assert.deepEqual(
@@ -45,6 +49,7 @@ assert.deepEqual(
     modelID: "gpt-5.6-sol",
     definition: {
       name: "GPT 5.6 Sol",
+      provider: { npm: "@ai-sdk/openai-compatible" },
       reasoning: true,
       variants: {
         minimal: { reasoningEffort: "minimal" },
@@ -86,7 +91,11 @@ assert.deepEqual(syncPlan.patch.provider["custom-api"].options, {
 });
 assert.deepEqual(syncPlan.patch.provider["custom-api"].headers, { "x-test": "preserve" });
 assert.deepEqual(syncPlan.patch.provider["custom-api"].models, {
-  "new-model": { name: "New model", limit: { context: 128000, output: 16000 } },
+  "new-model": {
+    name: "New model",
+    provider: { npm: "@ai-sdk/openai-compatible" },
+    limit: { context: 128000, output: 16000 },
+  },
 });
 assert.equal(syncPlan.patch.model, "custom-api/untouched");
 assert.deepEqual(syncPlan.removedModelIds, ["custom-api/legacy"]);
@@ -101,6 +110,53 @@ const removalOnlyPlan = bridge.buildModelSyncPatch({
 });
 assert.equal(removalOnlyPlan.patch, null);
 assert.deepEqual(removalOnlyPlan.removedModelIds, ["custom-api/removable"]);
+
+const responsesPlan = bridge.buildModelSyncPatch({
+  provider: {
+    "custom-api": {
+      npm: "@ai-sdk/openai-compatible",
+      models: {
+        switching: {
+          name: "Switching",
+          provider: { npm: "@ai-sdk/openai-compatible" },
+        },
+      },
+    },
+  },
+}, {
+  models: [{
+    modelId: "custom-api/switching",
+    displayName: "Switching",
+    apiProtocol: "responses",
+  }],
+  removeModelIds: [],
+});
+assert.equal(
+  responsesPlan.patch.provider["custom-api"].models.switching.provider.npm,
+  "@ai-sdk/openai",
+);
+const chatCompletionsPlan = bridge.buildModelSyncPatch({
+  provider: {
+    "custom-api": {
+      npm: "@ai-sdk/openai-compatible",
+      models: responsesPlan.patch.provider["custom-api"].models,
+    },
+  },
+}, {
+  models: [{
+    modelId: "custom-api/switching",
+    displayName: "Switching",
+    apiProtocol: "chat_completions",
+  }],
+  removeModelIds: [],
+});
+assert.equal(
+  chatCompletionsPlan.patch.provider["custom-api"].models.switching.provider.npm,
+  "@ai-sdk/openai-compatible",
+);
+assert.throws(function () {
+  bridge.normalizeModelApiProtocol("unsupported");
+});
 
 const migration = bridge.buildManagedProviderMigration({
   model: "codex-remote/gpt-5.6-sol",
@@ -175,6 +231,7 @@ const newProviderPlan = bridge.buildModelSyncPatch({}, {
   removeModelIds: [],
 });
 assert.equal(newProviderPlan.patch.provider["new-provider"].models.model.name, "model");
+assert.equal(newProviderPlan.patch.provider["new-provider"].models.model.provider, undefined);
 assert.equal(newProviderPlan.patch.provider["new-provider"].npm, "@ai-sdk/openai-compatible");
 assert.equal(
   bridge.buildModelSyncPatch(newProviderPlan.patch, { models: [], removeModelIds: [] }).patch,

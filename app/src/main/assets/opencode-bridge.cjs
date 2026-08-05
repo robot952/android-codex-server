@@ -22,6 +22,9 @@ const managedProviderID = "custom-api";
 const legacyManagedProviderID = "codex-remote";
 const managedProviderName = "Custom API";
 const managedProviderPackage = "@ai-sdk/openai-compatible";
+const managedResponsesProviderPackage = "@ai-sdk/openai";
+const chatCompletionsProtocol = "chat_completions";
+const responsesProtocol = "responses";
 const managedReasoningEfforts = ["minimal", "low", "medium", "high", "xhigh"];
 const bridgeStartedAt = Date.now();
 
@@ -968,6 +971,21 @@ function normalizeOpenCodeModel(value, providerID) {
     : String(providerID || managedProviderID) + "/" + model;
 }
 
+function normalizeModelApiProtocol(value) {
+  const protocol = String(value || chatCompletionsProtocol).trim().toLowerCase();
+  if (protocol === chatCompletionsProtocol || protocol === "chatcompletions") {
+    return chatCompletionsProtocol;
+  }
+  if (protocol === responsesProtocol) return responsesProtocol;
+  throw new Error("不支持的模型 API 协议: " + String(value));
+}
+
+function modelApiPackage(protocol) {
+  return normalizeModelApiProtocol(protocol) === responsesProtocol
+    ? managedResponsesProviderPackage
+    : managedProviderPackage;
+}
+
 function modelConfigDefinition(value, providerID) {
   const fullModel = normalizeOpenCodeModel(value && (value.modelId || value.id), providerID);
   const parsed = parseModel(fullModel);
@@ -977,6 +995,9 @@ function modelConfigDefinition(value, providerID) {
   const definition = {
     name: String(value && value.displayName || parsed.modelID).trim() || parsed.modelID,
   };
+  if (providerID === managedProviderID) {
+    definition.provider = { npm: modelApiPackage(value && value.apiProtocol) };
+  }
   if (context > 0 || output > 0) {
     definition.limit = { context: context, output: output };
   }
@@ -2103,6 +2124,7 @@ module.exports = {
   modelConfigDefinition: modelConfigDefinition,
   modelDefinitionsByProvider: modelDefinitionsByProvider,
   normalizeOpenCodeModel: normalizeOpenCodeModel,
+  normalizeModelApiProtocol: normalizeModelApiProtocol,
   normalizeManagedModelReference: normalizeManagedModelReference,
   normalizeProxyUrl: normalizeProxyUrl,
   normalizeReasoningEffort: normalizeReasoningEffort,

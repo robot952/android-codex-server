@@ -28,6 +28,7 @@ import top.asdb.codexremote.diagnostics.recordConnectionTiming
 import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
+import top.asdb.codexremote.data.ModelApiProtocol
 import top.asdb.codexremote.data.RemoteDirectory
 import top.asdb.codexremote.data.RemoteDirectoryListing
 import top.asdb.codexremote.data.RemoteFileEntry
@@ -647,12 +648,19 @@ class SshCodexTransport {
         apiKey: String,
         proxyUrl: String,
         testModel: String,
+        apiProtocol: ModelApiProtocol? = null,
     ): CodexConnectionTestResult {
         val lines = executeScript(
             profile = profile,
-            script = RemoteCodexSettings.testConnectionScript(baseUrl, apiKey, proxyUrl, testModel),
+            script = RemoteCodexSettings.testConnectionScript(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                proxyUrl = proxyUrl,
+                testModel = testModel,
+                apiProtocol = apiProtocol,
+            ),
             timeoutMs = GLOBAL_SETTINGS_TIMEOUT_MS,
-            operationName = "测试 Codex API 连接",
+            operationName = "测试模型 API 连接",
         )
         return RemoteCodexSettings.parseConnectionTest(lines)
     }

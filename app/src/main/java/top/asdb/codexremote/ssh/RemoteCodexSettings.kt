@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.CodexConnectionTestResult
 import top.asdb.codexremote.data.CodexGlobalSettings
+import top.asdb.codexremote.data.ModelApiProtocol
 
 /** Builds narrowly-scoped scripts for the user's global Codex configuration. */
 internal object RemoteCodexSettings {
@@ -318,6 +319,7 @@ internal object RemoteCodexSettings {
         apiKey: String,
         proxyUrl: String,
         testModel: String,
+        apiProtocol: ModelApiProtocol? = null,
     ): String {
         val normalizedBaseUrl = validateBaseUrl(baseUrl).ifBlank { DEFAULT_OPENAI_BASE_URL }
         val normalizedApiKey = validateApiKey(apiKey)
@@ -334,6 +336,7 @@ internal object RemoteCodexSettings {
             API_KEY=${shellQuote(normalizedApiKey)}
             PROXY_URL=${shellQuote(normalizedProxy)}
             TEST_MODEL=${shellQuote(normalizedTestModel)}
+            TEST_API_PROTOCOL=${shellQuote(apiProtocol?.wireValue.orEmpty())}
             RESPONSES_ENDPOINT=${shellQuote(responsesEndpoint)}
             CHAT_COMPLETIONS_ENDPOINT=${shellQuote(chatCompletionsEndpoint)}
             RESPONSES_REQUEST_BODY=${shellQuote(responsesRequestBody)}
@@ -395,38 +398,44 @@ internal object RemoteCodexSettings {
               fi
             }
 
-            HTTP_STATUS="${'$'}(run_request "${'$'}RESPONSES_ENDPOINT" "${'$'}RESPONSES_BODY_FILE")"
-            CURL_EXIT=${'$'}?
-            if [ "${'$'}CURL_EXIT" -ne 0 ]; then
-              printf '${TEST_PREFIX}STATUS=NETWORK_ERROR\n'
-              exit 0
+            if [ "${'$'}TEST_API_PROTOCOL" = chat_completions ]; then
+              HTTP_STATUS="${'$'}(run_request "${'$'}CHAT_COMPLETIONS_ENDPOINT" "${'$'}CHAT_COMPLETIONS_BODY_FILE")"
+              CURL_EXIT=${'$'}?
+              TEST_API=chat/completions
+            else
+              HTTP_STATUS="${'$'}(run_request "${'$'}RESPONSES_ENDPOINT" "${'$'}RESPONSES_BODY_FILE")"
+              CURL_EXIT=${'$'}?
+              TEST_API=responses
             fi
-
-            case "${'$'}HTTP_STATUS" in
-              2??)
-                TEST_STATUS=SUCCESS
-                TEST_API=responses
-                ;;
-              401|403) TEST_STATUS=UNAUTHORIZED ;;
-              *)
-                CHAT_HTTP_STATUS="${'$'}(run_request "${'$'}CHAT_COMPLETIONS_ENDPOINT" "${'$'}CHAT_COMPLETIONS_BODY_FILE")"
-                CHAT_CURL_EXIT=${'$'}?
-                if [ "${'$'}CHAT_CURL_EXIT" -ne 0 ]; then
-                  TEST_STATUS=NETWORK_ERROR
-                else
-                  HTTP_STATUS="${'$'}CHAT_HTTP_STATUS"
-                  TEST_API=chat/completions
-                  case "${'$'}CHAT_HTTP_STATUS" in
-                    2??) TEST_STATUS=SUCCESS ;;
-                    401|403) TEST_STATUS=UNAUTHORIZED ;;
-                    *) TEST_STATUS=HTTP_ERROR ;;
-                  esac
-                fi
-                ;;
-            esac
+            if [ "${'$'}CURL_EXIT" -ne 0 ]; then
+              TEST_STATUS=NETWORK_ERROR
+            else
+              case "${'$'}HTTP_STATUS" in
+                2??) TEST_STATUS=SUCCESS ;;
+                401|403) TEST_STATUS=UNAUTHORIZED ;;
+                *)
+                  if [ -z "${'$'}TEST_API_PROTOCOL" ]; then
+                    HTTP_STATUS="${'$'}(run_request "${'$'}CHAT_COMPLETIONS_ENDPOINT" "${'$'}CHAT_COMPLETIONS_BODY_FILE")"
+                    CURL_EXIT=${'$'}?
+                    TEST_API=chat/completions
+                    if [ "${'$'}CURL_EXIT" -ne 0 ]; then
+                      TEST_STATUS=NETWORK_ERROR
+                    else
+                      case "${'$'}HTTP_STATUS" in
+                        2??) TEST_STATUS=SUCCESS ;;
+                        401|403) TEST_STATUS=UNAUTHORIZED ;;
+                        *) TEST_STATUS=HTTP_ERROR ;;
+                      esac
+                    fi
+                  else
+                    TEST_STATUS=HTTP_ERROR
+                  fi
+                  ;;
+              esac
+            fi
             printf '${TEST_PREFIX}STATUS=%s\n' "${'$'}TEST_STATUS"
             printf '${TEST_PREFIX}MODEL=%s\n' "${'$'}TEST_MODEL"
-            printf '${TEST_PREFIX}API=%s\n' "${'$'}{TEST_API:-responses}"
+            printf '${TEST_PREFIX}API=%s\n' "${'$'}TEST_API"
             printf '${TEST_PREFIX}HTTP_STATUS=%s\n' "${'$'}HTTP_STATUS"
         """.trimIndent()
     }

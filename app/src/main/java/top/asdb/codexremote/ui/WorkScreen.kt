@@ -114,6 +114,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -176,6 +179,7 @@ import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.CustomModelDefinition
 import top.asdb.codexremote.data.FileChange
 import top.asdb.codexremote.data.MessageAttachment
+import top.asdb.codexremote.data.ModelApiProtocol
 import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
@@ -878,6 +882,7 @@ fun WorkScreen(
         ModelManagerSheet(
             models = state.models,
             customModels = modelSettings?.customModels.orEmpty(),
+            modelApiProtocols = state.activeAgentCapabilities.modelApiProtocols,
             hiddenModelIds = modelSettings?.hiddenModelIds.orEmpty(),
             apiModelOptions = state.apiModelOptions.takeIf {
                 state.apiModelOptionsProfileId == state.selectedProfileId
@@ -2747,6 +2752,7 @@ private data class ModelEditorRequest(
 private fun ModelManagerSheet(
     models: List<CodexModel>,
     customModels: List<CustomModelDefinition>,
+    modelApiProtocols: List<ModelApiProtocol>,
     hiddenModelIds: List<String>,
     apiModelOptions: List<ApiModelOption>,
     apiModelOptionsLoading: Boolean,
@@ -2793,6 +2799,7 @@ private fun ModelManagerSheet(
                 items(customModels, key = { "custom-${it.modelId}" }) { definition ->
                     ModelManagerCustomRow(
                         definition = definition,
+                        showApiProtocol = modelApiProtocols.isNotEmpty(),
                         onEdit = {
                             editorRequest = ModelEditorRequest(
                                 originalModelId = definition.modelId,
@@ -2852,6 +2859,7 @@ private fun ModelManagerSheet(
         CustomModelEditorDialog(
             request = request,
             existingModelIds = customModels.map { it.modelId },
+            modelApiProtocols = modelApiProtocols,
             apiModelOptions = apiModelOptions,
             apiModelOptionsLoading = apiModelOptionsLoading,
             apiModelOptionsError = apiModelOptionsError,
@@ -2893,6 +2901,7 @@ private fun ModelManagerSectionTitle(text: String) {
 @Composable
 private fun ModelManagerCustomRow(
     definition: CustomModelDefinition,
+    showApiProtocol: Boolean,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -2909,6 +2918,13 @@ private fun ModelManagerCustomRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (showApiProtocol) {
+                Text(
+                    definition.apiProtocol.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             ModelCapabilityText(definition.contextWindowTokens, definition.maxOutputTokens)
@@ -2962,10 +2978,12 @@ private fun ModelCapabilityText(contextWindowTokens: Long, maxOutputTokens: Long
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomModelEditorDialog(
     request: ModelEditorRequest,
     existingModelIds: List<String>,
+    modelApiProtocols: List<ModelApiProtocol>,
     apiModelOptions: List<ApiModelOption>,
     apiModelOptionsLoading: Boolean,
     apiModelOptionsError: String?,
@@ -2981,6 +2999,13 @@ private fun CustomModelEditorDialog(
     }
     var maxOutput by remember(request) {
         mutableStateOf(request.definition.maxOutputTokens.takeIf { it > 0L }?.toString().orEmpty())
+    }
+    var apiProtocol by remember(request, modelApiProtocols) {
+        mutableStateOf(
+            request.definition.apiProtocol.takeIf { it in modelApiProtocols }
+                ?: modelApiProtocols.firstOrNull()
+                ?: request.definition.apiProtocol,
+        )
     }
     var apiSearch by remember(request) { mutableStateOf("") }
     val normalizedId = modelId.trim()
@@ -3062,6 +3087,20 @@ private fun CustomModelEditorDialog(
                     }
                 }
                 HorizontalDivider(color = CodexBorder)
+                if (modelApiProtocols.isNotEmpty()) {
+                    Text("API 协议", style = MaterialTheme.typography.labelLarge)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        modelApiProtocols.forEachIndexed { index, protocol ->
+                            SegmentedButton(
+                                selected = apiProtocol == protocol,
+                                onClick = { apiProtocol = protocol },
+                                shape = SegmentedButtonDefaults.itemShape(index, modelApiProtocols.size),
+                                icon = {},
+                                label = { Text(protocol.label) },
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = modelId,
                     onValueChange = { modelId = it },
@@ -3112,6 +3151,7 @@ private fun CustomModelEditorDialog(
                             displayName = displayName.trim(),
                             contextWindowTokens = contextValue ?: 0L,
                             maxOutputTokens = maxOutputValue ?: 0L,
+                            apiProtocol = apiProtocol,
                         ),
                     )
                 },

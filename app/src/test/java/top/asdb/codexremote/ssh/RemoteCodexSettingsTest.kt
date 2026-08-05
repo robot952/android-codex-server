@@ -7,6 +7,7 @@ import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.TimeUnit
+import top.asdb.codexremote.data.ModelApiProtocol
 
 class RemoteCodexSettingsTest {
     @Test
@@ -436,6 +437,72 @@ class RemoteCodexSettingsTest {
             val result = RemoteCodexSettings.parseConnectionTest(stdout.lineSequence().toList())
             assertTrue(result.successful)
             assertTrue(result.message.contains("Chat Completions"))
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `connection test honors an explicitly selected API protocol`() {
+        val home = Files.createTempDirectory("codex-remote-test-selected-protocol").toFile()
+        try {
+            val bin = home.resolve("bin").apply { mkdirs() }
+            val curl = bin.resolve("curl")
+            curl.writeText(
+                """
+                #!/bin/sh
+                endpoint=
+                for argument in "${'$'}@"; do
+                  case "${'$'}argument" in
+                    https://*) endpoint="${'$'}argument" ;;
+                  esac
+                done
+                printf '%s\n' "${'$'}endpoint" >> "${'$'}HOME/endpoints"
+                case "${'$'}endpoint" in
+                  */responses) printf '404' ;;
+                  */chat/completions) printf '200' ;;
+                  *) exit 91 ;;
+                esac
+                """.trimIndent() + "\n",
+            )
+            assertTrue(curl.setExecutable(true))
+
+            fun run(protocol: ModelApiProtocol): Pair<String, String> {
+                home.resolve("endpoints").delete()
+                val process = ProcessBuilder("sh", "-s")
+                    .apply {
+                        environment()["HOME"] = home.absolutePath
+                        environment()["PATH"] = listOf(
+                            bin.absolutePath,
+                            System.getenv("PATH").orEmpty(),
+                        ).joinToString(":")
+                    }
+                    .start()
+                process.outputStream.bufferedWriter().use {
+                    it.write(
+                        RemoteCodexSettings.testConnectionScript(
+                            "https://gateway.example.com/v1",
+                            "sk-selected-protocol",
+                            "",
+                            "gpt-test",
+                            protocol,
+                        ),
+                    )
+                }
+                assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+                val stdout = process.inputStream.bufferedReader().readText()
+                val stderr = process.errorStream.bufferedReader().readText()
+                assertEquals(stderr, 0, process.exitValue())
+                return stdout to home.resolve("endpoints").readText()
+            }
+
+            val responses = run(ModelApiProtocol.Responses)
+            assertFalse(RemoteCodexSettings.parseConnectionTest(responses.first.lineSequence().toList()).successful)
+            assertEquals("https://gateway.example.com/v1/responses\n", responses.second)
+
+            val chat = run(ModelApiProtocol.ChatCompletions)
+            assertTrue(RemoteCodexSettings.parseConnectionTest(chat.first.lineSequence().toList()).successful)
+            assertEquals("https://gateway.example.com/v1/chat/completions\n", chat.second)
         } finally {
             home.deleteRecursively()
         }

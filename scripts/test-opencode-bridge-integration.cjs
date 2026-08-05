@@ -92,6 +92,54 @@ function streamCompletion(response, model) {
   response.end("data: [DONE]\n\n");
 }
 
+function streamResponse(response, model) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  const responseID = "resp-integration";
+  const messageID = "msg-integration";
+  const created = Math.floor(Date.now() / 1000);
+  function sendEvent(value) {
+    response.write("data: " + JSON.stringify(value) + "\n\n");
+  }
+  sendEvent({
+    type: "response.created",
+    response: { id: responseID, created_at: created, model: model },
+  });
+  sendEvent({
+    type: "response.output_item.added",
+    output_index: 0,
+    item: { type: "message", id: messageID, phase: "final_answer" },
+  });
+  sendEvent({
+    type: "response.output_text.delta",
+    item_id: messageID,
+    delta: "RESPONSES_MODEL_OK",
+  });
+  sendEvent({
+    type: "response.output_item.done",
+    output_index: 0,
+    item: { type: "message", id: messageID, phase: "final_answer" },
+  });
+  sendEvent({
+    type: "response.completed",
+    response: {
+      incomplete_details: null,
+      usage: {
+        input_tokens: 1,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens: 1,
+        output_tokens_details: { reasoning_tokens: 0 },
+      },
+      reasoning: null,
+      service_tier: null,
+    },
+  });
+  response.end("data: [DONE]\n\n");
+}
+
 function sendRpc(method, params, timeoutMs) {
   const id = nextID++;
   const timeout = timeoutMs || 30_000;
@@ -144,19 +192,34 @@ async function main() {
           data: [
             { id: "gpt-5-integration", object: "model" },
             { id: "gpt-5-integration-extra", object: "model" },
+            { id: "gpt-5-responses-integration", object: "model" },
           ],
         }));
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
         const body = await readJsonBody(request);
-        requests.push({ authorization: request.headers.authorization || "", body: body });
+        requests.push({
+          protocol: "chat_completions",
+          authorization: request.headers.authorization || "",
+          body: body,
+        });
         if (body.stream) {
           streamCompletion(response, body.model || "gpt-5-integration-extra");
         } else {
           response.writeHead(200, { "content-type": "application/json" });
           response.end(JSON.stringify(completionResponse(body.model || "gpt-5-integration-extra")));
         }
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v1/responses") {
+        const body = await readJsonBody(request);
+        requests.push({
+          protocol: "responses",
+          authorization: request.headers.authorization || "",
+          body: body,
+        });
+        streamResponse(response, body.model || "gpt-5-responses-integration");
         return;
       }
       response.writeHead(404, { "content-type": "application/json" });
@@ -260,6 +323,13 @@ async function main() {
         displayName: "Integration Model",
         contextWindowTokens: 200000,
         maxOutputTokens: 32000,
+        apiProtocol: "chat_completions",
+      }, {
+        modelId: "custom-api/gpt-5-responses-integration",
+        displayName: "Responses Integration Model",
+        contextWindowTokens: 180000,
+        maxOutputTokens: 24000,
+        apiProtocol: "responses",
       }],
     });
     assert.equal(saved.baseUrl, baseUrl);
@@ -313,6 +383,10 @@ async function main() {
       return model.id === "custom-api/gpt-5-integration-extra" &&
         model.contextWindowTokens === 128000 && model.maxOutputTokens === 16000;
     }), "Existing custom model is missing: " + JSON.stringify(managedModels));
+    assert(models.data.some(function (model) {
+      return model.id === "custom-api/gpt-5-responses-integration" &&
+        model.contextWindowTokens === 180000 && model.maxOutputTokens === 24000;
+    }), "Responses custom model is missing: " + JSON.stringify(managedModels));
     const persistedConfig = fs.existsSync(persistedConfigPath)
       ? fs.readFileSync(persistedConfigPath, "utf8")
       : "<missing opencode.jsonc>";
@@ -332,6 +406,14 @@ async function main() {
     ));
     assert.equal(parsedConfig.model, "custom-api/untouched");
     assert.equal(parsedConfig.provider["custom-api"].options.timeout, 30);
+    assert.equal(
+      parsedConfig.provider["custom-api"].models["gpt-5-integration"].provider.npm,
+      "@ai-sdk/openai-compatible",
+    );
+    assert.equal(
+      parsedConfig.provider["custom-api"].models["gpt-5-responses-integration"].provider.npm,
+      "@ai-sdk/openai",
+    );
     assert(persistedConfig.includes("This comment and the timeout are not managed"));
 
     const started = await sendRpc("thread/start");
@@ -368,12 +450,42 @@ async function main() {
         };
       })));
     assert.equal(turnRequest.body.reasoning_effort, "high");
+    assert.equal(turnRequest.protocol, "chat_completions");
     assert.equal(turnRequest.authorization, "Bearer " + expectedKey);
     assert(notifications.some(function (message) {
       return message.method === "item/completed" &&
         message.params && message.params.threadId === threadID &&
         message.params.item && message.params.item.type === "agentMessage" &&
-        message.params.item.text.includes("CUSTOM_MODEL_OK");
+      message.params.item.text.includes("CUSTOM_MODEL_OK");
+    }));
+
+    const responsesStarted = await sendRpc("thread/start");
+    const responsesThreadID = responsesStarted.thread.id;
+    assert(responsesThreadID);
+    await sendRpc("turn/start", {
+      threadId: responsesThreadID,
+      model: "custom-api/gpt-5-responses-integration",
+      effort: "high",
+      input: [{ type: "text", text: "Reply exactly RESPONSES_MODEL_OK" }],
+      approvalPolicy: "never",
+    });
+    await waitForNotification("turn/completed", function (params) {
+      return params.threadId === responsesThreadID;
+    }, 60_000);
+    const responsesRequest = requests.find(function (request) {
+      return request.protocol === "responses" &&
+        request.body.model === "gpt-5-responses-integration";
+    });
+    assert(responsesRequest, "OpenCode did not call /v1/responses: " +
+      JSON.stringify(requests.map(function (request) {
+        return { protocol: request.protocol, model: request.body.model };
+      })));
+    assert.equal(responsesRequest.authorization, "Bearer " + expectedKey);
+    assert(notifications.some(function (message) {
+      return message.method === "item/completed" &&
+        message.params && message.params.threadId === responsesThreadID &&
+        message.params.item && message.params.item.type === "agentMessage" &&
+        message.params.item.text.includes("RESPONSES_MODEL_OK");
     }));
 
     const finalRemoval = await sendRpc("agent/models/sync", {
@@ -381,6 +493,7 @@ async function main() {
       removeModelIds: [
         "custom-api/gpt-5-integration",
         "custom-api/gpt-5-integration-extra",
+        "custom-api/gpt-5-responses-integration",
         "custom-api/untouched",
       ],
     });
@@ -392,6 +505,7 @@ async function main() {
     assert(!finalModels.data.some(function (model) {
       return model.id === "custom-api/gpt-5-integration" ||
         model.id === "custom-api/gpt-5-integration-extra" ||
+        model.id === "custom-api/gpt-5-responses-integration" ||
         model.id === "custom-api/untouched";
     }));
     const finalConfigText = fs.readFileSync(persistedConfigPath, "utf8");

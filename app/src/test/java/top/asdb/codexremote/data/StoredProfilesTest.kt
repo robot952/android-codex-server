@@ -8,6 +8,32 @@ import org.junit.Test
 
 class StoredProfilesTest {
     @Test
+    fun `legacy custom models default to Chat Completions protocol`() {
+        val restored = Json.decodeFromString<StoredProfiles>(
+            """
+            {
+              "profiles": [{
+                "id": "legacy-opencode",
+                "agentModelSettings": {
+                  "OpenCode": {
+                    "customModels": [{"modelId":"custom-api/legacy-model"}]
+                  }
+                }
+              }]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            ModelApiProtocol.ChatCompletions,
+            restored.profiles.single()
+                .modelSettings(AgentKind.OpenCode)
+                .customModels.single()
+                .apiProtocol,
+        )
+    }
+
+    @Test
     fun `completed turn timings survive encrypted-profile payload serialization`() {
         val timing = TurnTiming(
             threadId = "thread-1",
@@ -63,7 +89,12 @@ class StoredProfilesTest {
                 AgentKind.Codex to AgentModelSettings(preferredModel = "gpt-5.2-codex"),
                 AgentKind.OpenCode to AgentModelSettings(
                     preferredModel = "anthropic/claude-sonnet-4",
-                    customModels = listOf(CustomModelDefinition(modelId = "anthropic/claude-sonnet-4")),
+                    customModels = listOf(
+                        CustomModelDefinition(
+                            modelId = "anthropic/claude-sonnet-4",
+                            apiProtocol = ModelApiProtocol.Responses,
+                        ),
+                    ),
                     hiddenModelIds = listOf("openai/gpt-4"),
                     managedModelIds = listOf(
                         "anthropic/claude-sonnet-4",
@@ -81,6 +112,10 @@ class StoredProfilesTest {
         assertEquals(AgentKind.OpenCode, restored.activeAgent)
         assertEquals("gpt-5.2-codex", restored.modelSettings(AgentKind.Codex).preferredModel)
         assertEquals("anthropic/claude-sonnet-4", restored.modelSettings(AgentKind.OpenCode).preferredModel)
+        assertEquals(
+            ModelApiProtocol.Responses,
+            restored.modelSettings(AgentKind.OpenCode).customModels.single().apiProtocol,
+        )
         assertEquals(listOf("openai/gpt-4"), restored.modelSettings(AgentKind.OpenCode).hiddenModelIds)
         assertEquals(
             listOf("anthropic/claude-sonnet-4", "codex-remote/removed-model"),

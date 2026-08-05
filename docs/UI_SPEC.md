@@ -68,6 +68,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   selected model's context limit. Reopening a cached thread retains its last known usage until the
   server sends a newer value.
 - Model and reasoning effort use a bottom sheet; sandbox choice uses a dedicated mode sheet
+- When an Agent advertises per-model API protocols, the custom-model editor uses a two-segment
+  `Chat Completions` / `Responses` control. The selected protocol is shown on the saved custom-model
+  row; Agents without that capability keep the same editor without a protocol control.
 - Approvals are blocking dialogs tied to the exact JSON-RPC request id
 - Stopping a running response and pausing an active goal both require an explicit confirmation dialog;
   cancelling leaves the response or goal running. Resuming an already paused goal remains a direct action.

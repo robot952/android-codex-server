@@ -19,6 +19,7 @@ import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.data.AgentMode
 import top.asdb.codexremote.data.ApiModelOption
 import top.asdb.codexremote.data.CustomModelDefinition
+import top.asdb.codexremote.data.ModelApiProtocol
 import top.asdb.codexremote.data.ServerProfile
 import top.asdb.codexremote.data.modelSettings
 import top.asdb.codexremote.ssh.RemoteBootstrap
@@ -55,6 +56,32 @@ private fun providerModelId(providerId: String, value: String): String {
     return normalized.takeIf(String::isNotBlank)?.let { id ->
         if (id.startsWith("$providerId/")) id else "$providerId/$id"
     }.orEmpty()
+}
+
+internal fun openCodeCustomModelParams(definition: CustomModelDefinition): JsonObject = buildJsonObject {
+    put("modelId", definition.modelId)
+    put("displayName", definition.displayName)
+    put("contextWindowTokens", definition.contextWindowTokens)
+    put("maxOutputTokens", definition.maxOutputTokens)
+    put("apiProtocol", definition.apiProtocol.wireValue)
+}
+
+internal fun openCodeCustomModelCacheKey(definition: CustomModelDefinition): String = listOf(
+    normalizeOpenCodeModelId(definition.modelId),
+    definition.displayName.trim(),
+    definition.contextWindowTokens.toString(),
+    definition.maxOutputTokens.toString(),
+    definition.apiProtocol.wireValue,
+).joinToString("\u0000")
+
+internal fun resolveOpenCodeModelApiProtocol(
+    modelId: String,
+    definitions: List<CustomModelDefinition>,
+): ModelApiProtocol {
+    val normalizedModelId = normalizeOpenCodeModelId(modelId)
+    return definitions.firstOrNull { definition ->
+        normalizeOpenCodeModelId(definition.modelId) == normalizedModelId
+    }?.apiProtocol ?: ModelApiProtocol.ChatCompletions
 }
 
 /**
@@ -216,12 +243,7 @@ class OpenCodeAgentClient(
                 put("preserveCurrentProvider", effectivePreserveCurrentProvider)
                 put("customModels", buildJsonArray {
                     profile.modelSettings(AgentKind.OpenCode).customModels.forEach { definition ->
-                        add(buildJsonObject {
-                            put("modelId", definition.modelId)
-                            put("displayName", definition.displayName)
-                            put("contextWindowTokens", definition.contextWindowTokens)
-                            put("maxOutputTokens", definition.maxOutputTokens)
-                        })
+                        add(openCodeCustomModelParams(definition))
                     }
                 })
             },
@@ -239,13 +261,17 @@ class OpenCodeAgentClient(
         apiKey: String,
         proxyUrl: String,
         testModel: String,
-    ): AgentConnectionTestResult = bootstrapTransport.testCodexGlobalSettings(
-        profile = profile,
-        baseUrl = baseUrl,
-        apiKey = apiKey,
-        proxyUrl = proxyUrl,
-        testModel = apiModelId(testModel),
-    )
+    ): AgentConnectionTestResult {
+        val definitions = profile.modelSettings(AgentKind.OpenCode).customModels
+        return bootstrapTransport.testCodexGlobalSettings(
+            profile = profile,
+            baseUrl = baseUrl,
+            apiKey = apiKey,
+            proxyUrl = proxyUrl,
+            testModel = apiModelId(testModel),
+            apiProtocol = resolveOpenCodeModelApiProtocol(testModel, definitions),
+        )
+    }
 
     override suspend fun fetchApiModels(
         profile: ServerProfile,
@@ -266,7 +292,7 @@ class OpenCodeAgentClient(
         definition: CustomModelDefinition,
     ) {
         val generation = delegate.currentGeneration() ?: return
-        val key = customModelKey(definition)
+        val key = openCodeCustomModelCacheKey(definition)
         if (ensuredCustomModels[key] == generation) return
         syncCustomModels(profile, listOf(definition), emptyList())
     }
@@ -279,14 +305,14 @@ class OpenCodeAgentClient(
         val generation = delegate.currentGeneration() ?: return
         val normalizedDefinitions = definitions.map { definition ->
             definition.copy(modelId = normalizeOpenCodeModelId(definition.modelId))
-        }.distinctBy { customModelKey(it) }
+        }.distinctBy(::openCodeCustomModelCacheKey)
         val normalizedRemovedIds = removedModelIds.asSequence()
             .map(::normalizeOpenCodeModelId)
             .filter(String::isNotBlank)
             .distinct()
             .toList()
         val pendingDefinitions = normalizedDefinitions.filter { definition ->
-            ensuredCustomModels[customModelKey(definition)] != generation
+            ensuredCustomModels[openCodeCustomModelCacheKey(definition)] != generation
         }
         if (pendingDefinitions.isEmpty() && normalizedRemovedIds.isEmpty()) return
         delegate.requestAdapterExtension(
@@ -294,12 +320,7 @@ class OpenCodeAgentClient(
             params = buildJsonObject {
                 put("models", buildJsonArray {
                     pendingDefinitions.forEach { definition ->
-                        add(buildJsonObject {
-                            put("modelId", definition.modelId)
-                            put("displayName", definition.displayName)
-                            put("contextWindowTokens", definition.contextWindowTokens)
-                            put("maxOutputTokens", definition.maxOutputTokens)
-                        })
+                        add(openCodeCustomModelParams(definition))
                     }
                 })
                 put("removeModelIds", buildJsonArray {
@@ -312,7 +333,7 @@ class OpenCodeAgentClient(
             normalizedRemovedIds.forEach(::removeCachedModel)
             pendingDefinitions.forEach { definition ->
                 removeCachedModel(definition.modelId)
-                ensuredCustomModels[customModelKey(definition)] = generation
+                ensuredCustomModels[openCodeCustomModelCacheKey(definition)] = generation
             }
         }
     }
@@ -330,13 +351,6 @@ class OpenCodeAgentClient(
         private const val INSTALL_TIMEOUT_MS = 20 * 60_000L
         private const val UNINSTALL_TIMEOUT_MS = 60_000L
         private const val SETTINGS_TIMEOUT_MS = 30_000L
-
-        private fun customModelKey(definition: CustomModelDefinition): String = listOf(
-            normalizeOpenCodeModelId(definition.modelId),
-            definition.displayName.trim(),
-            definition.contextWindowTokens.toString(),
-            definition.maxOutputTokens.toString(),
-        ).joinToString("\u0000")
 
         private fun modelIdFromCustomModelKey(key: String): String = key.substringBefore('\u0000')
 

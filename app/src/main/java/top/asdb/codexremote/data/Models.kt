@@ -1,5 +1,6 @@
 package top.asdb.codexremote.data
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.util.UUID
 
@@ -69,7 +70,7 @@ data class ServerProfile(
 
 @Serializable
 data class CustomModelDefinition(
-    /** Exact identifier sent to Codex in thread/start and turn/start. */
+    /** Exact identifier sent to the active Agent in thread/start and turn/start. */
     val modelId: String = "",
     /** Optional label used only by the Android picker. */
     val displayName: String = "",
@@ -77,7 +78,19 @@ data class CustomModelDefinition(
     val contextWindowTokens: Long = 0,
     /** Informational maximum output size in tokens; zero means unknown. */
     val maxOutputTokens: Long = 0,
+    /** HTTP API contract used by adapters that expose per-model protocol selection. */
+    val apiProtocol: ModelApiProtocol = ModelApiProtocol.ChatCompletions,
 )
+
+/** Agent-neutral model API protocols supported by compatible provider adapters. */
+@Serializable
+enum class ModelApiProtocol(val label: String, val wireValue: String) {
+    @SerialName("chat_completions")
+    ChatCompletions("Chat Completions", "chat_completions"),
+
+    @SerialName("responses")
+    Responses("Responses", "responses"),
+}
 
 @Serializable
 data class AgentModelSettings(
@@ -161,6 +174,7 @@ data class AgentConnectionKey(
 /** Feature gates supplied by an adapter instead of hard-coded agent-name checks in the UI. */
 data class AgentCapabilities(
     val models: Boolean = true,
+    val modelApiProtocols: List<ModelApiProtocol> = emptyList(),
     val reasoningEffort: Boolean = false,
     val approvals: Boolean = false,
     val archiveThread: Boolean = true,
@@ -195,6 +209,10 @@ data class AgentCapabilities(
         )
 
         val OpenCode = AgentCapabilities(
+            modelApiProtocols = listOf(
+                ModelApiProtocol.ChatCompletions,
+                ModelApiProtocol.Responses,
+            ),
             reasoningEffort = true,
             approvals = true,
             archiveThread = false,
