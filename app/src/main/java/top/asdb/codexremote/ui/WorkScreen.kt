@@ -261,7 +261,9 @@ fun WorkScreen(
     var fullAccessRequested by remember { mutableStateOf(false) }
     var compactRequested by remember { mutableStateOf(false) }
     var goalEditorVisible by remember { mutableStateOf(false) }
+    var goalPauseRequested by remember { mutableStateOf(false) }
     var goalDeleteRequested by remember { mutableStateOf(false) }
+    var stopRequested by remember { mutableStateOf(false) }
     var imagePreview by remember { mutableStateOf<RemoteImagePreview?>(null) }
     var imageLoadingPath by remember { mutableStateOf<String?>(null) }
     var imagePreviewError by remember { mutableStateOf<String?>(null) }
@@ -344,6 +346,21 @@ fun WorkScreen(
                 imageLoadingPath = null
             }
         }
+    }
+
+    val requestGoalPauseToggle: () -> Unit = {
+        if (shouldConfirmGoalPause(state.activeGoal?.status)) {
+            goalPauseRequested = true
+        } else {
+            onToggleGoalPause()
+        }
+    }
+
+    LaunchedEffect(state.running) {
+        if (!state.running) stopRequested = false
+    }
+    LaunchedEffect(state.activeGoal?.status) {
+        if (!shouldConfirmGoalPause(state.activeGoal?.status)) goalPauseRequested = false
     }
 
     DisposableEffect(lifecycleOwner, focusManager, keyboardController) {
@@ -544,12 +561,12 @@ fun WorkScreen(
                 onAttachFile = { documentPicker.launch(arrayOf("*/*")) },
                 onRemoveAttachment = onRemoveAttachment,
                 onSend = { onSend(state.composerDraft) },
-                onStop = onStop,
+                onStop = { stopRequested = true },
                 onShowModels = { showModels = true },
                 onShowPermissions = { showPermissions = true },
                 onCompact = { compactRequested = true },
                 onEditGoal = { goalEditorVisible = true },
-                onToggleGoalPause = onToggleGoalPause,
+                onToggleGoalPause = requestGoalPauseToggle,
                 onClearGoal = { goalDeleteRequested = true },
                 agents = backgroundAgents,
                 onOpenSubAgent = onOpenSubAgent,
@@ -970,6 +987,24 @@ fun WorkScreen(
         )
     }
 
+    if (stopRequested && state.running) {
+        AlertDialog(
+            onDismissRequest = { stopRequested = false },
+            icon = { Icon(Icons.Default.Stop, contentDescription = null) },
+            title = { Text("停止当前回复") },
+            text = { Text("确定停止当前正在运行的回复吗？已经生成的内容会保留。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    stopRequested = false
+                    if (state.running) onStop()
+                }) { Text("停止", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { stopRequested = false }) { Text("取消") }
+            },
+        )
+    }
+
     if (goalEditorVisible && state.activeAgentCapabilities.threadGoals) {
         var objective by remember(state.activeThread?.id, state.activeGoal?.objective) {
             mutableStateOf(state.activeGoal?.objective.orEmpty())
@@ -1001,6 +1036,29 @@ fun WorkScreen(
             },
             dismissButton = {
                 TextButton(onClick = { goalEditorVisible = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (goalPauseRequested && shouldConfirmGoalPause(state.activeGoal?.status) &&
+        state.activeAgentCapabilities.threadGoals
+    ) {
+        AlertDialog(
+            onDismissRequest = { goalPauseRequested = false },
+            icon = { Icon(Icons.Default.PauseCircleOutline, contentDescription = null) },
+            title = { Text("暂停目标") },
+            text = { Text("确定暂停当前目标吗？之后可以随时继续。") },
+            confirmButton = {
+                TextButton(
+                    enabled = !state.submitting,
+                    onClick = {
+                        goalPauseRequested = false
+                        if (shouldConfirmGoalPause(state.activeGoal?.status)) onToggleGoalPause()
+                    },
+                ) { Text("暂停") }
+            },
+            dismissButton = {
+                TextButton(onClick = { goalPauseRequested = false }) { Text("取消") }
             },
         )
     }
@@ -2475,6 +2533,9 @@ private fun goalStatusLabel(status: ThreadGoalStatus): String = when (status) {
     ThreadGoalStatus.Complete -> "已完成目标"
     ThreadGoalStatus.Unknown -> "目标"
 }
+
+internal fun shouldConfirmGoalPause(status: ThreadGoalStatus?): Boolean =
+    status == ThreadGoalStatus.Active
 
 private fun formatGoalElapsed(goal: ThreadGoal, nowMillis: Long): String {
     val updatedAtMillis = normalizeEpochMillis(goal.updatedAt) ?: nowMillis

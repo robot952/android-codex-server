@@ -1,9 +1,20 @@
 package top.asdb.codexremote.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import top.asdb.codexremote.data.ThreadGoalStatus
 
 class WorkScreenHelpersTest {
+    @Test
+    fun onlyActiveGoalRequiresPauseConfirmation() {
+        assertTrue(shouldConfirmGoalPause(ThreadGoalStatus.Active))
+        assertFalse(shouldConfirmGoalPause(ThreadGoalStatus.Paused))
+        assertFalse(shouldConfirmGoalPause(ThreadGoalStatus.Complete))
+        assertFalse(shouldConfirmGoalPause(null))
+    }
+
     @Test
     fun formatsTurnElapsedWithCompactUnits() {
         val startedAtMillis = 1_700_000_000_000L

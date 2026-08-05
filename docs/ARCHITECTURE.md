@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.89（versionCode 111）
+- Android 应用版本：1.7.90（versionCode 112）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -176,6 +176,8 @@ ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建�
 - 顶部齿轮显示“选择工作目录”、当前 Agent 的全局配置和“文件管理”；另保留独立 SSH 终端入口。
 - 未连接任何 Agent 时，“选择工作目录”和 Agent 模型配置灰显且不可点击；文件管理和 SSH 终端
   仍可使用。此处工作目录指 Agent 新会话的默认 workspace，不限制文件管理浏览路径。
+- 已有的 Agent 任务缓存只有在对应 lane 进入 `Connected` 后才允许渲染；SSH-only、断开或尚未
+  完成 Agent 握手时显示“Agent 尚未连接”和零任务，不用陈旧列表暗示 Agent 已可用。
 
 工作目录自动弹窗只允许在某台服务器第一次成功连接 Agent 时出现一次。ServerProfile 的
 workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择时再打开。
@@ -215,6 +217,7 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
   `thread.id`。
   远端恢复失败时留在子页以便重试；已经断线时恢复父快照并提示重连。提交或审批期间不得切入子页。
 - 支持目标的显示、编辑、暂停/继续和删除，目标是远程线程持久状态，不是本地假状态。
+- 停止运行中的回合和暂停活动目标都必须先经过确认弹框；取消不改变远端状态，继续已暂停目标可直接执行。
 
 DiffViewer.kt 负责全屏 unified diff；ContextUsage.kt 负责上下文占用计算；components/
 MarkdownText.kt 负责 Markwon 渲染。页面级修改不要把这些逻辑复制回 WorkScreen。ThreadSessionCache
@@ -874,7 +877,7 @@ prompt 路由与 Authorization，不得访问用户生产 API。
 | IME | 点击输入框、输入多行、隐藏/再开键盘 | 输入框不被盖，上方消息与键盘同帧移动，不自动抢焦点 |
 | 历史分页 | 顶部下拉未到/到阈值/释放 | 提示只在拉动时出现，显示“松开加载更多”，释放才加载 |
 | 滚动 | 阅读旧消息时新 delta 到达 | 保持阅读位置并显示回到底部箭头 |
-| 发送/停止 | 空闲发送、运行中点击停止 | 图标和状态正确，无重复 turn |
+| 发送/停止 | 空闲发送、运行中点击停止 | 停止先确认；取消保持运行，确认后才中断，无重复 turn |
 | 权限 | 三种模式及命令/文件审批 | 左下权限入口存在，审批关联正确 request id |
 | 会话菜单 | 打开操作菜单 | 目标、压缩、模型、权限均可用，不依赖斜杠 |
 | 目标 | 新建、编辑、暂停、重连、删除 | 与远程 thread 同步，重连后不被陈旧读取覆盖 |

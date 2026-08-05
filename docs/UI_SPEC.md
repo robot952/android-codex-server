@@ -24,6 +24,9 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
 - After the Agent handshake succeeds, the task list and model/workspace selections restore from the
   profile-and-Agent cache immediately. Model, task-list, and workspace refreshes continue in parallel;
   workspace latency must never keep the Agent page in a loading state.
+- Cached task rows remain hidden until the selected Agent lane is actually connected. An SSH-only page
+  shows the explicit "Agent 尚未连接" empty state and a zero task count, even when an older lane cache
+  exists; terminal, file management, and server settings that only need SSH remain available.
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 `thread/name/set`, and `thread/archive`.
@@ -62,6 +65,8 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   the server sends a newer value.
 - Model and reasoning effort use a bottom sheet; sandbox choice uses a dedicated mode sheet
 - Approvals are blocking dialogs tied to the exact JSON-RPC request id
+- Stopping a running response and pausing an active goal both require an explicit confirmation dialog;
+  cancelling leaves the response or goal running. Resuming an already paused goal remains a direct action.
 - Transient remote diagnostics use a compact, dark, width-bounded Snackbar. Raw stderr, nested JSON,
   request ids, and stack-like text never occupy the work surface; a nonfatal MCP/rmcp 403 explains
   that the main session remains usable while the related tool may be unavailable.

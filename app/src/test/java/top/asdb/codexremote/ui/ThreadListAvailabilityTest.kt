@@ -1,6 +1,7 @@
 package top.asdb.codexremote.ui
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.asdb.codexremote.data.AgentConnectionKey
@@ -8,8 +9,25 @@ import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
+import top.asdb.codexremote.data.CodexThread
 
 class ThreadListAvailabilityTest {
+    @Test
+    fun `disconnected agent never exposes cached task rows`() {
+        val cached = listOf(testThread("cached", "Cached task"))
+
+        assertEquals(emptyList<CodexThread>(), visibleAgentThreads(cached, "", agentConnected = false))
+        assertEquals(cached, visibleAgentThreads(cached, "", agentConnected = true))
+    }
+
+    @Test
+    fun `connected agent filters cached tasks by query`() {
+        val matching = testThread("match", "Server status")
+        val cached = listOf(matching, testThread("other", "Write tests"))
+
+        assertEquals(listOf(matching), visibleAgentThreads(cached, "server", agentConnected = true))
+    }
+
     @Test
     fun `ssh only keeps terminal and files enabled while agent controls stay disabled`() {
         val profileId = "server"
@@ -92,4 +110,16 @@ class ThreadListAvailabilityTest {
         assertFalse(availability.workspaceEnabled)
         assertFalse(availability.modelSettingsEnabled)
     }
+
+    private fun testThread(id: String, title: String) = CodexThread(
+        id = id,
+        title = title,
+        preview = title,
+        cwd = "/workspace",
+        source = "test",
+        status = "idle",
+        createdAt = 1L,
+        updatedAt = 1L,
+        cliVersion = "test",
+    )
 }

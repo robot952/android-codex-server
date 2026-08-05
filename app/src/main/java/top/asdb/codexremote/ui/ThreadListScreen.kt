@@ -207,11 +207,8 @@ fun ThreadListScreen(
                 val agentThreads = state.agentThreadLists[key]
                     ?: state.threads.takeIf { agent == state.activeAgent }
                     ?: emptyList()
-                val threads = agentThreads.filter { thread ->
-                    query.isBlank() || thread.title.contains(query, true) ||
-                        thread.preview.contains(query, true) || thread.cwd.contains(query, true)
-                }
                 val connected = state.agentConnectionStates[key]?.phase == ConnectionPhase.Connected
+                val threads = visibleAgentThreads(agentThreads, query, connected)
                 AgentThreadList(
                     agent = agent,
                     threads = threads,
@@ -223,6 +220,19 @@ fun ThreadListScreen(
                 )
             }
         }
+    }
+}
+
+internal fun visibleAgentThreads(
+    cachedThreads: List<CodexThread>,
+    query: String,
+    agentConnected: Boolean,
+): List<CodexThread> {
+    if (!agentConnected) return emptyList()
+    val normalizedQuery = query.trim()
+    return cachedThreads.filter { thread ->
+        normalizedQuery.isBlank() || thread.title.contains(normalizedQuery, true) ||
+            thread.preview.contains(normalizedQuery, true) || thread.cwd.contains(normalizedQuery, true)
     }
 }
 
