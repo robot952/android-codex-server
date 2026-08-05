@@ -444,7 +444,11 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
         AlertDialog(
             modifier = Modifier.imePadding(),
             onDismissRequest = {
-                if (!state.setupInProgress) viewModel.cancelRemoteSetup()
+                if (state.setupInProgress) {
+                    viewModel.minimizeRemoteSetup()
+                } else {
+                    viewModel.cancelRemoteSetup()
+                }
             },
             icon = { Icon(Icons.Default.Download, contentDescription = null) },
             title = { Text(setup.title) },
@@ -571,9 +575,14 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             },
             dismissButton = {
                 TextButton(
-                    onClick = viewModel::cancelRemoteSetup,
-                    enabled = !state.setupInProgress,
-                ) { Text("取消") }
+                    onClick = {
+                        if (state.setupInProgress) {
+                            viewModel.minimizeRemoteSetup()
+                        } else {
+                            viewModel.cancelRemoteSetup()
+                        }
+                    },
+                ) { Text(if (state.setupInProgress) "最小化" else "取消") }
             },
         )
     }
@@ -797,15 +806,16 @@ internal fun remoteSetupDisplay(setup: RemoteSetupPrompt): RemoteSetupDisplay {
                 versionLine = "OpenCode $version · 共享 Node ${BuildConfig.PINNED_NODE_VERSION}",
                 installPath = "$sharedRoot/opencode/releases/$version",
                 bridgePath = "${setup.home}/.local/bin/codex-remote-opencode-bridge",
-                proxyDescription = "仅用于本次远程 Node.js、共享运行时和 OpenCode 下载，并保存到此服务器",
+                proxyDescription = "仅用于本次远程 Node.js 和 OpenCode 下载，并保存到此服务器",
             )
         }
     }
 }
 
-private fun setupProgressFraction(message: String): Float {
+internal fun setupProgressFraction(message: String): Float {
     val normalized = message.trim()
     if (normalized.isBlank()) return 0.04f
+    if (normalized.startsWith("等待")) return 0f
     Regex("^(\\d{1,3})(?:%|\\|)").find(normalized)?.groupValues?.getOrNull(1)
         ?.toIntOrNull()?.let { return (it.coerceIn(0, 100) / 100f).coerceAtLeast(0.02f) }
     return when {

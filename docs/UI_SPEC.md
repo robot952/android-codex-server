@@ -4,13 +4,23 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
 
 ## Task view
 
-- Compact top bar with the literal `CODEX` product name and active server below it
+- Compact top bar with the neutral `Agent` title and active server below it
 - Refresh, new-task, and disconnect icon actions
 - Search field followed by an unframed, divider-separated task list
 - Each row renders runtime status, title, preview, source, working directory, and relative update time
 - Active work uses a fixed-size progress indicator so row layout does not shift
 - The active server header shows compact speedometer, memory, and storage icons with percentages; accessibility descriptions retain the metric names, while visible task rows stay unchanged
-- Tapping the `CODEX` title returns to the server list without disconnecting the selected server
+- Tapping the `Agent` title returns to the server list without disconnecting the selected server
+- The Agent switcher is a two-segment control for Codex and OpenCode. Its selected segment uses a
+  moving filled indicator, border, and stronger type weight; connection/install status remains visible
+  in each segment. Switching segments animates only the lower task-list viewport horizontally, so the
+  server metrics, search field, and actions do not reload or jump.
+- Selecting an Agent that needs dependencies opens its install prompt. While downloading, the prompt
+  can be minimized; the task continues and its overall percentage plus a compact progress bar appear
+  inside that Agent's segment. Tapping the segment restores the prompt for that lane. Codex and
+  OpenCode installers have independent jobs and never install the other Agent's package. Requests for
+  the same server are queued while retaining separate per-Agent progress; different servers may install
+  concurrently.
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 `thread/name/set`, and `thread/archive`.

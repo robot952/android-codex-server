@@ -101,17 +101,17 @@ class OpenCodeAgentClient(
         profile: ServerProfile,
         onProgress: (RemoteInstallProgress) -> Unit,
     ) {
-        val sharedRuntime = delegate.inspectRuntime(profile)
-        if (sharedRuntime.compatibleCommand == null) {
-            delegate.installRuntime(profile) { progress ->
-                onProgress(
-                    progress.copy(
-                        percent = (progress.percent * SHARED_RUNTIME_PERCENT / 100)
-                            .coerceIn(0, SHARED_RUNTIME_PERCENT),
-                        message = "准备共享运行时 · ${progress.message}",
-                    ),
-                )
-            }
+        bootstrapTransport.installNodeRuntimeDetailed(
+            profile = profile,
+            nodeVersion = BuildConfig.PINNED_NODE_VERSION,
+        ) { progress ->
+            onProgress(
+                progress.copy(
+                    percent = (progress.percent * SHARED_RUNTIME_PERCENT / 100)
+                        .coerceIn(0, SHARED_RUNTIME_PERCENT),
+                    message = "准备 OpenCode 运行时 · ${progress.message}",
+                ),
+            )
         }
         bootstrapTransport.runBootstrapScript(
             profile = profile,

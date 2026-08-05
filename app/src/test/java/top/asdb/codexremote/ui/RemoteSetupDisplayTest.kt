@@ -8,6 +8,11 @@ import top.asdb.codexremote.data.RemoteSetupPrompt
 
 class RemoteSetupDisplayTest {
     @Test
+    fun `queued setup progress remains at zero`() {
+        assertEquals(0f, setupProgressFraction("等待安装队列"), 0f)
+    }
+
+    @Test
     fun `OpenCode setup shows its release and bridge paths`() {
         val display = remoteSetupDisplay(
             RemoteSetupPrompt(

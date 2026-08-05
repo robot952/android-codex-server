@@ -70,4 +70,26 @@ class ThreadListAvailabilityTest {
 
         assertFalse(availability.agentSelectionEnabled)
     }
+
+    @Test
+    fun `agent switcher stays usable while the active lane downloads its runtime`() {
+        val profileId = "server"
+        val availability = serverPageAvailability(
+            AppUiState(
+                selectedProfileId = profileId,
+                activeAgent = AgentKind.OpenCode,
+                connectionStates = mapOf(
+                    profileId to ConnectionState(ConnectionPhase.Connected, "SSH 已连接"),
+                ),
+                agentConnectionStates = mapOf(
+                    AgentConnectionKey(profileId, AgentKind.OpenCode) to
+                        ConnectionState(ConnectionPhase.Installing, "正在安装 OpenCode"),
+                ),
+            ),
+        )
+
+        assertTrue(availability.agentSelectionEnabled)
+        assertFalse(availability.workspaceEnabled)
+        assertFalse(availability.modelSettingsEnabled)
+    }
 }

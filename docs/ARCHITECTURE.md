@@ -5,13 +5,13 @@
 
 文档基线：
 
-- Android 应用版本：1.7.87（versionCode 109）
+- Android 应用版本：1.7.88（versionCode 110）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
 - 主要技术：Kotlin、Jetpack Compose、Coroutines/Flow、JSch、kotlinx.serialization
-- 最后核对日期：2026-08-04
+- 最后核对日期：2026-08-05
 
 版本会变化。发布前必须以 app/build.gradle.kts、protocol/codex-version.txt 和
 protocol/node-version.txt 为准，不要只相信本文顶部的快照。
@@ -161,12 +161,18 @@ ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建�
 职责：
 
 - 显示当前服务器名称、连接状态、搜索、刷新、新建会话和会话列表。
-- 顶部 `CODEX` 标题可点击返回服务器列表；当前服务器名称下显示速度表、内存芯片、存储、网络图标及资源状态，点按任一指标可查看完整服务器资源详情。会话行本身不增加资源指标，保持原有高度和信息布局。
+- 顶部固定显示中性的 `Agent` 标题并可点击返回服务器列表；当前服务器名称下显示速度表、内存芯片、存储、网络图标及资源状态，点按任一指标可查看完整服务器资源详情。会话行本身不增加资源指标，保持原有高度和信息布局。
 - 正在工作的会话使用固定尺寸的转圈状态，避免列表布局跳动。
 - 从会话页返回时保留服务器级 SessionSnapshot，重复进入优先显示缓存后再远程校准。
 - 提供服务器切换弹窗；切换只改变当前展示，不主动断开其他服务器。
 - 列表顶部始终提供 Codex 和 OpenCode 分段控件。点击未连接的 Agent 时按需探测并启动该 lane；
   点击已连接的 Agent 只切换展示，另一条已连接通道保持运行。Agent 启动失败不影响 SSH 主机连接。
+- 分段控件用滑动底色、边框和粗体明确当前选择；切换时只对下方任务列表做左右滑入/滑出，服务器
+  指标、搜索和操作栏保持原位，不重新加载整个页面。每个 lane 的任务列表按 `profileId + AgentKind`
+  缓存，切回时优先复用已有内容。
+- Agent 依赖安装支持最小化：隐藏弹窗不会取消对应 lane 的远程安装，安装百分比和进度条显示在该
+  Agent 分段内；再次点击该分段恢复安装弹窗。Codex 与 OpenCode 使用独立安装 job，OpenCode 只
+  复用共享 Node.js，不执行 `@openai/codex` 的 npm 安装。
 - 顶部齿轮显示“选择工作目录”、当前 Agent 的全局配置和“文件管理”；另保留独立 SSH 终端入口。
 - 未连接任何 Agent 时，“选择工作目录”和 Agent 模型配置灰显且不可点击；文件管理和 SSH 终端
   仍可使用。此处工作目录指 Agent 新会话的默认 workspace，不限制文件管理浏览路径。
@@ -245,8 +251,8 @@ SshTerminalManager 为每个 profile 维护独立 generation、输入队列、re
 data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 
 - 全局/服务器：profiles、selectedProfileId、connectionStates、debugModeEnabled。
-- 连接流程：pendingFingerprint、remoteSetup、setupProgress。
-- 会话列表：threads、threadSearch、loading。
+- 连接流程：pendingFingerprint、remoteSetup、setupProgress、agentSetupStates。
+- 会话列表：threads、agentThreadLists、threadSearch、loading。
 - 当前会话：activeThread、timeline、activeTurnId、running、submitting。
 - 分页：olderTurnsCursor、olderTurnsLoading。
 - 会话配置：selectedModel、selectedEffort、approvalMode、sandbox。
@@ -265,6 +271,9 @@ data/Models.kt 的 AppUiState 是 Compose 唯一展示状态，主要分为：
 | SSH 主机客户端 | profileId | SshServerConnectionManager.Entry |
 | Agent 客户端 | profileId + AgentKind | AgentConnectionManager.Entry |
 | 连接状态 | 主机按 profileId；Agent 按 profileId + AgentKind | connectionStates / agentConnectionStates |
+| 安装状态与最小化进度 | profileId + AgentKind | agentSetupStates / setupJobs |
+| 安装执行队列 | profileId | setupMutexes |
+| 会话列表展示缓存 | profileId + AgentKind | agentThreadLists |
 | 页面会话快照 | profileId + AgentKind | AppViewModel.sessionSnapshots |
 | 待审批队列 | profileId + AgentKind | pendingApprovalsByProfile |
 | 恢复期通知缓冲 | profileId + AgentKind + threadId + generation | ResumeNotificationBuffer |
@@ -446,6 +455,10 @@ SSH 登录本身不会触发安装检查。RemoteBootstrap.probeScript 检查：
 - OpenCode 固定版本来自 protocol/opencode-version.txt，使用共享 Node.js，并优先从
   registry.npmmirror.com 下载；用户配置的安装代理同样传给 npm。OpenCode release 同时固定安装
   `jsonc-parser`，供 bridge 在保留注释的前提下结构化编辑全局 JSONC 配置。
+- Codex 安装只执行 Codex runtime lane；OpenCode 安装先调用共享 Node.js runtime lane，再单独执行
+  OpenCode release lane，不解析或下载 `@openai/codex`。两个 lane 的 job、进度和弹窗状态均按
+  `profileId + AgentKind` 隔离；同一服务器的安装 job 通过 profile 级互斥队列依次执行，避免共享
+  Node.js 目录和远端安装锁竞态，不同服务器仍可并行安装。
 - 通过 ::progress::总体百分比|当前下载百分比|说明|详情 回传可见进度；旧的
   ::progress::百分比|说明 格式仍可解析。Node.js 下载显示真实字节进度，Codex CLI 下载显示
   已处理组件数和安装目录大小；OpenCode 安装提示显示固定版本、

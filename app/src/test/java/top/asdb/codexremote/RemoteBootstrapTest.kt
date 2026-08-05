@@ -85,6 +85,8 @@ class RemoteBootstrapTest {
         assertFalse(script.contains("mkdir \"\$LOCK"))
         assertTrue(script.contains("bin/node\" --version"))
         assertTrue(script.contains("bin/npm\" --version"))
+        assertTrue(script.contains("for CANDIDATE in \"\$ROOT\"/runtime/\"\$NODE_NAME\"-*"))
+        assertTrue(script.contains("Reuse any verified matching"))
         assertTrue(script.contains("::progress::%s|%s|%s|%s"))
         assertTrue(script.contains("download_file"))
         assertTrue(script.contains("--package-lock-only"))
@@ -176,6 +178,75 @@ class RemoteBootstrapTest {
         process.outputStream.bufferedWriter().use {
             it.write(RemoteBootstrap.installScript("0.146.0", "22.17.0"))
         }
+
+        assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+    }
+
+    @Test
+    fun `node runtime installer reuses a verified suffixed release`() {
+        val home = Files.createTempDirectory("codex-remote-node-reuse").toFile()
+        try {
+            val machine = ProcessBuilder("uname", "-m").start().let { process ->
+                assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+                process.inputStream.bufferedReader().readText().trim()
+            }
+            val nodeArch = when (machine) {
+                "x86_64", "amd64" -> "x64"
+                "aarch64", "arm64" -> "arm64"
+                else -> return
+            }
+            val runtimeBin = home.resolve(
+                ".local/share/codex-remote/runtime/node-v22.17.0-linux-$nodeArch-existing/bin",
+            )
+            runtimeBin.mkdirs()
+            runtimeBin.resolve("node").apply {
+                writeText("#!/bin/sh\nprintf 'v22.17.0\\n'\n")
+                assertTrue(setExecutable(true))
+            }
+            runtimeBin.resolve("npm").apply {
+                writeText("#!/bin/sh\nprintf '10.0.0\\n'\n")
+                assertTrue(setExecutable(true))
+            }
+            val fakeBin = home.resolve("fake-bin").apply { mkdirs() }
+            fakeBin.resolve("curl").apply {
+                writeText("#!/bin/sh\nexit 99\n")
+                assertTrue(setExecutable(true))
+            }
+
+            val process = ProcessBuilder("sh", "-c", RemoteBootstrap.installNodeRuntimeScript("22.17.0"))
+                .apply {
+                    environment()["HOME"] = home.absolutePath
+                    environment()["PATH"] = "${fakeBin.absolutePath}:${environment()["PATH"]}"
+                }
+                .start()
+
+            assertTrue(process.waitFor(10, TimeUnit.SECONDS))
+            val output = process.inputStream.bufferedReader().readText()
+            assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+            assertTrue(output.contains("复用现有 Node.js 运行时"))
+            assertFalse(output.contains("下载独立 Node.js 运行时"))
+        } finally {
+            home.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `node-only installer is valid and never installs Codex`() {
+        val script = RemoteBootstrap.installNodeRuntimeScript("22.17.0")
+
+        assertTrue(script.contains("node-v22.17.0-linux-"))
+        assertTrue(script.contains("0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a"))
+        assertTrue(script.contains("3e99df8b01b27dc8b334a2a30d1cd500442b3b0877d217b308fd61a9ccfc33d4"))
+        assertTrue(script.contains("共享 Node.js 运行时已就绪"))
+        assertFalse(script.contains("@openai/codex"))
+        assertFalse(script.contains("node_modules/@openai/codex"))
+        assertFalse(script.contains("npm install"))
+        assertFalse(script.contains("npm\" ci"))
+        assertFalse(script.contains("准备 Codex CLI 安装目录"))
+
+        val process = ProcessBuilder("sh", "-n").start()
+        process.outputStream.bufferedWriter().use { it.write(script) }
 
         assertTrue(process.waitFor(5, TimeUnit.SECONDS))
         assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())

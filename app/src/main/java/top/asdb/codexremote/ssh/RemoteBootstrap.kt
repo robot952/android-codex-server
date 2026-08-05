@@ -265,7 +265,7 @@ object RemoteBootstrap {
         WATCHDOG_PID="${'$'}!"
         exec 9>"${'$'}LOCK_FILE"
         if ! flock -n 9; then
-          printf '另一个 Codex 安装任务正在运行\n' >&2
+          printf '另一个 Agent 安装任务正在运行\n' >&2
           exit 75
         fi
         printf '%s\n' "${'$'}${'$'}" >&9
@@ -275,11 +275,24 @@ object RemoteBootstrap {
           printf '用户目录可用空间不足 300 MB\n' >&2
           exit 74
         fi
+        node_runtime_works() {
+          [ -x "${'$'}1/bin/node" ] && [ -x "${'$'}1/bin/npm" ] && \
+            [ "${'$'}("${'$'}1/bin/node" --version 2>/dev/null || true)" = "v$nodeVersion" ] && \
+            PATH="${'$'}1/bin:${'$'}PATH" "${'$'}1/bin/npm" --version >/dev/null 2>&1
+        }
         NODE_OK=0
-        if [ -x "${'$'}NODE_DIR/bin/node" ] && [ -x "${'$'}NODE_DIR/bin/npm" ] && \
-          [ "${'$'}("${'$'}NODE_DIR/bin/node" --version 2>/dev/null || true)" = "v$nodeVersion" ] && \
-          PATH="${'$'}NODE_DIR/bin:${'$'}PATH" "${'$'}NODE_DIR/bin/npm" --version >/dev/null 2>&1; then
+        if node_runtime_works "${'$'}NODE_DIR"; then
           NODE_OK=1
+        else
+          # Releases are suffixed with their SHA and installer PID. Reuse any verified matching
+          # release instead of downloading the same Node archive for every Agent lane.
+          for CANDIDATE in "${'$'}ROOT"/runtime/"${'$'}NODE_NAME"-*; do
+            if node_runtime_works "${'$'}CANDIDATE"; then
+              NODE_DIR="${'$'}CANDIDATE"
+              NODE_OK=1
+              break
+            fi
+          done
         fi
         if [ "${'$'}NODE_OK" != 1 ]; then
           ARCHIVE="${'$'}WORK/${'$'}NODE_NAME.tar.gz"
@@ -397,6 +410,30 @@ object RemoteBootstrap {
     }
 
     /**
+     * Installs only the managed Node.js runtime used by Agent adapters.
+     *
+     * The common bootstrap, download, integrity, locking, and disconnect-watchdog logic stays in
+     * [installScript]. The Codex-specific tail is removed before this script is sent remotely, so
+     * installing OpenCode never resolves or downloads the Codex npm package.
+     */
+    fun installNodeRuntimeScript(
+        nodeVersion: String,
+        proxyUrl: String = "",
+    ): String {
+        val fullInstaller = installScript(
+            codexVersion = NODE_ONLY_UNUSED_CODEX_VERSION,
+            nodeVersion = nodeVersion,
+            proxyUrl = proxyUrl,
+        )
+        val codexTailMarker = "\nprogress 55 '' '准备 Codex CLI 安装目录'"
+        check(codexTailMarker in fullInstaller) { "Codex installer layout changed" }
+        return fullInstaller.substringBefore(codexTailMarker) + "\n" + """
+            INSTALL_COMMITTED=1
+            progress 100 '' '共享 Node.js 运行时已就绪' '仅准备 Agent 公共运行环境，未安装 Codex CLI'
+        """.trimIndent()
+    }
+
+    /**
      * Removes only the runtime and launcher installed by [installScript]. System Codex installs,
      * VS Code server data, account state in ~/.codex, and user workspaces are intentionally outside
      * these paths and are never touched. The app-owned ~/.codex-mobile attachment staging directory
@@ -480,6 +517,7 @@ object RemoteBootstrap {
     }
 
     private val SUPPORTED_PROXY_SCHEMES = setOf("http", "https", "socks5", "socks5h")
+    private const val NODE_ONLY_UNUSED_CODEX_VERSION = "node-runtime-only"
 }
 
 private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"

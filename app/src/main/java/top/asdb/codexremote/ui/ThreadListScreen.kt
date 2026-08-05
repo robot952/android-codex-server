@@ -1,23 +1,36 @@
 package top.asdb.codexremote.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -35,20 +48,20 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -84,14 +97,9 @@ fun ThreadListScreen(
     onSelectAgent: (AgentKind) -> Unit,
 ) {
     val query = state.threadSearch.trim()
-    val threads = state.threads.filter { thread ->
-        query.isBlank() || thread.title.contains(query, true) ||
-            thread.preview.contains(query, true) || thread.cwd.contains(query, true)
-    }
     val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
     val availability = serverPageAvailability(state)
     val hostConnected = availability.hostConnected
-    val activeAgentConnected = availability.agentConnected
 
     Scaffold(
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
@@ -103,11 +111,11 @@ fun ThreadListScreen(
                             .clickable(onClick = onBackToServers)
                             .semantics { contentDescription = "返回服务器列表" },
                     ) {
-                        Text(state.activeAgent.label.uppercase(), fontWeight = FontWeight.SemiBold)
+                        Text("Agent", fontWeight = FontWeight.SemiBold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 Modifier.size(6.dp).clip(CircleShape).background(
-                                    if (activeAgentConnected) {
+                                    if (hostConnected) {
                                         CodexGreen
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -167,101 +175,232 @@ fun ThreadListScreen(
                 showResourceDetails = true,
             )
             if (profile != null) {
-                SingleChoiceSegmentedButtonRow(
+                AgentSwitcher(
+                    state = state,
+                    profileId = profile.id,
+                    enabled = availability.agentSelectionEnabled,
+                    onSelectAgent = onSelectAgent,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 7.dp),
-                ) {
-                    AgentKind.entries.forEachIndexed { index, agent ->
-                        val phase = state.agentConnectionStates[AgentConnectionKey(profile.id, agent)]?.phase
-                            ?: ConnectionPhase.Disconnected
-                        SegmentedButton(
-                            selected = state.activeAgent == agent,
-                            onClick = { onSelectAgent(agent) },
-                            enabled = availability.agentSelectionEnabled,
-                            shape = SegmentedButtonDefaults.itemShape(index, AgentKind.entries.size),
-                            label = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        Modifier.size(6.dp).clip(CircleShape).background(
-                                            when (phase) {
-                                                ConnectionPhase.Connected -> CodexGreen
-                                                ConnectionPhase.Failed -> MaterialTheme.colorScheme.error
-                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                        ),
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(agent.label)
-                                }
-                            },
-                        )
-                    }
-                }
+                )
             }
             SearchBox(
                 value = state.threadSearch,
                 onValueChange = onSearchChange,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    if (query.isBlank()) "最近任务" else "搜索结果",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "${threads.size}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            AnimatedContent(
+                targetState = state.activeAgent,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    val movingRight = targetState.ordinal > initialState.ordinal
+                    val enter = slideInHorizontally(tween(220)) { width ->
+                        if (movingRight) width else -width
+                    } + fadeIn(tween(160))
+                    val exit = slideOutHorizontally(tween(220)) { width ->
+                        if (movingRight) -width else width
+                    } + fadeOut(tween(120))
+                    enter togetherWith exit
+                },
+                label = "agent-task-list",
+            ) { agent ->
+                val key = AgentConnectionKey(profile?.id.orEmpty(), agent)
+                val agentThreads = state.agentThreadLists[key]
+                    ?: state.threads.takeIf { agent == state.activeAgent }
+                    ?: emptyList()
+                val threads = agentThreads.filter { thread ->
+                    query.isBlank() || thread.title.contains(query, true) ||
+                        thread.preview.contains(query, true) || thread.cwd.contains(query, true)
+                }
+                val connected = state.agentConnectionStates[key]?.phase == ConnectionPhase.Connected
+                AgentThreadList(
+                    agent = agent,
+                    threads = threads,
+                    query = query,
+                    hostConnected = hostConnected,
+                    agentConnected = connected,
+                    loading = agent == state.activeAgent && state.loading,
+                    onOpen = onOpen,
                 )
             }
+        }
+    }
+}
 
-            Box(Modifier.fillMaxSize()) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        start = 10.dp,
-                        end = 10.dp,
-                        bottom = 16.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(0.dp),
+@Composable
+private fun AgentSwitcher(
+    state: AppUiState,
+    profileId: String,
+    enabled: Boolean,
+    onSelectAgent: (AgentKind) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val agents = AgentKind.entries
+    val selectedIndex = agents.indexOf(state.activeAgent).coerceAtLeast(0)
+    val outerShape = RoundedCornerShape(10.dp)
+    BoxWithConstraints(
+        modifier = modifier.height(54.dp).clip(outerShape)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, CodexBorder, outerShape),
+    ) {
+        val segmentWidth = maxWidth / agents.size
+        val indicatorOffset by animateDpAsState(
+            targetValue = segmentWidth * selectedIndex,
+            animationSpec = tween(durationMillis = 220),
+            label = "agent-selector-position",
+        )
+        val indicatorShape = RoundedCornerShape(7.dp)
+        Box(
+            modifier = Modifier.offset(x = indicatorOffset).width(segmentWidth).fillMaxHeight()
+                .padding(3.dp).clip(indicatorShape)
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .border(1.dp, CodexGreen.copy(alpha = 0.72f), indicatorShape),
+        )
+        Row(Modifier.fillMaxSize()) {
+            agents.forEach { agent ->
+                val key = AgentConnectionKey(profileId, agent)
+                val phase = state.agentConnectionStates[key]?.phase ?: ConnectionPhase.Disconnected
+                val setup = state.agentSetupStates[key]
+                val selected = state.activeAgent == agent
+                val setupStatus = when {
+                    setup?.inProgress == true && setup.progress.startsWith("等待") -> "等待"
+                    setup?.inProgress == true -> "${setup.percent.coerceIn(0, 100)}%"
+                    phase == ConnectionPhase.Failed && setup?.prompt != null -> "失败"
+                    setup?.prompt != null -> "待安装"
+                    else -> null
+                }
+                val statusColor = when (phase) {
+                    ConnectionPhase.Connected -> CodexGreen
+                    ConnectionPhase.Failed -> MaterialTheme.colorScheme.error
+                    ConnectionPhase.Installing -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight()
+                        .selectable(
+                            selected = selected,
+                            enabled = enabled,
+                            role = Role.Tab,
+                            onClick = { onSelectAgent(agent) },
+                        )
+                        .semantics {
+                            contentDescription = buildString {
+                                append(agent.label)
+                                setupStatus?.let { append("，安装进度 $it") }
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    items(threads, key = { it.id }) { thread ->
-                        ThreadRow(thread, onClick = { onOpen(thread) })
-                    }
-                }
-                if (threads.isEmpty() && !state.loading) {
-                    Column(
-                        Modifier.align(Alignment.Center),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Icon(
-                            Icons.Default.Terminal,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(30.dp),
-                        )
-                        Spacer(Modifier.height(9.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
+                        Spacer(Modifier.width(7.dp))
                         Text(
-                            when {
-                                !hostConnected -> "SSH 尚未连接"
-                                !activeAgentConnected -> "请选择 Codex 或 OpenCode 开始"
-                                query.isBlank() -> "暂无任务"
-                                else -> "没有匹配任务"
+                            agent.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        setupStatus?.let { status ->
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                status,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (setup?.inProgress == true) CodexGreen else statusColor,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                    if (setup?.inProgress == true) {
+                        Spacer(Modifier.height(5.dp))
+                        LinearProgressIndicator(
+                            progress = { setup.percent.coerceIn(0, 100) / 100f },
+                            modifier = Modifier.fillMaxWidth().height(3.dp),
+                            color = CodexGreen,
+                            trackColor = CodexBorder,
                         )
                     }
                 }
-                if (state.loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center).size(26.dp),
-                        strokeWidth = 2.dp,
+            }
+        }
+    }
+}
+
+@Composable
+private fun AgentThreadList(
+    agent: AgentKind,
+    threads: List<CodexThread>,
+    query: String,
+    hostConnected: Boolean,
+    agentConnected: Boolean,
+    loading: Boolean,
+    onOpen: (CodexThread) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (query.isBlank()) "最近任务" else "搜索结果",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "${threads.size}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = 10.dp,
+                    end = 10.dp,
+                    bottom = 16.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                items(threads, key = { it.id }) { thread ->
+                    ThreadRow(thread, onClick = { onOpen(thread) })
+                }
+            }
+            if (threads.isEmpty() && !loading) {
+                Column(
+                    Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        Icons.Default.Terminal,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(30.dp),
+                    )
+                    Spacer(Modifier.height(9.dp))
+                    Text(
+                        when {
+                            !hostConnected -> "SSH 尚未连接"
+                            !agentConnected -> "${agent.label} 尚未连接"
+                            query.isBlank() -> "暂无任务"
+                            else -> "没有匹配任务"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.align(Alignment.Center).size(26.dp),
+                    strokeWidth = 2.dp,
+                )
             }
         }
     }
@@ -286,15 +425,11 @@ internal fun serverPageAvailability(state: AppUiState): ServerPageAvailability {
     val agentConnected = profileId != null &&
         state.agentConnectionStates[AgentConnectionKey(profileId, state.activeAgent)]?.phase ==
         ConnectionPhase.Connected
-    val agentBusy = profileId != null && (
-        state.setupInProgress || state.agentConnectionStates.any { (key, connection) ->
-            key.profileId == profileId && connection.phase in setOf(
-                ConnectionPhase.Probing,
-                ConnectionPhase.Connecting,
-                ConnectionPhase.Installing,
-            )
-        }
-    )
+    val agentBusy = profileId != null &&
+        state.agentConnectionStates[AgentConnectionKey(profileId, state.activeAgent)]?.phase in setOf(
+            ConnectionPhase.Probing,
+            ConnectionPhase.Connecting,
+        )
     return ServerPageAvailability(hostConnected, agentConnected, agentBusy)
 }
 

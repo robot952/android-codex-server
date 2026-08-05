@@ -312,6 +312,24 @@ class SshCodexTransport {
         }
     }
 
+    suspend fun installNodeRuntimeDetailed(
+        profile: ServerProfile,
+        nodeVersion: String,
+        onProgress: (RemoteInstallProgress) -> Unit,
+    ) {
+        executeScript(
+            profile = profile,
+            script = RemoteBootstrap.installNodeRuntimeScript(nodeVersion, profile.proxyUrl),
+            timeoutMs = INSTALL_TIMEOUT_MS,
+            remoteCommand = INSTALL_SHELL_COMMAND,
+            operationName = "安装共享 Node.js 运行时",
+        ) { line ->
+            if (line.startsWith(PROGRESS_PREFIX)) {
+                onProgress(parseInstallProgress(line.removePrefix(PROGRESS_PREFIX)))
+            }
+        }
+    }
+
     /** Removes only the managed Codex Remote runtime; system and VS Code Codex installs are kept. */
     suspend fun uninstallRemote(profile: ServerProfile) {
         executeScript(

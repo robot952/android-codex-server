@@ -491,6 +491,18 @@ data class RemoteSetupPrompt(
     val agent: AgentKind = AgentKind.Codex,
 )
 
+/** Runtime installation state kept independently for each server and Agent lane. */
+data class AgentSetupState(
+    val prompt: RemoteSetupPrompt? = null,
+    val inProgress: Boolean = false,
+    val progress: String = "",
+    val percent: Int = 0,
+    val detail: String = "",
+    val downloadPercent: Int? = null,
+    /** The dialog is hidden while the remote installer continues in the foreground service. */
+    val minimized: Boolean = false,
+)
+
 /** User-level provider configuration exposed by an Agent settings adapter. */
 data class AgentGlobalSettings(
     val baseUrl: String = "",
@@ -545,6 +557,10 @@ data class AppUiState(
     val setupProgressDetail: String = "",
     /** Progress within the active download, separate from the full installation percentage. */
     val setupDownloadPercent: Int? = null,
+    /** Installation progress for every Agent lane on the selected or background servers. */
+    val agentSetupStates: Map<AgentConnectionKey, AgentSetupState> = emptyMap(),
+    /** Cached task lists used to animate between Agent lanes without rebuilding the whole page. */
+    val agentThreadLists: Map<AgentConnectionKey, List<CodexThread>> = emptyMap(),
     val threads: List<CodexThread> = emptyList(),
     val threadSearch: String = "",
     val activeThread: CodexThread? = null,
