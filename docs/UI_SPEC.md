@@ -62,9 +62,11 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   thread id; a mismatched response is retried once and then rejected, never rendered under the
   child Agent name. Unscoped streaming items are also rejected while viewing a child.
 - The context ring opens a compact popover with server-reported current-context usage: used/remaining
-  percentage and used/window token counts. It is informational; manual compaction remains an explicit
-  command in the composer action menu. Reopening a cached thread retains its last known usage until
-  the server sends a newer value.
+  percentage plus used, remaining, and total token counts. It is informational; manual compaction
+  remains an explicit command in the composer action menu. Codex reads the native token-usage event;
+  the OpenCode bridge derives the same neutral payload from the latest assistant message and the
+  selected model's context limit. Reopening a cached thread retains its last known usage until the
+  server sends a newer value.
 - Model and reasoning effort use a bottom sheet; sandbox choice uses a dedicated mode sheet
 - Approvals are blocking dialogs tied to the exact JSON-RPC request id
 - Stopping a running response and pausing an active goal both require an explicit confirmation dialog;

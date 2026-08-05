@@ -35,6 +35,9 @@ const messageInfo = new Map();
 const messageToTurn = new Map();
 const pendingPermissions = new Map();
 const pendingQuestions = new Map();
+const modelContextWindows = new Map();
+const publishedTokenUsage = new Map();
+let modelCatalogRefresh = null;
 let jsoncParserModule = null;
 
 function send(value) {
@@ -156,6 +159,116 @@ function mapUserMessage(info, parts) {
     type: "userMessage",
     content: content,
   };
+}
+
+function nonNegativeTokenCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+}
+
+/**
+ * Converts OpenCode's AssistantMessage.tokens shape to the neutral token breakdown used by the
+ * Android client. OpenCode counts cache reads/writes as part of the context window as well.
+ */
+function mapMessageTokenUsage(info, contextWindowTokens) {
+  const tokens = objectValue(info && info.tokens);
+  if (!Object.keys(tokens).length) return null;
+  const cache = objectValue(tokens.cache);
+  const cachedInputTokens = nonNegativeTokenCount(
+    cache.read ?? tokens.cachedInputTokens ?? tokens.cacheRead,
+  );
+  const inputTokens = nonNegativeTokenCount(tokens.input ?? tokens.inputTokens ?? tokens.prompt_tokens);
+  const outputTokens = nonNegativeTokenCount(tokens.output ?? tokens.outputTokens ?? tokens.completion_tokens);
+  const reasoningOutputTokens = nonNegativeTokenCount(tokens.reasoning ?? tokens.reasoningOutputTokens);
+  const cacheWriteTokens = nonNegativeTokenCount(cache.write ?? tokens.cacheWrite);
+  const totalTokens = cachedInputTokens + inputTokens + outputTokens +
+    reasoningOutputTokens + cacheWriteTokens;
+  const contextWindow = nonNegativeTokenCount(contextWindowTokens);
+  if (totalTokens <= 0 || contextWindow <= 0) return null;
+  const last = {
+    cachedInputTokens: cachedInputTokens,
+    inputTokens: inputTokens,
+    outputTokens: outputTokens,
+    reasoningOutputTokens: reasoningOutputTokens,
+    totalTokens: totalTokens,
+  };
+  return {
+    // The Android reducer uses `last` for the context ring. `total` is kept equal to the latest
+    // OpenCode sample because the bridge only receives the latest assistant message here; the UI
+    // deliberately does not use the cumulative thread total for the ring.
+    last: last,
+    total: last,
+    modelContextWindow: contextWindow,
+  };
+}
+
+function modelReferenceFromInfo(info, sessionID) {
+  const providerID = String(info && info.providerID || "").trim();
+  const modelID = String(info && info.modelID || "").trim();
+  if (providerID && modelID) return providerID + "/" + modelID;
+  const active = activeTurns.get(sessionID);
+  return active && active.modelReference || "";
+}
+
+function modelContextWindowForInfo(info, sessionID) {
+  const reference = modelReferenceFromInfo(info, sessionID);
+  if (!reference) return 0;
+  return modelContextWindows.get(reference) || 0;
+}
+
+function publishTokenUsage(sessionID, tokenUsage) {
+  if (!sessionID || !tokenUsage) return;
+  const signature = JSON.stringify(tokenUsage);
+  if (publishedTokenUsage.get(sessionID) === signature) return;
+  publishedTokenUsage.set(sessionID, signature);
+  notify("thread/tokenUsage/updated", {
+    threadId: sessionID,
+    tokenUsage: tokenUsage,
+  });
+}
+
+function tokenUsageForInfo(info, sessionID) {
+  return mapMessageTokenUsage(info, modelContextWindowForInfo(info, sessionID));
+}
+
+async function refreshModelContextWindows() {
+  if (modelCatalogRefresh) return modelCatalogRefresh;
+  modelCatalogRefresh = request("/provider")
+    .then(function (providers) {
+      mapModels(providers || {});
+    })
+    .catch(function () {
+      // Model limits are optional in OpenCode provider metadata. A missing limit is represented
+      // as an unavailable context ring rather than failing an otherwise usable turn.
+    })
+    .finally(function () {
+      modelCatalogRefresh = null;
+    });
+  return modelCatalogRefresh;
+}
+
+async function tokenUsageForMessages(messages) {
+  const latest = (messages || []).slice().reverse().find(function (message) {
+    const info = message && message.info;
+    return info && info.role === "assistant" && Object.keys(objectValue(info.tokens)).length;
+  });
+  if (!latest) return null;
+  const sessionID = latest.info.sessionID || "";
+  let usage = tokenUsageForInfo(latest.info, sessionID);
+  if (!usage) {
+    await refreshModelContextWindows();
+    usage = tokenUsageForInfo(latest.info, sessionID);
+  }
+  return usage;
+}
+
+async function publishTokenUsageForInfo(info, sessionID) {
+  let usage = tokenUsageForInfo(info, sessionID);
+  if (!usage) {
+    await refreshModelContextWindows();
+    usage = tokenUsageForInfo(info, sessionID);
+  }
+  publishTokenUsage(sessionID, usage);
 }
 
 function toolStatus(state) {
@@ -303,12 +416,15 @@ async function hydrateSession(session, statuses) {
   const messages = await sessionMessages(session.id, 200);
   const thread = mapSession(session, status);
   thread.turns = groupMessages(messages, busy);
+  const tokenUsage = await tokenUsageForMessages(messages);
+  if (tokenUsage) thread.tokenUsage = tokenUsage;
   if (busy && thread.turns.length && !activeTurns.has(session.id)) {
     const latest = thread.turns[thread.turns.length - 1];
     activeTurns.set(session.id, {
       id: latest.id,
       startedAt: latest.startedAt,
       approvalPolicy: "untrusted",
+      modelReference: "",
     });
   }
   return thread;
@@ -1276,12 +1392,15 @@ async function refreshAfterConfigFileEdit(modelIds, removeDefaultModel) {
 function mapModels(providers) {
   const connected = new Set(providers.connected || []);
   const data = [];
+  const contextWindows = new Map();
   for (const provider of providers.all || []) {
-    if (connected.size && !connected.has(provider.id)) continue;
     for (const modelKey of Object.keys(provider.models || {})) {
       const model = provider.models[modelKey] || {};
       const modelID = model.id || modelKey;
       const id = provider.id + "/" + modelID;
+      const contextWindow = nonNegativeTokenCount(model.limit && model.limit.context);
+      if (contextWindow > 0) contextWindows.set(id, contextWindow);
+      if (connected.size && !connected.has(provider.id)) continue;
       const variants = objectValue(model.variants);
       const efforts = managedReasoningEfforts.filter(function (effort) {
         return hasOwn(variants, effort);
@@ -1294,11 +1413,13 @@ function mapModels(providers) {
         isDefault: providers.default && providers.default[provider.id] === modelID,
         defaultReasoningEffort: "",
         supportedReasoningEfforts: efforts,
-        contextWindowTokens: Number(model.limit && model.limit.context || 0),
-        maxOutputTokens: Number(model.limit && model.limit.output || 0),
+        contextWindowTokens: contextWindow,
+        maxOutputTokens: nonNegativeTokenCount(model.limit && model.limit.output),
       });
     }
   }
+  modelContextWindows.clear();
+  contextWindows.forEach(function (value, key) { modelContextWindows.set(key, value); });
   return data;
 }
 
@@ -1322,7 +1443,11 @@ function inputParts(input) {
 async function sendPrompt(sessionID, params) {
   const body = { parts: inputParts(params.input) };
   const model = parseModel(normalizeManagedModelReference(params.model));
-  if (model) body.model = model;
+  if (model) {
+    body.model = model;
+    const active = activeTurns.get(sessionID);
+    if (active) active.modelReference = model.providerID + "/" + model.modelID;
+  }
   const variant = normalizeReasoningEffort(params.effort);
   if (variant) body.variant = variant;
   await request("/session/" + encodeURIComponent(sessionID) + "/prompt_async", {
@@ -1399,6 +1524,7 @@ async function handleRequest(method, params) {
       id: turnID,
       startedAt: Date.now(),
       approvalPolicy: params.approvalPolicy || "untrusted",
+      modelReference: "",
     });
     notify("turn/started", {
       threadId: params.threadId,
@@ -1442,6 +1568,8 @@ async function handleRequest(method, params) {
 async function emitCurrentTurn(sessionID, turn) {
   try {
     const messages = await sessionMessages(sessionID, 200);
+    const tokenUsage = await tokenUsageForMessages(messages);
+    publishTokenUsage(sessionID, tokenUsage);
     const turns = groupMessages(messages, true);
     const current = turns.length ? turns[turns.length - 1] : null;
     if (!current) return;
@@ -1687,7 +1815,12 @@ async function handleEvent(rawEvent) {
     const info = properties.info || {};
     messageInfo.set(info.id, info);
     if (info.role === "user") messageToTurn.set(info.id, info.id);
-    if (info.role === "assistant") messageToTurn.set(info.id, info.parentID || info.id);
+    if (info.role === "assistant") {
+      messageToTurn.set(info.id, info.parentID || info.id);
+      Promise.resolve(publishTokenUsageForInfo(info, info.sessionID || "")).catch(function (error) {
+        notify("warning", { threadId: info.sessionID || "", message: error.message || String(error) });
+      });
+    }
     return;
   }
   if (event.type === "message.part.updated") {
@@ -1728,6 +1861,7 @@ async function handleEvent(rawEvent) {
         id: turnID,
         startedAt: Date.now(),
         approvalPolicy: "untrusted",
+        modelReference: "",
       });
       notify("turn/started", {
         threadId: sessionID,
@@ -1959,6 +2093,7 @@ module.exports = {
   healthVersion: healthVersion,
   isSessionActive: isSessionActive,
   mapGlobalSettings: mapGlobalSettings,
+  mapMessageTokenUsage: mapMessageTokenUsage,
   mapModels: mapModels,
   mapPart: mapPart,
   mapSession: mapSession,

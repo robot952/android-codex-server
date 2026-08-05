@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.91（versionCode 113）
+- Android 应用版本：1.7.92（versionCode 114）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -192,7 +192,7 @@ workspacePromptShown 和 workspace 负责记忆，之后只有用户主动选择
   Codex 思考强度控件。
 - 正在运行时，主动作显示停止图标；空闲时显示发送图标。
 - 输入区操作顺序维持“小型上下文圆环、模型、发送/停止”这一产品契约。圆环点击显示服务器返回的
-  本轮上下文已用/剩余百分比和已用/总标记，不触发压缩确认；手动压缩保留在明确的会话操作菜单。
+  本轮上下文已用/剩余百分比和已用/剩余/总标记，不触发压缩确认；手动压缩保留在明确的会话操作菜单。
 - 权限选择提供 VS Code 风格的请求批准、替我审批、完全访问三种模式。输入区入口固定显示“权限”，
   只用不同图标表达当前模式，不重复显示较长的模式名称；模型按钮使用剩余弹性宽度。
 - “会话操作”菜单提供目标、压缩、模型和权限入口，不依赖复杂的斜杠命令识别。
@@ -352,6 +352,13 @@ CodexAppServerClient 直接使用上述 JSON-RPC 通道。OpenCodeAgentClient �
 取消和 generation 防护，但远端先启动 `opencode-bridge.cjs`：桥接只在服务器回环地址启动带随机
 Basic Auth 的 OpenCode HTTP 服务，把 REST/SSE 会话、消息、权限和模型事件转换为共享 JSONL 契约。
 SSH stdin 关闭或桥接收到终止信号时必须同时结束回环 HTTP 子进程。
+
+OpenCode 的上下文用量也由 bridge 归一到共享契约：当前上下文已用量取最近一条 assistant message 的
+`input + output + reasoning + cache.read + cache.write`，模型总长度取 `/provider` 返回的
+`provider.models[modelID].limit.context`，再发送 `thread/tokenUsage/updated`。`thread/resume` 和
+`thread/read` 同时在 thread 快照中返回最近一次用量，使实时消息、切换 Agent 和重进历史会话都复用
+`TokenUsage`、`ThreadSessionCache` 与 `ProfileScopedContextUsageCache`；模型未提供有效 context limit
+时不猜测上限，也不显示误导性的圆环比例。
 
 ### 7.3 App-server 握手
 
@@ -822,7 +829,7 @@ TurnCompletionNotifier.kt 的 ObsoleteSdkInt。新增错误或警告不能简单
 | agent/OpenCodeBootstrapTest | 固定版本安装、国内 npm 源、代理、jsonc-parser 和 bridge hash |
 | CodexPayloadParserTest | thread/item/通知/审批/子 Agent/目标解析，以及父子会话事件隔离 |
 | ConnectionHandoffTest | 连接遮罩到会话页的无空档交接 |
-| ContextUsageTest | 上下文圆环占用计算 |
+| ContextUsageTest | 上下文圆环已用、剩余和总量计算 |
 | ProfileScopedContextUsageCacheTest | 客户端重建后的上下文圆环回退、LRU 与 profile 隔离 |
 | ProfileScopedBackStackTest | 子智能体嵌套逐层返回、pending 返回幂等、失败重试、profile 隔离和过期回调保护 |
 | PersistedUiPreferenceTest | 草稿、模型、推理强度持久化和键空间 |

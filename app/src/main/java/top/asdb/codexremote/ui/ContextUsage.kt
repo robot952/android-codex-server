@@ -8,6 +8,7 @@ internal data class ContextUsageSummary(
     val windowTokens: Long,
     val fraction: Float,
 ) {
+    val remainingTokens: Long get() = (windowTokens - usedTokens).coerceAtLeast(0L)
     val usedPercent: Int get() = (fraction * 100).toInt().coerceIn(0, 100)
     val remainingPercent: Int get() = 100 - usedPercent
 }

@@ -121,6 +121,39 @@ class CodexPayloadParserTest {
     }
 
     @Test
+    fun parsesTokenUsageIncludedInResumedThreadPayload() {
+        val payload = json.parseToJsonElement(
+            """
+            {
+              "thread": {
+                "id": "thr-1",
+                "status": "idle",
+                "turns": []
+              },
+              "tokenUsage": {
+                "last": {"cachedInputTokens":7,"inputTokens":11,"outputTokens":5,"reasoningOutputTokens":2,"totalTokens":28},
+                "total": {"cachedInputTokens":7,"inputTokens":11,"outputTokens":5,"reasoningOutputTokens":2,"totalTokens":28},
+                "modelContextWindow": 400000
+              }
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val usage = CodexPayloadParser.parseTokenUsagePayload(payload)
+
+        assertEquals(400_000L, usage?.modelContextWindow)
+        assertEquals(28L, usage?.last?.totalTokens)
+
+        val nested = buildJsonObject {
+            put("thread", buildJsonObject {
+                put("id", "thr-1")
+                put("tokenUsage", payload.getValue("tokenUsage"))
+            })
+        }
+        assertEquals(400_000L, CodexPayloadParser.parseTokenUsagePayload(nested)?.modelContextWindow)
+    }
+
+    @Test
     fun incompleteTokenUsageUpdateDoesNotClearKnownContextWindow() {
         val knownUsage = TokenUsage(
             last = TokenUsageBreakdown(totalTokens = 129_000),

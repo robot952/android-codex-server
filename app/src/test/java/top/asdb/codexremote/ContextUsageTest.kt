@@ -59,6 +59,7 @@ class ContextUsageTest {
         )!!
 
         assertEquals(129_000, summary.usedTokens)
+        assertEquals(224_000, summary.remainingTokens)
         assertEquals(353_000, summary.windowTokens)
         assertEquals(36, summary.usedPercent)
         assertEquals(64, summary.remainingPercent)

@@ -244,6 +244,41 @@ assert.deepEqual(models[0], {
   maxOutputTokens: 128000,
 });
 
+assert.deepEqual(
+  bridge.mapMessageTokenUsage({
+    role: "assistant",
+    providerID: "openai",
+    modelID: "gpt-5",
+    tokens: {
+      input: 11,
+      output: 5,
+      reasoning: 2,
+      cache: { read: 7, write: 3 },
+    },
+  }, 400000),
+  {
+    last: {
+      cachedInputTokens: 7,
+      inputTokens: 11,
+      outputTokens: 5,
+      reasoningOutputTokens: 2,
+      totalTokens: 28,
+    },
+    total: {
+      cachedInputTokens: 7,
+      inputTokens: 11,
+      outputTokens: 5,
+      reasoningOutputTokens: 2,
+      totalTokens: 28,
+    },
+    modelContextWindow: 400000,
+  },
+);
+assert.equal(
+  bridge.mapMessageTokenUsage({ tokens: { input: 11, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, 0),
+  null,
+);
+
 const v1Permission = {
   id: "perm/1",
   sessionID: "session/1",

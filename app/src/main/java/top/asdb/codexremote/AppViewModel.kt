@@ -1603,6 +1603,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             current.activeThread?.id == loaded.id && it.hasKnownContextWindow()
                         } ?: client.cachedContextUsage(loaded.id)
                             ?: contextUsageFallbacks.get(agentScopeId(key), loaded.id)
+                            ?: resumed.tokenUsage?.takeIf { it.hasKnownContextWindow() }
                             ?: rememberedTokenUsage
                         current.copy(
                             screen = targetScreen,

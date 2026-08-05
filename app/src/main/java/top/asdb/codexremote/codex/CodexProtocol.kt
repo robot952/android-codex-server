@@ -82,7 +82,7 @@ object CodexPayloadParser {
             )
         }
 
-    fun parseTokenUsage(params: JsonObject): TokenUsage {
+    private fun parseTokenUsageValue(usage: JsonObject): TokenUsage {
         fun breakdown(value: JsonObject?): TokenUsageBreakdown = TokenUsageBreakdown(
             cachedInputTokens = value?.long("cachedInputTokens") ?: 0,
             inputTokens = value?.long("inputTokens") ?: 0,
@@ -91,13 +91,20 @@ object CodexPayloadParser {
             totalTokens = value?.long("totalTokens") ?: 0,
         )
 
-        val usage = params.obj("tokenUsage") ?: JsonObject(emptyMap())
         return TokenUsage(
             last = breakdown(usage.obj("last")),
             total = breakdown(usage.obj("total")),
             modelContextWindow = usage.long("modelContextWindow"),
         )
     }
+
+    fun parseTokenUsage(params: JsonObject): TokenUsage =
+        parseTokenUsageValue(params.obj("tokenUsage") ?: JsonObject(emptyMap()))
+
+    /** Reads the optional usage included in a thread/resume or thread/read response. */
+    fun parseTokenUsagePayload(result: JsonObject): TokenUsage? =
+        (result.obj("tokenUsage") ?: result.obj("thread")?.obj("tokenUsage"))
+            ?.let(::parseTokenUsageValue)
 
     fun parseThreadGoal(value: JsonObject): ThreadGoal = ThreadGoal(
         threadId = value.string("threadId"),

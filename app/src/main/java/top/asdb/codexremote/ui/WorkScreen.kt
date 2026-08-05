@@ -1383,7 +1383,7 @@ private fun ContextUsageRing(
             }.semantics {
                 contentDescription = "上下文用量，点击查看详情"
                 stateDescription = usage?.let {
-                    "${it.usedPercent}% 已用，剩余 ${it.remainingPercent}%"
+                    "${it.usedPercent}% 已用，剩余 ${it.remainingPercent}%（${formatContextTokenCount(it.remainingTokens)} 标记）"
                 } ?: "等待服务器用量数据"
             },
             contentAlignment = Alignment.Center,
@@ -1426,7 +1426,8 @@ private fun ContextUsageRing(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "已用 ${formatContextTokenCount(usage.usedTokens)} 标记，共 " +
+                        "已用 ${formatContextTokenCount(usage.usedTokens)} 标记，剩余 " +
+                            "${formatContextTokenCount(usage.remainingTokens)}，共 " +
                             "${formatContextTokenCount(usage.windowTokens)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

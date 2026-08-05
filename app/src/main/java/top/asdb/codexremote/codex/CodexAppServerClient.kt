@@ -464,7 +464,11 @@ class CodexAppServerClient(
             timeoutMs = threadRequestTimeoutMs,
         ).jsonObject
         val snapshot = CodexPayloadParser.parseThreadPayload(result)
-        activeThreadCache.put(snapshot.first, snapshot.second)
+        activeThreadCache.put(
+            snapshot.first,
+            snapshot.second,
+            tokenUsage = CodexPayloadParser.parseTokenUsagePayload(result),
+        )
         return snapshot
     }
 
@@ -1039,6 +1043,7 @@ internal fun parseResumedThreadPayload(result: JsonObject, responseSequence: Lon
         thread = snapshot.first,
         timeline = snapshot.second,
         responseSequence = responseSequence,
+        tokenUsage = CodexPayloadParser.parseTokenUsagePayload(result),
         activeTurnStartedAtMillis = activeTurnStartedAtMillis,
         nextTurnsCursor = initialPage?.string("nextCursor")?.takeIf { it.isNotBlank() }
             ?.takeUnless { reachedInheritedHistory },

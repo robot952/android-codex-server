@@ -347,6 +347,14 @@ async function main() {
     await waitForNotification("turn/completed", function (params) {
       return params.threadId === threadID;
     }, 60_000);
+    const usageNotification = await waitForNotification("thread/tokenUsage/updated", function (params) {
+      return params.threadId === threadID &&
+        params.tokenUsage && params.tokenUsage.modelContextWindow === 128000;
+    }, 60_000);
+    assert(usageNotification.params.tokenUsage.last.totalTokens > 0);
+    const restored = await sendRpc("thread/read", { threadId: threadID, includeTurns: true });
+    assert.equal(restored.thread.tokenUsage.modelContextWindow, 128000);
+    assert(restored.thread.tokenUsage.last.totalTokens > 0);
     const turnRequest = requests.find(function (request) {
       return request.body.model === "gpt-5-integration-extra" &&
         request.body.reasoning_effort === "high";
