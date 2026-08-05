@@ -21,6 +21,7 @@ import top.asdb.codexremote.data.FileChange
 import top.asdb.codexremote.data.InputOption
 import top.asdb.codexremote.data.InputQuestion
 import top.asdb.codexremote.data.MessageAttachment
+import top.asdb.codexremote.data.ModelApiProtocol
 import top.asdb.codexremote.data.ThreadGoal
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineEntry
@@ -79,6 +80,10 @@ object CodexPayloadParser {
                 },
                 contextWindowTokens = value.long("contextWindowTokens"),
                 maxOutputTokens = value.long("maxOutputTokens"),
+                isCustom = (value["isCustom"] as? JsonPrimitive)?.booleanOrNull == true,
+                apiProtocol = value.string("apiProtocol").let { protocol ->
+                    ModelApiProtocol.entries.firstOrNull { it.wireValue == protocol }
+                },
             )
         }
 

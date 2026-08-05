@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.asdb.codexremote.data.CodexModel
 import top.asdb.codexremote.data.CustomModelDefinition
+import top.asdb.codexremote.data.ModelApiProtocol
 
 class ModelCatalogTest {
     private val remoteModels = listOf(
@@ -63,6 +64,7 @@ class ModelCatalogTest {
                     displayName = "Preferred name",
                     contextWindowTokens = 64_000,
                     maxOutputTokens = 8_000,
+                    apiProtocol = ModelApiProtocol.Responses,
                 ),
             ),
             hiddenModelIds = emptyList(),
@@ -73,6 +75,7 @@ class ModelCatalogTest {
         assertEquals("Preferred name", model.displayName)
         assertEquals(64_000, model.contextWindowTokens)
         assertEquals(8_000, model.maxOutputTokens)
+        assertEquals(ModelApiProtocol.Responses, model.apiProtocol)
         assertFalse(model.isDefault)
     }
 

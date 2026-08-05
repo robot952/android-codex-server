@@ -16,6 +16,7 @@ import top.asdb.codexremote.codex.OUTPUT_TRUNCATION_MARKER
 import top.asdb.codexremote.codex.TEXT_TRUNCATION_MARKER
 import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
+import top.asdb.codexremote.data.ModelApiProtocol
 import top.asdb.codexremote.data.ThreadGoalStatus
 import top.asdb.codexremote.data.TimelineKind
 import top.asdb.codexremote.data.TokenUsage
@@ -37,6 +38,8 @@ class CodexPayloadParserTest {
                 "isDefault": true,
                 "contextWindowTokens": 200000,
                 "maxOutputTokens": 64000,
+                "isCustom": true,
+                "apiProtocol": "responses",
                 "supportedReasoningEfforts": []
               }]
             }
@@ -49,6 +52,8 @@ class CodexPayloadParserTest {
         assertEquals(200_000L, model.contextWindowTokens)
         assertEquals(64_000L, model.maxOutputTokens)
         assertTrue(model.isDefault)
+        assertTrue(model.isCustom)
+        assertEquals(ModelApiProtocol.Responses, model.apiProtocol)
     }
 
     @Test

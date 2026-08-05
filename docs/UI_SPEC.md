@@ -30,6 +30,8 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
 - Starting a task disables the new-task action until that navigation request finishes. A slow initial
   model or task-list refresh must not block `thread/start`; switching Agents keeps the app bar, server
   metrics, actions, and search field fixed while only the selector indicator and lower list animate.
+- Agent-managed custom models remain editable when they are discovered from the remote provider
+  catalog but their local profile metadata is missing. Native provider models remain hide/show only.
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 `thread/name/set`, and `thread/archive`.

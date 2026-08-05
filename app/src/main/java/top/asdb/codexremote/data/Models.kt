@@ -268,6 +268,8 @@ data class AgentModel(
     val contextWindowTokens: Long = 0,
     val maxOutputTokens: Long = 0,
     val isCustom: Boolean = false,
+    /** Editable API contract advertised by an Agent-managed model; null for native catalog models. */
+    val apiProtocol: ModelApiProtocol? = null,
 )
 
 /** Compatibility name retained while older UI and parser code migrates to Agent terminology. */

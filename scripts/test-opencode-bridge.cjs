@@ -301,6 +301,32 @@ assert.deepEqual(models[0], {
   maxOutputTokens: 128000,
 });
 
+const managedModels = bridge.mapModels({
+  connected: ["custom-api"],
+  default: { "custom-api": "gpt-managed" },
+  all: [{
+    id: "custom-api",
+    name: "Custom API",
+    npm: "@ai-sdk/openai-compatible",
+    models: {
+      "gpt-managed": {
+        id: "gpt-managed",
+        name: "GPT Managed",
+      },
+    },
+  }],
+}, {
+  provider: {
+    "custom-api": {
+      models: {
+        "gpt-managed": { provider: { npm: "@ai-sdk/openai" } },
+      },
+    },
+  },
+});
+assert.equal(managedModels[0].isCustom, true);
+assert.equal(managedModels[0].apiProtocol, "responses");
+
 assert.deepEqual(
   bridge.mapMessageTokenUsage({
     role: "assistant",

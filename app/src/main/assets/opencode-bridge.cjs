@@ -1412,11 +1412,15 @@ async function refreshAfterConfigFileEdit(modelIds, removeDefaultModel) {
   return false;
 }
 
-function mapModels(providers) {
+function mapModels(providers, globalConfig) {
   const connected = new Set(providers.connected || []);
+  const configuredProviders = objectValue(globalConfig && globalConfig.provider);
   const data = [];
   const contextWindows = new Map();
   for (const provider of providers.all || []) {
+    const managedProvider = provider.id === managedProviderID ||
+      provider.id === legacyManagedProviderID;
+    const configuredModels = objectValue(objectValue(configuredProviders[provider.id]).models);
     for (const modelKey of Object.keys(provider.models || {})) {
       const model = provider.models[modelKey] || {};
       const modelID = model.id || modelKey;
@@ -1428,7 +1432,7 @@ function mapModels(providers) {
       const efforts = managedReasoningEfforts.filter(function (effort) {
         return hasOwn(variants, effort);
       });
-      data.push({
+      const mapped = {
         id: id,
         model: id,
         displayName: model.name || modelID,
@@ -1438,7 +1442,21 @@ function mapModels(providers) {
         supportedReasoningEfforts: efforts,
         contextWindowTokens: contextWindow,
         maxOutputTokens: nonNegativeTokenCount(model.limit && model.limit.output),
-      });
+      };
+      if (managedProvider) {
+        const configuredModel = objectValue(configuredModels[modelKey] || configuredModels[modelID]);
+        const modelPackage = String(
+          objectValue(configuredModel.provider).npm ||
+          objectValue(model.provider).npm ||
+          provider.npm ||
+          "",
+        ).trim();
+        mapped.isCustom = true;
+        mapped.apiProtocol = modelPackage === managedResponsesProviderPackage
+          ? responsesProtocol
+          : chatCompletionsProtocol;
+      }
+      data.push(mapped);
     }
   }
   modelContextWindows.clear();
@@ -1496,8 +1514,11 @@ async function handleRequest(method, params) {
   }
   if (method === "initialized") return null;
   if (method === "model/list") {
-    const providers = await request("/provider", { timeoutMs: listRequestTimeoutMs }) || {};
-    return { data: mapModels(providers) };
+    const values = await Promise.all([
+      request("/provider", { timeoutMs: listRequestTimeoutMs }),
+      request("/global/config", { timeoutMs: listRequestTimeoutMs }).catch(function () { return {}; }),
+    ]);
+    return { data: mapModels(values[0] || {}, values[1] || {}) };
   }
   if (method === "agent/settings/read") {
     return readGlobalSettings();

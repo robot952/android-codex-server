@@ -2710,8 +2710,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (agent == AgentKind.OpenCode) normalizeOpenCodeModelId(id) else id
         }
         if (normalizedId.isBlank()) return
+        val key = AgentConnectionKey(profileId, agent)
+        val discoveredCustomModel = agent == AgentKind.OpenCode &&
+            remoteModelsByProfile[key].orEmpty().any { model ->
+                model.isCustom && (model.id == normalizedId || model.model == normalizedId)
+            }
         updateProfileModelCatalog(profileId) { settings ->
-            if (settings.customModels.none { it.modelId == normalizedId }) return@updateProfileModelCatalog settings
+            if (settings.customModels.none { it.modelId == normalizedId } && !discoveredCustomModel) {
+                return@updateProfileModelCatalog settings
+            }
             settings.copy(
                 preferredModel = settings.preferredModel.takeUnless { it == normalizedId }.orEmpty(),
                 testModel = settings.testModel.takeUnless { it == normalizedId }.orEmpty(),
@@ -5335,6 +5342,7 @@ internal fun buildModelCatalog(
                 maxOutputTokens = custom.maxOutputTokens.takeIf { it > 0L } ?: remote.maxOutputTokens,
                 efforts = remote.efforts.ifEmpty { inferredEfforts },
                 isCustom = true,
+                apiProtocol = custom.apiProtocol,
             )
         } else {
             models += CodexModel(
@@ -5348,6 +5356,7 @@ internal fun buildModelCatalog(
                 contextWindowTokens = custom.contextWindowTokens,
                 maxOutputTokens = custom.maxOutputTokens,
                 isCustom = true,
+                apiProtocol = custom.apiProtocol,
             )
         }
     }

@@ -377,7 +377,8 @@ async function main() {
     assert(models.data.some(function (model) {
       return model.id === "custom-api/gpt-5-integration" &&
         model.displayName === "Integration Model Updated" &&
-        model.contextWindowTokens === 256000 && model.maxOutputTokens === 64000;
+        model.contextWindowTokens === 256000 && model.maxOutputTokens === 64000 &&
+        model.isCustom === true && model.apiProtocol === "chat_completions";
     }), "Updated model metadata is missing: " + JSON.stringify(managedModels));
     assert(models.data.some(function (model) {
       return model.id === "custom-api/gpt-5-integration-extra" &&
@@ -385,7 +386,8 @@ async function main() {
     }), "Existing custom model is missing: " + JSON.stringify(managedModels));
     assert(models.data.some(function (model) {
       return model.id === "custom-api/gpt-5-responses-integration" &&
-        model.contextWindowTokens === 180000 && model.maxOutputTokens === 24000;
+        model.contextWindowTokens === 180000 && model.maxOutputTokens === 24000 &&
+        model.isCustom === true && model.apiProtocol === "responses";
     }), "Responses custom model is missing: " + JSON.stringify(managedModels));
     const persistedConfig = fs.existsSync(persistedConfigPath)
       ? fs.readFileSync(persistedConfigPath, "utf8")

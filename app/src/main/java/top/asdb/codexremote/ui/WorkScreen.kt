@@ -879,9 +879,13 @@ fun WorkScreen(
     if (showModelManager && state.activeAgentCapabilities.models) {
         val profile = state.profiles.firstOrNull { it.id == state.selectedProfileId }
         val modelSettings = profile?.modelSettings(state.activeAgent)
+        val editableCustomModels = editableCustomModelDefinitions(
+            models = state.models,
+            storedDefinitions = modelSettings?.customModels.orEmpty(),
+        )
         ModelManagerSheet(
             models = state.models,
-            customModels = modelSettings?.customModels.orEmpty(),
+            customModels = editableCustomModels,
             modelApiProtocols = state.activeAgentCapabilities.modelApiProtocols,
             hiddenModelIds = modelSettings?.hiddenModelIds.orEmpty(),
             apiModelOptions = state.apiModelOptions.takeIf {
@@ -2746,6 +2750,52 @@ private data class ModelEditorRequest(
     val originalModelId: String? = null,
     val definition: CustomModelDefinition = CustomModelDefinition(),
 )
+
+/** Restores editor access when an Agent still has a custom model but local profile metadata is absent. */
+internal fun editableCustomModelDefinitions(
+    models: List<CodexModel>,
+    storedDefinitions: List<CustomModelDefinition>,
+): List<CustomModelDefinition> {
+    val discovered = models.asSequence()
+        .filter(CodexModel::isCustom)
+        .associateBy { it.model.ifBlank { it.id } }
+    val storedIds = storedDefinitions.mapTo(HashSet()) { it.modelId.trim() }
+    return buildList {
+        storedDefinitions.forEach { stored ->
+            val modelId = stored.modelId.trim()
+            val model = discovered[modelId]
+            add(
+                if (model == null) {
+                    stored
+                } else {
+                    CustomModelDefinition(
+                        modelId = modelId,
+                        displayName = model.displayName.takeUnless { it == modelId }
+                            ?: stored.displayName,
+                        contextWindowTokens = model.contextWindowTokens.takeIf { it > 0L }
+                            ?: stored.contextWindowTokens,
+                        maxOutputTokens = model.maxOutputTokens.takeIf { it > 0L }
+                            ?: stored.maxOutputTokens,
+                        apiProtocol = model.apiProtocol ?: stored.apiProtocol,
+                    )
+                },
+            )
+        }
+        discovered.forEach { (modelId, model) ->
+            if (modelId !in storedIds) {
+                add(
+                    CustomModelDefinition(
+                        modelId = modelId,
+                        displayName = model.displayName.takeUnless { it == modelId }.orEmpty(),
+                        contextWindowTokens = model.contextWindowTokens,
+                        maxOutputTokens = model.maxOutputTokens,
+                        apiProtocol = model.apiProtocol ?: ModelApiProtocol.ChatCompletions,
+                    ),
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

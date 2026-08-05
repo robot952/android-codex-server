@@ -374,6 +374,8 @@ OpenCode 的主机前置条件和 OpenCode 版本/bridge hash 使用一次合并
 `/session` 与 `/session/status` 并发请求，并允许连接首屏的 `model/list` 与 `thread/list` 并发处理。
 交互请求使用独立的串行路径，不等待可能较慢的首屏列表读取；只有会改写 Provider 配置的请求保留
 读取屏障。列表请求和新建会话请求都有明确超时，避免远端 OpenCode 卡住后永久占用 bridge 队列。
+`model/list` 还会用 Agent 中性的 `isCustom`/`apiProtocol` 元数据标记可管理模型。Android 将远端
+发现结果与本地定义合并，因此配置文件仍是模型存在性的可靠来源，本地元数据丢失不会关闭编辑入口。
 
 每个 request 有递增 id、CompletableDeferred 和超时。断线会一次性移除并失败所有 pending
 请求。不要只增加 UI 超时时间而留下 pending；会话恢复较慢时应优先使用缓存即时展示，再由后台
