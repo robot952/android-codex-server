@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.asdb.codexremote.data.AgentConnectionKey
 import top.asdb.codexremote.data.AgentKind
+import top.asdb.codexremote.data.AppScreen
 import top.asdb.codexremote.data.AppUiState
 import top.asdb.codexremote.data.ConnectionPhase
 import top.asdb.codexremote.data.ConnectionState
@@ -109,6 +110,22 @@ class ThreadListAvailabilityTest {
         assertTrue(availability.agentSelectionEnabled)
         assertFalse(availability.workspaceEnabled)
         assertFalse(availability.modelSettingsEnabled)
+    }
+
+    @Test
+    fun `new task action is disabled while a navigation request is loading`() {
+        val availability = ServerPageAvailability(hostConnected = true, agentConnected = true)
+
+        assertTrue(newThreadActionEnabled(availability, loading = false))
+        assertFalse(newThreadActionEnabled(availability, loading = true))
+    }
+
+    @Test
+    fun `thread id only participates in animation on conversation pages`() {
+        assertEquals(null, screenAnimationThreadId(AppScreen.Threads, "thread-codex"))
+        assertEquals(null, screenAnimationThreadId(AppScreen.Servers, "thread-codex"))
+        assertEquals("thread-codex", screenAnimationThreadId(AppScreen.Work, "thread-codex"))
+        assertEquals("thread-agent", screenAnimationThreadId(AppScreen.AgentWork, "thread-agent"))
     }
 
     private fun testThread(id: String, title: String) = CodexThread(

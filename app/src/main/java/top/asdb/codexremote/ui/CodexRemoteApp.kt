@@ -132,7 +132,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val navigationTarget = ScreenAnimationTarget(
         screen = state.screen,
-        threadId = state.activeThread?.id,
+        threadId = screenAnimationThreadId(state.screen, state.activeThread?.id),
         subAgentBackNavigation = state.subAgentBackNavigation,
     )
 
@@ -619,6 +619,9 @@ private data class ScreenAnimationTarget(
     val threadId: String?,
     val subAgentBackNavigation: Boolean,
 )
+
+internal fun screenAnimationThreadId(screen: AppScreen, activeThreadId: String?): String? =
+    activeThreadId.takeIf { screen == AppScreen.Work || screen == AppScreen.AgentWork }
 
 @Composable
 private fun ThreadSettingsActionsDialog(

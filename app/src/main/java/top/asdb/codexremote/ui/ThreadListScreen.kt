@@ -152,7 +152,10 @@ fun ThreadListScreen(
                             Icon(Icons.Default.Refresh, contentDescription = "刷新")
                         }
                     }
-                    IconButton(onClick = onCreate, enabled = availability.agentConnected) {
+                    IconButton(
+                        onClick = onCreate,
+                        enabled = newThreadActionEnabled(availability, state.loading),
+                    ) {
                         Icon(Icons.Default.AddComment, contentDescription = "新任务")
                     }
                     IconButton(onClick = onOpenSettings, enabled = hostConnected) {
@@ -442,6 +445,11 @@ internal fun serverPageAvailability(state: AppUiState): ServerPageAvailability {
         )
     return ServerPageAvailability(hostConnected, agentConnected, agentBusy)
 }
+
+internal fun newThreadActionEnabled(
+    availability: ServerPageAvailability,
+    loading: Boolean,
+): Boolean = availability.agentConnected && !loading
 
 @Composable
 private fun SearchBox(

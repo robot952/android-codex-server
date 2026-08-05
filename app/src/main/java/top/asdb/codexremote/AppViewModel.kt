@@ -1226,12 +1226,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createThread() {
         val profile = currentProfile() ?: return
+        val key = sessionKey(profile.id)
+        if (sessionNavigationJobs[profile.id]?.isActive == true) {
+            DiagnosticLogger.info(
+                "Thread",
+                "create_ignored profile=${profileRef(profile.id)} agent=${key.agent.label} " +
+                    "reason=navigation_in_progress",
+            )
+            return
+        }
         subAgentNavigationStacks.clear(subAgentNavigationScope(profile.id))
-        DiagnosticLogger.info("Thread", "create_start profile=${profileRef(profile.id)}")
-        val client = connections.client(profile.id)?.takeIf { it.isConnected() } ?: return
+        val client = connections.client(profile.id, key.agent)?.takeIf { it.isConnected() } ?: run {
+            DiagnosticLogger.warn(
+                "Thread",
+                "create_rejected profile=${profileRef(profile.id)} agent=${key.agent.label} " +
+                    "reason=agent_disconnected",
+            )
+            return
+        }
         invalidateLane(profile.id, "session-navigation")
         invalidateLane(profile.id, "thread-history")
-        val operation = beginClientOperation(profile.id, "session-navigation", client) ?: return
+        val operation = beginClientOperation(key, "session-navigation", client) ?: return
+        val startedNanos = System.nanoTime()
+        DiagnosticLogger.info(
+            "Thread",
+            "create_start profile=${profileRef(profile.id)} agent=${operation.key.agent.label}",
+        )
         val modelSettings = profile.modelSettings(operation.key.agent)
         val selection = resolveNewThreadModelSelection(
             models = _state.value.models,
@@ -1240,39 +1260,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
         val model = selection.model
         val approvalMode = _state.value.approvalMode
-        val job = viewModelScope.launch {
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             if (isOperationVisible(operation)) applySessionState(profile.id) { it.copy(loading = true, error = null) }
             try {
                 val (thread, timeline) = client.startThread(profile, model, approvalMode)
                 if (isOperationCurrent(operation)) {
+                    val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L
                     DiagnosticLogger.info(
                         "Thread",
-                        "create_success profile=${profileRef(profile.id)} thread=${profileRef(thread.id)}",
+                        "create_success profile=${profileRef(profile.id)} agent=${operation.key.agent.label} " +
+                            "thread=${profileRef(thread.id)} elapsed_ms=$elapsedMs",
                     )
                     rememberThreadModelPreference(profile.id, thread.id, selection)
-                    applySessionState(profile.id) {
+                    applySessionState(profile.id, operation.key.agent) {
                         it.copy(
-                        screen = AppScreen.Work,
-                        activeThread = thread,
-                        activeAgentName = null,
-                        activeGoal = null,
-                        timeline = timeline,
-                        olderTurnsCursor = null,
-                        olderTurnsLoading = false,
-                        activeTurnId = null,
-                        running = false,
-                        aggregateDiff = "",
-                        tokenUsage = null,
-                        composerDraft = composerDraft(profile.id, thread.id),
-                        selectedModel = selection.model,
-                        selectedEffort = selection.effort,
-                        loading = false,
+                            screen = AppScreen.Work,
+                            activeThread = thread,
+                            activeAgentName = null,
+                            activeGoal = null,
+                            timeline = timeline,
+                            olderTurnsCursor = null,
+                            olderTurnsLoading = false,
+                            activeTurnId = null,
+                            running = false,
+                            aggregateDiff = "",
+                            tokenUsage = null,
+                            composerDraft = composerDraft(profile.id, thread.id),
+                            selectedModel = selection.model,
+                            selectedEffort = selection.effort,
+                            loading = false,
                         )
                     }
+                } else {
+                    val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L
+                    DiagnosticLogger.warn(
+                        "Thread",
+                        "create_discarded profile=${profileRef(profile.id)} " +
+                            "agent=${operation.key.agent.label} elapsed_ms=$elapsedMs reason=stale_operation",
+                    )
                 }
             } catch (error: CancellationException) {
+                val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L
+                DiagnosticLogger.info(
+                    "Thread",
+                    "create_cancelled profile=${profileRef(profile.id)} " +
+                        "agent=${operation.key.agent.label} elapsed_ms=$elapsedMs",
+                )
                 throw error
             } catch (error: Throwable) {
+                val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L
+                DiagnosticLogger.error(
+                    "Thread",
+                    "create_failed profile=${profileRef(profile.id)} " +
+                        "agent=${operation.key.agent.label} elapsed_ms=$elapsedMs",
+                    error,
+                )
                 if (isOperationVisible(operation)) showError(error, profile.id)
             } finally {
                 finishClientOperation(operation)
@@ -1282,6 +1324,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         sessionNavigationJobs[profile.id] = job
+        job.start()
     }
 
     fun openThread(thread: top.asdb.codexremote.data.CodexThread) {

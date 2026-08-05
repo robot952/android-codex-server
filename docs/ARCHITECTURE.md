@@ -372,6 +372,8 @@ CodexAppServerClient 连接后执行：
 
 OpenCode 的主机前置条件和 OpenCode 版本/bridge hash 使用一次合并 shell 探测。bridge 内部把
 `/session` 与 `/session/status` 并发请求，并允许连接首屏的 `model/list` 与 `thread/list` 并发处理。
+交互请求使用独立的串行路径，不等待可能较慢的首屏列表读取；只有会改写 Provider 配置的请求保留
+读取屏障。列表请求和新建会话请求都有明确超时，避免远端 OpenCode 卡住后永久占用 bridge 队列。
 
 每个 request 有递增 id、CompletableDeferred 和超时。断线会一次性移除并失败所有 pending
 请求。不要只增加 UI 超时时间而留下 pending；会话恢复较慢时应优先使用缓存即时展示，再由后台
@@ -865,7 +867,9 @@ OpenCode bridge 还必须运行：
 
 统一入口自动发现版本完全匹配的持久 OpenCode，只在本机不存在时从国内 npm 源安装一次。`full` 使用
 隔离的临时配置和本地假 OpenAI 服务，验证 URL/Key、Provider、自定义模型元数据、默认模型、真实
-Chat Completions/Responses prompt 路由与 Authorization，不得访问用户生产 API。
+Chat Completions/Responses prompt 路由与 Authorization，不得访问用户生产 API。quick/full 都运行
+Bridge 调度回归，验证挂起的 `model/list` 或 `thread/list` 不会阻塞 `thread/start`，同时配置写入仍保留
+必要的读取屏障。
 
 ### 14.4 模拟器手工回归矩阵
 

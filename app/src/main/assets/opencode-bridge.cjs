@@ -26,6 +26,8 @@ const managedResponsesProviderPackage = "@ai-sdk/openai";
 const chatCompletionsProtocol = "chat_completions";
 const responsesProtocol = "responses";
 const managedReasoningEfforts = ["minimal", "low", "medium", "high", "xhigh"];
+const listRequestTimeoutMs = 30000;
+const createSessionTimeoutMs = 30000;
 const bridgeStartedAt = Date.now();
 
 let baseUrl = "";
@@ -400,9 +402,9 @@ function groupMessages(messages, busy) {
   return turns;
 }
 
-async function statusMap() {
+async function statusMap(timeoutMs) {
   try {
-    return await request("/session/status") || {};
+    return await request("/session/status", { timeoutMs: timeoutMs }) || {};
   } catch (error) {
     return {};
   }
@@ -1494,7 +1496,7 @@ async function handleRequest(method, params) {
   }
   if (method === "initialized") return null;
   if (method === "model/list") {
-    const providers = await request("/provider") || {};
+    const providers = await request("/provider", { timeoutMs: listRequestTimeoutMs }) || {};
     return { data: mapModels(providers) };
   }
   if (method === "agent/settings/read") {
@@ -1510,7 +1512,10 @@ async function handleRequest(method, params) {
     return ensureCustomModel(params);
   }
   if (method === "thread/list") {
-    const values = await Promise.all([request("/session"), statusMap()]);
+    const values = await Promise.all([
+      request("/session", { timeoutMs: listRequestTimeoutMs }),
+      statusMap(listRequestTimeoutMs),
+    ]);
     const sessions = values[0] || [];
     const statuses = values[1];
     const search = String(params.searchTerm || "").toLowerCase();
@@ -1524,7 +1529,11 @@ async function handleRequest(method, params) {
     return { data: data.slice(0, Number(params.limit || 100)) };
   }
   if (method === "thread/start") {
-    const session = await request("/session", { method: "POST", body: {} });
+    const session = await request("/session", {
+      method: "POST",
+      body: {},
+      timeoutMs: createSessionTimeoutMs,
+    });
     const thread = mapSession(session, null);
     thread.turns = [];
     return { thread: thread };
@@ -2030,6 +2039,53 @@ function isConcurrentReadLine(line) {
   }
 }
 
+function requiresConcurrentReadBarrier(line) {
+  try {
+    const message = JSON.parse(line);
+    return Object.prototype.hasOwnProperty.call(message, "id") && (
+      message.method === "agent/settings/write" ||
+      message.method === "agent/models/sync" ||
+      message.method === "agent/model/ensure"
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+function createRpcLineScheduler(ready, processor, reportError) {
+  let serialChain = Promise.resolve(ready);
+  const concurrentReads = new Set();
+
+  function trackConcurrentRead(task) {
+    concurrentReads.add(task);
+    const remove = function () { concurrentReads.delete(task); };
+    task.then(remove, remove);
+  }
+
+  return {
+    enqueue: function (line) {
+      if (isConcurrentReadLine(line)) {
+        const task = serialChain.then(function () { return processor(line); }).catch(reportError);
+        trackConcurrentRead(task);
+        return task;
+      }
+      const waitForReads = requiresConcurrentReadBarrier(line);
+      serialChain = serialChain.then(async function () {
+        // Provider configuration writes must observe earlier catalog reads. Interactive session
+        // operations are independent and must never queue behind a slow model/session listing.
+        if (waitForReads && concurrentReads.size) {
+          await Promise.allSettled(Array.from(concurrentReads));
+        }
+        return processor(line);
+      }).catch(reportError);
+      return serialChain;
+    },
+    idle: function () {
+      return Promise.allSettled([serialChain].concat(Array.from(concurrentReads)));
+    },
+  };
+}
+
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -2075,24 +2131,12 @@ async function main() {
         String(Date.now() - bridgeStartedAt) + "\n",
     );
   });
-  let serialChain = ready;
-  const concurrentReads = new Set();
   function reportLineError(error) {
     process.stderr.write((error.stack || error.message || String(error)) + "\n");
   }
+  const scheduler = createRpcLineScheduler(ready, processLine, reportLineError);
   input.on("line", function (line) {
-    if (isConcurrentReadLine(line)) {
-      const task = serialChain.then(function () { return processLine(line); }).catch(reportLineError);
-      concurrentReads.add(task);
-      task.finally(function () { concurrentReads.delete(task); });
-      return;
-    }
-    serialChain = serialChain.then(async function () {
-      if (concurrentReads.size) {
-        await Promise.allSettled(Array.from(concurrentReads));
-      }
-      return processLine(line);
-    }).catch(reportLineError);
+    scheduler.enqueue(line);
   });
   input.on("close", function () { shutdown(0); });
   await ready;
@@ -2144,4 +2188,7 @@ module.exports = {
   reasoningVariants: reasoningVariants,
   settingsProvider: settingsProvider,
   statusType: statusType,
+  createRpcLineScheduler: createRpcLineScheduler,
+  isConcurrentReadLine: isConcurrentReadLine,
+  requiresConcurrentReadBarrier: requiresConcurrentReadBarrier,
 };

@@ -27,6 +27,9 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
 - Cached task rows remain hidden until the selected Agent lane is actually connected. An SSH-only page
   shows the explicit "Agent 尚未连接" empty state and a zero task count, even when an older lane cache
   exists; terminal, file management, and server settings that only need SSH remain available.
+- Starting a task disables the new-task action until that navigation request finishes. A slow initial
+  model or task-list refresh must not block `thread/start`; switching Agents keeps the app bar, server
+  metrics, actions, and search field fixed while only the selector indicator and lower list animate.
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 `thread/name/set`, and `thread/archive`.

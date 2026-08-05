@@ -31,6 +31,7 @@ open_code_sha256="$(workflow_file_sha256_cached "$ROOT_DIR" "$open_code_bin")"
 input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     app/src/main/assets/opencode-bridge.cjs \
     scripts/test-opencode-bridge.cjs \
+    scripts/test-opencode-bridge-scheduling.cjs \
     scripts/test-opencode-bridge-question.cjs \
     scripts/test-opencode-bridge-integration.cjs \
     scripts/test-opencode.sh \
@@ -54,6 +55,7 @@ started_seconds="$(date +%s)"
 export OPENCODE_BIN="$open_code_bin"
 node --check app/src/main/assets/opencode-bridge.cjs
 node scripts/test-opencode-bridge.cjs
+node scripts/test-opencode-bridge-scheduling.cjs
 node scripts/test-opencode-bridge-question.cjs
 if [[ "$mode" == full ]]; then
     node scripts/test-opencode-bridge-integration.cjs
