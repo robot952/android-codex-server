@@ -32,6 +32,9 @@ The supplied VS Code Codex reference is stored as `vscode-codex-task-reference.p
   metrics, actions, and search field fixed while only the selector indicator and lower list animate.
 - Agent-managed custom models remain editable when they are discovered from the remote provider
   catalog but their local profile metadata is missing. Native provider models remain hide/show only.
+- The custom-model editor places a stable `获取` action beside the model ID field. It fetches the
+  configured API catalog and opens a searchable dropdown; choosing a result fills the model ID,
+  display name, context limit, and output limit without expanding a permanent model list in the form.
 
 Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 `thread/name/set`, and `thread/archive`.
@@ -72,6 +75,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   the OpenCode bridge derives the same neutral payload from the latest assistant message and the
   selected model's context limit. Reopening a cached thread retains its last known usage until the
   server sends a newer value.
+- Manual compaction uses the same shared action for both Agents. Codex calls its native app-server
+  method; OpenCode resolves the session's latest model and calls its native summarize endpoint. Both
+  produce the shared in-progress/completed compaction timeline state.
 - Model and reasoning effort use a bottom sheet; sandbox choice uses a dedicated mode sheet
 - When an Agent advertises per-model API protocols, the custom-model editor uses a two-segment
   `Chat Completions` / `Responses` control. The selected protocol is shown on the saved custom-model
@@ -85,6 +91,8 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Transient remote diagnostics use a compact, dark, width-bounded Snackbar. Raw stderr, nested JSON,
   request ids, and stack-like text never occupy the work surface; a nonfatal MCP/rmcp 403 explains
   that the main session remains usable while the related tool may be unavailable.
+- In Debug mode, the work menu opens retained crash and diagnostic sessions for direct attachment.
+  Crash sessions are visibly marked and the newest crash is preselected.
 
 Protocol mapping: `turn/start`, `turn/steer`, `turn/interrupt`, `review/start`, `item/*`,
 `turn/diff/updated`, and server request/response approval methods.

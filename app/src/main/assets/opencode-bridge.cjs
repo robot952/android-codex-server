@@ -415,6 +415,71 @@ async function sessionMessages(sessionID, limit) {
   return await request("/session/" + encodeURIComponent(sessionID) + "/message" + suffix) || [];
 }
 
+/** Resolves the model OpenCode requires for a manual session summary. */
+function compactionModel(messages, config) {
+  const history = Array.isArray(messages) ? messages : [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const info = objectValue(history[index] && history[index].info);
+    const providerID = String(info.providerID || "").trim();
+    const modelID = String(info.modelID || "").trim();
+    if (providerID && modelID) {
+      return parseModel(normalizeManagedModelReference(providerID + "/" + modelID));
+    }
+  }
+  const currentConfig = objectValue(config);
+  const buildAgent = objectValue(objectValue(currentConfig.agent).build);
+  const configured = [buildAgent.model, currentConfig.model];
+  for (const reference of configured) {
+    const parsed = parseModel(normalizeManagedModelReference(reference));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+async function summarizeSession(sessionID) {
+  const values = await Promise.all([
+    sessionMessages(sessionID, 50),
+    request("/global/config").catch(function () { return {}; }),
+  ]);
+  const model = compactionModel(values[0], values[1]);
+  if (!model) {
+    throw new Error("无法确定用于压缩的 OpenCode 模型，请先在该会话中完成一次对话或设置默认模型");
+  }
+  const turnID = "opencode-compaction-turn-" + Date.now().toString(36) + "-" +
+    Math.random().toString(36).slice(2, 8);
+  const itemID = "opencode-compaction-" + turnID;
+  activeTurns.set(sessionID, {
+    id: turnID,
+    startedAt: Date.now(),
+    approvalPolicy: "untrusted",
+    modelReference: model.providerID + "/" + model.modelID,
+    compactionItemID: itemID,
+  });
+  notify("turn/started", {
+    threadId: sessionID,
+    turn: { id: turnID, status: "inProgress", startedAt: Date.now(), items: [] },
+  });
+  notify("item/started", {
+    threadId: sessionID,
+    turnId: turnID,
+    item: { id: itemID, type: "contextCompaction" },
+  });
+  try {
+    await request("/session/" + encodeURIComponent(sessionID) + "/summarize", {
+      method: "POST",
+      body: {
+        providerID: model.providerID,
+        modelID: model.modelID,
+        auto: false,
+      },
+    });
+  } catch (error) {
+    await completeSession(sessionID, error.message || String(error));
+    throw error;
+  }
+  return {};
+}
+
 async function hydrateSession(session, statuses) {
   const status = statuses && statuses[session.id];
   const busy = isSessionActive(status);
@@ -533,6 +598,21 @@ function openCodeDataDirectory() {
 
 function openCodeAuthPath() {
   return path.join(openCodeDataDirectory(), "auth.json");
+}
+
+function readStoredApiKey(providerID) {
+  try {
+    const auth = JSON.parse(fs.readFileSync(openCodeAuthPath(), "utf8"));
+    const credential = objectValue(auth)[providerID];
+    if (credential && credential.type === "api" && typeof credential.key === "string") {
+      return credential.key;
+    }
+  } catch (error) {
+    if (error && error.code !== "ENOENT") {
+      process.stderr.write("OpenCode auth read failed: " + (error.message || String(error)) + "\n");
+    }
+  }
+  return "";
 }
 
 function parseJsoncDocument(text, filePath) {
@@ -1215,7 +1295,8 @@ function mapGlobalSettings(config, providers, proxyUrl) {
   }) || {};
   const configuredBaseUrl = configured.options && configured.options.baseURL;
   const runtimeBaseUrl = runtime.options && runtime.options.baseURL;
-  const key = typeof runtime.key === "string" ? runtime.key : "";
+  const runtimeKey = typeof runtime.key === "string" ? runtime.key : "";
+  const key = runtimeKey || readStoredApiKey(providerID);
   return {
     baseUrl: String(configuredBaseUrl || runtimeBaseUrl || ""),
     model: normalizeManagedModelReference(config && config.model),
@@ -1607,9 +1688,12 @@ async function handleRequest(method, params) {
     notify("thread/name/updated", { threadId: params.threadId, name: params.name || "" });
     return {};
   }
+  if (method === "thread/compact/start") {
+    return summarizeSession(params.threadId);
+  }
   if (method === "thread/goal/get") return { goal: null };
-  if (method === "thread/compact/start" || method === "thread/rollback" ||
-      method === "thread/goal/set" || method === "thread/goal/clear" ||
+  if (method === "thread/rollback" || method === "thread/goal/set" ||
+      method === "thread/goal/clear" ||
       method === "review/start") {
     throw rpcMethodError(method);
   }
@@ -1625,6 +1709,9 @@ async function emitCurrentTurn(sessionID, turn) {
     const current = turns.length ? turns[turns.length - 1] : null;
     if (!current) return;
     for (const item of current.items || []) {
+      if (item.type === "contextCompaction" && turn.compactionItemID) {
+        item.id = turn.compactionItemID;
+      }
       notify("item/completed", { threadId: sessionID, turnId: turn.id, item: item });
     }
   } catch (error) {
@@ -1899,6 +1986,9 @@ async function handleEvent(rawEvent) {
     } else {
       const item = mapPart(part, "assistant");
       if (item) {
+        if (item.type === "contextCompaction" && turn && turn.compactionItemID) {
+          item.id = turn.compactionItemID;
+        }
         notify("item/completed", { threadId: sessionID, turnId: turnID, item: item });
       }
     }
@@ -1926,6 +2016,23 @@ async function handleEvent(rawEvent) {
   }
   if (event.type === "session.idle") {
     await completeSession(properties.sessionID, null);
+    return;
+  }
+  if (event.type === "session.compacted") {
+    const sessionID = properties.sessionID;
+    if (!sessionID) return;
+    const turn = activeTurns.get(sessionID);
+    const turnID = turn && turn.id || "opencode-compaction-turn-" + Date.now().toString(36);
+    const itemID = turn && turn.compactionItemID || "opencode-compaction-" + turnID;
+    if (turn) turn.compactionItemID = itemID;
+    notify("item/completed", {
+      threadId: sessionID,
+      turnId: turnID,
+      item: { id: itemID, type: "contextCompaction" },
+    });
+    const messages = await sessionMessages(sessionID, 50).catch(function () { return []; });
+    const tokenUsage = await tokenUsageForMessages(messages);
+    publishTokenUsage(sessionID, tokenUsage);
     return;
   }
   if (event.type === "session.error") {
@@ -2185,6 +2292,7 @@ module.exports = {
   mapSession: mapSession,
   buildModelSyncPatch: buildModelSyncPatch,
   buildManagedProviderMigration: buildManagedProviderMigration,
+  compactionModel: compactionModel,
   isReasoningModelID: isReasoningModelID,
   modelConfigDefinition: modelConfigDefinition,
   modelDefinitionsByProvider: modelDefinitionsByProvider,
@@ -2194,6 +2302,7 @@ module.exports = {
   normalizeProxyUrl: normalizeProxyUrl,
   normalizeReasoningEffort: normalizeReasoningEffort,
   parseModel: parseModel,
+  readStoredApiKey: readStoredApiKey,
   permissionApiVersion: permissionApiVersion,
   permissionPrompt: permissionPrompt,
   permissionReplyTarget: permissionReplyTarget,

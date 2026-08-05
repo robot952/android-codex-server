@@ -1,5 +1,6 @@
 package top.asdb.codexremote.diagnostics
 
+import android.app.ApplicationExitInfo
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -87,5 +88,21 @@ class DiagnosticLoggerTest {
                 "status=failed detail=request timed out",
             message,
         )
+    }
+
+    @Test
+    fun `fatal and legacy uncaught exception records are recognized as crashes`() {
+        assertTrue(containsCrashRecord("2026-08-05 FATAL Crash uncaught_exception thread=main"))
+        assertTrue(containsCrashRecord("2026-08-05 ERROR Crash uncaught_exception thread=main"))
+        assertTrue(containsCrashRecord("2026-08-05 FATAL Crash previous_process_exit reason=anr"))
+        assertFalse(containsCrashRecord("2026-08-05 ERROR Operation failed"))
+    }
+
+    @Test
+    fun `Android crash and ANR exit reasons are retained`() {
+        assertTrue(isCrashExitReason(ApplicationExitInfo.REASON_CRASH))
+        assertTrue(isCrashExitReason(ApplicationExitInfo.REASON_CRASH_NATIVE))
+        assertTrue(isCrashExitReason(ApplicationExitInfo.REASON_ANR))
+        assertFalse(isCrashExitReason(ApplicationExitInfo.REASON_USER_REQUESTED))
     }
 }

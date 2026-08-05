@@ -43,6 +43,7 @@ class OpenCodeAgentClientTest {
     fun `OpenCode exposes global provider settings`() {
         assertTrue(AgentCapabilities.OpenCode.globalSettings)
         assertTrue(AgentCapabilities.OpenCode.reasoningEffort)
+        assertTrue(AgentCapabilities.OpenCode.compactThread)
         assertEquals(
             listOf(ModelApiProtocol.ChatCompletions, ModelApiProtocol.Responses),
             AgentCapabilities.OpenCode.modelApiProtocols,

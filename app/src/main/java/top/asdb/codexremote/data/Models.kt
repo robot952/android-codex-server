@@ -217,6 +217,7 @@ data class AgentCapabilities(
             approvals = true,
             archiveThread = false,
             steerTurn = true,
+            compactThread = true,
             globalSettings = true,
         )
     }

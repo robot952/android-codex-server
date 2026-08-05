@@ -98,6 +98,17 @@ class RemoteCodexSettingsTest {
     }
 
     @Test
+    fun `missing API key uses an agent neutral model configuration message`() {
+        val error = runCatching {
+            RemoteCodexSettings.parseApiModels(
+                listOf("__CODEX_API_MODEL_LIST_STATUS=MISSING_API_KEY"),
+            )
+        }.exceptionOrNull()
+
+        assertEquals("请先在模型配置中保存 API 密钥", error?.message)
+    }
+
+    @Test
     fun `model list script emits a short final base64 chunk`() {
         val home = Files.createTempDirectory("codex-remote-model-list").toFile()
         try {

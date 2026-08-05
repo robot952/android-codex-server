@@ -5,7 +5,7 @@
 
 文档基线：
 
-- Android 应用版本：1.7.93（versionCode 115）
+- Android 应用版本：1.7.96（versionCode 118）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
@@ -151,7 +151,8 @@ AnimatedContent 做前进/返回的滑动淡入动画，并按页面绑定 AppVi
 - Agent 依赖不在服务器表单或 SSH 登录阶段检查；用户在服务器页点击对应 Agent 后才探测，缺失或
   版本不兼容时由用户明确确认安装，并显示阶段和百分比。
 - 顶部 Codex 图标连续点击 10 次启用 Debug；Debug 页面可分享脱敏日志。开启后，会话右上角菜单
-  可将最新日志作为受 512 KB 限制的文本附件加入输入区，超出时只附带日志末尾并标记截断。
+  可选择崩溃或诊断会话作为受 512 KB 限制的文本附件加入输入区，超出时只附带日志末尾并标记截断；
+  最近的崩溃记录会标记并默认选中。
 
 ServerScreen 内部的未保存表单草稿只服务于页面切换。真正持久化仍由 AppViewModel 和
 ProfileStore 完成。凭据不会写入 rememberSaveable Bundle；进程重建时从加密存储恢复。
@@ -537,9 +538,12 @@ OpenCode 配置入口与 Codex 共用同一套 Agent 设置 UI，但通过桥接
 `/global/config`、`/provider` 和 `/auth/{providerID}`。App 管理的自定义 Provider 固定为
 `custom-api`，可配置模型 URL、API 密钥、HTTP/HTTPS/SOCKS 代理和默认模型；旧的 `codex-remote`
 Provider 会无损迁移。API 密钥仍只在当前
-设置弹窗内存和 SSH 请求中存在，不写入 Android 持久化或日志。
+设置弹窗内存和 SSH 请求中存在，不写入 Android 持久化或日志。由于 OpenCode 的 `/provider`
+只返回认证状态，Bridge 会按当前 Provider 从服务器本地 `auth.json` 读取 `type: "api"` 的 Key，
+仅用于设置回显、连通性测试和 `/models` 请求；OAuth 凭据不会被当作 API Key。
 
-用户可从兼容 API 的 `/models` 获取模型，也可直接输入 `provider/model` 或裸模型 ID；裸 ID 归入
+用户可在模型 ID 右侧点击“获取”，从兼容 API 的 `/models` 拉取并弹出可搜索候选列表；选择后自动
+回填模型 ID、显示名、上下文和输出限制。也可直接输入 `provider/model` 或裸模型 ID；裸 ID 归入
 `custom-api`。自定义模型的显示名、上下文长度、最大输出长度和 API 协议按 profile + AgentKind 保存；
 旧 Profile 缺少协议字段时默认使用 Chat Completions。Agent adapter 通过
 `AgentCapabilities.modelApiProtocols` 声明可选协议，模型管理 UI 不依赖具体 Agent 名称。OpenCode 的
@@ -579,6 +583,9 @@ DiagnosticLogger：
 
 - 默认关闭；主页 Codex 图标连续点击 10 次打开。
 - 记录应用生命周期、连接、操作和崩溃，不记录消息正文、密码、私钥或 token。
+- 未捕获的 Kotlin/Java 异常会同步强制落盘；Android 11+ 下次启动还会从
+  `ApplicationExitInfo` 补录上次 Java/Native 崩溃和 ANR，因此崩溃记录不依赖进程能否正常收尾。
+- Debug 模式的对话菜单可直接选择并附加保留日志；崩溃会话有明确标识且默认选中最新一条。
 - 对主机、路径、URL、Bearer/API key 等内容进行脱敏。
 - 文件有大小上限和轮转；分享时通过 FileProvider 导出文本并调起系统分享面板。
 - 正常 UI 先显示简短中文错误，详细技术信息进入可导出的诊断日志。
@@ -890,6 +897,7 @@ Bridge 调度回归，验证挂起的 `model/list` 或 `thread/list` 不会阻�
 | 按需 Agent | 顶部依次点击 Codex、OpenCode 并切换 | 只在点击时启动；双 lane 可即时切换且会话、模型、运行态不串 |
 | OpenCode 设置 | 配置工作目录、URL、Key、代理、默认模型并重连 | 新会话使用新配置；文件管理复用当前 SSH；Key 不进入持久化或日志 |
 | OpenCode 模型 | 获取 API 列表、手输模型、填写上下文/输出长度、隐藏/恢复并发送 | 选择器状态保留，实际请求使用选中的模型 ID 和限制信息 |
+| OpenCode 压缩 | 空闲长会话执行“压缩会话” | 使用会话最近模型调用 `/session/{id}/summarize`；时间线先显示进行中再显示完成并刷新上下文用量 |
 | 连接动画 | 从服务器列表连接 | 全屏半透明转圈，结束后直接进入会话列表，无空白等待 |
 | 会话缓存 | 重复进入较大历史会话 | 先显示缓存，后台校准；不轻易超时或闪白 |
 | 会话运行态 | 会话仍生成时返回列表 | 列表固定尺寸转圈，返回会话继续流式更新 |
@@ -910,7 +918,7 @@ Bridge 调度回归，验证挂起的 `model/list` 或 `thread/list` 不会阻�
 | 后台 | turn 运行时 Home/锁屏 | 尽量继续；完成后通知，点击跳到正确服务器和会话 |
 | 进程重建 | force-stop/系统回收后重开 | 无闪退；持久状态恢复，连接状态不伪装成已连接 |
 | 旋转/大字体 | 横竖屏和放大字体 | 无重叠、截断或不可达按钮，表单可滚动 |
-| Debug | Codex 图标连点 10 次并分享 | 日志启用、可预览/分享、敏感值已脱敏 |
+| Debug | Codex 图标连点 10 次，复现崩溃后重开并添加到对话 | 日志可预览/分享；崩溃记录有标识、默认选中并可作为附件加入对话 |
 | 终端 | 打开、隐藏、恢复、resize、关闭 | 输出保留且有界，不影响 Codex channel |
 | 文件管理 | 进入目录、长按文件、上传多文件、下载、重命名、删除、复制/剪切再粘贴 | 只操作当前服务器；系统文件选择器可返回；删除有确认；目录、路径和连接状态不串台 |
 

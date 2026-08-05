@@ -36,6 +36,7 @@ import top.asdb.codexremote.diagnostics.DiagnosticLogEntry
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import top.asdb.codexremote.ui.theme.CodexBorder
 import top.asdb.codexremote.ui.theme.CodexGreen
+import top.asdb.codexremote.ui.theme.CodexRed
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -53,6 +54,7 @@ fun DiagnosticLogPickerDialog(
     onConfirm: (List<String>) -> Unit,
     modifier: Modifier = Modifier,
     title: String = "选择诊断日志",
+    preselectLatestCrash: Boolean = false,
 ) {
     var entries by remember { mutableStateOf<List<DiagnosticLogEntry>>(emptyList()) }
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -64,6 +66,9 @@ fun DiagnosticLogPickerDialog(
         loadError = null
         try {
             entries = withContext(Dispatchers.IO) { DiagnosticLogger.listLogs() }
+            if (preselectLatestCrash) {
+                selectedIds = entries.firstOrNull { it.hasCrash }?.let { setOf(it.id) }.orEmpty()
+            }
         } catch (error: CancellationException) {
             throw error
         } catch (_: Throwable) {
@@ -177,6 +182,14 @@ private fun DiagnosticLogPickerRow(
                         "当前记录中",
                         style = MaterialTheme.typography.labelSmall,
                         color = CodexGreen,
+                    )
+                }
+                if (entry.hasCrash) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "崩溃",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CodexRed,
                     )
                 }
             }

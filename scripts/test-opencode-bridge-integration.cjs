@@ -461,6 +461,21 @@ async function main() {
       message.params.item.text.includes("CUSTOM_MODEL_OK");
     }));
 
+    const compactionNotificationStart = notifications.length;
+    await sendRpc("thread/compact/start", { threadId: threadID }, 60_000);
+    await waitForNotification("turn/completed", function (params) {
+      return params.threadId === threadID && notifications.indexOf(
+        notifications.find(function (message) {
+          return message.method === "turn/completed" && message.params === params;
+        }),
+      ) >= compactionNotificationStart;
+    }, 60_000);
+    assert(notifications.slice(compactionNotificationStart).some(function (message) {
+      return message.method === "item/completed" &&
+        message.params && message.params.threadId === threadID &&
+        message.params.item && message.params.item.type === "contextCompaction";
+    }), "OpenCode manual compaction did not emit a contextCompaction item");
+
     const responsesStarted = await sendRpc("thread/start");
     const responsesThreadID = responsesStarted.thread.id;
     assert(responsesThreadID);

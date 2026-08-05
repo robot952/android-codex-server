@@ -1,5 +1,7 @@
 package top.asdb.codexremote.diagnostics
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -31,6 +33,7 @@ data class DiagnosticLogEntry(
     val updatedAtMillis: Long,
     val sizeBytes: Long,
     val isActive: Boolean,
+    val hasCrash: Boolean,
 )
 
 object DiagnosticLogger {
@@ -60,6 +63,7 @@ object DiagnosticLogger {
         if (shouldRecordProcessStart) {
             info("App", "process_started version=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})")
         }
+        collectPreviousProcessExitsAsync()
     }
 
     fun isEnabled(): Boolean = enabled
@@ -242,8 +246,14 @@ object DiagnosticLogger {
         return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", output)
     }
 
-    private fun append(level: String, tag: String, message: String, throwable: Throwable?) {
-        if (!enabled) return
+    private fun append(
+        level: String,
+        tag: String,
+        message: String,
+        throwable: Throwable?,
+        force: Boolean = false,
+    ) {
+        if (!enabled && !force) return
         val safeTag = sanitizeDiagnosticText(tag).replace('\n', ' ').take(48)
         val safeMessage = sanitizeDiagnosticText(message).take(MAX_MESSAGE_CHARS)
         val stack = throwable?.let(::safeStackTrace).orEmpty()
@@ -257,7 +267,7 @@ object DiagnosticLogger {
             },
         )
         synchronized(lock) {
-            if (!enabled) return
+            if (!enabled && !force) return
             var file = currentLogLocked() ?: return
             file.parentFile?.mkdirs()
             if (file.length() + entry.toByteArray(Charsets.UTF_8).size > MAX_LOG_BYTES) {
@@ -268,6 +278,7 @@ object DiagnosticLogger {
         }
         Log.println(
             when (level) {
+                "FATAL" -> Log.ASSERT
                 "ERROR" -> Log.ERROR
                 "WARN" -> Log.WARN
                 else -> Log.INFO
@@ -425,6 +436,7 @@ object DiagnosticLogger {
             updatedAtMillis = updatedAtMillis,
             sizeBytes = file.length(),
             isActive = enabled && file.name == activeFileName,
+            hasCrash = containsCrashRecord(readLogFile(file)),
         )
     }
 
@@ -464,10 +476,63 @@ object DiagnosticLogger {
         if (previousExceptionHandler != null) return
         previousExceptionHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            error("Crash", "uncaught_exception thread=${thread.name}", throwable)
+            append(
+                level = "FATAL",
+                tag = "Crash",
+                message = "uncaught_exception thread=${thread.name} " +
+                    "version=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE}) " +
+                    "android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}",
+                throwable = throwable,
+                force = true,
+            )
             previousExceptionHandler?.uncaughtException(thread, throwable) ?: run {
                 android.os.Process.killProcess(android.os.Process.myPid())
             }
+        }
+    }
+
+    private fun collectPreviousProcessExitsAsync() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        Thread(
+            {
+                runCatching { collectPreviousProcessExits() }
+                    .onFailure { Log.w(LOGCAT_TAG, "Unable to collect previous process exits", it) }
+            },
+            "diagnostic-exit-history",
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun collectPreviousProcessExits() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val context = appContext ?: return
+        val activityManager = context.getSystemService(ActivityManager::class.java) ?: return
+        val previousTimestamp = preferences().getLong(KEY_LAST_EXIT_TIMESTAMP, 0L)
+        val exits = activityManager.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+            .filter { it.timestamp > previousTimestamp }
+            .sortedBy(ApplicationExitInfo::getTimestamp)
+        exits.filter { isCrashExitReason(it.reason) }.forEach { exit ->
+            val trace = runCatching {
+                exit.traceInputStream?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                    val buffer = CharArray(MAX_STACK_CHARS)
+                    val count = reader.read(buffer)
+                    if (count > 0) String(buffer, 0, count) else ""
+                }.orEmpty()
+            }.getOrDefault("")
+            append(
+                level = "FATAL",
+                tag = "Crash",
+                message = "previous_process_exit reason=${processExitReasonName(exit.reason)} " +
+                    "timestamp=${exit.timestamp} status=${exit.status} " +
+                    "importance=${exit.importance} description=${exit.description.orEmpty()}",
+                throwable = trace.takeIf(String::isNotBlank)?.let(::PreviousProcessExitException),
+                force = true,
+            )
+        }
+        exits.maxOfOrNull(ApplicationExitInfo::getTimestamp)?.let { newestTimestamp ->
+            preferences().edit().putLong(KEY_LAST_EXIT_TIMESTAMP, newestTimestamp).apply()
         }
     }
 
@@ -489,6 +554,7 @@ object DiagnosticLogger {
 
     private const val PREFERENCES_NAME = "diagnostic_settings"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_LAST_EXIT_TIMESTAMP = "last_exit_timestamp"
     private const val LOGCAT_TAG = "CodexRemote"
     private const val MAX_SESSION_COUNT = 100
     private const val MAX_LOG_BYTES = 100L * 1024L
@@ -513,6 +579,27 @@ object DiagnosticLogger {
 
     private fun nextMillis(value: Long): Long = if (value == Long.MAX_VALUE) Long.MAX_VALUE else value + 1L
 }
+
+private class PreviousProcessExitException(trace: String) : RuntimeException(trace) {
+    override fun fillInStackTrace(): Throwable = this
+}
+
+internal fun isCrashExitReason(reason: Int): Boolean = reason == ApplicationExitInfo.REASON_CRASH ||
+    reason == ApplicationExitInfo.REASON_CRASH_NATIVE || reason == ApplicationExitInfo.REASON_ANR
+
+internal fun processExitReasonName(reason: Int): String = when (reason) {
+    ApplicationExitInfo.REASON_CRASH -> "crash"
+    ApplicationExitInfo.REASON_CRASH_NATIVE -> "native_crash"
+    ApplicationExitInfo.REASON_ANR -> "anr"
+    else -> "other_$reason"
+}
+
+internal fun containsCrashRecord(value: String): Boolean =
+    CRASH_RECORD_PATTERN.containsMatchIn(value)
+
+private val CRASH_RECORD_PATTERN = Regex(
+    "(?:ERROR|FATAL)\\s+Crash\\s+(?:uncaught_exception|previous_process_exit)\\b",
+)
 
 internal fun takeFirstUtf8Bytes(value: String, maxBytes: Int): String {
     if (maxBytes <= 0 || value.isEmpty()) return ""

@@ -256,7 +256,7 @@ internal object RemoteCodexSettings {
         val curlExit = values.firstOrNull { it.first == "CURL_EXIT" }?.second?.trim()
         when (status) {
             "SUCCESS" -> Unit
-            "MISSING_API_KEY" -> throw IllegalStateException("请先在 Codex 配置中保存 API 密钥")
+            "MISSING_API_KEY" -> throw IllegalStateException("请先在模型配置中保存 API 密钥")
             "CURL_UNAVAILABLE" -> throw IllegalStateException("服务器未安装 curl，无法获取模型列表")
             "ENCODER_UNAVAILABLE" -> throw IllegalStateException("服务器缺少 base64 或 fold，无法读取模型列表")
             "TEMPORARY_FILE_ERROR" -> throw IllegalStateException("无法安全准备模型列表请求")

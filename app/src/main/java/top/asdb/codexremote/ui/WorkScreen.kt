@@ -542,7 +542,7 @@ fun WorkScreen(
                             if (canAddDebugLog) {
                                 HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text("添加 Debug 日志") },
+                                    text = { Text("添加崩溃 / Debug 日志") },
                                     leadingIcon = { Icon(Icons.Default.BugReport, contentDescription = null) },
                                     enabled = !state.loading && !state.submitting,
                                     onClick = {
@@ -774,8 +774,9 @@ fun WorkScreen(
 
     if (showDebugLogPicker) {
         DiagnosticLogPickerDialog(
-            title = "选择要添加的诊断日志",
+            title = "选择崩溃或诊断日志",
             confirmLabel = "添加到对话",
+            preselectLatestCrash = true,
             onDismissRequest = { showDebugLogPicker = false },
             onConfirm = { ids ->
                 showDebugLogPicker = false
@@ -3058,6 +3059,7 @@ private fun CustomModelEditorDialog(
         )
     }
     var apiSearch by remember(request) { mutableStateOf("") }
+    var apiModelPickerExpanded by remember(request) { mutableStateOf(false) }
     val normalizedId = modelId.trim()
     val contextValue = contextWindow.trim().toLongOrNull()
     val maxOutputValue = maxOutput.trim().toLongOrNull()
@@ -3067,14 +3069,7 @@ private fun CustomModelEditorDialog(
         normalizedId in existingModelIds
     val modelIdValid = normalizedId.matches(Regex("[A-Za-z0-9._:/@+\\-]+")) && normalizedId.length <= 200
     val canSave = modelIdValid && !duplicateId && !invalidContext && !invalidMaxOutput
-    val visibleApiOptions = apiModelOptions.asSequence()
-        .filter { option ->
-            val query = apiSearch.trim()
-            query.isBlank() || option.modelId.contains(query, ignoreCase = true) ||
-                option.displayName.contains(query, ignoreCase = true)
-        }
-        .take(80)
-        .toList()
+    val visibleApiOptions = filterApiModelOptions(apiModelOptions, apiSearch)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (request.originalModelId == null) "新增模型" else "编辑自定义模型") },
@@ -3083,60 +3078,159 @@ private fun CustomModelEditorDialog(
                 modifier = Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (canFetchApiModels) {
-                    OutlinedButton(
-                        onClick = onFetchApiModelOptions,
-                        enabled = !apiModelOptionsLoading,
-                    ) {
-                        if (apiModelOptionsLoading) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(Modifier.width(7.dp))
-                        Text("获取 API 模型列表")
-                    }
-                    apiModelOptionsError?.let { message ->
-                        Text(message, style = MaterialTheme.typography.bodySmall, color = CodexRed)
-                    }
-                }
-                if (apiModelOptions.isNotEmpty()) {
-                    Text("从 API 列表选择", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
                     OutlinedTextField(
-                        value = apiSearch,
-                        onValueChange = { apiSearch = it },
-                        label = { Text("筛选模型") },
+                        value = modelId,
+                        onValueChange = { modelId = it },
+                        label = { Text("模型 ID") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        isError = modelId.isNotBlank() && (!modelIdValid || duplicateId),
+                        supportingText = {
+                            when {
+                                duplicateId -> Text("已有相同的自定义模型 ID")
+                                modelId.isNotBlank() && !modelIdValid -> Text("仅支持字母、数字及 . _ - / : @ +")
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
                     )
-                    visibleApiOptions.forEach { option ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                modelId = option.modelId
-                                if (displayName.isBlank()) displayName = option.displayName
-                                if (option.contextWindowTokens > 0L) {
-                                    contextWindow = option.contextWindowTokens.toString()
-                                }
-                                if (option.maxOutputTokens > 0L) {
-                                    maxOutput = option.maxOutputTokens.toString()
-                                }
-                            }.padding(vertical = 7.dp),
-                        ) {
-                            Column {
-                                Text(option.displayName.ifBlank { option.modelId }, fontWeight = FontWeight.Medium)
-                                if (option.displayName.isNotBlank()) {
-                                    Text(
-                                        option.modelId,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    if (canFetchApiModels) {
+                        Box {
+                            OutlinedButton(
+                                onClick = {
+                                    apiModelPickerExpanded = true
+                                    onFetchApiModelOptions()
+                                },
+                                enabled = !apiModelOptionsLoading,
+                                modifier = Modifier.height(56.dp),
+                            ) {
+                                if (apiModelOptionsLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
                                     )
                                 }
-                                ModelCapabilityText(option.contextWindowTokens, option.maxOutputTokens)
+                                Spacer(Modifier.width(6.dp))
+                                Text("获取")
+                            }
+                            DropdownMenu(
+                                expanded = apiModelPickerExpanded,
+                                onDismissRequest = { apiModelPickerExpanded = false },
+                                modifier = Modifier.widthIn(min = 300.dp, max = 360.dp)
+                                    .heightIn(max = 420.dp),
+                            ) {
+                                when {
+                                    apiModelOptionsLoading -> {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                                            horizontalArrangement = Arrangement.Center,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                strokeWidth = 2.dp,
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            Text("正在获取模型")
+                                        }
+                                    }
+
+                                    apiModelOptionsError != null -> {
+                                        Text(
+                                            apiModelOptionsError,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = CodexRed,
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("重新获取") },
+                                            leadingIcon = {
+                                                Icon(Icons.Default.Refresh, contentDescription = null)
+                                            },
+                                            onClick = onFetchApiModelOptions,
+                                        )
+                                    }
+
+                                    apiModelOptions.isEmpty() -> {
+                                        Text(
+                                            "API 未返回可用模型",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 18.dp),
+                                        )
+                                    }
+
+                                    else -> {
+                                        OutlinedTextField(
+                                            value = apiSearch,
+                                            onValueChange = { apiSearch = it },
+                                            leadingIcon = {
+                                                Icon(Icons.Default.Search, contentDescription = null)
+                                            },
+                                            label = { Text("筛选模型") },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        )
+                                        visibleApiOptions.forEach { option ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Column {
+                                                        Text(
+                                                            option.displayName.ifBlank { option.modelId },
+                                                            fontWeight = FontWeight.Medium,
+                                                        )
+                                                        if (option.displayName.isNotBlank()) {
+                                                            Text(
+                                                                option.modelId,
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                            )
+                                                        }
+                                                        ModelCapabilityText(
+                                                            option.contextWindowTokens,
+                                                            option.maxOutputTokens,
+                                                        )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    val selection = applyApiModelOption(
+                                                        option = option,
+                                                        currentDisplayName = displayName,
+                                                        currentContextWindow = contextWindow,
+                                                        currentMaxOutput = maxOutput,
+                                                    )
+                                                    modelId = selection.modelId
+                                                    displayName = selection.displayName
+                                                    contextWindow = selection.contextWindow
+                                                    maxOutput = selection.maxOutput
+                                                    apiModelPickerExpanded = false
+                                                },
+                                            )
+                                        }
+                                        if (visibleApiOptions.isEmpty()) {
+                                            Text(
+                                                "没有匹配的模型",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 18.dp),
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                HorizontalDivider(color = CodexBorder)
                 if (modelApiProtocols.isNotEmpty()) {
                     Text("API 协议", style = MaterialTheme.typography.labelLarge)
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -3151,20 +3245,6 @@ private fun CustomModelEditorDialog(
                         }
                     }
                 }
-                OutlinedTextField(
-                    value = modelId,
-                    onValueChange = { modelId = it },
-                    label = { Text("模型 ID") },
-                    singleLine = true,
-                    isError = modelId.isNotBlank() && (!modelIdValid || duplicateId),
-                    supportingText = {
-                        when {
-                            duplicateId -> Text("已有相同的自定义模型 ID")
-                            modelId.isNotBlank() && !modelIdValid -> Text("仅支持字母、数字及 . _ - / : @ +")
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
                 OutlinedTextField(
                     value = displayName,
                     onValueChange = { displayName = it },
@@ -3211,6 +3291,42 @@ private fun CustomModelEditorDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
+
+internal data class ApiModelEditorSelection(
+    val modelId: String,
+    val displayName: String,
+    val contextWindow: String,
+    val maxOutput: String,
+)
+
+internal fun filterApiModelOptions(
+    options: List<ApiModelOption>,
+    query: String,
+    limit: Int = 80,
+): List<ApiModelOption> {
+    val normalizedQuery = query.trim()
+    return options.asSequence()
+        .filter { option ->
+            normalizedQuery.isBlank() || option.modelId.contains(normalizedQuery, ignoreCase = true) ||
+                option.displayName.contains(normalizedQuery, ignoreCase = true)
+        }
+        .take(limit.coerceAtLeast(0))
+        .toList()
+}
+
+internal fun applyApiModelOption(
+    option: ApiModelOption,
+    currentDisplayName: String,
+    currentContextWindow: String,
+    currentMaxOutput: String,
+): ApiModelEditorSelection = ApiModelEditorSelection(
+    modelId = option.modelId,
+    displayName = currentDisplayName.ifBlank { option.displayName },
+    contextWindow = option.contextWindowTokens.takeIf { it > 0L }?.toString()
+        ?: currentContextWindow,
+    maxOutput = option.maxOutputTokens.takeIf { it > 0L }?.toString()
+        ?: currentMaxOutput,
+)
 
 private fun formatModelTokenLimit(value: Long): String = when {
     value >= 1_000L && value % 1_000L == 0L -> "${value / 1_000L}K"

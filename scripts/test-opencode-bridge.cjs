@@ -240,6 +240,36 @@ assert.equal(
 assert.equal(bridge.healthVersion({ healthy: true, version: " 1.18.11 " }), "1.18.11");
 assert.equal(bridge.healthVersion({ healthy: true }), "opencode");
 
+assert.deepEqual(bridge.compactionModel([
+  {
+    info: {
+      role: "assistant",
+      providerID: "codex-remote",
+      modelID: "older-model",
+    },
+  },
+  {
+    info: {
+      role: "assistant",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+    },
+  },
+], {
+  model: "custom-api/default-model",
+}), {
+  providerID: "anthropic",
+  modelID: "claude-sonnet-4-5",
+});
+assert.deepEqual(bridge.compactionModel([], {
+  model: "custom-api/default-model",
+  agent: { build: { model: "codex-remote/build-model" } },
+}), {
+  providerID: "custom-api",
+  modelID: "build-model",
+});
+assert.equal(bridge.compactionModel([], {}), null);
+
 assert.deepEqual(bridge.proxyEnvironment("http://127.0.0.1:7890"), {
   HTTP_PROXY: "http://127.0.0.1:7890",
   HTTPS_PROXY: "http://127.0.0.1:7890",
@@ -268,6 +298,31 @@ assert.deepEqual(mappedSettings, {
   apiKey: "test-key",
   proxyUrl: "http://127.0.0.1:7890",
 });
+
+const previousDataHome = process.env.XDG_DATA_HOME;
+const authTestRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-auth-read-"));
+try {
+  process.env.XDG_DATA_HOME = authTestRoot;
+  const authDirectory = path.join(authTestRoot, "opencode");
+  fs.mkdirSync(authDirectory, { recursive: true });
+  fs.writeFileSync(path.join(authDirectory, "auth.json"), JSON.stringify({
+    custom: { type: "api", key: "stored-test-key" },
+    oauth: { type: "oauth", access: "not-an-api-key" },
+  }));
+  assert.equal(bridge.readStoredApiKey("custom"), "stored-test-key");
+  assert.equal(bridge.readStoredApiKey("oauth"), "");
+  assert.equal(bridge.mapGlobalSettings({
+    model: "custom/gpt-new",
+    provider: { custom: { options: { baseURL: "https://api.example.com/v1" } } },
+  }, {
+    connected: ["custom"],
+    all: [{ id: "custom", options: {} }],
+  }, "").apiKey, "stored-test-key");
+} finally {
+  if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME;
+  else process.env.XDG_DATA_HOME = previousDataHome;
+  fs.rmSync(authTestRoot, { recursive: true, force: true });
+}
 
 const models = bridge.mapModels({
   connected: ["openai"],
