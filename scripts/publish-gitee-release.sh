@@ -11,7 +11,7 @@ readonly GITEE_API_BASE="${CODEX_GITEE_API_BASE:-https://gitee.com/api/v5}"
 readonly GITEE_RELEASE_OWNER="${CODEX_RELEASE_OWNER:-YanGanYuan}"
 readonly GITEE_RELEASE_REPOSITORY="${CODEX_RELEASE_REPOSITORY:-android-codex-server}"
 readonly GITEE_RELEASE_BRANCH="${CODEX_RELEASE_BRANCH:-release}"
-readonly APK_PATH="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
+readonly APK_PATH="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-release.apk"
 
 release_token="${CODEX_RELEASE_TOKEN:-}"
 if [[ -z "$release_token" ]]; then

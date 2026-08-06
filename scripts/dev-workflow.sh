@@ -68,7 +68,9 @@ prepare_emulator() {
     fi
     local gradle_home="${GRADLE_USER_HOME:-$ROOT_DIR/../.gradle-cache}"
     if [[ -d "$gradle_home" ]]; then
-        run_stage "Release Gradle memory for emulator" env GRADLE_USER_HOME="$gradle_home" "$ROOT_DIR/gradlew" --stop
+        if [[ -x "$ROOT_DIR/flutter_app/android/gradlew" ]]; then
+            run_stage "Release Gradle memory for emulator" env GRADLE_USER_HOME="$gradle_home" "$ROOT_DIR/flutter_app/android/gradlew" --stop
+        fi
     fi
 }
 
@@ -95,8 +97,8 @@ show_status() {
     find "$(workflow_cache_dir "$ROOT_DIR")" -maxdepth 1 -type f -name '*.stamp' \
         -printf '%TY-%Tm-%Td %TH:%TM:%TS %f\n' 2>/dev/null | sort || true
     for apk_path in \
-        app/build/outputs/apk/debug/app-debug.apk \
-        app/build/outputs/apk/release/app-release.apk \
+        flutter_app/build/app/outputs/flutter-apk/app-debug.apk \
+        flutter_app/build/app/outputs/flutter-apk/app-release.apk \
         /var/www/html/codex.apk; do
         [[ -f "$apk_path" ]] && sha256sum "$apk_path"
     done

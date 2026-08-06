@@ -1,129 +1,204 @@
 # Codex Remote for Android
 
-An Android client for a remote Codex CLI host. The app opens an SSH exec channel, starts the pinned
-Codex app-server without a PTY, and renders its structured JSON-RPC events as a native Jetpack
-Compose interface modeled after the VS Code Codex task and work views.
+Codex Remote 是一个通过 SSH 连接远程服务器、并计划在移动端提供接近 VS Code Codex 插件体验的
+Flutter 客户端。仓库正在从旧的 Kotlin/Jetpack Compose 实现迁移到 Flutter；当前 Android 构建入口
+已经切换到 `flutter_app/`，但 Agent 和会话工作区尚未迁移完成。
 
-The project is isolated in `/home/ygy/android-codex-server`. It does not modify the existing
-`ssh-client`, `lobe-android`, or `mihomo-web` workspaces.
+> 当前状态（2026-08-06）：可保存多台服务器并完成密码或私钥 SSH 连接；Codex/OpenCode Agent、
+> 会话列表和对话页仍是迁移目标。不要把旧 `app/` 中已有的功能误写成当前 Flutter APK 已可用。
 
-## Features
+## 当前可用
 
-- Multiple encrypted server profiles with password or imported private-key authentication
-- SHA-256 SSH host-key fingerprint probing, explicit trust, and strict pinning
-- Fixed Codex app-server command over a non-PTY JSON-RPC channel
-- Independent SSH terminal with a local xterm renderer, hide/resume history, and explicit disconnect
-- Codex `initialize` handshake and model catalog
-- Task list, search, refresh, new task, resume, rename, and archive
-- Streaming user/agent messages, reasoning, plans, command output, tool calls, and notices
-- File-change summary, per-file unified diff viewer, and uncommitted-change review
-- Command, file-write, permission, and `request_user_input` dialogs
-- Turn start, same-turn steering, interruption, model, reasoning effort, and sandbox selection
-- VS Code-style approval modes backed by Codex approval policies
-- SSH directory picker after login with per-server workspace persistence
-- IME-aware composer positioning and a jump-to-latest control while reading earlier output
-- Optional SFTP attachment upload when the host's SSH subsystem and helper are configured; image
-  paths are sent as `localImage` input
-- Encrypted profile storage with Android Keystore-backed `EncryptedSharedPreferences`
-- Pinned Codex CLI installer, restricted SSH entrypoint examples, schema generation, and smoke test
-- SSH preflight with an explicit, user-approved installation of private Node.js and pinned Codex
+- Flutter + Riverpod 应用壳、服务器列表、服务器设置页和页面切换动画。
+- 多服务器 Profile 的新增、编辑、删除、选择和独立连接状态。
+- `flutter_secure_storage` 加密持久化，并通过 Android MethodChannel 一次性导入旧原生 Profile。
+- `dartssh2` 密码认证和 OpenSSH 私钥认证，包括带密码私钥。
+- SSH 主机公钥 SHA-256 指纹探测、用户确认、保存和后续严格固定校验。
+- 连接过程的全屏半透明阻塞层，以及连接成功后直接进入会话占位页。
+- 服务器资源指标的基础展示位置；真实 CPU、内存、磁盘和网络采样尚未接入。
+- 服务器页在竖屏、横屏和放大字体下的 Widget 回归。
+- Android Debug 和 Release APK 使用同一把长期稳定签名，可覆盖安装历史同签名版本。
 
-## Build
+## 尚未迁移
 
-The repository pins Gradle 8.2, AGP 8.2.2, Kotlin 1.9.22, and Android SDK 34.
+以下能力存在于旧 `app/`、服务器辅助脚本或产品约束中，但当前 Flutter APK **尚不能使用**：
 
-For local iteration, use the tiered build entry point. It keeps Gradle's daemon, configuration
-cache, task cache, and incremental Kotlin outputs between runs; normal development should not call
-`clean`. By default the shared dependency cache is stored beside the checkout at
-`../.gradle-cache`; set `GRADLE_USER_HOME` to override it.
+- Codex/OpenCode Agent 探测、安装、启动和多 Agent 通道。
+- Codex app-server JSON-RPC/JSONL 握手、会话加载、搜索、创建、恢复和分页。
+- 对话时间线、流式输出、输入、停止、审批、模型、推理强度、上下文占用、目标和子 Agent。
+- 对话中的图片预览、中文“查看了图片”状态和长按保存到手机。
+- SSH 终端和 SFTP 文件管理界面。
+- 工作目录选择、Agent 全局设置和真实模型连通性测试。
+- 后台前台服务、回合完成通知、完整 Debug 日志预览与系统分享。
 
-The recommended entry point now coordinates Android, OpenCode, the persistent emulator, and local
-APK publishing with content-addressed success caches:
+`ThreadListScreen` 当前只是占位页。刷新、新建会话、终端、设置、Agent 切换和搜索控件均未启用；
+`AppScreen.work`、`AppScreen.agentWork` 和 `AppScreen.fileManager` 也暂时回退到该占位页。
+
+完整的当前实现边界、迁移顺序和长期产品约束见
+[架构与协作手册](docs/ARCHITECTURE.md)。
+
+## 目录
+
+| 路径 | 当前职责 |
+| --- | --- |
+| `flutter_app/lib` | 当前 Flutter 应用源码 |
+| `flutter_app/test` | 当前 Flutter 单元测试和 Widget 测试 |
+| `flutter_app/android` | 当前 Android 宿主、签名和旧 Profile 导入桥接 |
+| `flutter_app/ios` | Flutter 自动生成的 iOS 工程骨架，尚未作为交付版本验收 |
+| `app` | 旧 Kotlin/Compose 完整实现，仅作迁移参考和行为基线 |
+| `server` | 固定 Agent 安装、受限入口和 app-server smoke test 辅助脚本 |
+| `protocol` | Codex、OpenCode 和 Node.js 固定版本及协议资料 |
+| `scripts` | 构建、测试、模拟器和 APK 发布入口 |
+| `keystore` | 不得更换的 Android 稳定签名 |
+| `docs/ARCHITECTURE.md` | 当前架构、迁移缺口、产品约束和测试地图 |
+| `docs/LOCAL_WORKFLOW.md` | 本地构建、缓存、模拟器和发布流程 |
+| `docs/UI_SPEC.md` | 视觉/交互契约和历史参考（实现状态以本文为准） |
+| `docs/GITEE_RELEASE.md`、`docs/GITEE_GO_RELEASE.md` | Gitee 发布参考 |
+
+当前入口是 `flutter_app/lib/main.dart`，应用根组件是
+`flutter_app/lib/src/app/codex_remote_app.dart`。除非任务明确要求修复旧版，不要继续在 `app/` 实现
+新功能；应把对应行为迁移到 Flutter。
+
+## 工具链
+
+当前工程版本以源码文件为准：
+
+| 项目 | 当前值 |
+| --- | --- |
+| App | `1.8.0+120`，来源 `flutter_app/pubspec.yaml` |
+| Flutter | `3.44.8 stable` |
+| Dart | `3.12.2` |
+| Java | 17 |
+| Gradle wrapper | 9.1.0 |
+| Android Gradle Plugin | 9.0.1 |
+| Kotlin Android plugin | 2.3.20 |
+| Android | minSdk 26、targetSdk 34、compileSdk 36 |
+
+## 构建
+
+日常开发使用统一入口；它会按输入内容复用服务器脚本、OpenCode、Flutter、APK 和模拟器门禁：
 
 ```bash
-./scripts/dev-workflow.sh quick    # edit loop
-./scripts/dev-workflow.sh check    # feature-level tests + debug emulator smoke
-./scripts/dev-workflow.sh full     # full local gate + release emulator smoke
-./scripts/dev-workflow.sh publish  # full gate + local HTTP APK, reusing identical results
-./scripts/dev-workflow.sh status   # reusable environment and artifact status
+./scripts/dev-workflow.sh quick
+./scripts/dev-workflow.sh check
+./scripts/dev-workflow.sh full
+./scripts/dev-workflow.sh publish
+./scripts/dev-workflow.sh status
 ```
 
-See [Local reusable development workflow](docs/LOCAL_WORKFLOW.md) for cache invalidation, persistent
-OpenCode/AVD/SSH setup, resource coordination, and `--force` behavior.
+只运行 Android/Flutter 阶段时：
 
 ```bash
-./scripts/build-android.sh fast     # Kotlin compile only
-./scripts/build-android.sh debug    # unit tests + installable debug APK
-./scripts/build-android.sh release  # release unit tests + Lint + signed release APK
-./scripts/build-android.sh all      # tests, Lint, and APKs for both variants
+./scripts/build-android.sh fast     # flutter analyze
+./scripts/build-android.sh debug    # analyze + test + Debug APK
+./scripts/build-android.sh release  # analyze + test + Release APK
+./scripts/build-android.sh all      # analyze + test + Debug/Release APK
 ```
 
-The script is offline by default once dependencies are cached. When a download is required, it
-detects and uses the local `127.0.0.1:7890` proxy:
+脚本不会执行 `flutter clean`。依赖默认先通过持久 `PUB_CACHE` 离线解析；缺失依赖且本机
+`127.0.0.1:7890` 可用时会使用该代理下载，也可显式联网：
 
 ```bash
 CODEX_BUILD_ONLINE=1 ./scripts/build-android.sh debug
+# 或
+./scripts/dev-workflow.sh check --online
 ```
 
-When the Android SDK is installed beside this checkout at `../android-sdk`, the scripts detect it
-automatically. To build a signed release locally and publish it to the machine's existing HTTP
-download endpoint without creating a Gitee tag or Release, run:
-
-```bash
-./scripts/publish-local-apk.sh          # reuse an identical successful release gate
-./scripts/publish-local-apk.sh --force  # rerun the release gate explicitly
-```
-
-The command verifies the signing certificate, atomically replaces `/var/www/html/codex.apk`, then
-downloads and checks the published file at `http://210.16.163.118:18080/codex.apk`.
-
-```bash
-docker run --rm \
-  --network host \
-  -v "$PWD:/project" \
-  -v /home/ygy/.gradle-cache:/gradle-cache \
-  -v android-sdk:/opt/android-sdk \
-  -e GRADLE_USER_HOME=/gradle-cache \
-  -e CODEX_BUILD_ONLINE=1 \
-  -w /project \
-  thyrlian/android-sdk:latest \
-  sh -lc './scripts/build-android.sh all'
-```
-
-APK:
+默认缓存位于仓库同级目录：
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+../.pub-cache
+../.gradle-cache
 ```
 
-Both debug and release APKs use the project's persistent signing key at
-`keystore/codex-remote-stable.keystore`, so builds from fresh containers remain upgrade-compatible.
-Do not delete or regenerate that file. Its signing certificate SHA-256 is:
+不要为普通构建删除 Pub/Gradle 缓存、`.workflow-cache/`、AVD、App 数据或远端 Agent。需要绕过
+内容成功缓存时使用 `--force`。完整规则见
+[本地高复用开发流程](docs/LOCAL_WORKFLOW.md)。
+
+## APK
+
+构建产物：
+
+```text
+flutter_app/build/app/outputs/flutter-apk/app-debug.apk
+flutter_app/build/app/outputs/flutter-apk/app-release.apk
+```
+
+安装 Debug APK：
+
+```bash
+adb install -r flutter_app/build/app/outputs/flutter-apk/app-debug.apk
+```
+
+Debug 和 Release 都使用：
+
+```text
+keystore/codex-remote-stable.keystore
+```
+
+不得删除、重新生成或替换该文件，也不得更换 alias。稳定证书 SHA-256：
 
 ```text
 72:72:22:18:70:9A:6D:7F:D0:E8:0B:94:49:03:AE:29:61:B4:CF:A8:AB:E0:35:86:F6:02:AC:DC:1E:A0:F5:2A
 ```
 
-The debug APK can be installed directly:
+版本名和 Android `versionCode` 分别来自 `flutter_app/pubspec.yaml` 的 `version` 与 `+build`；每次
+发布可安装更新的 APK 前必须增加 build number。
+
+## 本机发布
+
+生成 Release APK、验签、复制到本机 HTTP 目录并实际下载校验：
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./scripts/publish-local-apk.sh
+./scripts/publish-local-apk.sh --force
 ```
 
-`assembleRelease` produces a signed `app/build/outputs/apk/release/app-release.apk` with the same
-certificate. Keep an encrypted backup of the signing key; losing it makes future in-place updates
-impossible.
+脚本把产物归档为 `dist/CodexRemote-<version>.apk`，原子更新
+`/var/www/html/codex.apk`，并绕过代理校验以下两个地址的 SHA-256：
 
-## Automated release
+- 内网：<http://192.168.8.109:18080/codex.apk>
+- 外网：<http://frp.asdb.top:18080/codex.apk>
 
-Local debug builds stay local. A protected `v<versionName>` tag can trigger a self-hosted Gitee Runner
-to build, verify, archive, and deploy the signed release APK without committing the APK to Git. See
-[Gitee tag automated release](docs/GITEE_RELEASE.md) for the one-time Runner setup and daily release
-commands.
+交付 APK 时必须同时给出内网和外网完整地址。地址属于部署环境，不要写入 App 业务逻辑，也不要在
+文档、命令或 Git 中记录 FRP token。
 
-## Server quickstart
+## 当前架构
 
-Run as the Unix user whose Codex login, threads, workspace, and config should be available:
+```text
+Flutter Widgets
+      |
+AppController (Riverpod StateNotifier)
+      |-------------------------|
+SecureProfileStore              ServerConnectionManager
+      |                         |
+flutter_secure_storage          DartSshServerClient
+      |                         |
+Android legacy MethodChannel    dartssh2 + pinned SHA-256 host key
+```
+
+`ServerConnectionManager` 以 `profileId` 隔离客户端、锁、连接代次和展示状态。修改主机、端口、用户、
+认证材料或固定指纹会替换旧客户端；只修改服务器名称等展示字段则复用连接。
+
+下一阶段的预期数据流是：
+
+```text
+Flutter Work UI
+      |
+profileId + AgentKind + threadId 隔离的状态/缓存
+      |
+Agent adapter (Codex / OpenCode)
+      |
+SSH exec channel (JSONL, no PTY)
+      |
+remote Agent runtime + workspace
+```
+
+这条 Agent 数据流目前只是迁移目标，不能据此判断 Flutter 版已支持会话。
+
+## 服务器辅助脚本
+
+`server/` 仍保留独立安装和 app-server smoke test：
 
 ```bash
 cd server
@@ -132,100 +207,26 @@ cd server
 CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./smoke-test.mjs
 ```
 
-Create an Android server profile with:
+这些脚本不会让当前 Flutter APK 自动获得 Agent 能力。自动探测、用户确认、安装进度和 app-server
+连接必须在 Flutter 迁移完成后才能从 App 使用。脚本默认安装到服务器用户目录，不应使用 `sudo`、
+覆盖系统 Node.js、覆盖 VS Code 扩展内置 CLI，或删除该用户的 `~/.codex` 登录和会话。
 
-```text
-Host: your SSH host
-User: the same Unix user
-Command: ~/.local/bin/codex-remote app-server --listen stdio://
-Workspace: an absolute project directory on the server
-```
+## 安全约束
 
-Tap the fingerprint action, verify the SHA-256 value against a trusted server console, then trust and
-connect. The app loads the same persisted Codex threads visible to other Codex clients using that
-Unix user's `CODEX_HOME`.
+- 未知 SSH 主机必须先显示 SHA-256 指纹，由用户确认后才能正式认证连接。
+- 已保存指纹必须严格匹配；主机或端口变化后重新确认。
+- 密码和私钥只存入系统安全存储，不写日志、通知、普通首选项或截图。
+- Codex/OpenCode 凭据留在远程服务器；App 不把它们打包进 APK。
+- Agent 协议最终只通过 SSH 通道传输，不公开监听 app-server TCP/WebSocket。
+- 生产环境推荐非 root 专用账户和每台设备独立 SSH key；界面默认用户为 `root` 只是产品默认值。
 
-When the default managed command is selected, the app checks the remote host before starting Codex.
-An existing compatible `codex-cli 0.146.0` is reused. If Codex is missing or has a different version,
-the app asks before installing Node.js 22.17.0 and Codex into:
+## 协作规则
 
-```text
-~/.local/share/codex-remote/
-~/.local/bin/codex-remote
-```
-
-The bootstrap does not use `sudo`, modify a system Node.js installation, or overwrite the CLI bundled
-with the VS Code extension. Node.js archives are pinned by SHA-256 and the installed CLI version and
-`app-server` command are verified before the connection continues. The server needs Linux x86_64 or
-arm64, `sh`, `tar`, `sha256sum`, `curl` or `wget`, at least 300 MB free in the user's home directory,
-and outbound HTTPS access to nodejs.org and the npm registry. The host also needs `flock` and
-`setsid --wait` (normally provided by `util-linux`) so concurrent installs are serialized and an
-install is terminated if its SSH connection disappears.
-
-Installation does not create an OpenAI login. The CLI and IDE extension reuse the same login cache
-under the Unix user's `CODEX_HOME` (normally `~/.codex`). On a new headless account, run
-`~/.local/bin/codex-remote login --device-auth` after installation.
-
-For a hardened forced-command account and daemon/proxy mode, see [server/README.md](server/README.md).
-The sample forced entrypoint intentionally fixes direct mode, CLI paths, and its launch directory
-rather than trusting SSH environment overrides. It is not a filesystem boundary; use a dedicated
-account/container when the app-server `cwd` must be confined.
-
-## Architecture
-
-维护者和 AI 修改代码前，请先阅读完整的
-[架构与协作手册](docs/ARCHITECTURE.md)。其中记录了模块职责、运行时数据流、多服务器隔离、
-本地模拟器环境、回归用例、固定签名和发布约束。
-
-```text
-Jetpack Compose UI
-        |
-AppViewModel + event reducer
-        |
-Codex JSON-RPC client
-        |
-SSH exec channel (JSONL stdin/stdout, no PTY)
-        |
-codex app-server --listen stdio://
-        |
-Pinned Codex CLI + server CODEX_HOME + workspace
-```
-
-`thread`, `turn`, and `item` are kept as separate protocol concepts. The event reducer updates an
-idempotent timeline from item start/completion and delta notifications. Server-initiated requests
-retain their JSON-RPC request id until the user approves, declines, or answers.
-
-## Security defaults
-
-- The app never accepts an unknown host silently during an authenticated connection.
-- Cleartext Android network traffic and backups are disabled.
-- Passwords and imported private keys are encrypted at rest.
-- Codex credentials remain on the SSH host.
-- New turns default to `workspace-write` and `on-request`.
-- Full access requires a separate confirmation in the UI.
-- Public app-server WebSocket listeners are not used.
-
-`request_user_input` is experimental and disabled by default in Codex 0.146.0. The UI is ready for
-servers that explicitly enable `default_mode_request_user_input`; otherwise normal command/file
-approvals remain available.
-
-For production, use a non-root account, public-key authentication, one key per phone, a forced SSH
-command, no PTY/forwarding on the forced account, and server-side `requirements.toml` policy. The
-forced entrypoint has an explicit, host-dependent external `sftp-server` attachment path but does
-not provide a shell; built-in `internal-sftp` needs a separate upload account. Verify the host's
-subsystem with the same key, and pair it with a tested chroot or dedicated upload directory when
-filesystem confinement is needed.
-
-## Protocol version
-
-The direct transport pins `codex-cli 0.146.0`. The optional standalone daemon bootstrap starts an
-updater and can move to a newer CLI, so use direct mode when a strict version pin is required. The
-app-server interface remains experimental. Upgrade only by changing `protocol/codex-version.txt`
-(the Android build reads this as its single version source), regenerating the schema, reviewing its
-diff, and running the full validation checklist in `server/README.md`.
-
-Official references:
-
-- <https://learn.chatgpt.com/docs/app-server>
-- <https://learn.chatgpt.com/docs/remote-connections>
-- <https://github.com/openai/codex/tree/main/codex-rs/app-server>
+- 仓库存在 `.codegraph/` 时，理解源码前先运行 `codegraph explore`；源码修改完成后运行
+  `codegraph sync`。纯文档修改无需同步索引。
+- 保留共享工作区里不属于当前任务的修改，不修改同级其他项目。
+- 手工编辑使用 `apply_patch`；普通开发不运行 `clean`。
+- 测试范围按风险扩大，不能只以“编译通过”代替 Widget、模拟器或真实 SSH 流程验证。
+- Git 提交信息使用中文；不要强推或改写他人历史。
+- 长期产品注意事项有变化时，同步更新
+  [架构与协作手册](docs/ARCHITECTURE.md)。

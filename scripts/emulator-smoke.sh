@@ -32,8 +32,8 @@ if [[ "${CODEX_WORKFLOW_NO_CACHE:-0}" == 1 || "$force_install" == 1 || "$reset_d
 fi
 
 case "$variant" in
-    debug) apk_path="$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk" ;;
-    release) apk_path="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk" ;;
+    debug) apk_path="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-debug.apk" ;;
+    release) apk_path="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-release.apk" ;;
 esac
 [[ -f "$apk_path" ]] || {
     echo "APK is missing: $apk_path" >&2
@@ -66,6 +66,50 @@ smoke_fingerprint="$(printf 'schema=1\nvariant=%s\napk=%s\ninputs=%s\nserial=%s\
     "$variant" "$apk_sha256" "$smoke_input_hash" "$SERIAL" "$host_boot_id" "$emulator_pid" "$device_boot_id" |
     workflow_sha256)"
 smoke_stamp="$CACHE_DIR/smoke-$variant.stamp"
+minimum_short_edge="${CODEX_EMULATOR_MIN_SHORT_EDGE:-1080}"
+minimum_long_edge="${CODEX_EMULATOR_MIN_LONG_EDGE:-2400}"
+
+assert_minimum_canvas() {
+    local screenshot="$1"
+    local orientation="$2"
+    local metadata
+    local width
+    local height
+    metadata="$(file "$screenshot")"
+    read -r width height <<< "$(sed -nE 's/.*PNG image data, ([0-9]+) x ([0-9]+),.*/\1 \2/p' <<< "$metadata")"
+    if [[ -z "${width:-}" || -z "${height:-}" ]]; then
+        echo "$metadata" >&2
+        echo "Unable to read emulator screenshot dimensions" >&2
+        return 1
+    fi
+    case "$orientation" in
+        portrait)
+            if (( width < minimum_short_edge || height < minimum_long_edge || width >= height )); then
+                echo "$metadata" >&2
+                echo "Portrait canvas is too small; use at least ${minimum_short_edge}x${minimum_long_edge}" >&2
+                return 1
+            fi
+            ;;
+        landscape)
+            if (( height < minimum_short_edge || width < minimum_long_edge || height >= width )); then
+                echo "$metadata" >&2
+                echo "Landscape canvas is too small; use at least ${minimum_long_edge}x${minimum_short_edge}" >&2
+                return 1
+            fi
+            ;;
+    esac
+}
+
+set_rotation() {
+    "$ADB" -s "$SERIAL" shell cmd window user-rotation lock "$1" >/dev/null
+}
+
+restore_portrait() {
+    set_rotation 0 >/dev/null 2>&1 || true
+}
+
+trap restore_portrait EXIT
+set_rotation 0
 
 if [[ "$reuse" == 1 ]] &&
     workflow_stamp_matches "$smoke_stamp" "$smoke_fingerprint" &&
@@ -127,7 +171,7 @@ if [[ "$reset_data" == 1 ]]; then
 fi
 if [[ "$force_install" == 1 || "$installed_marker" != "$apk_sha256" || -z "$package_path" ]]; then
     echo "Installing $variant APK on $SERIAL"
-    "$ADB" -s "$SERIAL" install -r -d "$apk_path" >/dev/null
+    "$ADB" -s "$SERIAL" install -r "$apk_path" >/dev/null
     "$ADB" -s "$SERIAL" shell "printf '%s' '$apk_sha256' > '$MARKER_PATH'"
 else
     echo "Reusing installed $variant APK on $SERIAL"
@@ -151,13 +195,26 @@ fi
 
 log_path="$CACHE_DIR/latest-logcat.txt"
 screen_path="$CACHE_DIR/latest-$variant.png"
+landscape_screen_path="$CACHE_DIR/latest-$variant-landscape.png"
 window_path="$CACHE_DIR/latest-window.xml"
-"$ADB" -s "$SERIAL" logcat -d -v brief > "$log_path"
+landscape_window_path="$CACHE_DIR/latest-window-landscape.xml"
 "$ADB" -s "$SERIAL" exec-out screencap -p > "$screen_path"
 if ! dump_window "$window_path"; then
     echo "Unable to capture the emulator UI hierarchy" >&2
     exit 1
 fi
+assert_minimum_canvas "$screen_path" portrait
+
+set_rotation 1
+sleep "${CODEX_EMULATOR_ROTATION_SETTLE_SECONDS:-1}"
+"$ADB" -s "$SERIAL" exec-out screencap -p > "$landscape_screen_path"
+if ! dump_window "$landscape_window_path"; then
+    echo "Unable to capture the landscape UI hierarchy" >&2
+    exit 1
+fi
+assert_minimum_canvas "$landscape_screen_path" landscape
+set_rotation 0
+"$ADB" -s "$SERIAL" logcat -d -v brief > "$log_path"
 
 if awk '
     /FATAL EXCEPTION/ { fatal_window = 20 }
@@ -180,6 +237,10 @@ if ! rg -q "package=\"$PACKAGE\"" "$window_path"; then
     echo "The foreground UI does not belong to $PACKAGE" >&2
     exit 1
 fi
+if ! rg -q "package=\"$PACKAGE\"" "$landscape_window_path"; then
+    echo "The landscape foreground UI does not belong to $PACKAGE" >&2
+    exit 1
+fi
 
 {
     printf 'variant=%s\n' "$variant"
@@ -190,4 +251,5 @@ fi
 workflow_write_stamp "$smoke_stamp" "$smoke_fingerprint"
 
 echo "Emulator smoke passed on $SERIAL"
-echo "Screenshot: $screen_path"
+echo "Portrait screenshot: $screen_path"
+echo "Landscape screenshot: $landscape_screen_path"

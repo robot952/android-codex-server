@@ -9,9 +9,9 @@ apk_expected_certificate_sha256() {
 apk_version_name() {
     local root_dir="$1"
     local version_name
-    version_name="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' "$root_dir/app/build.gradle.kts")"
+    version_name="$(sed -nE 's/^[[:space:]]*version:[[:space:]]*([^+[:space:]]+)(\+[0-9]+)?[[:space:]]*$/\1/p' "$root_dir/flutter_app/pubspec.yaml")"
     if [[ ! "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-        echo "Unable to read a semantic versionName from app/build.gradle.kts" >&2
+        echo "Unable to read a semantic version from flutter_app/pubspec.yaml" >&2
         return 1
     fi
     printf '%s' "$version_name"

@@ -1,123 +1,124 @@
 # 本地高复用开发流程
 
-本文是本仓库本地开发、测试、模拟器验证和 APK 发布的唯一流程说明。目标是让源码、Gradle、
-OpenCode、模拟器、SSH 测试主机和发布产物按内容变化自动复用，不再为每次小改动重复准备环境。
+本文是当前 Flutter/Android 工程的本地构建、测试、模拟器验收和 APK 发布唯一说明。它描述的是
+仓库中的 `flutter_app/`，不是旧 `app/` Kotlin/Compose 工程。目标是复用依赖、构建输出、模拟器和
+测试服务器，缩短反馈时间，同时不牺牲可重复性。
 
-正式 Gitee `release` 流程不读取本地成功缓存，仍然每次执行完整门禁。本文只优化本地 `main`
-开发和本机 HTTP 下载包，不会推送或触发 `release`。
+正式 Gitee 发布不信任本机成功缓存；本文只覆盖本机开发和本机 HTTP APK 发布。当前迁移任务在独立
+分支 `flutter-refactor` 上进行；修改前应确认自己没有误在 `main` 或其他人的分支上工作。
 
-## 1. 日常只记一个命令
+## 1. 常用入口
 
-~~~bash
+```bash
 ./scripts/dev-workflow.sh quick
 ./scripts/dev-workflow.sh check
 ./scripts/dev-workflow.sh full
 ./scripts/dev-workflow.sh publish
 ./scripts/dev-workflow.sh status
-~~~
+```
 
-| 模式 | 用途 | 执行内容 |
+| 模式 | 适用场景 | 实际执行 |
 | --- | --- | --- |
-| `quick` | 编码中的频繁反馈 | 服务器脚本静态门禁 + OpenCode 快速桥接测试 + 增量 Kotlin 编译 |
-| `check` | 一项功能完成 | 服务器脚本静态门禁 + OpenCode 真实本地集成测试 + Debug 单测/APK + 模拟器启动冒烟 |
-| `full` | 提交前或高风险改动 | 服务器脚本静态门禁 + OpenCode 完整测试 + Debug/Release 测试、Lint、APK + Release 模拟器冒烟 |
-| `publish` | 给用户本地下载包 | `full` 的缓存结果 + 验签 + 本地 HTTP 部署和下载哈希校验 |
-| `status` | 查看当前环境 | Git、模拟器、OpenCode、门禁缓存和 APK 哈希 |
+| `quick` | 频繁编码反馈 | 服务器脚本门禁、OpenCode bridge quick 门禁、Flutter `analyze` |
+| `check` | 一个功能完成 | 服务器脚本门禁、OpenCode bridge full 门禁、Flutter analyze/test、Debug APK、Debug 模拟器冒烟 |
+| `full` | 提交前或高风险改动 | 上述门禁、Debug/Release APK、Release 模拟器冒烟 |
+| `publish` | 交付本机下载包 | `full` 的缓存结果、稳定签名校验、本机 HTTP 部署、内外网下载哈希校验 |
+| `status` | 查看环境 | Git、AVD、OpenCode 运行时、门禁 stamp 和 APK SHA-256 |
 
-默认使用内容指纹缓存。只有调查缓存、工具链升级或明确要求从头验证时才执行：
+`quick` 不构建可安装 APK；需要 APK 时至少执行 `check`。只有明确要求从头验证或怀疑缓存时才强制
+重跑：
 
-~~~bash
+```bash
 ./scripts/dev-workflow.sh full --force
-~~~
+```
 
-依赖缺失时加 `--online`，Gradle 会优先使用 `127.0.0.1:7890`；已有依赖时保持离线：
+可用 `--no-emulator` 只跳过模拟器阶段；它不跳过 analyze、test 或 APK 构建。依赖下载确实需要联网
+时追加 `--online`。
 
-~~~bash
-./scripts/dev-workflow.sh check --online
-~~~
+## 2. Flutter 构建入口
 
-## 2. 缓存如何保证不会复用旧代码
+底层脚本支持：
 
-缓存位于被 Git 忽略的 `.workflow-cache/`。缓存键不是提交号或文件时间，而是以下内容的 SHA-256：
-
-- 当前所有相关 Git 已跟踪文件；
-- 相关目录下未被忽略的未跟踪文件；
-- 文件路径、权限和文件内容；
-- Java、Android SDK、Build Tools 或 OpenCode 固定版本等工具链身份；
-- OpenCode 可执行文件的 SHA-256；文件元数据未变时复用已计算的哈希；
-- 门禁模式，例如 `debug` 和 `release` 分开记录。
-
-因此未提交修改也会立刻使缓存失效。Android APK 还会再次比对成功记录中的 APK SHA-256；APK
-不存在或被替换时不会命中。以下变化会自动只重做受影响阶段：
-
-~~~text
-OpenCode bridge/tests/version changed -> OpenCode gate invalidated
-Server entry scripts/version changed -> server script gate invalidated
-Android source/resources/build config changed -> Android gate invalidated
-Only docs changed -> existing Android/OpenCode gates reused
-Same release APK republished -> build and Web file copy skipped; HTTP hash still verified
-Different APK -> install -r; same APK -> emulator install skipped
-~~~
-
-所有门禁使用 `flock` 串行化同类任务，避免两个会话同时写 APK 或 stamp。不要运行 `clean`，也不要
-删除 `.gradle-cache`、AVD 或已安装的 Agent 来获得“干净测试”；需要绕过成功缓存时使用 `--force`。
-
-## 3. Android 构建复用
-
-底层入口仍可单独使用：
-
-~~~bash
+```bash
 ./scripts/build-android.sh fast --reuse
 ./scripts/build-android.sh debug --reuse
 ./scripts/build-android.sh release --reuse
 ./scripts/build-android.sh all --force
-./scripts/build-android.sh all --cache-status  # 只判断门禁是否可复用，不启动 Gradle
-~~~
+./scripts/build-android.sh all --cache-status
+```
 
-所有本地入口默认使用仓库同级的 `/home/ygy/.gradle-cache`，共享 Gradle wrapper、依赖、daemon、
-configuration cache、task cache 和 Kotlin 增量输出。不要再直接使用 `/root/.gradle` 启动第二套 daemon；
-8 GB 主机同时保留两套 4 GB Gradle daemon 会显著拖慢 R8 和模拟器。
+执行顺序如下：
 
-`dev-workflow.sh` 会自动协调内存：先用 `--cache-status` 判断 Android 阶段；命中时不再重复调用构建
-脚本，也保留正在运行的模拟器和 Gradle daemon。只有确实需要 Gradle 构建时才暂停模拟器，并在随后
-的模拟器验证前停止本轮启动的 Gradle daemon；若 AVD 被手动停止，则在重新启动前也先释放已有 Gradle
-daemon，避免两者争用内存。缓存文件和编译输出始终保留。
+1. 解析 Android SDK、Flutter CLI、Gradle cache 和 Pub cache。
+2. 在 `flutter_app/` 执行离线 `flutter pub get --offline`；离线缺包且 `127.0.0.1:7890` 正在监听时，
+   自动切换到在线下载并设置该代理。
+3. 执行 `flutter analyze --no-pub`。
+4. `debug`、`release`、`all` 再执行 `flutter test --no-pub`。
+5. 按模式执行 `flutter build apk --debug/--release --no-pub`。
 
-## 4. 服务器脚本门禁复用
+当前没有独立的 Kotlin `compileDebugKotlin`、`testDebugUnitTest` 或 Compose Lint 门禁；Flutter 的
+`analyze` 是当前静态检查入口，文档和脚本不得把旧 Gradle task 写成当前构建步骤。
 
-~~~bash
+默认目录：
+
+```text
+Flutter 工程：flutter_app/
+Pub cache：    ../.pub-cache（不可写时回退到 $HOME/.pub-cache）
+Gradle cache： ../.gradle-cache（不可写时回退到 $HOME/.gradle）
+```
+
+可用环境变量覆盖：`CODEX_FLUTTER_BIN`、`PUB_CACHE`、`GRADLE_USER_HOME`、`ANDROID_HOME` 或
+`ANDROID_SDK_ROOT`。当前机器 SDK 默认是 `/home/ygy/android-sdk`，脚本会自动发现。
+
+## 3. 缓存和资源策略
+
+缓存目录是被 Git 忽略的 `.workflow-cache/`。Android stamp 的指纹包含：
+
+- `flutter_app/lib`、`flutter_app/test`、`flutter_app/android`、Pubspec 和分析配置；
+- `keystore` 与相关构建脚本；
+- 文件内容、路径和权限（未提交但未被忽略的相关文件也会参与）；
+- Java、Flutter、Android SDK 和 Build Tools 身份；
+- 门禁模式及 APK SHA-256。
+
+所以未提交源码也会使对应阶段失效；只修改文档通常不会使 Android stamp 失效。命中缓存时不会
+再次执行 Flutter、Gradle 或 APK 安装。`--cache-status` 只判断命中与否，不启动构建。
+
+保持以下内容长期存在以换空间换时间：
+
+- `../.pub-cache` 和 `../.gradle-cache`；
+- Flutter 的 `.dart_tool/`、`flutter_app/build/`；
+- `asdb_api34` AVD、Quick Boot 状态和 App 数据；
+- 已准备的 SSH 测试账号及远端 Agent 依赖。
+
+不要运行 `flutter clean`、`./gradlew clean`，不要删除上述缓存、AVD、App 数据或远端 Agent 来追求
+“干净测试”。要绕过错误 stamp 用 `--force`；只有明确验证首次安装/数据迁移才使用
+`emulator-smoke.sh --reset-data`。
+
+构建和模拟器共用 8 GB 主机时，`dev-workflow.sh` 会在确有构建任务时停止 AVD，并在模拟器验收前
+释放本轮 Gradle daemon；缓存命中则尽量保持 AVD 和进程不动。不要同时用 `/root/.gradle` 和共享
+cache 启动两套大型 daemon。
+
+## 4. 服务器脚本和 OpenCode 门禁
+
+它们是仓库辅助工具的静态/本地验证，不代表 Flutter APK 已接入 Agent：
+
+```bash
 ./scripts/test-server.sh
 ./scripts/test-server.sh --force
-~~~
-
-该门禁对 `bootstrap-daemon.sh`、`install-codex-pinned.sh`、`codex-app-server-ssh` 执行 Bash 语法
-检查，对 `smoke-test.mjs` 执行 Node 语法检查，并把固定 Codex 版本与 Bash/Node 工具链纳入指纹。
-它不会安装 Codex、读取登录状态或修改远程服务器。需要真实 app-server 验证时，仍按架构文档的
-“真实 SSH/app-server 回归”使用已经准备好的长期测试账号和运行时。
-
-## 5. OpenCode 测试运行时复用
-
-统一入口：
-
-~~~bash
 ./scripts/test-opencode.sh quick
 ./scripts/test-opencode.sh full
-~~~
+```
 
-`ensure-opencode-runtime.sh` 按 `protocol/opencode-version.txt` 查找可复用运行时，依次使用：
+`test-server.sh` 检查 Bash 语法和 `server/smoke-test.mjs` 的 Node 语法，不登录或修改真实服务器。
+`test-opencode.sh` 验证本地 bridge、调度和隔离的假 OpenAI 兼容服务；需要安装固定 npm 运行时时才下载。
+两类脚本都使用内容 stamp，`--force` 才无条件重跑。
 
-1. 显式 `OPENCODE_BIN`；
-2. PATH 中版本完全匹配的 `opencode`；
-3. 当前用户或 root 已由 App 安装的固定 OpenCode；
-4. `.workflow-cache/opencode/<version>` 中的一次性本地安装。
+下载 OpenCode/npm 依赖时优先使用 `127.0.0.1:7890`。这是宿主机构建代理；将来远程服务器上的
+Codex/OpenCode 安装代理必须由用户按服务器单独配置，不能把 7890 写死进 App 业务网络。
 
-找不到时才通过 `registry.npmmirror.com` 安装固定 `opencode-ai` 和 `jsonc-parser`；7890 可用时自动
-使用代理。临时目录不再保存一套 100 MB 以上的 OpenCode，真实集成测试也不访问生产模型 API：它使用
-隔离配置和本地假 OpenAI 兼容服务。
+## 5. 长期模拟器
 
-## 6. 模拟器长期复用
-
-~~~bash
+```bash
 ./scripts/android-emulator.sh start
 ./scripts/android-emulator.sh status
 ./scripts/android-emulator.sh stop
@@ -125,115 +126,125 @@ daemon，避免两者争用内存。缓存文件和编译输出始终保留。
 
 ./scripts/emulator-smoke.sh debug
 ./scripts/emulator-smoke.sh release
-~~~
+```
 
-默认复用 API 34 的 `Codex_API_34` AVD 和 `emulator-5554`。root 环境使用临时 systemd service 托管，
-不会因当前终端或编码任务结束而被回收。主动停止时保存 Quick Boot 状态；下一次启动继续使用原 AVD。
+默认 AVD 为 `asdb_api34`，设备通常是 `emulator-5554`；实际序列号以 `adb devices -l` 为准。
+root 环境下脚本可用临时 systemd service 托管模拟器，任务终端退出后仍可复用。
 
-`emulator-smoke.sh`：
+UI 验收推荐使用约 1.5K 画布：
 
-- 保留 App 数据、服务器配置、导入密钥和 Android Keystore；
-- 按 APK SHA-256 判断是否需要 `adb install -r -d`；
-- 直接启动 `MainActivity`，等待进程和 UI 稳定；
-- 保存最新截图、UI XML 和 logcat 到 `.workflow-cache/emulator/`；
-- 检查本应用崩溃/ANR，也检查覆盖页面的 Android 无响应/崩溃弹窗；
-- 默认不关闭模拟器，便于接着做手工回归。
-- 统一工作流按 APK、测试脚本、宿主机启动、模拟器进程和 Android 启动身份缓存成功冒烟；同一 APK
-  在同一持续运行的 AVD 上不会重复启动 App，`full --force` 则始终真实重跑。
+- 推荐竖屏：`1220x2712`；
+- 推荐横屏：`2712x1220`；
+- 这两个是推荐尺寸，不是必须精确匹配的硬限制；
+- 自动冒烟最低要求：短边 `1080`、长边 `2400`。可用 `CODEX_EMULATOR_MIN_SHORT_EDGE` 和
+  `CODEX_EMULATOR_MIN_LONG_EDGE` 调整门禁阈值。
 
-只有需要验证首次启动/迁移时才清除 App 数据：
+`android-emulator.sh` 默认用 `wm size 1220x2712` 设置逻辑画布。`emulator-smoke.sh` 会：
 
-~~~bash
+1. 保留 App 数据和 Keystore，按 APK SHA-256 决定是否 `adb install -r`；
+2. 启动 `top.asdb.codexremote/.MainActivity`，等待进程稳定；
+3. 采集竖屏和横屏截图、UIAutomator XML 与 logcat；
+4. 核对两种方向的最低画布尺寸和前台包名；
+5. 检查本应用崩溃、ANR 及覆盖页面的系统错误弹窗；
+6. 默认保留模拟器运行，便于继续手工回归。
+
+首次启动或迁移专项才清理数据：
+
+```bash
 ./scripts/emulator-smoke.sh release --reset-data
-~~~
+```
 
-不要在普通流程使用 `-wipe-data`、删除 AVD 或卸载 App；这些操作会丢失最有价值的复用状态。
+每次做响应式或键盘回归至少覆盖一次推荐竖屏、一次推荐横屏和软键盘弹出场景，并核对截图实际
+PNG 尺寸；不要把推荐尺寸误写成“必须精确 1220x2712”。
 
-## 7. SSH 和 Agent 测试主机复用
+## 6. SSH 测试主机
 
-本机只需准备一次：
+长期测试主机只准备一次：
 
-~~~bash
+```bash
 ./scripts/reusable-test-host.sh prepare
 ./scripts/reusable-test-host.sh status
-~~~
+```
 
-默认创建并长期保留 `codexemu`、固定密码、`/home/codexemu/workspace` 和 profile 信息。模拟器访问
-宿主机地址为 `10.0.2.2:22`。首次在 App 添加这个服务器后，不要清除 App 数据；Codex/OpenCode 由
-App 安装到该用户目录后也长期保留。后续任务只更新 APK，以下内容都无需重做：
+默认用户 `codexemu`、工作目录 `/home/codexemu/workspace`，模拟器访问宿主机使用 `10.0.2.2:22`。
+ profile、指纹、工作目录和远端依赖应保留，以便后续 APK 更新后继续测试。需要改账号或密码时用
+`CODEX_TEST_HOST_USER`、`CODEX_TEST_HOST_PASSWORD` 覆盖并重新执行 `prepare`。
 
-- SSH 服务器表单和已信任指纹；
-- 工作目录；
-- 模型 URL、Key、模型列表和 Agent 设置；
-- 远端 Node、Codex、OpenCode、bridge 和 npm 依赖；
-- 测试会话和 Agent 登录状态。
+当前 Flutter 版只实现 SSH 主机连接；不要把测试主机已安装的 Codex/OpenCode 误当作 App 已接入。
+真实 Agent 回归必须明确授权，避免删除用户会话、工作目录或登录状态。
 
-当前 profile 内容写在 `.workflow-cache/test-host/profile.txt`。该目录不提交 Git，也不在普通任务结束时
-清理。需要不同账号或密码时通过 `CODEX_TEST_HOST_USER`、`CODEX_TEST_HOST_PASSWORD` 覆盖后再次
-执行 `prepare`。
+## 7. APK 发布和验签
 
-## 8. 本地 APK 发布
+产物路径：
 
-~~~bash
-./scripts/publish-local-apk.sh          # 默认复用相同内容的 release 门禁
-./scripts/publish-local-apk.sh --force  # 明确重跑 release 门禁
-~~~
+```text
+Debug:   flutter_app/build/app/outputs/flutter-apk/app-debug.apk
+Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
+```
 
-脚本始终执行签名校验并实际下载验证：
+本机发布：
 
-~~~text
-构建 APK：app/build/outputs/apk/release/app-release.apk
-归档 APK：dist/CodexRemote-<version>.apk
-Web APK：/var/www/html/codex.apk
-下载地址：http://210.16.163.118:18080/codex.apk
-~~~
+```bash
+./scripts/publish-local-apk.sh
+./scripts/publish-local-apk.sh --force
+```
 
-三者 SHA-256 必须相同。若 Web 文件已经是同一哈希，则不再复制，但 HTTP 下载校验不会跳过。
-`publish-gitee-release.sh` 和 `publish-tag-release.sh` 显式使用 `--force`，因此线上流程永远不会信任
-本机 stamp。
+脚本读取 `flutter_app/pubspec.yaml` 的版本，使用
+`keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/codex.apk`，然后用
+`curl --noproxy '*'` 校验：
 
-## 9. 推荐节奏和预期收益
+```text
+内网：http://192.168.8.109:18080/codex.apk
+外网：http://frp.asdb.top:18080/codex.apk
+```
 
-一次典型功能修改建议按以下节奏：
+两个地址返回的 SHA-256 必须与 Release APK 相同。发布报告必须同时给出这两个完整地址；网络代理
+不通时先说明验证失败，不要给不完整或未经请求验证的 URL。
 
-1. 编码过程中反复执行 `quick`。
-2. 功能完成执行一次 `check`，继续在已启动模拟器中做针对性操作。
-3. 提交前执行 `full`；只有相关输入变化才付出完整门禁成本。
-4. 用户要 APK 时执行 `publish`；同一源码不会再跑第二次 Release。
+稳定签名契约：
 
-在当前机器上，实际收益主要来自：
+- Debug/Release 共用 `keystore/codex-remote-stable.keystore`；
+- 不删除、重生成、替换 keystore 或 alias；
+- 发布必须增加 `flutter_app/pubspec.yaml` 的 build number；
+- 覆盖安装失败先检查 applicationId、build number 和证书，不得通过换签名或卸载数据解决。
 
-| 原重复工作 | 优化后 |
+## 8. 手工回归最小集
+
+当前 Flutter 功能的最低回归范围：
+
+| 场景 | 预期 |
 | --- | --- |
-| 每次重新下载/解压 OpenCode 约 100-160 MB | 固定运行时只保留一份，直接发现复用 |
-| 本地发布再次跑 Release 测试、Lint、R8 | 同一内容命中门禁，通常只剩验签和 HTTP 校验 |
-| 每次冷启动 AVD、安装同一 APK | AVD/App 数据保留，相同 APK 跳过安装 |
-| 每次创建 SSH 用户、密钥、工作目录、安装 Agent | 固定测试用户和远端依赖长期保留 |
-| `/root/.gradle` 与 `/home/ygy/.gradle-cache` 两套 daemon 抢 8 GB 内存 | 所有本地构建统一到一套 cache，构建/模拟器错峰运行 |
-| 每次任务结束清除临时测试状态 | 普通流程不清理；需要首次状态时显式 `--reset-data` |
+| 空配置冷启动 | 进入服务器列表，无异常白框或崩溃 |
+| 新建/编辑/删除 Profile | 默认用户 `root`；校验地址/端口；删除只删本地配置 |
+| 密码/私钥连接 | 指纹首次确认；固定指纹匹配；失败不会影响其他服务器 |
+| 多服务器 | A、B 可同时保持独立连接，切换不串状态 |
+| 连接遮罩 | 连接/指纹阶段半透明阻塞，完成后直接进入占位会话页 |
+| 返回和旋转 | 页面动画可用；推荐竖横屏、大字体无溢出；IME 不遮挡表单 |
+| 进程重建 | 加密 Profile 可恢复；断线状态不伪装成已连接 |
 
-OpenCode 的固定版本优先从已安装 npm 包元数据读取，不为版本探测启动约 2 秒的二进制；实际二进制
-SHA-256 只在文件元数据变化时重算。缓存命中时 `quick/full` 通常只需秒级；相同源码再次本地发布
-通常只需验签、复制/复用和下载校验。首次
-改动后的完整编译和首次 AVD 冷启动仍有真实成本，但之后不会因流程设计重复支付。
+Agent、会话、后台通知、终端、文件管理等产品回归必须等对应 Flutter 模块落地后补 integration
+测试；在此之前只能把旧 `app/` 或服务器 smoke test 当作历史参考。
 
-当前 8 GB 主机在 Gradle、OpenCode 和 AVD 均已准备好的实测结果（2026-08-04）：
+## 9. 故障定位
 
-| 命令 | 实测耗时 | 说明 |
-| --- | ---: | --- |
-| `full --force` | 约 2 分钟 | 真实 OpenCode 集成、Gradle 全门禁、模拟器重启和 App 冒烟 |
-| 相同内容再次 `full` | 3 秒 | 四层门禁命中，模拟器 PID 不变，不启动 Gradle |
-| 相同内容再次 `publish` | 以验签和 HTTP 下载校验为主 | 不重复构建、安装 APK 或启动 App |
-
-## 10. 故障定位
-
-~~~bash
+```bash
 ./scripts/dev-workflow.sh status
 ./scripts/android-emulator.sh log
 sed -n '1,120p' .workflow-cache/emulator/latest-logcat.txt
 cat .workflow-cache/emulator/latest-smoke.txt
-cat dist/local-release-metadata.txt
-~~~
+```
 
-缓存行为可疑时先运行对应阶段 `--force`，不要删除全部缓存。只有特定缓存确实损坏时才处理该目录；
-保留其他阶段的成功结果、AVD、App 数据和 Agent 安装。
+处理顺序：先看对应阶段的 stamp 和输入哈希，再用该阶段 `--force` 重跑；不要一开始删除全部缓存。
+Flutter 依赖错误先检查 `PUB_CACHE` 和 7890 代理，APK 安装错误检查稳定证书和 build number，模拟器
+问题检查 `adb devices -l`、服务状态和两方向截图。
+
+## 10. 每次修改的收尾
+
+1. `git status --short --branch`，确认在独立分支并保留他人改动。
+2. 按风险运行 `quick`、`check` 或 `full`；文档修改可只做静态检查。
+3. 源码修改且存在 `.codegraph/` 时运行 `codegraph sync`；纯文档修改不必重建索引。
+4. `git diff --check`，提交信息使用中文；未经用户要求不要提交或推送。
+5. 交付 APK 时同时给出内网和外网下载地址、版本、SHA-256 和签名证书信息。
+
+用户新增或变更长期注意事项时，必须同步写入 `docs/ARCHITECTURE.md` 的产品约束和本文对应流程，
+避免只留在聊天记录中。

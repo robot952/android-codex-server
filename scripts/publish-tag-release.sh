@@ -8,8 +8,8 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/android-sdk.sh"
 source "$ROOT_DIR/scripts/apk-lib.sh"
 
-readonly DEFAULT_RELEASE_VERIFY_URL="http://210.16.163.118:18080/codex.apk"
-readonly APK_PATH="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
+readonly DEFAULT_RELEASE_VERIFY_URLS="http://192.168.8.109:18080/codex.apk,http://frp.asdb.top:18080/codex.apk"
+readonly APK_PATH="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-release.apk"
 
 version_name="$(apk_version_name "$ROOT_DIR")"
 
@@ -69,7 +69,7 @@ fi
 
 verify_urls="${CODEX_RELEASE_VERIFY_URLS:-}"
 if [[ -z "$verify_urls" && -n "$publish_dir" ]]; then
-    verify_urls="$DEFAULT_RELEASE_VERIFY_URL"
+    verify_urls="$DEFAULT_RELEASE_VERIFY_URLS"
 fi
 if [[ -n "$verify_urls" ]]; then
     IFS=',' read -r -a urls <<< "$verify_urls"

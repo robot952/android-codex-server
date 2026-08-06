@@ -10,8 +10,9 @@ resolve_android_sdk "$ROOT_DIR"
 
 ADB="$ANDROID_HOME/platform-tools/adb"
 EMULATOR="$ANDROID_HOME/emulator/emulator"
-AVD_NAME="${CODEX_EMULATOR_AVD:-Codex_API_34}"
+AVD_NAME="${CODEX_EMULATOR_AVD:-asdb_api34}"
 EMULATOR_PORT="${CODEX_EMULATOR_PORT:-5554}"
+EMULATOR_SIZE="${CODEX_EMULATOR_SIZE:-1220x2712}"
 SERIAL="emulator-$EMULATOR_PORT"
 CACHE_DIR="$(workflow_cache_dir "$ROOT_DIR")/emulator"
 PID_PATH="$CACHE_DIR/emulator.pid"
@@ -46,10 +47,18 @@ wait_for_boot() {
     return 1
 }
 
+configure_device() {
+    "$ADB" -s "$SERIAL" shell wm size "$EMULATOR_SIZE" >/dev/null
+    "$ADB" -s "$SERIAL" shell settings put system accelerometer_rotation 0 >/dev/null
+    "$ADB" -s "$SERIAL" shell cmd window user-rotation lock 0 >/dev/null
+    "$ADB" -s "$SERIAL" shell settings put secure show_ime_with_hard_keyboard 1 >/dev/null
+}
+
 start_emulator() {
     local available_avds
     "$ADB" start-server >/dev/null
     if is_running; then
+        configure_device
         printf '%s\n' "$SERIAL"
         return 0
     fi
@@ -105,6 +114,7 @@ start_emulator() {
         printf '%s\n' "$!" > "$PID_PATH"
     fi
     wait_for_boot
+    configure_device
     "$ADB" -s "$SERIAL" shell settings put global window_animation_scale 0 >/dev/null
     "$ADB" -s "$SERIAL" shell settings put global transition_animation_scale 0 >/dev/null
     "$ADB" -s "$SERIAL" shell settings put global animator_duration_scale 0 >/dev/null

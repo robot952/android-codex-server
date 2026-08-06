@@ -11,19 +11,70 @@ stages:
     name: android_build
     displayName: Android 构建
     jdkVersion: "17"
-    gradleVersion: "8.12"
-    buildToolsVersion: 34.0.0
+    gradleVersion: "9.1"
+    buildToolsVersion: "36.0.0"
     ndkVersion: 28.2.13676358
     commands:
-    - GRADLE_USER_HOME="$HOME/.gradle" CODEX_BUILD_ONLINE=1
-      GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
-      -Dorg.gradle.workers.max=4" ./scripts/publish-gitee-release.sh
+    - |
+      set -euo pipefail
+
+      export FLUTTER_VERSION="3.44.8"
+      export FLUTTER_REVISION="058e0af2c2b57e369d905a03ac9748b0ebf543c6"
+      export FLUTTER_ROOT="$HOME/.cache/codex/flutter-$FLUTTER_VERSION"
+      export CODEX_FLUTTER_BIN="$FLUTTER_ROOT/bin/flutter"
+      export PUB_CACHE="$HOME/.pub-cache"
+      export GRADLE_USER_HOME="$HOME/.gradle"
+      export CODEX_BUILD_ONLINE=1
+      export GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=4"
+      export PATH="$FLUTTER_ROOT/bin:$PATH"
+
+      mkdir -p "$(dirname "$FLUTTER_ROOT")" "$PUB_CACHE" "$GRADLE_USER_HOME"
+      CURRENT_FLUTTER_REVISION="$(git -C "$FLUTTER_ROOT" rev-parse HEAD 2>/dev/null || true)"
+      if [ ! -x "$CODEX_FLUTTER_BIN" ] || [ "$CURRENT_FLUTTER_REVISION" != "$FLUTTER_REVISION" ]; then
+        rm -rf "$FLUTTER_ROOT"
+        git clone --branch "$FLUTTER_VERSION" --depth 1 \
+          https://github.com/flutter/flutter.git "$FLUTTER_ROOT"
+      fi
+
+      ACTUAL_FLUTTER_REVISION="$(git -C "$FLUTTER_ROOT" rev-parse HEAD)"
+      if [ "$ACTUAL_FLUTTER_REVISION" != "$FLUTTER_REVISION" ]; then
+        echo "Flutter revision mismatch: expected $FLUTTER_REVISION, got $ACTUAL_FLUTTER_REVISION" >&2
+        exit 1
+      fi
+
+      SDKMANAGER="$(command -v sdkmanager || true)"
+      if [ -z "$SDKMANAGER" ]; then
+        for CANDIDATE in \
+          "${ANDROID_SDK_ROOT:-}/cmdline-tools/latest/bin/sdkmanager" \
+          "${ANDROID_HOME:-}/cmdline-tools/latest/bin/sdkmanager" \
+          "${ANDROID_SDK_ROOT:-}/tools/bin/sdkmanager" \
+          "${ANDROID_HOME:-}/tools/bin/sdkmanager"; do
+          if [ -x "$CANDIDATE" ]; then
+            SDKMANAGER="$CANDIDATE"
+            break
+          fi
+        done
+      fi
+      if [ -z "$SDKMANAGER" ]; then
+        echo "sdkmanager was not found" >&2
+        exit 1
+      fi
+
+      yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+      "$SDKMANAGER" \
+        "platforms;android-36" \
+        "build-tools;36.0.0" \
+        "ndk;28.2.13676358"
+      "$CODEX_FLUTTER_BIN" precache --android
+      ./scripts/publish-gitee-release.sh
     artifacts:
     - name: BUILD_ARTIFACT
       path:
       - dist
       type: .tar.gz
     caches:
+    - "~/.cache/codex/flutter-3.44.8"
+    - "~/.pub-cache"
     - "~/.gradle/caches"
     - "~/.gradle/wrapper"
     strategy:

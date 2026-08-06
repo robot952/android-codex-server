@@ -19,12 +19,12 @@ sudo useradd --create-home --shell /bin/bash codexci
 sudo install -d -o codexci -g codexci -m 700 /opt/codex-remote-ci
 sudo install -d -o codexci -g codexci -m 700 /opt/codex-remote-ci/gradle
 sudo install -o codexci -g codexci -m 600 \
-  /home/ygy/android-codex-server/keystore/codex-remote-stable.keystore \
+  /home/yan/ygy/codex-remote-android/keystore/codex-remote-stable.keystore \
   /opt/codex-remote-ci/codex-remote-stable.keystore
 ~~~
 
-Runner 还必须能读取 Android SDK。构建脚本会优先识别仓库同级的 `../android-sdk`；当前机器使用
-`/home/ygy/android-sdk`。如果新机器不同，安装 SDK 34、build-tools 34.0.0 和 JDK 17，并通过
+Runner 还必须能读取 Android SDK。构建脚本会优先识别仓库同级的 `../android-sdk`；如果新机器不同，
+安装 Android Platform 36、build-tools 36.0.0、NDK 28.2.13676358 和 JDK 17，并通过
 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT` 指向实际路径。
 
 为让 Runner 只拥有 APK 发布权限，而不是整个 Web 根目录的写权限，创建一个专用目录并把既有下载文件改为
@@ -63,7 +63,7 @@ Runner 只应允许受保护分支和受保护标签使用。不要把注册 tok
 export GRADLE_USER_HOME=/opt/codex-remote-ci/gradle
 export CODEX_SIGNING_KEYSTORE=/opt/codex-remote-ci/codex-remote-stable.keystore
 export CODEX_RELEASE_PUBLISH_DIR=/var/www/html/codex-releases
-export CODEX_RELEASE_VERIFY_URLS=http://210.16.163.118:18080/codex.apk
+export CODEX_RELEASE_VERIFY_URLS=http://192.168.8.109:18080/codex.apk,http://frp.asdb.top:18080/codex.apk
 ./scripts/publish-tag-release.sh
 ~~~
 
@@ -87,21 +87,22 @@ CODEX_SIGNING_KEY_PASSWORD
 
 ~~~bash
 ./scripts/dev-workflow.sh check
-git add app/build.gradle.kts <本次源码和文档>
-git commit -m "发布 1.7.19"
-git push origin main
-git tag -a v1.7.19 -m "发布 v1.7.19"
-git push origin v1.7.19
+git add flutter_app scripts docs <本次源码和文档>
+git commit -m "发布 Flutter 版本"
+git push origin release
+git tag -a v<versionName> -m "发布 Flutter 版本"
+git push origin v<versionName>
 ~~~
 
 最后一条命令触发流水线。`scripts/publish-tag-release.sh` 会依次：
 
-1. 确认 `v1.7.19` 正好指向当前检出提交，且没有未提交的已跟踪文件。
-2. 执行 `all` 门禁：debug/release 单测、Lint、debug/release APK 和 R8。
+1. 确认 `v<versionName>` 正好指向当前检出提交，且没有未提交的已跟踪文件。
+2. 执行 Flutter analyze/test 和 debug/release APK 门禁。
 3. 验证 release APK 证书 SHA-256 必须为
    `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
-4. 生成 `dist/CodexRemote-1.7.19.apk` 和 `dist/release-metadata.txt`。
-5. 原子替换下载文件，并检查 `http://210.16.163.118:18080/codex.apk` 返回成功。
+4. 生成 `dist/CodexRemote-<versionName>.apk` 和 `dist/release-metadata.txt`。
+5. 原子替换下载文件，并检查内网 `http://192.168.8.109:18080/codex.apk` 与外网
+   `http://frp.asdb.top:18080/codex.apk` 返回相同 SHA-256。
 
 失败时不要移动或复用标签，也不要重复发布同一 `versionCode`。修复后增加版本号，重新提交并创建新标签，例如
 `v1.7.20`。Gitee 流水线重跑只适用于同一提交的构建环境故障，不应用于内容变更。
@@ -112,9 +113,9 @@ git push origin v1.7.19
 `dist/`，但未设置发布目录时不会修改下载站。
 
 ~~~bash
-git tag -a v1.7.19 -m "本地发布验证"
+git tag -a v<versionName> -m "本地发布验证"
 ./scripts/publish-tag-release.sh
-git tag -d v1.7.19
+git tag -d v<versionName>
 ~~~
 
 已推送的正式标签不能用上面的删除步骤。首次启用流水线时，应先在一个尚未发布的新版本完成完整流程。

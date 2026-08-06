@@ -54,13 +54,15 @@ if workflow_stamp_matches "$stamp_path" "$first_hash"; then
 fi
 
 [[ "$(apk_version_name "$ROOT_DIR")" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
+rg -q 'http://192\.168\.8\.109:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
+rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 runtime_path="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 expected_runtime_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/opencode-version.txt")"
 [[ "$(workflow_opencode_version "$runtime_path")" == "$expected_runtime_version" ]]
 
 # A multi-line producer followed by `rg -q` can return SIGPIPE under pipefail.
 # The workflow intentionally captures command output before matching runtime status.
-multi_line_status=$'Codex_API_34 is running as emulator-5554\nAndroid 14'
+multi_line_status=$'asdb_api34 is running as emulator-5554\nAndroid 14'
 rg -q ' is running as ' <<< "$multi_line_status"
 
 bash -n "$ROOT_DIR"/scripts/*.sh
