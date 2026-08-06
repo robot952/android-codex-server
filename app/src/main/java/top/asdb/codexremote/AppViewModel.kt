@@ -34,6 +34,7 @@ import top.asdb.codexremote.agent.openCodeReasoningEfforts
 import top.asdb.codexremote.codex.CodexEventReducer
 import top.asdb.codexremote.codex.ResumeNotificationBuffer
 import top.asdb.codexremote.codex.estimateTimelineWeightChars
+import top.asdb.codexremote.codex.obj
 import top.asdb.codexremote.codex.ProfileOperationTracker
 import top.asdb.codexremote.codex.string
 import top.asdb.codexremote.data.ApiModelOption
@@ -181,6 +182,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
     private val _turnCompletions = MutableSharedFlow<TurnCompletion>(extraBufferCapacity = 16)
+    private val turnCompletionDeduplicator = TurnCompletionDeduplicator()
     val turnCompletions: SharedFlow<TurnCompletion> = _turnCompletions.asSharedFlow()
     internal val terminalState = terminals.state
     internal val terminalOutputSignals = terminals.outputSignals
@@ -3995,7 +3997,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             markGoalNotification(key, notification.params.string("threadId"))
         }
         if (notification.method == "turn/completed") {
-            publishTurnCompletion(key, notification.params.string("threadId"))
+            publishTurnCompletion(
+                key = key,
+                reportedThreadId = notification.params.string("threadId"),
+                reportedTurnId = notification.params.obj("turn")?.string("id").orEmpty(),
+            )
         }
         resumeNotificationBuffers[key]?.let { buffer ->
             if (buffer.offer(notification)) return
@@ -4021,7 +4027,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun publishTurnCompletion(key: AgentConnectionKey, reportedThreadId: String) {
+    private fun publishTurnCompletion(
+        key: AgentConnectionKey,
+        reportedThreadId: String,
+        reportedTurnId: String,
+    ) {
         val current = _state.value
         val profileId = key.profileId
         val snapshot = sessionSnapshots[key]
@@ -4034,16 +4044,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             snapshot?.threads?.firstOrNull { it.id == threadId }
         } ?: activeThread?.takeIf { it.id == threadId }
         val profile = current.profiles.firstOrNull { it.id == profileId } ?: return
-        _turnCompletions.tryEmit(
-            TurnCompletion(
-                profileId = profileId,
-                agent = key.agent,
-                profileName = profile.name.ifBlank { profile.host },
-                threadId = threadId,
-                threadTitle = thread?.title.orEmpty(),
-                threadPreview = thread?.preview.orEmpty(),
-            ),
+        val completion = TurnCompletion(
+            profileId = profileId,
+            agent = key.agent,
+            profileName = profile.name.ifBlank { profile.host },
+            threadId = threadId,
+            turnId = reportedTurnId,
+            threadTitle = thread?.title.orEmpty(),
+            threadPreview = thread?.preview.orEmpty(),
         )
+        if (!turnCompletionDeduplicator.shouldPublish(completion)) {
+            DiagnosticLogger.info(
+                "Notification",
+                "turn_completion_suppressed profile=${profileId.take(8)} " +
+                    "agent=${key.agent.name} thread=${threadId.take(8)} " +
+                    "turn=${reportedTurnId.take(8)} reason=duplicate",
+            )
+            return
+        }
+        _turnCompletions.tryEmit(completion)
     }
 
     private fun releaseResumeNotifications(
