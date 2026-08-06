@@ -5,13 +5,13 @@
 
 文档基线：
 
-- Android 应用版本：1.7.96（versionCode 118）
+- Android 应用版本：1.7.100（versionCode 122）
 - 固定 Codex CLI：0.146.0
 - 固定 OpenCode：1.18.11
 - 固定 Node.js：22.17.0
 - Android：minSdk 26、targetSdk/compileSdk 34
 - 主要技术：Kotlin、Jetpack Compose、Coroutines/Flow、JSch、kotlinx.serialization
-- 最后核对日期：2026-08-05
+- 最后核对日期：2026-08-06
 
 版本会变化。发布前必须以 app/build.gradle.kts、protocol/codex-version.txt 和
 protocol/node-version.txt 为准，不要只相信本文顶部的快照。
@@ -362,6 +362,11 @@ OpenCode 的上下文用量也由 bridge 归一到共享契约：当前上下文
 `thread/read` 同时在 thread 快照中返回最近一次用量，使实时消息、切换 Agent 和重进历史会话都复用
 `TokenUsage`、`ThreadSessionCache` 与 `ProfileScopedContextUsageCache`；模型未提供有效 context limit
 时不猜测上限，也不显示误导性的圆环比例。
+
+OpenCode 的 `turn/start` 会先生成活动 turn ID，再异步得到 user message ID。运行中执行
+`thread/resume` 时，bridge 必须让最后一个 turn 及其 message 映射继续使用 `activeTurns` 中的活动 ID；
+不能用 user message ID 覆盖。否则回答 `question` 后 OpenCode 重发原 user part 会形成重复气泡，随后
+`turn/completed` 也会因 ID 不匹配被 Android 当成旧回合而丢弃，页面将一直显示运行中。
 
 ### 7.3 App-server 握手
 
@@ -907,6 +912,7 @@ Bridge 调度回归，验证挂起的 `model/list` 或 `thread/list` 不会阻�
 | OpenCode 设置 | 配置工作目录、URL、Key、代理、默认模型并重连 | 新会话使用新配置；文件管理复用当前 SSH；Key 不进入持久化或日志 |
 | OpenCode 模型 | 获取 API 列表、手输模型、填写上下文/输出长度、隐藏/恢复并发送 | 选择器状态保留，实际请求使用选中的模型 ID 和限制信息 |
 | OpenCode 压缩 | 空闲长会话执行“压缩会话” | 使用会话最近模型调用 `/session/{id}/summarize`；时间线先显示进行中再显示完成并刷新上下文用量 |
+| OpenCode 提问恢复 | 回合弹出 `question` 后返回列表、重进会话并回答 | 原用户消息不重复；回答继续当前回合；最终退出运行态，不一直显示“正在处理” |
 | 连接动画 | 从服务器列表连接 | 全屏半透明转圈，结束后直接进入会话列表，无空白等待 |
 | 会话缓存 | 重复进入较大历史会话 | 先显示缓存，后台校准；不轻易超时或闪白 |
 | 会话运行态 | 会话仍生成时返回列表 | 列表固定尺寸转圈，返回会话继续流式更新 |
