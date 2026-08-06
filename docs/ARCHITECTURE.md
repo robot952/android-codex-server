@@ -263,6 +263,11 @@ JSON-RPC -32601，不能让远端回合永久等待。固定版本变更前先�
 同一 generation 的通知，再合并快照，避免旧响应覆盖新 delta。更早历史通过 cursor 分页、去重并保持
 时间顺序；超大响应要降低页大小或 itemsView 后重试，而不是无限提高内存。
 
+OpenCode adapter/bridge 迁移时必须保持活动回合身份稳定：`turn/start` 创建活动 turn ID 后，异步得到的
+user message ID 不能覆盖它；运行中 `thread/resume` 仍应让最后一个 turn 及其 message 映射到
+`activeTurns` 的活动 ID。否则回答 `question` 后可能重复插入原用户消息，并因完成事件 ID 不一致而一直
+显示运行中。旧 Kotlin 实现及其 bridge 回归测试是该行为的参考基线。
+
 上下文圆环只显示服务器返回的有效 used/total；缺少模型上下文上限时不猜测比例。最近一次有效
 TokenUsage 可放在有界内存缓存中，供返回列表后立即恢复；不应把会话正文或 token usage 无限持久化。
 
@@ -312,6 +317,8 @@ profile、其他工作区或 VS Code 扩展文件。设置页的“测试”应�
 这些是产品验收目标，不是当前 Flutter APK 的可用承诺：
 
 - 前台服务尽量维持后台 SSH；回合终态在后台发送带 profileId/threadId 的通知，点击进入正确会话。
+  通知按 profileId、AgentKind、threadId、turnId 有界去重；子 Agent thread 只更新父时间线，不发系统
+  完成通知；更新同一通知时不得重复响铃或弹出。
 - SSH 终端使用独立 shell channel、有界输出和 resize 队列，不污染 Agent JSONL channel。
 - 文件管理使用当前 SSH 的 SFTP channel 和 Android Storage Access Framework，不拼接 shell 路径；删除有确认。
 - Debug 通过 Codex 图标十次点击开启，日志脱敏、轮转、预览并用系统分享；崩溃记录可作为附件加入对话。
@@ -431,6 +438,7 @@ flutter test --no-pub
 | Agent 连接 | SSH 先连接；Codex/OpenCode 按需探测、安装、显示进度；已有版本复用而不覆盖 VS Code |
 | 工作目录 | 第一次成功连接 Agent 只弹一次，选择后按服务器记住，之后不重复打扰 |
 | 会话 | 列表搜索/刷新/新建/恢复/分页；重进先缓存再校准；运行会话显示固定尺寸转圈 |
+| OpenCode 提问恢复 | 回合提出 question 后返回列表、重进并回答；原用户消息不重复，完成后正确退出运行态 |
 | 会话设置 | 每个服务器、Agent、thread 独立模型和思考强度，返回主页后仍恢复 |
 | 输入 | 草稿按复合键恢复；IME 与消息同帧上移；切后台回来不自动弹键盘 |
 | 对话动作 | 发送/停止、权限模式、审批、模型、上下文圆环、压缩和目标均可用 |
@@ -438,7 +446,7 @@ flutter test --no-pub
 | Markdown | 蓝色完整 HTTP/HTTPS 链接可点击，点击先确认，长按可复制 |
 | 图片 | 显示“查看了图片”；点击可预览，长按可保存到手机 |
 | 子 Agent | 只显示图标和自身状态；父子 thread 不串，嵌套返回不跳层，恢复失败可重试 |
-| 后台 | turn 尽力继续；后台完成通知携带正确 profile/thread，点击直达会话 |
+| 后台 | turn 尽力继续；后台完成通知携带正确 profile/thread，点击直达；同一 turn 不重复提醒，子 Agent 不单独通知 |
 | Debug | 十次点击开启；日志脱敏、预览、系统分享和崩溃附件可用 |
 | 终端/文件 | 独立 SSH channel；SFTP 长按、上传、下载、重命名、删除确认和多服务器隔离 |
 | 全局配置 | 读取服务器真实 Codex Provider/URL/Key/代理；保存指定全局文件；真实最小请求测试 |

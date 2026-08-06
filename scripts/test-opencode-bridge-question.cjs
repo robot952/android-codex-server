@@ -22,6 +22,14 @@ const port = Number(process.argv[portIndex + 1]);
 const replyPath = process.env.QUESTION_REPLY_PATH;
 let eventResponse = null;
 let questionSent = false;
+let sessionBusy = false;
+let sessionMessages = [];
+function emit(type, properties) {
+  if (!eventResponse || eventResponse.destroyed) return;
+  eventResponse.write("data: " + JSON.stringify({
+    payload: { id: "event-" + type + "-" + Date.now(), type, properties },
+  }) + "\\n\\n");
+}
 function body(request) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -51,31 +59,6 @@ const server = http.createServer(async (request, response) => {
     });
     response.write(": ready\\n\\n");
     eventResponse = response;
-    if (!questionSent) {
-      questionSent = true;
-      setTimeout(() => {
-        if (!eventResponse || eventResponse.destroyed) return;
-        eventResponse.write("data: " + JSON.stringify({
-          payload: {
-            id: "event-question",
-            type: "question.asked",
-            properties: {
-              id: "question-1",
-              sessionID: "session-1",
-              questions: [{
-                header: "模式",
-                question: "选择运行模式",
-                options: [
-                  { label: "快速", description: "少量检查" },
-                  { label: "完整", description: "完整检查" },
-                ],
-              }],
-              tool: { messageID: "message-1", callID: "call-1" },
-            },
-          },
-        }) + "\\n\\n");
-      }, 120);
-    }
     return;
   }
   if (request.method === "GET" && url.pathname === "/global/config") {
@@ -86,6 +69,60 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   if (request.method === "POST" && url.pathname.endsWith("/prompt_async")) {
+    if (!questionSent) {
+      questionSent = true;
+      sessionBusy = true;
+      const userInfo = {
+        id: "user-message-1",
+        sessionID: "session-1",
+        role: "user",
+        time: { created: 1000 },
+      };
+      const userPart = {
+        id: "user-part-1",
+        messageID: "user-message-1",
+        sessionID: "session-1",
+        type: "text",
+        text: "show an OpenCode question",
+      };
+      const assistantInfo = {
+        id: "assistant-message-1",
+        sessionID: "session-1",
+        parentID: "user-message-1",
+        role: "assistant",
+      };
+      const questionPart = {
+        id: "call-1",
+        messageID: "assistant-message-1",
+        sessionID: "session-1",
+        type: "tool",
+        tool: "question",
+        state: { status: "running" },
+      };
+      sessionMessages = [
+        { info: userInfo, parts: [userPart] },
+        { info: assistantInfo, parts: [questionPart] },
+      ];
+      setTimeout(() => {
+        emit("message.updated", { info: userInfo });
+        emit("message.part.updated", { part: userPart });
+        emit("message.updated", { info: assistantInfo });
+        emit("message.part.updated", { part: questionPart });
+        emit("question.asked", {
+          id: "question-1",
+          sessionID: "session-1",
+          questions: [{
+            header: "模式",
+            question: "选择运行模式",
+            options: [
+              { label: "快速", description: "少量检查" },
+              { label: "完整", description: "完整检查" },
+            ],
+          }],
+          tool: { messageID: "assistant-message-1", callID: "call-1" },
+        });
+      }, 40);
+    }
     await new Promise(resolve => setTimeout(resolve, 1500));
     response.writeHead(204);
     response.end();
@@ -95,6 +132,26 @@ const server = http.createServer(async (request, response) => {
     const value = await body(request);
     fs.writeFileSync(replyPath, JSON.stringify({ path: url.pathname, body: value }));
     json(response, true);
+    const questionPart = sessionMessages[1].parts[0];
+    questionPart.state = { status: "completed", output: "快速" };
+    const answerPart = {
+      id: "answer-1",
+      messageID: "assistant-message-1",
+      sessionID: "session-1",
+      type: "text",
+      text: "selected quick mode",
+    };
+    sessionMessages[1].parts.push(answerPart);
+    sessionBusy = false;
+    setTimeout(() => {
+      // OpenCode can republish the original user part after a question reply. Its item and the
+      // resumed snapshot must still belong to the same synthetic turn returned by turn/start.
+      emit("message.part.updated", { part: sessionMessages[0].parts[0] });
+      emit("message.part.updated", { part: questionPart });
+      emit("message.part.updated", { part: answerPart });
+      emit("question.replied", { requestID: "question-1", sessionID: "session-1" });
+      emit("session.idle", { sessionID: "session-1" });
+    }, 20);
     return;
   }
   if (request.method === "POST" && url.pathname === "/question/question-1/reject") {
@@ -103,7 +160,33 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/session") {
-    json(response, []);
+    json(response, [{
+      id: "session-1",
+      title: "Question test",
+      directory: process.cwd(),
+      time: { created: 1000, updated: 1000 },
+    }]);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/session/status") {
+    json(response, sessionBusy ? { "session-1": { type: "busy" } } : {});
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/session/session-1") {
+    json(response, {
+      id: "session-1",
+      title: "Question test",
+      directory: process.cwd(),
+      time: { created: 1000, updated: 1000 },
+    });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/session/session-1/message") {
+    json(response, sessionMessages);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/session/session-1/message/user-message-1") {
+    json(response, sessionMessages[0]);
     return;
   }
   json(response, {});
@@ -174,11 +257,6 @@ async function main() {
       });
 
     await sendRpc("initialize");
-    const prompt = await waitFor(message => message.method === "item/tool/requestUserInput", 5_000);
-    assert.equal(prompt.params.threadId, "session-1");
-    assert.equal(prompt.params.questions[0].id, "opencode-question-0");
-    assert.deepEqual(prompt.params.questions[0].options.map(option => option.label), ["快速", "完整"]);
-
     const startedAt = Date.now();
     const turn = await sendRpc("turn/start", {
       threadId: "session-1",
@@ -187,6 +265,21 @@ async function main() {
     });
     assert.equal(turn.turn.status, "inProgress");
     assert(Date.now() - startedAt < 700, "turn/start waited for prompt_async");
+
+    const prompt = await waitFor(message => message.method === "item/tool/requestUserInput", 5_000);
+    assert.equal(prompt.params.threadId, "session-1");
+    assert.equal(prompt.params.turnId, turn.turn.id);
+    assert.equal(prompt.params.questions[0].id, "opencode-question-0");
+    assert.deepEqual(prompt.params.questions[0].options.map(option => option.label), ["快速", "完整"]);
+
+    const resumed = await sendRpc("thread/resume", { threadId: "session-1" });
+    const resumedTurn = resumed.thread.turns[resumed.thread.turns.length - 1];
+    assert.equal(resumedTurn.status, "inProgress");
+    assert.equal(
+      resumedTurn.id,
+      turn.turn.id,
+      "resuming while a question is open must preserve the active turn identity",
+    );
 
     bridgeProcess.stdin.write(JSON.stringify({
       id: prompt.id,
@@ -200,6 +293,17 @@ async function main() {
     const reply = JSON.parse(fs.readFileSync(replyPath, "utf8"));
     assert.equal(reply.path, "/question/question-1/reply");
     assert.deepEqual(reply.body, { answers: [["快速"]] });
+    const completion = await waitFor(message => message.method === "turn/completed", 5_000);
+    assert.equal(completion.params.turn.id, turn.turn.id);
+    const repeatedUserItems = messages.filter(message =>
+      message.method === "item/completed" &&
+      message.params && message.params.item && message.params.item.id === "user-message-1",
+    );
+    assert(repeatedUserItems.length >= 2, "the fake server did not republish the user message");
+    assert(
+      repeatedUserItems.every(message => message.params.turnId === turn.turn.id),
+      "republished user messages must keep the active turn identity",
+    );
     process.stdout.write("OpenCode bridge question tests passed\n");
   } finally {
     for (const callback of pending.values()) callback.reject(new Error("Test shutting down"));

@@ -365,8 +365,9 @@ function mapPart(part, role) {
   return null;
 }
 
-function groupMessages(messages, busy) {
+function groupMessages(messages, busy, activeTurnID) {
   const turns = [];
+  const messageIDsByTurn = [];
   let current = null;
   for (const message of messages || []) {
     const info = message.info || {};
@@ -380,6 +381,7 @@ function groupMessages(messages, busy) {
         items: [mapUserMessage(info, parts)],
       };
       turns.push(current);
+      messageIDsByTurn.push(info.id ? [info.id] : []);
       messageToTurn.set(info.id, current.id);
     } else if (info.role === "assistant") {
       if (!current) {
@@ -390,7 +392,9 @@ function groupMessages(messages, busy) {
           items: [],
         };
         turns.push(current);
+        messageIDsByTurn.push([]);
       }
+      if (info.id) messageIDsByTurn[messageIDsByTurn.length - 1].push(info.id);
       messageToTurn.set(info.id, current.id);
       for (const part of parts) {
         const item = mapPart(part, "assistant");
@@ -398,7 +402,18 @@ function groupMessages(messages, busy) {
       }
     }
   }
-  if (busy && turns.length) turns[turns.length - 1].status = "inProgress";
+  if (busy && turns.length) {
+    const latestIndex = turns.length - 1;
+    const latest = turns[latestIndex];
+    const stableTurnID = String(activeTurnID || "").trim();
+    latest.status = "inProgress";
+    if (stableTurnID) {
+      latest.id = stableTurnID;
+      for (const messageID of messageIDsByTurn[latestIndex]) {
+        messageToTurn.set(messageID, stableTurnID);
+      }
+    }
+  }
   return turns;
 }
 
@@ -485,10 +500,11 @@ async function hydrateSession(session, statuses) {
   const busy = isSessionActive(status);
   const messages = await sessionMessages(session.id, 200);
   const thread = mapSession(session, status);
-  thread.turns = groupMessages(messages, busy);
+  const activeTurn = busy ? activeTurns.get(session.id) : null;
+  thread.turns = groupMessages(messages, busy, activeTurn && activeTurn.id);
   const tokenUsage = await tokenUsageForMessages(messages);
   if (tokenUsage) thread.tokenUsage = tokenUsage;
-  if (busy && thread.turns.length && !activeTurns.has(session.id)) {
+  if (busy && thread.turns.length && !activeTurn) {
     const latest = thread.turns[thread.turns.length - 1];
     activeTurns.set(session.id, {
       id: latest.id,
@@ -1705,7 +1721,7 @@ async function emitCurrentTurn(sessionID, turn) {
     const messages = await sessionMessages(sessionID, 200);
     const tokenUsage = await tokenUsageForMessages(messages);
     publishTokenUsage(sessionID, tokenUsage);
-    const turns = groupMessages(messages, true);
+    const turns = groupMessages(messages, true, turn.id);
     const current = turns.length ? turns[turns.length - 1] : null;
     if (!current) return;
     for (const item of current.items || []) {

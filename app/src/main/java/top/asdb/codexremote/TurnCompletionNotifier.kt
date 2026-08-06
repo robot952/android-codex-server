@@ -13,17 +13,89 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import top.asdb.codexremote.data.AgentConnectionKey
 import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
+import java.util.LinkedHashSet
 
 data class TurnCompletion(
     val profileId: String,
     val agent: AgentKind,
     val profileName: String,
     val threadId: String,
+    val turnId: String,
     val threadTitle: String,
     val threadPreview: String,
 )
+
+internal class TurnCompletionDeduplicator(
+    private val maxEntries: Int = MAX_TRACKED_TURN_COMPLETIONS,
+) {
+    private val seen = LinkedHashSet<TurnCompletionIdentity>()
+
+    init {
+        require(maxEntries > 0) { "maxEntries must be positive" }
+    }
+
+    @Synchronized
+    fun shouldPublish(completion: TurnCompletion): Boolean {
+        if (completion.turnId.isBlank()) return true
+        val identity = TurnCompletionIdentity(
+            profileId = completion.profileId,
+            agent = completion.agent,
+            threadId = completion.threadId,
+            turnId = completion.turnId,
+        )
+        if (!seen.add(identity)) return false
+        while (seen.size > maxEntries) {
+            val iterator = seen.iterator()
+            iterator.next()
+            iterator.remove()
+        }
+        return true
+    }
+}
+
+private data class TurnCompletionIdentity(
+    val profileId: String,
+    val agent: AgentKind,
+    val threadId: String,
+    val turnId: String,
+)
+
+internal class SubAgentThreadRegistry(
+    private val maxEntries: Int = MAX_TRACKED_SUB_AGENT_THREADS,
+) {
+    private val knownThreads = LinkedHashSet<SubAgentThreadIdentity>()
+
+    init {
+        require(maxEntries > 0) { "maxEntries must be positive" }
+    }
+
+    @Synchronized
+    fun remember(key: AgentConnectionKey, threadId: String) {
+        if (threadId.isBlank()) return
+        val identity = SubAgentThreadIdentity(key, threadId)
+        if (!knownThreads.add(identity)) return
+        while (knownThreads.size > maxEntries) {
+            val iterator = knownThreads.iterator()
+            iterator.next()
+            iterator.remove()
+        }
+    }
+
+    @Synchronized
+    fun contains(key: AgentConnectionKey, threadId: String): Boolean =
+        threadId.isNotBlank() && SubAgentThreadIdentity(key, threadId) in knownThreads
+}
+
+private data class SubAgentThreadIdentity(
+    val key: AgentConnectionKey,
+    val threadId: String,
+)
+
+internal fun isSubAgentThreadSource(source: String): Boolean =
+    source.equals("subAgent", ignoreCase = true)
 
 object TurnCompletionNotifier {
     const val ACTION_OPEN_COMPLETED_THREAD = "top.asdb.codexremote.action.OPEN_COMPLETED_THREAD"
@@ -74,7 +146,7 @@ object TurnCompletionNotifier {
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(false)
+            .setOnlyAlertOnce(true)
             .setGroup(GROUP_KEY)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .build()
@@ -84,7 +156,8 @@ object TurnCompletionNotifier {
             DiagnosticLogger.info(
                 "Notification",
                 "turn_completion_posted profile=${completion.profileId.take(8)} " +
-                    "agent=${completion.agent.name} thread=${completion.threadId.take(8)}",
+                    "agent=${completion.agent.name} thread=${completion.threadId.take(8)} " +
+                    "turn=${completion.turnId.take(8).ifBlank { "none" }}",
             )
         }.onFailure {
             DiagnosticLogger.error("Notification", "turn_completion_failed", it)
@@ -120,3 +193,5 @@ internal fun completionNotificationId(profileId: String, agent: AgentKind, threa
         ((31 * (31 * profileId.hashCode() + agent.hashCode()) + threadId.hashCode()) and 0x00ff_ffff)
 
 private const val NOTIFICATION_ID_RANGE_START = 10_000
+private const val MAX_TRACKED_TURN_COMPLETIONS = 512
+private const val MAX_TRACKED_SUB_AGENT_THREADS = 1_024

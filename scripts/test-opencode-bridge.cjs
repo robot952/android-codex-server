@@ -524,4 +524,32 @@ assert.equal(turns[0].items[0].type, "userMessage");
 assert.equal(turns[0].items[1].type, "reasoning");
 assert.equal(turns[0].items[2].type, "agentMessage");
 
+const resumedActiveTurns = bridge.groupMessages([
+  {
+    info: {
+      id: "user-active",
+      sessionID: "session-active",
+      role: "user",
+      time: { created: 2000 },
+    },
+    parts: [{ id: "part-user-active", type: "text", text: "ask a question" }],
+  },
+  {
+    info: {
+      id: "assistant-active",
+      sessionID: "session-active",
+      parentID: "user-active",
+      role: "assistant",
+    },
+    parts: [{ id: "part-question-active", type: "tool", tool: "question", state: {} }],
+  },
+], true, "opencode-turn-active");
+assert.equal(resumedActiveTurns.length, 1);
+assert.equal(
+  resumedActiveTurns[0].id,
+  "opencode-turn-active",
+  "resuming an active session must preserve the turn/start identity",
+);
+assert.equal(resumedActiveTurns[0].status, "inProgress");
+
 process.stdout.write("OpenCode bridge tests passed\n");
