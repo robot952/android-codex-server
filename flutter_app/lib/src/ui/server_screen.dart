@@ -373,7 +373,7 @@ class _AppTitle extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Tooltip(
-          message: 'Codex Remote',
+          message: 'Agent',
           child: InkWell(
             onTap: onTap,
             borderRadius: BorderRadius.circular(6),
@@ -403,7 +403,7 @@ class _AppTitle extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Codex',
+              'Agent',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleMedium,

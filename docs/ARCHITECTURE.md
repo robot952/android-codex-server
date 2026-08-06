@@ -71,7 +71,7 @@ OpenCode Agent，将事件渲染为接近 VS Code Codex 插件的移动端工作
 | flutter_app/lib/src/ui/server_screen.dart | 服务器列表、设置编辑、私钥导入、连接遮罩和外链 | 当前运行 |
 | flutter_app/lib/src/ui/thread_list_screen.dart | 会话页占位、服务器状态和未启用操作入口 | 当前运行但功能不完整 |
 | flutter_app/lib/src/ui/theme.dart | Flutter 主题和产品色值 | 当前运行 |
-| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | top.asdb.codexremote/legacy MethodChannel | 仅旧 Profile 导入 |
+| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | top.asdb.agent/legacy MethodChannel | 仅当前包内旧 Profile 导入 |
 | flutter_app/lib/src/domain/models.freezed.dart、models.g.dart | 生成代码 | 不要手工编辑 |
 | flutter_app/test | Flutter 单元测试和 Widget 测试 | 当前门禁 |
 | app/ | Kotlin/Compose、Codex 协议、终端、文件管理等旧实现 | 历史参考，不是入口 |
@@ -149,7 +149,7 @@ Agent 偏好。新增字段必须有默认值并保持旧 JSON 可解析。任�
 SecureProfileStore 的关键行为：
 
 1. 读取加密键 profiles_v2；解析失败降级为空配置并保留错误边界。
-2. 若没有 v2，调用 Android MethodChannel top.asdb.codexremote/legacy 读取旧原生 profiles_v1。
+2. 若没有 v2，调用 Android MethodChannel top.asdb.agent/legacy 读取当前包内旧格式 profiles_v1。
 3. 成功解析后写入 v2，并写迁移标记 profiles_v1_migration_complete=1，再清理旧值。
 4. 每次读写都执行 normalizeStoredProfiles：去重 ID、补默认名称/用户名、限制端口、限制草稿和
    复合键数量，并保留有效的 selected profile。
@@ -357,11 +357,11 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 - 证书 SHA-256 为 72:72:22:18:70:9A:6D:7F:D0:E8:0B:94:49:03:AE:29:61:B4:CF:A8:AB:E0:35:86:F6:02:AC:DC:1E:A0:F5:2A；
 - 不删除、重生成、替换 keystore 或 alias；每个可覆盖安装发布都增加 Pubspec build number。
 
-本机发布脚本会验签、原子替换 /var/www/html/codex.apk，并绕过代理校验：
+本机发布脚本会验签、原子替换 /var/www/html/agent.apk，并绕过代理校验：
 
 ~~~text
-内网：http://192.168.8.109:18080/codex.apk
-外网：http://frp.asdb.top:18080/codex.apk
+内网：http://192.168.8.107/agent.apk
+外网：http://frp.asdb.top:18080/agent.apk
 ~~~
 
 交付时必须同时给出两个完整地址和 APK SHA-256。不要在文档、提交或回复中写访问 token。
@@ -547,8 +547,9 @@ SafeArea/viewInsets 和可滚动表单；不要用吞掉异常的方式“修复
 
 ### 16.6 APK 无法覆盖安装
 
-依次检查 applicationId=top.asdb.codexremote、build number 是否增加、APK 是否由稳定 keystore
-签名、证书 SHA-256 是否一致。绝不能换签名、卸载用户数据或删除 keystore 解决升级问题。
+依次检查 applicationId=top.asdb.agent、build number 是否增加、APK 是否由稳定 keystore
+签名、证书 SHA-256 是否一致。旧版 top.asdb.codexremote 与 Agent 独立安装、数据互不共享；绝不能换签名、
+卸载用户数据或删除 keystore 解决升级问题。
 
 ### 16.7 未来远端 403/503
 

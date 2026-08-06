@@ -40,7 +40,7 @@ resolve_android_sdk "$ROOT_DIR"
 certificate_sha256="$(apk_verify_stable_signature "$ANDROID_HOME" "$APK_PATH")"
 
 output_dir="${CODEX_RELEASE_OUTPUT_DIR:-$ROOT_DIR/dist}"
-artifact_name="CodexRemote-$version_name.apk"
+artifact_name="Agent-$version_name.apk"
 artifact_path="$output_dir/$artifact_name"
 mkdir -p "$output_dir"
 install -m 0644 "$APK_PATH" "$artifact_path"

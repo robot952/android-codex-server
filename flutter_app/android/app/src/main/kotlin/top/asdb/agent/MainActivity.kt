@@ -1,4 +1,4 @@
-package top.asdb.codexremote
+package top.asdb.agent
 
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -51,7 +51,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private companion object {
-        const val LEGACY_CHANNEL = "top.asdb.codexremote/legacy"
+        const val LEGACY_CHANNEL = "top.asdb.agent/legacy"
         const val LEGACY_PREFERENCES = "codex_remote_profiles"
         const val LEGACY_KEY = "profiles_v1"
     }

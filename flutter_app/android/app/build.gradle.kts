@@ -25,7 +25,7 @@ val stableKeyPassword = providers.gradleProperty("codexSigningKeyPassword")
     .getOrElse("android")
 
 android {
-    namespace = "top.asdb.codexremote"
+    namespace = "top.asdb.agent"
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
@@ -36,7 +36,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "top.asdb.codexremote"
+        applicationId = "top.asdb.agent"
         minSdk = 26
         targetSdk = 34
         versionCode = flutter.versionCode

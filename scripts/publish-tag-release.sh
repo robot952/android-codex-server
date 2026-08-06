@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/android-sdk.sh"
 source "$ROOT_DIR/scripts/apk-lib.sh"
 
-readonly DEFAULT_RELEASE_VERIFY_URLS="http://192.168.8.109:18080/codex.apk,http://frp.asdb.top:18080/codex.apk"
+readonly DEFAULT_RELEASE_VERIFY_URLS="http://192.168.8.107/agent.apk,http://frp.asdb.top:18080/agent.apk"
 readonly APK_PATH="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-release.apk"
 
 version_name="$(apk_version_name "$ROOT_DIR")"
@@ -41,7 +41,7 @@ esac
 certificate_sha256="$(apk_verify_stable_signature "$ANDROID_HOME" "$APK_PATH")"
 
 output_dir="${CODEX_RELEASE_OUTPUT_DIR:-$ROOT_DIR/dist}"
-artifact_path="$output_dir/CodexRemote-$version_name.apk"
+artifact_path="$output_dir/Agent-$version_name.apk"
 mkdir -p "$output_dir"
 install -m 0644 "$APK_PATH" "$artifact_path"
 artifact_sha256="$(sha256sum "$artifact_path" | awk '{print $1}')"
@@ -59,12 +59,12 @@ if [[ -n "$publish_dir" ]]; then
         echo "CODEX_RELEASE_PUBLISH_DIR is not a writable directory: $publish_dir" >&2
         exit 1
     fi
-    temporary_apk="$(mktemp "$publish_dir/.codex.apk.XXXXXX")"
+    temporary_apk="$(mktemp "$publish_dir/.agent.apk.XXXXXX")"
     trap 'rm -f "$temporary_apk"' EXIT
     install -m 0644 "$artifact_path" "$temporary_apk"
-    mv -f "$temporary_apk" "$publish_dir/codex.apk"
+    mv -f "$temporary_apk" "$publish_dir/agent.apk"
     trap - EXIT
-    echo "Published $publish_dir/codex.apk"
+    echo "Published $publish_dir/agent.apk"
 fi
 
 verify_urls="${CODEX_RELEASE_VERIFY_URLS:-}"

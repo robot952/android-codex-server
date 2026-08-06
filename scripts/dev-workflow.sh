@@ -99,7 +99,7 @@ show_status() {
     for apk_path in \
         flutter_app/build/app/outputs/flutter-apk/app-debug.apk \
         flutter_app/build/app/outputs/flutter-apk/app-release.apk \
-        /var/www/html/codex.apk; do
+        /var/www/html/agent.apk; do
         [[ -f "$apk_path" ]] && sha256sum "$apk_path"
     done
 }

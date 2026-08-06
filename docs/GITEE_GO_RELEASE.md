@@ -2,7 +2,7 @@
 
 推送 `release` 分支会触发 Gitee Go。流水线构建并验签 APK，随后自动创建与
 `versionName` 对应的不可移动 Git 标签、Gitee Release 和
-`CodexRemote-<version>.apk` 附件。Tag 推送不会触发 Android 构建，因此不同版本的
+`Agent-<version>.apk` 附件。Tag 推送不会触发 Android 构建，因此不同版本的
 发布不会因 Tag 触发而重新建立一套 Gradle 缓存。
 
 ## One-Time Variable Setup

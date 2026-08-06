@@ -41,11 +41,11 @@ esac
 }
 
 ADB="$ANDROID_HOME/platform-tools/adb"
-PACKAGE="top.asdb.codexremote"
+PACKAGE="${CODEX_SMOKE_PACKAGE:-top.asdb.agent}"
 LAUNCHER_COMPONENT="$PACKAGE/.MainActivity"
 SERIAL="$($ROOT_DIR/scripts/android-emulator.sh serial)"
 CACHE_DIR="$(workflow_cache_dir "$ROOT_DIR")/emulator"
-MARKER_PATH="/data/local/tmp/codex-remote-apk.sha256"
+MARKER_PATH="/data/local/tmp/agent-apk.sha256"
 apk_sha256="$(sha256sum "$apk_path" | awk '{print $1}')"
 installed_marker="$("$ADB" -s "$SERIAL" shell cat "$MARKER_PATH" 2>/dev/null | tr -d '\r' || true)"
 package_path="$("$ADB" -s "$SERIAL" shell pm path "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
@@ -216,15 +216,15 @@ assert_minimum_canvas "$landscape_screen_path" landscape
 set_rotation 0
 "$ADB" -s "$SERIAL" logcat -d -v brief > "$log_path"
 
-if awk '
+if awk -v package="$PACKAGE" '
     /FATAL EXCEPTION/ { fatal_window = 20 }
-    fatal_window > 0 && /Process: top\.asdb\.codexremote/ { bad = 1 }
-    /ANR in top\.asdb\.codexremote/ { bad = 1 }
-    /Process: top\.asdb\.codexremote.*has died/ { bad = 1 }
+    fatal_window > 0 && index($0, "Process: " package) { bad = 1 }
+    index($0, "ANR in " package) { bad = 1 }
+    index($0, "Process: " package) && /has died/ { bad = 1 }
     { if (fatal_window > 0) fatal_window-- }
     END { exit bad ? 0 : 1 }
 ' "$log_path"; then
-    rg -n -C 8 'FATAL EXCEPTION|ANR in top\.asdb\.codexremote|Process: top\.asdb\.codexremote' "$log_path" >&2 || true
+    rg -n -C 8 'FATAL EXCEPTION|ANR in |Process: ' "$log_path" >&2 || true
     echo "Crash or ANR detected after launch" >&2
     exit 1
 fi

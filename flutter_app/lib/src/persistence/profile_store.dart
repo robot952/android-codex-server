@@ -21,7 +21,7 @@ abstract interface class LegacyProfileImporter {
 class NativeLegacyProfileImporter implements LegacyProfileImporter {
   const NativeLegacyProfileImporter();
 
-  static const _channel = MethodChannel('top.asdb.codexremote/legacy');
+  static const _channel = MethodChannel('top.asdb.agent/legacy');
 
   @override
   Future<String?> readLegacyJson() async {

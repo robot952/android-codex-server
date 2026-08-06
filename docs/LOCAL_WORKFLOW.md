@@ -142,7 +142,7 @@ UI 验收推荐使用约 1.5K 画布：
 `android-emulator.sh` 默认用 `wm size 1220x2712` 设置逻辑画布。`emulator-smoke.sh` 会：
 
 1. 保留 App 数据和 Keystore，按 APK SHA-256 决定是否 `adb install -r`；
-2. 启动 `top.asdb.codexremote/.MainActivity`，等待进程稳定；
+2. 启动 `top.asdb.agent/.MainActivity`，等待进程稳定；
 3. 采集竖屏和横屏截图、UIAutomator XML 与 logcat；
 4. 核对两种方向的最低画布尺寸和前台包名；
 5. 检查本应用崩溃、ANR 及覆盖页面的系统错误弹窗；
@@ -190,12 +190,12 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
 脚本读取 `flutter_app/pubspec.yaml` 的版本，使用
-`keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/codex.apk`，然后用
+`keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/agent.apk`，然后用
 `curl --noproxy '*'` 校验：
 
 ```text
-内网：http://192.168.8.109:18080/codex.apk
-外网：http://frp.asdb.top:18080/codex.apk
+内网：http://192.168.8.107/agent.apk
+外网：http://frp.asdb.top:18080/agent.apk
 ```
 
 两个地址返回的 SHA-256 必须与 Release APK 相同。发布报告必须同时给出这两个完整地址；网络代理

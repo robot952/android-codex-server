@@ -10,7 +10,7 @@ source "$ROOT_DIR/scripts/android-sdk.sh"
 source "$ROOT_DIR/scripts/apk-lib.sh"
 
 readonly DEFAULT_PUBLISH_DIR="/var/www/html"
-readonly DEFAULT_VERIFY_URLS="http://192.168.8.109:18080/codex.apk,http://frp.asdb.top:18080/codex.apk"
+readonly DEFAULT_VERIFY_URLS="http://192.168.8.107/agent.apk,http://frp.asdb.top:18080/agent.apk"
 readonly APK_PATH="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-release.apk"
 
 resolve_android_sdk "$ROOT_DIR"
@@ -46,7 +46,7 @@ if [[ ! -d "$publish_dir" || ! -w "$publish_dir" ]]; then
     exit 1
 fi
 
-artifact_path="$output_dir/CodexRemote-$version_name.apk"
+artifact_path="$output_dir/Agent-$version_name.apk"
 mkdir -p "$output_dir"
 install -m 0644 "$APK_PATH" "$artifact_path"
 artifact_sha256="$(sha256sum "$artifact_path" | awk '{print $1}')"
@@ -57,24 +57,24 @@ artifact_sha256="$(sha256sum "$artifact_path" | awk '{print $1}')"
     printf 'certificateSha256=%s\n' "$certificate_sha256"
 } > "$output_dir/local-release-metadata.txt"
 
-temporary_apk="$(mktemp "$publish_dir/.codex.apk.XXXXXX")"
+temporary_apk="$(mktemp "$publish_dir/.agent.apk.XXXXXX")"
 verify_file="$(mktemp)"
 trap 'rm -f "$temporary_apk" "$verify_file"' EXIT
 published_sha256=""
-if [[ -f "$publish_dir/codex.apk" ]]; then
-    published_sha256="$(sha256sum "$publish_dir/codex.apk" | awk '{print $1}')"
+if [[ -f "$publish_dir/agent.apk" ]]; then
+    published_sha256="$(sha256sum "$publish_dir/agent.apk" | awk '{print $1}')"
 fi
 if [[ "$published_sha256" == "$artifact_sha256" ]]; then
-    echo "Reusing unchanged $publish_dir/codex.apk"
+    echo "Reusing unchanged $publish_dir/agent.apk"
 else
     install -m 0644 "$artifact_path" "$temporary_apk"
-    mv -f "$temporary_apk" "$publish_dir/codex.apk"
+    mv -f "$temporary_apk" "$publish_dir/agent.apk"
 fi
 
 IFS=',' read -r -a urls <<< "$verify_urls"
 for verify_url in "${urls[@]}"; do
     [[ -n "$verify_url" ]] || continue
-    curl --noproxy '*' --fail --location --silent --show-error --max-time 60 \
+    curl --noproxy '*' --fail --location --silent --show-error --max-time 180 \
         --output "$verify_file" "$verify_url"
     verified_sha256="$(sha256sum "$verify_file" | awk '{print $1}')"
     if [[ "$verified_sha256" != "$artifact_sha256" ]]; then

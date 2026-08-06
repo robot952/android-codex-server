@@ -13,7 +13,7 @@ class CodexRemoteApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return MaterialApp(
-      title: 'Codex Remote',
+      title: 'Agent',
       debugShowCheckedModeBanner: false,
       theme: buildCodexTheme(),
       home: const _AppRoot(),

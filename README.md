@@ -154,11 +154,11 @@ keystore/codex-remote-stable.keystore
 ./scripts/publish-local-apk.sh --force
 ```
 
-脚本把产物归档为 `dist/CodexRemote-<version>.apk`，原子更新
-`/var/www/html/codex.apk`，并绕过代理校验以下两个地址的 SHA-256：
+脚本把产物归档为 `dist/Agent-<version>.apk`，原子更新
+`/var/www/html/agent.apk`，并绕过代理校验以下两个地址的 SHA-256：
 
-- 内网：<http://192.168.8.109:18080/codex.apk>
-- 外网：<http://frp.asdb.top:18080/codex.apk>
+- 内网：<http://192.168.8.107/agent.apk>
+- 外网：<http://frp.asdb.top:18080/agent.apk>
 
 交付 APK 时必须同时给出内网和外网完整地址。地址属于部署环境，不要写入 App 业务逻辑，也不要在
 文档、命令或 Git 中记录 FRP token。
