@@ -580,6 +580,9 @@ TurnCompletionNotifier 监听 AppViewModel.turnCompletions：
 - 应用位于后台时显示状态栏通知。
 - 完成事件按 profileId、AgentKind、threadId 和 turnId 做有界内存去重；缺少 turnId 的旧协议事件
   保持兼容，不会被永久抑制。诊断日志同时记录 threadId 和 turnId，便于区分重复事件与连续 turn。
+- `source=subAgent` 的线程以及父时间线通过 `subAgentActivity.agentThreadId` 声明的子线程只更新父会话
+  内的智能体状态，不发布系统完成通知；只有用户主会话进入终态才提醒。过滤结果在诊断日志中记录
+  `reason=sub_agent`。
 - 同一会话使用稳定的通知 ID；后续完成事件更新已有通知时不重复响铃或弹出，用户清除或点击后
   下一次完成仍可重新提醒。
 - PendingIntent 带 profileId/threadId；点击后选择对应服务器并打开完成会话。

@@ -13,6 +13,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import top.asdb.codexremote.data.AgentConnectionKey
 import top.asdb.codexremote.data.AgentKind
 import top.asdb.codexremote.diagnostics.DiagnosticLogger
 import java.util.LinkedHashSet
@@ -61,6 +62,40 @@ private data class TurnCompletionIdentity(
     val threadId: String,
     val turnId: String,
 )
+
+internal class SubAgentThreadRegistry(
+    private val maxEntries: Int = MAX_TRACKED_SUB_AGENT_THREADS,
+) {
+    private val knownThreads = LinkedHashSet<SubAgentThreadIdentity>()
+
+    init {
+        require(maxEntries > 0) { "maxEntries must be positive" }
+    }
+
+    @Synchronized
+    fun remember(key: AgentConnectionKey, threadId: String) {
+        if (threadId.isBlank()) return
+        val identity = SubAgentThreadIdentity(key, threadId)
+        if (!knownThreads.add(identity)) return
+        while (knownThreads.size > maxEntries) {
+            val iterator = knownThreads.iterator()
+            iterator.next()
+            iterator.remove()
+        }
+    }
+
+    @Synchronized
+    fun contains(key: AgentConnectionKey, threadId: String): Boolean =
+        threadId.isNotBlank() && SubAgentThreadIdentity(key, threadId) in knownThreads
+}
+
+private data class SubAgentThreadIdentity(
+    val key: AgentConnectionKey,
+    val threadId: String,
+)
+
+internal fun isSubAgentThreadSource(source: String): Boolean =
+    source.equals("subAgent", ignoreCase = true)
 
 object TurnCompletionNotifier {
     const val ACTION_OPEN_COMPLETED_THREAD = "top.asdb.codexremote.action.OPEN_COMPLETED_THREAD"
@@ -159,3 +194,4 @@ internal fun completionNotificationId(profileId: String, agent: AgentKind, threa
 
 private const val NOTIFICATION_ID_RANGE_START = 10_000
 private const val MAX_TRACKED_TURN_COMPLETIONS = 512
+private const val MAX_TRACKED_SUB_AGENT_THREADS = 1_024
