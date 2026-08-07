@@ -1,11 +1,11 @@
 # Codex Remote for Android
 
-Codex Remote 是一个通过 SSH 连接远程服务器、并计划在移动端提供接近 VS Code Codex 插件体验的
-Flutter 客户端。仓库正在从旧的 Kotlin/Jetpack Compose 实现迁移到 Flutter；当前 Android 构建入口
-已经切换到 `flutter_app/`，但 Agent 和会话工作区尚未迁移完成。
+Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Codex 插件体验的 Flutter 客户端。
+当前 Android 构建入口是 `flutter_app/`；旧 Kotlin/Jetpack Compose 工程保留为行为基线，Flutter
+版本已经覆盖服务器、Agent、会话和工作区的主要链路。
 
-> 当前状态（2026-08-06）：可保存多台服务器并完成密码或私钥 SSH 连接；Codex/OpenCode Agent、
-> 会话列表和对话页仍是迁移目标。不要把旧 `app/` 中已有的功能误写成当前 Flutter APK 已可用。
+> 当前状态（2026-08-07）：Flutter Agent 核心迁移已提交到 `flutter-refactor` 分支，Codex/OpenCode
+> 共用会话协议和 Work 页面。真实服务器长时运行、最终 APK 构建和高分辨率模拟器回归仍是验收项。
 
 ## 当前可用
 
@@ -14,25 +14,27 @@ Flutter 客户端。仓库正在从旧的 Kotlin/Jetpack Compose 实现迁移到
 - `flutter_secure_storage` 加密持久化，并通过 Android MethodChannel 一次性导入旧原生 Profile。
 - `dartssh2` 密码认证和 OpenSSH 私钥认证，包括带密码私钥。
 - SSH 主机公钥 SHA-256 指纹探测、用户确认、保存和后续严格固定校验。
-- 连接过程的全屏半透明阻塞层，以及连接成功后直接进入会话占位页。
-- 服务器资源指标的基础展示位置；真实 CPU、内存、磁盘和网络采样尚未接入。
+- 连接过程的全屏半透明阻塞层，以及连接成功后进入真实会话列表。
+- 服务器 CPU、内存、磁盘和网络采样、紧凑指标和点击详情。
+- Codex/OpenCode Agent 探测、固定版本安装、HTTP/HTTPS 下载代理、进度展示、卸载和自动连接。
+- JSONL 会话列表、搜索、恢复、分页、流式消息、停止、审批、权限、会话级模型和思考强度。
+- Work 页面中的上下文用量、压缩、草稿、附件、图片预览/保存、Markdown 链接和子 Agent。
+- SSH 终端、SFTP 文件管理、工作目录选择、全局 Codex 配置和真实模型连通性测试。
+- Android 前台连接保护、回合完成通知、Debug 日志导出分享和按会话缓存。
 - 服务器页在竖屏、横屏和放大字体下的 Widget 回归。
 - Android Debug 和 Release APK 使用同一把长期稳定签名，可覆盖安装历史同签名版本。
 
-## 尚未迁移
+## 当前验收缺口
 
-以下能力存在于旧 `app/`、服务器辅助脚本或产品约束中，但当前 Flutter APK **尚不能使用**：
+以下项目已经有实现和测试覆盖，但本轮环境无法完成最终运行验收：
 
-- Codex/OpenCode Agent 探测、安装、启动和多 Agent 通道。
-- Codex app-server JSON-RPC/JSONL 握手、会话加载、搜索、创建、恢复和分页。
-- 对话时间线、流式输出、输入、停止、审批、模型、推理强度、上下文占用、目标和子 Agent。
-- 对话中的图片预览、中文“查看了图片”状态和长按保存到手机。
-- SSH 终端和 SFTP 文件管理界面。
-- 工作目录选择、Agent 全局设置和真实模型连通性测试。
-- 后台前台服务、回合完成通知、完整 Debug 日志预览与系统分享。
+- 在目标真实服务器上验证 OpenCode 固定版本的安装、卸载和真实 Provider/API 连通性。
+- 长时间 turn、steer、interrupt、断线重连和 Android 厂商后台限制下的持续运行。
+- 新代码对应的完整 Flutter test 和 Debug/Release APK 重编译。
+- 约 1220x2712 高分辨率模拟器上的竖屏/横屏逐页截图对比。
 
-`ThreadListScreen` 当前只是占位页。刷新、新建会话、终端、设置、Agent 切换和搜索控件均未启用；
-`AppScreen.work`、`AppScreen.agentWork` 和 `AppScreen.fileManager` 也暂时回退到该占位页。
+当前沙箱禁止测试器和 Gradle 创建本地 socket；已有签名 APK 和所有 Flutter/Pub/Gradle/AVD 缓存均保留，
+环境恢复后应优先运行 `./scripts/dev-workflow.sh full --force` 完成这些门禁。
 
 完整的当前实现边界、迁移顺序和长期产品约束见
 [架构与协作手册](docs/ARCHITECTURE.md)。
