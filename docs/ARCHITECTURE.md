@@ -377,7 +377,8 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 
 会话列表消费 `agentThreadLists[profileId + AgentKind]`，并通过 Agent 中立的可选分页契约消费远端
 `nextCursor`。接近列表底部时自动加载下一页，控制器按 lane 保存游标、合并去重并丢弃刷新/搜索/断线后
-的过期结果；不支持分页的轻量适配器仍可只实现基础列表契约。不要在此页面临时实现一套只支持 Codex
+的过期结果；Agent lane 断开后页面隐藏该 lane 的旧缓存条目，避免把历史快照误认成仍可打开的在线
+会话。`active/running/working/inProgress` 等运行态统一显示转圈；不支持分页的轻量适配器仍可只实现基础列表契约。不要在此页面临时实现一套只支持 Codex
 的会话状态；新增状态必须复用 Agent 中立契约，并按 profileId + AgentKind + threadId 隔离。
 
 齿轮菜单包含“选择工作目录”、“配置 Codex/OpenCode”和“文件管理”三项。配置项只在当前 Agent 已连接且声明
@@ -517,6 +518,13 @@ resume/历史响应依次尝试 `full/4 -> full/1 -> summary/1 -> notLoaded/1`�
 子 Agent resume 仍会校验返回的 thread ID，错误 ID 连续重试一次后拒绝污染当前页面；导航 generation
 也会丢弃切页后的迟到结果。流式 delta、缓冲溢出、降级响应和列表分页游标失效仍必须重点回归。
 
+实时事件只有在 `profileId + AgentKind` 匹配、当前页面是 `work/agentWork` 且 threadId 匹配可见会话时
+才写入前台状态；会话列表、其他会话、父子会话切换和其他 lane 的事件会以该 thread 的 stale cache 或
+列表行为基线，在独立 `ThreadSessionCache` 中继续归并 timeline、状态、cursor 和 TokenUsage。嵌套在
+`turn/thread` 对象中的 threadId 会先规范化再进入 reducer/resume buffer，当前 lane 的 `threads` 与
+`agentThreadLists` 同步更新。这样返回列表后服务器继续输出，再进入同一会话时可立即显示最新缓存，且
+不会把后台会话事件写进当前 Work 页面。
+
 OpenCode bridge 已按上述稳定 turn 身份处理 `turn/start` 和 `turn/steer`；相关 Node/Flutter 回归测试是
 代码门禁，但不能替代真实 OpenCode Provider、长时流式回合、审批和断线恢复验收。旧 Kotlin bridge
 仍只作为历史参考，不能替代当前 Flutter asset 的测试。
@@ -534,7 +542,8 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
 ### 9.5 Work UI、IME 和子 Agent（当前实现与缺口）
 
 - Composer 用 viewInsets 驱动 170 ms `AnimatedPadding`，时间线在键盘视口缩小时直接 jump 到底部；
-  FocusNode 没有 autofocus，但也没有在 App 进入后台时主动 unfocus，键盘同步和后台恢复仍需真机验证。
+  FocusNode 没有 autofocus，Work 页面在生命周期进入 `inactive/paused/hidden/detached` 时主动 unfocus 并
+  请求隐藏系统输入法，避免切回前台自动弹键盘。键盘动画与消息同帧移动仍需真机验证。
 - 空闲发送、运行停止、停止确认、权限模式、审批、上下文详情、回到底部、Markdown 链接确认、图片保存、
   当前会话独立 effort 选择和自定义模型管理均已接入。
 - 子 Agent 事件先由 `SubAgentPresentation` 合并为相邻同 turn 的渲染行，再以紧凑标签显示。标签状态按
@@ -654,7 +663,8 @@ provider 与 URL、key、代理是否已配置，绝不记录其实际值。
 Android Manifest 声明网络、通知、wake lock 和 `foreground-service:dataSync` 权限。Flutter 的
 `BackgroundConnectionBridge` 在任一 SSH/Agent lane 连接或回合运行时启停
 `ConnectionForegroundService`；Service 创建低重要度 ongoing notification，并以有界 partial wake lock
-提高进程在后台的存活机会。协议状态仍由 Dart 持有，Service 不会自行重建 app-server；`START_NOT_STICKY`
+提高进程在后台的存活机会。前台服务和回合完成通知都使用专用白色连接图标并声明 private 锁屏可见性，
+不使用彩色启动图标作为 Android small icon。协议状态仍由 Dart 持有，Service 不会自行重建 app-server；`START_NOT_STICKY`
 意味着进程被系统杀死后不能保证自动恢复，厂商省电策略也可能中断连接。
 
 `TurnCompletionNotifier` 监听非当前 lane 的回合终态，在 App 不处于前台时发送本地通知。通知 payload 携带
@@ -783,6 +793,7 @@ flutter test --no-pub
 | test/agent/codex_event_reducer_test.dart | turn/delta 生命周期、后台 thread 隔离、TokenUsage 窗口保护、旧 turn 完成防护，以及乐观用户消息/图片附件合并 |
 | test/agent/agent_connection_manager_test.dart | profile + Agent lane、host 断开、generation/旧请求防护、连接前不提前暴露 capability、steer 转发和自定义模型同步迟到结果隔离 |
 | test/agent/thread_session_cache_test.dart | 会话缓存 TTL、LRU、权重上限和上下文用量隔离 |
+| test/app/resume_lifecycle_test.dart | resume 通知缓冲/顺序、迟到响应保护，以及返回列表后后台 timeline/TokenUsage 写回缓存并在重进时恢复 |
 | test/ui/sub_agent_presentation_test.dart | 子 Agent 状态映射、同 turn 终态保护、跨 turn 重启、相邻活动分组和稳定身份色 |
 | test/ui/model_selection_presentation_test.dart | catalog id/wire model 匹配、模型/effort 标签和容量格式 |
 | test/platform/local_file_exporter_test.dart | Android 导出会话 begin/write/complete/abort、分块上限和关闭后拒绝写入 |
@@ -794,6 +805,7 @@ flutter test --no-pub
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
+| test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 `scripts/test-opencode-bridge-scheduling.cjs`、`scripts/test-opencode-bridge-question.cjs` 和
@@ -806,11 +818,11 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 当前 `codex_agent_client_test.dart` 也未覆盖握手、请求超时、事件、审批或断线。新增共享状态、持久化、
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
 
-最近一次受限环境记录（不要据此声称完整验收）：`HOME=/tmp/codex-dart-home .../dart analyze` 已
-通过；`flutter test` 在当前沙箱因不能绑定 `127.0.0.1:0` 而未启动，不是测试断言失败；Android/Gradle
-构建受本地 socket/FileLockContentionHandler 限制，尚无本轮新 APK；`adb`/模拟器也因 daemon 无法监听
-端口而未完成高分辨率截图回归。恢复权限或切换到可运行环境后，必须重新执行完整门禁并记录结果，旧
-APK 不得冒充本轮产物。
+最近一次受限环境记录（不要据此声称完整验收）：`flutter analyze --no-pub` 和
+`flutter build bundle --debug --no-pub` 已通过；`flutter test` 在当前沙箱因不能绑定 `127.0.0.1:0` 而在
+测试加载阶段失败，不是测试断言失败。Android/Gradle 构建仍可能受本地 socket/FileLockContentionHandler
+限制，`adb`/模拟器也可能因 daemon 无法监听端口而无法做高分辨率截图回归。恢复权限或切换到可运行
+环境后，必须重新执行完整门禁并记录结果，旧 APK 不得冒充本轮产物。
 
 ### 13.2 当前手工回归清单
 
@@ -851,7 +863,7 @@ APK 不得冒充本轮产物。
 | 工作目录 | 首次 Agent 成功只提示一次；SFTP 浏览、错误显示、确认/记忆和手动重开；thread/start/turn/start 传递 workspace | 真机大目录、权限拒绝、连续切换与断线回归 |
 | 会话 | 搜索/刷新/新建/恢复、turn 历史分页、缓存优先、resume 通知缓冲/快照协调/顺序重放、运行转圈 | thread/list 下一页；真实长时 resume/delta 竞态、缓冲溢出和大历史降级压测 |
 | 会话设置 | wire 模型和 effort 可独立选择并按 profile + Agent + thread 持久化；自定义模型新增/编辑/删除、远端隐藏/恢复、API `/models` 筛选回填已接入 | 真实服务器 Provider 差异、权限和模型目录回归 |
-| 输入 | 草稿按复合键恢复；Composer 有 IME inset 和 viewport 同步；本地附件 picker/上传/移除/发送及失败恢复 | 后台主动 unfocus、真机同帧验证、picker/Widget 自动化测试 |
+| 输入 | 草稿按复合键恢复；Composer 有 IME inset 和 viewport 同步；切后台主动 unfocus/隐藏输入法；本地附件 picker/上传/移除/发送及失败恢复 | 真机同帧验证、picker/Widget 自动化测试 |
 | 对话动作 | 发送/停止、权限、审批、上下文、压缩、回退、归档、重命名、审查、目标 | 真实固定 Codex 版本全场景回归 |
 | 历史滚动 | Cupertino sliver 分页、三态提示、正文下移留白、位置补偿和回底部箭头 | 真实超长历史与连续分页回归 |
 | Markdown/图片/文件 | Markdown HTTP 链接确认；图片识别、SFTP 预览/保存；远程绝对文件链接经 SAF 流式保存 | 裸 URL、大文件、断线和厂商文件选择器异常路径回归 |

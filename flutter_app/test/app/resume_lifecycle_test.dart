@@ -395,6 +395,73 @@ void main() {
     expect(completions, hasLength(1));
     expect(completions.single.turnId, isEmpty);
   });
+
+  test(
+    'notifications received on the thread list update the cached transcript',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent);
+      final firstResume = agent.gateNextResume(_threadA.id);
+
+      harness.controller.openThread(_threadA);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _threadA.id &&
+            harness.controller.state.loading,
+      );
+      firstResume.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: <TimelineEntry>[
+            TimelineEntry(
+              id: 'item-a',
+              kind: TimelineKind.agentMessage,
+              text: '旧内容',
+              turnId: 'turn-a',
+            ),
+          ],
+          tokenUsage: TokenUsage(
+            modelContextWindow: 1_000,
+            last: TokenUsageBreakdown(totalTokens: 100),
+            total: TokenUsageBreakdown(totalTokens: 100),
+          ),
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+
+      agent.emit(
+        _notificationWithParams('item/agentMessage/delta', <String, Object?>{
+          'threadId': _threadA.id,
+          'turnId': 'turn-a',
+          'itemId': 'item-a',
+          'delta': '，新内容',
+        }),
+      );
+      agent.emit(
+        _notificationWithParams('thread/tokenUsage/updated', <String, Object?>{
+          'threadId': _threadA.id,
+          'tokenUsage': <String, Object?>{
+            'modelContextWindow': 1_000,
+            'last': <String, Object?>{'totalTokens': 240},
+            'total': <String, Object?>{'totalTokens': 240},
+          },
+        }),
+      );
+      await _drainAsyncWork();
+
+      final nextResume = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _threadA.id &&
+            harness.controller.state.loading,
+      );
+      expect(harness.controller.state.timeline.single.text, '旧内容，新内容');
+      expect(harness.controller.state.tokenUsage?.last.totalTokens, 240);
+      nextResume.complete(const AgentSession(thread: _threadA, timeline: []));
+    },
+  );
 }
 
 class _Harness {
@@ -599,6 +666,18 @@ CodexRpcNotification _notification(
     isKnown: true,
   );
 }
+
+CodexRpcNotification _notificationWithParams(
+  String method,
+  Map<String, Object?> params,
+) => CodexRpcNotification(
+  generation: 1,
+  sequence: 0,
+  raw: <String, Object?>{'method': method, 'params': params},
+  method: method,
+  params: params,
+  isKnown: true,
+);
 
 Future<void> _waitUntil(bool Function() condition) async {
   for (var attempt = 0; attempt < 300; attempt += 1) {

@@ -92,7 +92,7 @@ class ConnectionForegroundService : Service() {
         )
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
-                .setSmallIcon(applicationInfo.icon)
+                .setSmallIcon(R.drawable.ic_connection_notification)
                 .setContentTitle(getString(R.string.connection_notification_title))
                 .setContentText(getString(R.string.connection_notification_text))
                 .setContentIntent(contentIntent)
@@ -100,16 +100,18 @@ class ConnectionForegroundService : Service() {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setSilent(true)
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .build()
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
-                .setSmallIcon(applicationInfo.icon)
+                .setSmallIcon(R.drawable.ic_connection_notification)
                 .setContentTitle(getString(R.string.connection_notification_title))
                 .setContentText(getString(R.string.connection_notification_text))
                 .setContentIntent(contentIntent)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .build()
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

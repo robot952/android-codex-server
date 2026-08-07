@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart'
     show CupertinoSliverRefreshControl, RefreshIndicatorMode;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -39,7 +40,8 @@ class WorkScreen extends ConsumerStatefulWidget {
   ConsumerState<WorkScreen> createState() => _WorkScreenState();
 }
 
-class _WorkScreenState extends ConsumerState<WorkScreen> {
+class _WorkScreenState extends ConsumerState<WorkScreen>
+    with WidgetsBindingObserver {
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _composerController = TextEditingController();
   final FocusNode _composerFocus = FocusNode();
@@ -57,11 +59,20 @@ class _WorkScreenState extends ConsumerState<WorkScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!shouldDismissWorkKeyboard(state)) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController
       ..removeListener(_onScroll)
       ..dispose();
@@ -764,6 +775,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen> {
     }
   }
 }
+
+bool shouldDismissWorkKeyboard(AppLifecycleState state) =>
+    state != AppLifecycleState.resumed;
 
 class _ModelSelectionSheet extends ConsumerWidget {
   const _ModelSelectionSheet();

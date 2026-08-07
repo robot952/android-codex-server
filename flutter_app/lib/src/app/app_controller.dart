@@ -4491,6 +4491,7 @@ class AppController extends StateNotifier<AppUiState> {
         }
       case RemoteAgentNotification(:final message):
         final before = state;
+        final routedMessage = _withResolvedNotificationThreadId(message);
         _rememberSubAgentReferences(
           envelope.key,
           before.agentThreadLists[envelope.key] ?? const <AgentThread>[],
@@ -4499,16 +4500,16 @@ class AppController extends StateNotifier<AppUiState> {
               : const <TimelineEntry>[],
         );
         final resumeBuffer = _resumeNotificationBuffers[envelope.key];
-        final buffered = resumeBuffer?.offer(message) ?? false;
+        final buffered = resumeBuffer?.offer(routedMessage) ?? false;
         if (publishCompletion) {
-          _publishTurnCompletionIfNeeded(envelope.key, message, before);
+          _publishTurnCompletionIfNeeded(envelope.key, routedMessage, before);
         }
         if (buffered) return;
-        if (!active) {
-          _applyBackgroundAgentNotification(envelope.key, message);
+        if (!_notificationTargetsVisibleThread(envelope.key, routedMessage)) {
+          _applyBackgroundAgentNotification(envelope.key, routedMessage);
           return;
         }
-        final reduced = reduceCodexNotification(state, message);
+        final reduced = reduceCodexNotification(state, routedMessage);
         if (identical(before, reduced)) return;
         final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
           state.agentThreadLists,
@@ -4523,8 +4524,8 @@ class AppController extends StateNotifier<AppUiState> {
         );
         final activeThread = state.activeThread;
         if (activeThread != null &&
-            (message.method == 'thread/goal/updated' ||
-                message.method == 'thread/goal/cleared')) {
+            (routedMessage.method == 'thread/goal/updated' ||
+                routedMessage.method == 'thread/goal/cleared')) {
           final storageKey = threadPreferenceKey(
             envelope.key.profileId,
             envelope.key.agent,
@@ -4554,9 +4555,9 @@ class AppController extends StateNotifier<AppUiState> {
             tokenUsage: state.tokenUsage,
           );
         }
-        if (message.method == 'turn/started' ||
-            message.method == 'turn/completed' ||
-            message.method == 'thread/status/changed') {
+        if (routedMessage.method == 'turn/started' ||
+            routedMessage.method == 'turn/completed' ||
+            routedMessage.method == 'thread/status/changed') {
           final timing = state.turnTiming;
           if (timing != null) {
             unawaited(
@@ -4679,18 +4680,89 @@ class AppController extends StateNotifier<AppUiState> {
     AgentConnectionKey key,
     CodexRpcNotification message,
   ) {
-    final laneThreads = state.agentThreadLists[key];
-    if (laneThreads == null || laneThreads.isEmpty) return;
-    final reduced = reduceCodexNotification(
-      AppUiState(threads: laneThreads),
-      message,
+    final laneThreads = state.agentThreadLists[key] ?? const <AgentThread>[];
+    final threadId = _notificationThreadId(message);
+    if (threadId.isEmpty) return;
+    final cache = _threadCaches[key];
+    final cached = cache?.getStale(threadId);
+    final listedThread = laneThreads.firstWhereOrNull(
+      (thread) => thread.id == threadId,
     );
-    if (identical(reduced.threads, laneThreads)) return;
-    final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
-      state.agentThreadLists,
-    )..[key] = reduced.threads;
-    state = state.copyWith(agentThreadLists: Map.unmodifiable(lists));
-    _rememberSubAgentReferences(key, reduced.threads, const <TimelineEntry>[]);
+    final seedThread = cached?.thread ?? listedThread;
+    if (seedThread == null) return;
+    final base = AppUiState(
+      // Supplying a work surface makes the pure reducer apply timeline and
+      // token updates to the cached thread while leaving the visible lane
+      // state untouched below.
+      screen: AppScreen.work,
+      threads: laneThreads,
+      activeThread: seedThread,
+      timeline: cached?.timeline ?? const <TimelineEntry>[],
+      olderTurnsCursor: cached?.nextTurnsCursor,
+      activeTurnId: seedThread.activeTurnId,
+      running: _threadIsRunning(seedThread),
+      tokenUsage: cache?.contextUsage(threadId) ?? cached?.tokenUsage,
+    );
+    final reduced = reduceCodexNotification(base, message);
+    final changedThreads = !identical(reduced.threads, laneThreads);
+    final changedSession =
+        reduced.activeThread != base.activeThread ||
+        !identical(reduced.timeline, base.timeline) ||
+        reduced.olderTurnsCursor != base.olderTurnsCursor ||
+        reduced.tokenUsage != base.tokenUsage;
+    final goalEvent =
+        message.method == 'thread/goal/updated' ||
+        message.method == 'thread/goal/cleared';
+    if (!changedThreads && !changedSession && !goalEvent) return;
+    final reducedThread =
+        reduced.activeThread ??
+        reduced.threads.firstWhereOrNull((thread) => thread.id == threadId);
+    if (changedThreads) {
+      final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
+        state.agentThreadLists,
+      )..[key] = reduced.threads;
+      state = state.copyWith(
+        agentThreadLists: Map.unmodifiable(lists),
+        threads: _isActiveKey(key) ? reduced.threads : state.threads,
+      );
+    }
+    if (changedSession && reducedThread != null) {
+      final nextCache =
+          cache ?? _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
+      nextCache.put(
+        reducedThread,
+        reduced.timeline,
+        nextTurnsCursor: reduced.olderTurnsCursor,
+        tokenUsage: reduced.tokenUsage,
+      );
+    }
+    if (message.method == 'thread/goal/updated') {
+      final goal = reduced.activeGoal;
+      if (goal != null) {
+        _threadGoals[threadPreferenceKey(key.profileId, key.agent, threadId)] =
+            goal;
+      }
+    } else if (message.method == 'thread/goal/cleared') {
+      _threadGoals.remove(
+        threadPreferenceKey(key.profileId, key.agent, threadId),
+      );
+    }
+    _rememberSubAgentReferences(key, reduced.threads, reduced.timeline);
+  }
+
+  bool _notificationTargetsVisibleThread(
+    AgentConnectionKey key,
+    CodexRpcNotification message,
+  ) {
+    if (!_isActiveKey(key) ||
+        (state.screen != AppScreen.work &&
+            state.screen != AppScreen.agentWork)) {
+      return false;
+    }
+    final activeThreadId = state.activeThread?.id.trim() ?? '';
+    if (activeThreadId.isEmpty) return false;
+    final threadId = _notificationThreadId(message);
+    return threadId.isEmpty || threadId == activeThreadId;
   }
 
   bool _isApiModelOptionsRequestCurrent(
@@ -5280,7 +5352,7 @@ String? _agentLoadDiagnostic(Object? threadError, Object? modelError) {
 bool _threadIsRunning(AgentThread thread) {
   if (thread.activeTurnId?.isNotEmpty ?? false) return true;
   return switch (thread.status.toLowerCase()) {
-    'active' || 'running' || 'inprogress' || 'in_progress' => true,
+    'active' || 'running' || 'working' || 'inprogress' || 'in_progress' => true,
     _ => false,
   };
 }
@@ -5337,6 +5409,47 @@ Map<String, Object?>? _notificationMap(Object? value) {
     if (entry.key is String) result[entry.key as String] = entry.value;
   }
   return result;
+}
+
+String _notificationThreadId(CodexRpcNotification message) {
+  final params = message.params;
+  return _notificationString(params, const ['threadId', 'thread_id'])
+      .ifEmpty(
+        () => _notificationString(_notificationMap(params['turn']), const [
+          'threadId',
+          'thread_id',
+        ]),
+      )
+      .ifEmpty(
+        () => _notificationString(_notificationMap(params['thread']), const [
+          'id',
+          'threadId',
+          'thread_id',
+        ]),
+      );
+}
+
+CodexRpcNotification _withResolvedNotificationThreadId(
+  CodexRpcNotification message,
+) {
+  final threadId = _notificationThreadId(message);
+  if (threadId.isEmpty) return message;
+  if (message.params['threadId'] == threadId) return message;
+  final params = Map<String, Object?>.unmodifiable(<String, Object?>{
+    ...message.params,
+    'threadId': threadId,
+  });
+  return CodexRpcNotification(
+    generation: message.generation,
+    sequence: message.sequence,
+    raw: Map<String, Object?>.unmodifiable(<String, Object?>{
+      ...message.raw,
+      'params': params,
+    }),
+    method: message.method,
+    params: params,
+    isKnown: message.isKnown,
+  );
 }
 
 String _notificationString(Map<String, Object?>? value, List<String> keys) {

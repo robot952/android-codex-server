@@ -47,7 +47,11 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
     final sourceThreads = key == null
         ? const <AgentThread>[]
         : state.agentThreadLists[key] ?? const <AgentThread>[];
-    final threads = _visibleThreads(sourceThreads, state.threadSearch);
+    final threads = visibleAgentThreads(
+      sourceThreads,
+      state.threadSearch,
+      agentConnected: agentConnected,
+    );
 
     if (!_searchFocus.hasFocus &&
         _searchController.text != state.threadSearch) {
@@ -454,7 +458,7 @@ class _ThreadRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final running = _isRunning(thread);
+    final running = isAgentThreadRunning(thread);
     final updatedAt = _updatedAtLabel(thread.updatedAt);
     final subtitle = <String>[
       if (thread.preview.trim().isNotEmpty) thread.preview.trim(),
@@ -490,7 +494,12 @@ class _ThreadRow extends StatelessWidget {
   }
 }
 
-List<AgentThread> _visibleThreads(List<AgentThread> threads, String query) {
+List<AgentThread> visibleAgentThreads(
+  List<AgentThread> threads,
+  String query, {
+  required bool agentConnected,
+}) {
+  if (!agentConnected) return const <AgentThread>[];
   final normalized = query.trim().toLowerCase();
   if (normalized.isEmpty) return threads;
   return threads
@@ -503,10 +512,10 @@ List<AgentThread> _visibleThreads(List<AgentThread> threads, String query) {
       .toList(growable: false);
 }
 
-bool _isRunning(AgentThread thread) {
+bool isAgentThreadRunning(AgentThread thread) {
   if (thread.activeTurnId?.isNotEmpty ?? false) return true;
   return switch (thread.status.toLowerCase()) {
-    'active' || 'running' || 'inprogress' || 'in_progress' => true,
+    'active' || 'running' || 'working' || 'inprogress' || 'in_progress' => true,
     _ => false,
   };
 }
