@@ -375,9 +375,10 @@ ID、profile、Agent、连接身份和 generation 校验；连续浏览只采用
 断开、删除和身份替换都会关闭弹窗并使旧结果失效。加载时只禁用确认，目录导航、“稍后”、遮罩和
 Back 仍可操作；确认保存的是当前展示路径，不是某个目录行。
 
-会话列表当前只消费 `agentThreadLists[profileId + AgentKind]`；远端返回的下一页 cursor 尚未提供列表
-分页入口。不要在此页面临时实现一套只支持 Codex 的会话状态；新增状态必须复用 Agent 中立契约，并按
-profileId + AgentKind + threadId 隔离。
+会话列表消费 `agentThreadLists[profileId + AgentKind]`，并通过 Agent 中立的可选分页契约消费远端
+`nextCursor`。接近列表底部时自动加载下一页，控制器按 lane 保存游标、合并去重并丢弃刷新/搜索/断线后
+的过期结果；不支持分页的轻量适配器仍可只实现基础列表契约。不要在此页面临时实现一套只支持 Codex
+的会话状态；新增状态必须复用 Agent 中立契约，并按 profileId + AgentKind + threadId 隔离。
 
 齿轮菜单包含“选择工作目录”、“配置 Codex/OpenCode”和“文件管理”三项。配置项只在当前 Agent 已连接且声明
 `globalSettings` capability 时可用；打开后先读取远程实际配置。保存会二次确认、更新该服务器该 Agent
@@ -514,8 +515,7 @@ resume 期间同 generation 的实时通知会进入有界 `ResumeNotificationBu
 sequence 重放快照之后的通知。缓冲区保留终态、合并相邻 delta，并在溢出时给出诊断。客户端对超大
 resume/历史响应依次尝试 `full/4 -> full/1 -> summary/1 -> notLoaded/1`，避免只提高内存和 timeout。
 子 Agent resume 仍会校验返回的 thread ID，错误 ID 连续重试一次后拒绝污染当前页面；导航 generation
-也会丢弃切页后的迟到结果。流式 delta、缓冲溢出和降级响应仍必须重点回归，会话列表自身尚未消费
-thread/list 的 next cursor。
+也会丢弃切页后的迟到结果。流式 delta、缓冲溢出、降级响应和列表分页游标失效仍必须重点回归。
 
 OpenCode bridge 已按上述稳定 turn 身份处理 `turn/start` 和 `turn/steer`；相关 Node/Flutter 回归测试是
 代码门禁，但不能替代真实 OpenCode Provider、长时流式回合、审批和断线恢复验收。旧 Kotlin bridge
@@ -1001,8 +1001,9 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   断线和不同厂商文件选择器回归。
 - 附件已完成选择、上传中状态、移除、待发、发送和失败恢复链路，但缺少 picker/Widget 自动化覆盖；
   子 Agent 已有真实 child thread 导航和父子返回栈，但尚未完成真实服务器长时间嵌套与大历史回归。
-- thread/list 没有下一页入口；resume 已有有界通知缓冲、快照协调和顺序重放，OpenCode bridge 也会
-  投影 `initialTurnsPage` 并遵守 `itemsView`，但超大活动会话、缓冲溢出和降级链仍需真实服务器压测。
+- thread/list 下一页入口已接入 Flutter 列表，按 lane 游标分页并自动去重；resume 已有有界通知缓冲、
+  快照协调和顺序重放，OpenCode bridge 也会投影 `initialTurnsPage` 并遵守 `itemsView`，但超大活动
+  会话、分页游标失效、缓冲溢出和降级链仍需真实服务器压测。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
   方向、包名和 Crash/ANR，不代表真实 Agent 流程。本次受限环境的 Flutter test 因本地 socket 权限未
   启动，Gradle 构建受 FileLockContentionHandler 限制，也尚未完成 ADB 高分辨率模拟器回归或生成新 APK。

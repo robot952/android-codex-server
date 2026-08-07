@@ -530,6 +530,27 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
   }
 }
 
+class _PaginatedThreadAgent extends _SubAgentNavigationAgent
+    implements RemoteAgentThreadPaginationClient {
+  @override
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
+      const AgentThreadPage(
+        threads: <AgentThread>[_SubAgentNavigationAgent.rootThread],
+        nextCursor: 'page-2',
+      );
+
+  @override
+  Future<AgentThreadPage> listThreadsPage({
+    String? searchTerm,
+    String? cursor,
+  }) async {
+    if (cursor != 'page-2') throw StateError('分页游标错误');
+    return const AgentThreadPage(
+      threads: <AgentThread>[_SubAgentNavigationAgent.childThread],
+    );
+  }
+}
+
 class _ConnectFailingAgent extends _FailingTurnAgent {
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
@@ -897,6 +918,29 @@ Future<void> _openSubAgent(
 }
 
 void main() {
+  test(
+    'loads and merges the next thread-list page for the active lane',
+    () async {
+      final harness = await _createSubAgentHarness(
+        agent: _PaginatedThreadAgent(),
+      );
+      harness.controller.backToThreadList();
+      await _waitUntil(
+        () => harness.controller.state.screen == AppScreen.threads,
+      );
+
+      await harness.controller.loadMoreThreads();
+
+      expect(
+        harness.controller.state.agentThreadLists.values.single.map(
+          (thread) => thread.id,
+        ),
+        <String>['root-thread', 'child-thread'],
+      );
+      expect(harness.controller.activeThreadListHasMore, isFalse);
+    },
+  );
+
   test('waits for initialization before applying a profile save', () async {
     final store = _GatedLoadProfileStore();
     final connections = ServerConnectionManager();

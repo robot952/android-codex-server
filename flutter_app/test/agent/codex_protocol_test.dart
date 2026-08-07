@@ -12,6 +12,10 @@ void main() {
 
       final initialize = generation.initialize(clientVersion: '1.8.0');
       final list = generation.threadList(searchTerm: '  migration  ');
+      final page = generation.threadList(
+        searchTerm: 'migration',
+        cursor: 'next-page-token',
+      );
       final initialized = generation.initialized();
 
       expect(initialize.id, const CodexRequestId.number(1));
@@ -37,6 +41,14 @@ void main() {
         'sortKey': 'recency_at',
         'sortDirection': 'desc',
         'searchTerm': 'migration',
+      });
+      expect(jsonDecode(page.encode())['params'], <String, Object?>{
+        'limit': 100,
+        'archived': false,
+        'sortKey': 'recency_at',
+        'sortDirection': 'desc',
+        'searchTerm': 'migration',
+        'cursor': 'next-page-token',
       });
       expect(jsonDecode(initialized.encode()), <String, Object?>{
         'method': 'initialized',

@@ -29,6 +29,7 @@ final class CodexResponseTooLargeException implements Exception {
 class CodexAgentClient
     implements
         RemoteAgentClient,
+        RemoteAgentThreadPaginationClient,
         RemoteAgentTurnClient,
         RemoteAgentSteerClient,
         RemoteAgentThreadCreateClient,
@@ -206,9 +207,17 @@ class CodexAgentClient
 
   @override
   Future<AgentThreadPage> listThreads({String? searchTerm}) async {
+    return listThreadsPage(searchTerm: searchTerm);
+  }
+
+  @override
+  Future<AgentThreadPage> listThreadsPage({
+    String? searchTerm,
+    String? cursor,
+  }) async {
     final scope = _requireScope();
     final response = await _request(
-      scope.threadList(searchTerm: searchTerm),
+      scope.threadList(searchTerm: searchTerm, cursor: cursor),
       timeout: threadRequestTimeout,
     );
     final result = response.resultOrThrow();

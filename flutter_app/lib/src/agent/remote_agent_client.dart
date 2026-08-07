@@ -125,6 +125,13 @@ abstract interface class RemoteAgentClient {
   void close();
 }
 
+/// Optional pagination capability for adapters whose thread/list endpoint
+/// exposes a continuation cursor. Keeping this separate preserves the small
+/// base contract for lightweight read-only adapters and test fakes.
+abstract interface class RemoteAgentThreadPaginationClient {
+  Future<AgentThreadPage> listThreadsPage({String? searchTerm, String? cursor});
+}
+
 /// Optional capability implemented by agents that can execute turns. Keeping
 /// this separate lets read-only adapters and third-party test fakes continue
 /// implementing [RemoteAgentClient] without a source-breaking change.

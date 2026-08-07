@@ -303,6 +303,28 @@ class AgentConnectionManager {
     return result;
   }
 
+  Future<AgentThreadPage> listMoreThreads(
+    AgentConnectionKey key, {
+    required String cursor,
+    String? searchTerm,
+  }) async {
+    final entry = _requireConnected(key);
+    final pagination = entry.client;
+    if (pagination is! RemoteAgentThreadPaginationClient) {
+      throw UnsupportedError('${key.agent.label} 不支持会话列表分页');
+    }
+    final paginatedClient = pagination as RemoteAgentThreadPaginationClient;
+    final generation = entry.generation;
+    final result = await paginatedClient.listThreadsPage(
+      searchTerm: searchTerm,
+      cursor: cursor,
+    );
+    if (!_isCurrent(key, entry) || entry.generation != generation) {
+      throw StateError('Agent 会话列表分页请求已失效');
+    }
+    return result;
+  }
+
   Future<AgentSession> resumeThread(
     AgentConnectionKey key,
     String threadId, {

@@ -242,6 +242,8 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
                 diagnostic: state.diagnostic,
                 onRetry: controller.ensureActiveAgent,
                 onOpen: controller.openThread,
+                hasMoreThreads: controller.activeThreadListHasMore,
+                onLoadMore: controller.loadMoreThreads,
               ),
             ),
           ],
@@ -272,7 +274,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
 
 enum _ThreadSettingsAction { workspace, agentSettings, fileManager }
 
-class _ThreadListBody extends StatelessWidget {
+class _ThreadListBody extends StatefulWidget {
   const _ThreadListBody({
     required this.agent,
     required this.hostConnected,
@@ -283,6 +285,8 @@ class _ThreadListBody extends StatelessWidget {
     required this.diagnostic,
     required this.onRetry,
     required this.onOpen,
+    required this.hasMoreThreads,
+    required this.onLoadMore,
   });
 
   final AgentKind agent;
@@ -294,38 +298,103 @@ class _ThreadListBody extends StatelessWidget {
   final String? diagnostic;
   final Future<void> Function() onRetry;
   final void Function(AgentThread thread) onOpen;
+  final bool hasMoreThreads;
+  final Future<void> Function() onLoadMore;
+
+  @override
+  State<_ThreadListBody> createState() => _ThreadListBodyState();
+}
+
+class _ThreadListBodyState extends State<_ThreadListBody> {
+  bool _loadingMore = false;
+
+  @override
+  void didUpdateWidget(covariant _ThreadListBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.agent != widget.agent ||
+        oldWidget.query != widget.query ||
+        oldWidget.threads.isEmpty && widget.threads.isEmpty) {
+      _loadingMore = false;
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || !widget.hasMoreThreads || !mounted) return;
+    setState(() => _loadingMore = true);
+    try {
+      await widget.onLoadMore();
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  bool _handleScroll(ScrollNotification notification) {
+    if (notification.metrics.extentAfter < 240 &&
+        widget.hasMoreThreads &&
+        !_loadingMore) {
+      _loadMore();
+    }
+    return false;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final agent = widget.agent;
+    final hostConnected = widget.hostConnected;
+    final connectionState = widget.connectionState;
+    final loading = widget.loading;
+    final query = widget.query;
+    final threads = widget.threads;
+    final diagnostic = widget.diagnostic;
+    final onRetry = widget.onRetry;
+    final onOpen = widget.onOpen;
     if (threads.isNotEmpty) {
-      return Column(
-        children: [
-          if (loading) const LinearProgressIndicator(minHeight: 2),
-          if (diagnostic != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 7, 16, 3),
-              child: Text(
-                diagnostic!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.error,
+      return NotificationListener<ScrollNotification>(
+        onNotification: _handleScroll,
+        child: Column(
+          children: [
+            if (loading) const LinearProgressIndicator(minHeight: 2),
+            if (diagnostic != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 7, 16, 3),
+                child: Text(
+                  diagnostic,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
                 ),
               ),
-            ),
-          Expanded(
-            child: ListView.separated(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(10, 4, 10, 18),
-              itemCount: threads.length,
-              separatorBuilder: (_, _) => const Divider(height: 1, indent: 52),
-              itemBuilder: (context, index) => _ThreadRow(
-                threads[index],
-                onTap: () => onOpen(threads[index]),
+            Expanded(
+              child: ListView.separated(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 18),
+                itemCount: threads.length + (_loadingMore ? 1 : 0),
+                separatorBuilder: (_, _) =>
+                    const Divider(height: 1, indent: 52),
+                itemBuilder: (context, index) {
+                  if (index == threads.length) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 14),
+                      child: Center(
+                        child: SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    );
+                  }
+                  return _ThreadRow(
+                    threads[index],
+                    onTap: () => onOpen(threads[index]),
+                  );
+                },
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       );
     }
 

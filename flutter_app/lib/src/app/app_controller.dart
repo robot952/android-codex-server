@@ -108,6 +108,9 @@ class AppController extends StateNotifier<AppUiState> {
   final SubAgentThreadRegistry _subAgentThreadRegistry =
       SubAgentThreadRegistry();
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
+  final Map<AgentConnectionKey, String?> _agentThreadNextCursors = {};
+  final Map<AgentConnectionKey, String> _agentThreadCursorSearches = {};
+  final Map<AgentConnectionKey, Future<void>> _agentThreadPageRequests = {};
   final Map<AgentConnectionKey, List<AgentModel>> _remoteModelsByLane = {};
   final Map<AgentConnectionKey, Timer> _customModelSyncTimers = {};
   final Map<AgentConnectionKey, int> _customModelSyncRevisions = {};
@@ -257,6 +260,7 @@ class AppController extends StateNotifier<AppUiState> {
       _remoteModelsByLane.removeWhere(
         (key, _) => key.profileId == normalized.id,
       );
+      _clearAgentThreadPaginationForProfile(normalized.id);
       _threadGoals.removeWhere(
         (key, _) => key.startsWith('${normalized.id}\u0000'),
       );
@@ -345,6 +349,7 @@ class AppController extends StateNotifier<AppUiState> {
       (key, _) => key.profileId == profileId,
     );
     _remoteModelsByLane.removeWhere((key, _) => key.profileId == profileId);
+    _clearAgentThreadPaginationForProfile(profileId);
     _pendingApprovalsByThread.removeWhere(
       (key, _) => key.profileId == profileId,
     );
@@ -874,6 +879,7 @@ class AppController extends StateNotifier<AppUiState> {
     final modelLists = Map<AgentConnectionKey, List<AgentModel>>.of(
       state.agentModelLists,
     )..remove(key);
+    _clearAgentThreadPagination(key);
     _threadCaches.remove(key);
     _resumeNotificationBuffers.remove(key);
     _remoteModelsByLane.remove(key);
@@ -905,6 +911,98 @@ class AppController extends StateNotifier<AppUiState> {
       agent: state.activeAgent,
     );
     await _loadAgentData(key, profile);
+  }
+
+  bool get activeThreadListHasMore {
+    final profileId = state.selectedProfileId;
+    if (profileId == null) return false;
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    if (_agentThreadCursorSearches[key] != state.threadSearch) return false;
+    final cursor = _agentThreadNextCursors[key];
+    return cursor?.trim().isNotEmpty ?? false;
+  }
+
+  /// Loads the next server-provided thread-list page for the active lane.
+  /// Requests are deduplicated and an old cursor cannot append into a newer
+  /// search/refresh result.
+  Future<void> loadMoreThreads() async {
+    await _initialization;
+    if (!mounted) return;
+    final profileId = state.selectedProfileId;
+    if (profileId == null) return;
+    final profile = state.profiles.firstWhereOrNull(
+      (candidate) => candidate.id == profileId,
+    );
+    if (profile == null) return;
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    final cursor = _agentThreadNextCursors[key]?.trim();
+    if (cursor == null ||
+        cursor.isEmpty ||
+        _agentThreadCursorSearches[key] != state.threadSearch) {
+      return;
+    }
+    final pending = _agentThreadPageRequests[key];
+    if (pending != null) return pending;
+    final search = state.threadSearch;
+    late final Future<void> request;
+    request = _loadMoreThreadsPage(key, cursor: cursor, searchTerm: search)
+        .whenComplete(() {
+          if (identical(_agentThreadPageRequests[key], request)) {
+            _agentThreadPageRequests.remove(key);
+          }
+        });
+    _agentThreadPageRequests[key] = request;
+    return request;
+  }
+
+  Future<void> _loadMoreThreadsPage(
+    AgentConnectionKey key, {
+    required String cursor,
+    required String searchTerm,
+  }) async {
+    try {
+      final page = await _agents.listMoreThreads(
+        key,
+        cursor: cursor,
+        searchTerm: searchTerm,
+      );
+      if (!mounted ||
+          !_isActiveKey(key) ||
+          state.threadSearch != searchTerm ||
+          _agentThreadCursorSearches[key] != searchTerm ||
+          _agentThreadNextCursors[key] != cursor) {
+        return;
+      }
+      final current = state.agentThreadLists[key] ?? const <AgentThread>[];
+      final merged = _mergeListedThreads(current, page.threads);
+      final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
+        state.agentThreadLists,
+      )..[key] = merged;
+      _agentThreadNextCursors[key] = page.nextCursor;
+      _rememberSubAgentReferences(key, page.threads, const <TimelineEntry>[]);
+      state = state.copyWith(
+        agentThreadLists: Map.unmodifiable(lists),
+        threads: merged,
+        diagnostic: null,
+      );
+    } catch (error) {
+      if (mounted &&
+          _isActiveKey(key) &&
+          state.threadSearch == searchTerm &&
+          _agentThreadCursorSearches[key] == searchTerm &&
+          _agentThreadNextCursors[key] == cursor) {
+        state = state.copyWith(
+          error: _message(error, '读取更多会话失败'),
+          diagnostic: _message(error, '读取更多会话失败'),
+        );
+      }
+    }
   }
 
   Future<void> showAgentSettings() async {
@@ -3854,6 +3952,8 @@ class AppController extends StateNotifier<AppUiState> {
     required bool includeModels,
     required bool runtimePrepared,
   }) async {
+    _agentThreadCursorSearches[key] = '';
+    _agentThreadNextCursors[key] = null;
     _setAgentLoading(key, true);
     try {
       final effectiveProfile = runtimePrepared
@@ -3894,6 +3994,10 @@ class AppController extends StateNotifier<AppUiState> {
       );
       if (threadPage != null) {
         threadLists[key] = threadPage!.threads;
+        _agentThreadNextCursors[key] = threadPage!.nextCursor;
+        _agentThreadCursorSearches[key] = _isActiveKey(key)
+            ? state.threadSearch
+            : '';
         _rememberSubAgentReferences(
           key,
           threadPage!.threads,
@@ -3991,6 +4095,22 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(
       agentLoadingStates: Map.unmodifiable(values),
       loading: _isActiveKey(key) ? loading : state.loading,
+    );
+  }
+
+  void _clearAgentThreadPagination(AgentConnectionKey key) {
+    _agentThreadNextCursors.remove(key);
+    _agentThreadCursorSearches.remove(key);
+    _agentThreadPageRequests.remove(key);
+  }
+
+  void _clearAgentThreadPaginationForProfile(String profileId) {
+    _agentThreadNextCursors.removeWhere((key, _) => key.profileId == profileId);
+    _agentThreadCursorSearches.removeWhere(
+      (key, _) => key.profileId == profileId,
+    );
+    _agentThreadPageRequests.removeWhere(
+      (key, _) => key.profileId == profileId,
     );
   }
 
@@ -4862,6 +4982,9 @@ class AppController extends StateNotifier<AppUiState> {
   void dispose() {
     _threadSearchTimer?.cancel();
     _draftPersistTimer?.cancel();
+    _agentThreadNextCursors.clear();
+    _agentThreadCursorSearches.clear();
+    _agentThreadPageRequests.clear();
     for (final timer in _customModelSyncTimers.values) {
       timer.cancel();
     }
@@ -5083,6 +5206,22 @@ Map<String, ServerMetrics> _connectedServerMetrics(
     ),
   ),
 );
+
+List<AgentThread> _mergeListedThreads(
+  List<AgentThread> current,
+  List<AgentThread> nextPage,
+) {
+  final merged = <AgentThread>[];
+  final seen = <String>{};
+  for (final thread in <AgentThread>[...current, ...nextPage]) {
+    final id = thread.id.trim();
+    final identity = id.isNotEmpty
+        ? id
+        : '${thread.title}\u0000${thread.cwd}\u0000${thread.createdAt}';
+    if (seen.add(identity)) merged.add(thread);
+  }
+  return List<AgentThread>.unmodifiable(merged);
+}
 
 Map<String, ServerMetrics> _withoutServerMetrics(
   Map<String, ServerMetrics> metrics,
