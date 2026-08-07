@@ -113,7 +113,7 @@ Flutter/Android 实现，但仍需在目标设备上做权限、厂商后台限�
 | flutter_app/lib/src/ui/server_screen.dart | 服务器列表、设置编辑、私钥导入、连接遮罩和外链 | 当前运行 |
 | flutter_app/lib/src/ui/thread_list_screen.dart | Codex/OpenCode lane 切换、搜索/刷新、真实会话列表、新建入口、运行状态、工作目录、Agent 配置、终端和文件管理入口 | 当前运行；两种 Agent 均由真实 adapter 驱动 |
 | flutter_app/lib/src/ui/agent_settings_dialog.dart | 服务器实际配置、模型/effort/URL/Key/HTTP(S) 代理、真实测试、回显和保存确认 | 当前运行；Codex/OpenCode 后端均已接入 |
-| flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化 | 当前运行；IME 安全 |
+| flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化；代理聚焦时收起运行时信息 | 当前运行；IME 安全，与旧 Compose 聚焦行为一致 |
 | flutter_app/lib/src/ui/workspace_picker_dialog.dart | 当前远端路径、父/子目录浏览、加载/错误显示和目录确认 | 当前运行 |
 | flutter_app/lib/src/ui/work_screen.dart | 当前线程时间线、Composer、附件选择/上传、审批、模型/自定义模型管理/权限、会话操作、图片预览/保存、远程文件保存、上下文环和子 Agent 子会话入口 | 当前运行 |
 | flutter_app/lib/src/ui/sub_agent_presentation.dart | 子 Agent 活动分组、稳定身份色、独立状态映射和终态保护 | 当前运行；由 WorkScreen 接线 |
@@ -769,7 +769,7 @@ flutter test --no-pub
 | test/app/app_controller_test.dart | 初始化/持久化、Profile/指纹/资源/目录、附件与全局配置/API 模型获取/自定义模型目录和同步 generation、运行时安装，以及子 Agent 多层导航、加载中/重复返回、失败重试、错误 thread 防污染、会话设置隔离、审批按 thread 隔离/精确回答和迟到回调保护 |
 | test/app/profile_scoped_back_stack_test.dart | profile + Agent 栈隔离、pending pop 幂等、取消/迟到回调保护和清理 |
 | test/domain/models_test.dart | Profile 默认值、Agent 模型字段、复合偏好键、上下文/差异辅助模型 |
-| test/domain/model_catalog_test.dart | 自定义模型 ID/名称/token 上限、远端/自定义合并、隐藏、编辑恢复、API 选项筛选/应用，以及 OpenCode `custom-api/`、旧 `codex-remote/` 迁移、effort 和 managed ID |
+| test/domain/model_catalog_test.dart | 空远端目录下保留会话模型/effort、自定义模型 ID/名称/token 上限、远端/自定义合并、隐藏、编辑恢复、API 选项筛选/应用，以及 OpenCode `custom-api/`、旧 `codex-remote/` 迁移、effort 和 managed ID |
 | test/persistence/profile_store_test.dart | 归一化、条目/草稿边界、旧 Agent 键迁移、OpenCode ID 归一化/去重/持久化迁移、旧加密 Profile 一次性导入和损坏数据降级 |
 | test/ssh/server_connection_manager_test.dart | 指纹规范化、多服务器隔离、客户端复用、旧结果防护、资源请求去重/断线清理、目录 capability/排序/扫描上限，以及附件上传和远程下载的身份、generation、类型与大小边界 |
 | test/ssh/server_metrics_test.dart | 采样协议解析、兼容短格式、非法/哨兵值和大小边界 |
@@ -793,7 +793,7 @@ flutter test --no-pub
 | test/ui/work_content_test.dart | 图片工具路径提取、非图片工具拒绝、图片 MIME 映射、保存文件名清理和附件 MIME/文本分类 |
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
-| test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化和键盘避让 |
+| test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 `scripts/test-opencode-bridge-scheduling.cjs`、`scripts/test-opencode-bridge-question.cjs` 和

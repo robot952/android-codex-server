@@ -3354,7 +3354,7 @@ return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.
 
 
 class _AgentThread implements AgentThread {
-  const _AgentThread({required this.id, this.title = '', this.preview = '', this.cwd = '', this.source = '', this.status = '', this.createdAt = 0, this.updatedAt = 0, this.cliVersion = '', this.activeTurnId});
+  const _AgentThread({required this.id, this.title = '', this.preview = '', this.cwd = '', this.source = '', this.status = 'idle', this.createdAt = 0, this.updatedAt = 0, this.cliVersion = '', this.activeTurnId});
   
 
 @override final  String id;

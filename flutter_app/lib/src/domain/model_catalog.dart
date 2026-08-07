@@ -74,6 +74,19 @@ ResolvedModelSelection resolveModelSelection(
       break;
     }
   }
+  // Keep a persisted custom/provider model when the remote catalog is
+  // temporarily incomplete (including an empty first response). It may be
+  // registered by the next connection refresh, so falling back to the server
+  // default here would silently change the user's session configuration.
+  if (selected == null &&
+      preferred.isNotEmpty &&
+      (models.isEmpty || preferred.contains('/'))) {
+    final requestedEffort = preferredEffort.trim();
+    return ResolvedModelSelection(
+      model: preferred,
+      effort: requestedEffort.isEmpty ? null : requestedEffort,
+    );
+  }
   if (selected == null) {
     for (final model in models) {
       if (model.isDefault) {
@@ -81,16 +94,6 @@ ResolvedModelSelection resolveModelSelection(
         break;
       }
     }
-  }
-  // A persisted custom/provider model may not be advertised until the remote
-  // catalog is available. Keep the user's selection stable across reconnects
-  // instead of silently switching the session to another model.
-  if (selected == null && preferred.isNotEmpty) {
-    final requestedEffort = preferredEffort.trim();
-    return ResolvedModelSelection(
-      model: preferred,
-      effort: requestedEffort.isEmpty ? null : requestedEffort,
-    );
   }
   selected ??= models.isEmpty ? null : models.first;
   if (selected == null) return const ResolvedModelSelection();

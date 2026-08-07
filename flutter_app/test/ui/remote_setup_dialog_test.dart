@@ -172,7 +172,6 @@ void main() {
 
     await tester.pumpWidget(
       const _DialogHarness(
-        bottomInset: 260,
         state: AppUiState(
           remoteSetup: RemoteSetupPrompt(
             title: '安装远程 Codex',
@@ -186,17 +185,41 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    // Focus the field before applying the simulated keyboard inset. This
+    // mirrors the order of events on Android and avoids tapping a clipped
+    // field that is already laid out beneath the inset.
+    final proxy = find.byKey(const ValueKey('remote-setup-proxy'));
+    await tester.ensureVisible(proxy);
+    await tester.tap(proxy);
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isTrue,
+    );
+    expect(
+      find.byKey(const ValueKey('remote-setup-runtime-information')),
+      findsNothing,
+    );
+
+    await tester.pumpWidget(
+      const _DialogHarness(
+        bottomInset: 260,
+        state: AppUiState(
+          remoteSetup: RemoteSetupPrompt(
+            title: '安装远程 Codex',
+            detail: '服务器上没有兼容的运行时。',
+            os: 'Linux',
+            architecture: 'x86_64',
+            home: '/root',
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
     final padding = tester.widget<AnimatedPadding>(
       find.byKey(const ValueKey('remote-setup-keyboard-padding')),
     );
     expect((padding.padding as EdgeInsets).bottom, 276);
-
-    await tester.tap(find.byKey(const ValueKey('remote-setup-proxy')));
-    await tester.pumpAndSettle();
-    expect(
-      tester.getRect(find.byKey(const ValueKey('remote-setup-proxy'))).bottom,
-      lessThanOrEqualTo(540),
-    );
+    expect(tester.getRect(proxy).bottom, lessThanOrEqualTo(540));
     expect(tester.takeException(), isNull);
   });
 }

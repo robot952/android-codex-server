@@ -333,7 +333,7 @@ abstract class AgentThread with _$AgentThread {
     @Default('') String preview,
     @Default('') String cwd,
     @Default('') String source,
-    @Default('') String status,
+    @Default('idle') String status,
     @Default(0) int createdAt,
     @Default(0) int updatedAt,
     @Default('') String cliVersion,

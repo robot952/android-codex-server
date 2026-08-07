@@ -585,7 +585,12 @@ class _SettingsForm extends StatelessWidget {
             icon: testing
                 ? const SizedBox.square(
                     dimension: 17,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    // A determinate ring keeps this compact button visually
+                    // busy without an unbounded ticker while the RPC runs.
+                    child: CircularProgressIndicator(
+                      value: 0.32,
+                      strokeWidth: 2,
+                    ),
                   )
                 : const Icon(Icons.network_check, size: 18),
             label: Text(testing ? '正在测试' : '测试连接'),

@@ -17,6 +17,17 @@ void main() {
     },
   );
 
+  test('keeps an unqualified persisted model while the catalog is empty', () {
+    final selection = resolveModelSelection(
+      const <AgentModel>[],
+      'root-model',
+      'high',
+    );
+
+    expect(selection.model, 'root-model');
+    expect(selection.effort, 'high');
+  });
+
   test('keeps a persisted model absent from the current remote catalog', () {
     final selection = resolveModelSelection(
       const <AgentModel>[

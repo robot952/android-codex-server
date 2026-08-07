@@ -32,11 +32,13 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
   late final TextEditingController _proxyController;
   final _proxyFocusNode = FocusNode();
   final _scrollController = ScrollController();
+  bool _proxyFocused = false;
 
   @override
   void initState() {
     super.initState();
     _proxyController = TextEditingController(text: widget.proxyUrl);
+    _proxyFocusNode.addListener(_handleProxyFocusChanged);
   }
 
   @override
@@ -54,10 +56,17 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
 
   @override
   void dispose() {
+    _proxyFocusNode.removeListener(_handleProxyFocusChanged);
     _proxyController.dispose();
     _proxyFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _handleProxyFocusChanged() {
+    final focused = _proxyFocusNode.hasFocus;
+    if (focused == _proxyFocused || !mounted) return;
+    setState(() => _proxyFocused = focused);
   }
 
   @override
@@ -127,18 +136,33 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
                                   children: [
-                                    Text(
-                                      setup.detail,
-                                      key: const ValueKey(
-                                        'remote-setup-detail',
+                                    AnimatedSize(
+                                      duration: const Duration(
+                                        milliseconds: 180,
                                       ),
+                                      curve: Curves.easeOutCubic,
+                                      alignment: Alignment.topCenter,
+                                      child: _proxyFocused
+                                          ? const SizedBox.shrink()
+                                          : Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.stretch,
+                                              children: [
+                                                Text(
+                                                  setup.detail,
+                                                  key: const ValueKey(
+                                                    'remote-setup-detail',
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 12),
+                                                _RuntimeInformation(
+                                                  setup: setup,
+                                                  display: display,
+                                                ),
+                                                const SizedBox(height: 12),
+                                              ],
+                                            ),
                                     ),
-                                    const SizedBox(height: 12),
-                                    _RuntimeInformation(
-                                      setup: setup,
-                                      display: display,
-                                    ),
-                                    const SizedBox(height: 12),
                                     TextField(
                                       key: const ValueKey('remote-setup-proxy'),
                                       controller: _proxyController,
