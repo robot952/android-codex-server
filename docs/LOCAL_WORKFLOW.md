@@ -67,8 +67,14 @@ Pub cache：    ../.pub-cache（不可写时回退到 $HOME/.pub-cache）
 Gradle cache： ../.gradle-cache（不可写时回退到 $HOME/.gradle）
 ```
 
+Flutter CLI 的探测顺序是 `CODEX_FLUTTER_BIN`、`PATH`、仓库同级
+`.toolchains/flutter-root/bin/flutter`、仓库内 `.toolchains/flutter-root/bin/flutter`，最后才回退到旧的
+`.toolchains/flutter/bin/flutter`。同级目录可能由其他用户创建，若出现 Git `dubious ownership`，应优先使用
+`flutter-root` 或显式设置 `CODEX_FLUTTER_BIN`，不要修改工具链目录归属。
+
 可用环境变量覆盖：`CODEX_FLUTTER_BIN`、`PUB_CACHE`、`GRADLE_USER_HOME`、`ANDROID_HOME` 或
-`ANDROID_SDK_ROOT`。当前机器 SDK 默认是 `/home/ygy/android-sdk`，脚本会自动发现。
+`ANDROID_SDK_ROOT`。Android SDK 会按 `ANDROID_HOME`、`ANDROID_SDK_ROOT`、仓库同级 `android-sdk`、
+`/tmp/android-sdk`、`/var/lib/docker/volumes/android-sdk/_data` 的顺序自动发现。
 
 ## 3. 缓存和资源策略
 
