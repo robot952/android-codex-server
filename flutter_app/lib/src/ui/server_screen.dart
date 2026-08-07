@@ -8,6 +8,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app/app_controller.dart';
 import '../domain/models.dart';
+import '../platform/diagnostic_logger.dart';
+import 'diagnostic_log_sheet.dart';
+import 'server_metrics_strip.dart';
 import 'theme.dart';
 
 const _promotionUrl = 'https://lowapi.asdb.top';
@@ -26,8 +29,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   bool _editorVisible = false;
   bool _advanced = false;
   bool _passwordVisible = false;
-  int _debugTapCount = 0;
-  DateTime? _lastDebugTap;
+  final DebugTapCounter _debugTapCounter = DebugTapCounter();
   String? _shownFingerprint;
 
   @override
@@ -101,6 +103,12 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       onPickKey: _pickPrivateKey,
                       onSave: _saveDraft,
                       onDelete: _existingDraft(state) ? _deleteDraft : null,
+                      onUninstall:
+                          _existingDraft(state) &&
+                              state.connectionStates[_draft?.id]?.phase ==
+                                  ConnectionPhase.connected
+                          ? _uninstallDraft
+                          : null,
                     )
                   : _ServerList(
                       key: const ValueKey('list'),
@@ -109,6 +117,8 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       onSettings: _editProfile,
                       onOpen: _openProfile,
                       onDisconnect: _confirmDisconnect,
+                      onOpenDebugLogs: _openDebugLogs,
+                      onShareDebugLogs: _shareDebugLogs,
                     ),
             ),
           ),
@@ -188,6 +198,28 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     if (!approved || !mounted) return;
     await ref.read(appControllerProvider.notifier).deleteProfile(draft.id);
     if (mounted) _closeEditor();
+  }
+
+  Future<void> _uninstallDraft() async {
+    final draft = _draft;
+    if (draft == null) return;
+    final approved = await _confirm(
+      title: '卸载托管 Codex？',
+      message:
+          '只会删除 Agent 安装在当前 SSH 用户目录中的 Codex 运行时和附件暂存目录。'
+          '系统 Codex、VS Code、~/.codex 配置和工作区不会被修改。',
+      confirmLabel: '卸载',
+      destructive: true,
+    );
+    if (!approved || !mounted) return;
+    try {
+      await ref
+          .read(appControllerProvider.notifier)
+          .uninstallRemoteRuntime(draft.id);
+      if (mounted) _showMessage('托管 Codex 已卸载');
+    } catch (error) {
+      if (mounted) _showMessage(_errorText(error));
+    }
   }
 
   Future<void> _openProfile(
@@ -340,17 +372,32 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       _showMessage('Debug 模式已开启');
       return;
     }
-    final now = DateTime.now();
-    if (_lastDebugTap == null || now.difference(_lastDebugTap!).inSeconds > 3) {
-      _debugTapCount = 0;
-    }
-    _lastDebugTap = now;
-    _debugTapCount++;
-    if (_debugTapCount >= 10) {
-      _debugTapCount = 0;
+    if (_debugTapCounter.registerTap()) {
       ref.read(appControllerProvider.notifier).enableDebugMode();
+      ref
+          .read(appControllerProvider.notifier)
+          .diagnosticLogger
+          .info('Debug', 'diagnostic_logging_enabled_from_logo');
       _showMessage('Debug 模式已开启');
     }
+  }
+
+  Future<void> _openDebugLogs() async {
+    if (!mounted) return;
+    final controller = ref.read(appControllerProvider.notifier);
+    await showDiagnosticLogSheet(
+      context,
+      logger: controller.diagnosticLogger,
+      onDisable: controller.disableDebugMode,
+    );
+  }
+
+  Future<void> _shareDebugLogs() async {
+    if (!mounted) return;
+    await shareDiagnosticLogs(
+      context,
+      logger: ref.read(appControllerProvider.notifier).diagnosticLogger,
+    );
   }
 
   void _showMessage(String message) {
@@ -479,6 +526,8 @@ class _ServerList extends StatelessWidget {
     required this.onSettings,
     required this.onOpen,
     required this.onDisconnect,
+    required this.onOpenDebugLogs,
+    required this.onShareDebugLogs,
   });
 
   final AppUiState state;
@@ -486,6 +535,8 @@ class _ServerList extends StatelessWidget {
   final ValueChanged<ServerProfile> onSettings;
   final void Function(ServerProfile, ConnectionState) onOpen;
   final ValueChanged<ServerProfile> onDisconnect;
+  final VoidCallback onOpenDebugLogs;
+  final VoidCallback onShareDebugLogs;
 
   @override
   Widget build(BuildContext context) {
@@ -568,9 +619,15 @@ class _ServerList extends StatelessWidget {
             const SizedBox(height: 10),
             ListTile(
               dense: true,
+              onTap: onOpenDebugLogs,
               leading: const Icon(Icons.bug_report_outlined, color: codexAmber),
               title: const Text('Debug 日志'),
               subtitle: const Text('运行日志与分享入口'),
+              trailing: IconButton(
+                tooltip: '分享诊断日志',
+                onPressed: onShareDebugLogs,
+                icon: const Icon(Icons.share_outlined),
+              ),
               shape: RoundedRectangleBorder(
                 side: const BorderSide(color: codexBorder),
                 borderRadius: BorderRadius.circular(6),
@@ -659,7 +716,10 @@ class _ServerRow extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    _MetricsStrip(metrics: metrics),
+                    ServerMetricsStrip(
+                      metrics: metrics,
+                      compactForServerList: true,
+                    ),
                     Text(
                       '${profile.username.trim().isEmpty ? 'root' : profile.username} · ${_connectionLabel(connection.phase)}',
                       maxLines: 1,
@@ -733,67 +793,6 @@ class _ServerRow extends StatelessWidget {
   }
 }
 
-class _MetricsStrip extends StatelessWidget {
-  const _MetricsStrip({required this.metrics});
-
-  final ServerMetrics? metrics;
-
-  @override
-  Widget build(BuildContext context) {
-    final values = [
-      (Icons.speed, _percent(metrics?.cpuPercent), 'CPU'),
-      (Icons.memory, _percent(metrics?.memoryPercent), '内存'),
-      (Icons.storage, _percent(metrics?.diskPercent), '硬盘'),
-      (
-        Icons.network_check,
-        _network(
-          (metrics?.networkDownloadBytesPerSecond ?? 0) +
-              (metrics?.networkUploadBytesPerSecond ?? 0),
-          available:
-              metrics?.networkDownloadBytesPerSecond != null ||
-              metrics?.networkUploadBytesPerSecond != null,
-        ),
-        '网络',
-      ),
-    ];
-    return InkWell(
-      onTap: metrics == null ? null : () => _showMetrics(context, metrics!),
-      borderRadius: BorderRadius.circular(4),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 48),
-        child: Row(
-          children: [
-            for (final value in values) ...[
-              Tooltip(
-                message: value.$3,
-                child: Icon(value.$1, size: 12, color: codexMuted),
-              ),
-              const SizedBox(width: 2),
-              Expanded(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    value.$2,
-                    maxLines: 1,
-                    softWrap: false,
-                    style: const TextStyle(
-                      color: codexMuted,
-                      fontSize: 10,
-                      letterSpacing: 0,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 7),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _EmptyServerState extends StatelessWidget {
   const _EmptyServerState({required this.onAdd});
 
@@ -847,6 +846,7 @@ class _ServerEditor extends StatelessWidget {
     required this.onPickKey,
     required this.onSave,
     required this.onDelete,
+    required this.onUninstall,
   });
 
   final ServerProfile profile;
@@ -859,6 +859,7 @@ class _ServerEditor extends StatelessWidget {
   final VoidCallback onPickKey;
   final VoidCallback onSave;
   final VoidCallback? onDelete;
+  final VoidCallback? onUninstall;
 
   @override
   Widget build(BuildContext context) {
@@ -1088,6 +1089,20 @@ class _ServerEditor extends StatelessWidget {
                                       profile.copyWith(remoteCommand: value),
                                     ),
                                   ),
+                                  if (onUninstall != null) ...[
+                                    const SizedBox(height: 12),
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: OutlinedButton.icon(
+                                        onPressed: onUninstall,
+                                        icon: const Icon(
+                                          Icons.delete_forever_outlined,
+                                          size: 18,
+                                        ),
+                                        label: const Text('卸载托管 Codex'),
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               )
                             : const SizedBox.shrink(),
@@ -1244,74 +1259,6 @@ String _connectionLabel(ConnectionPhase phase) => switch (phase) {
   ConnectionPhase.connected => '已连接',
   ConnectionPhase.failed => '连接失败',
 };
-
-String _percent(int? value) => value == null ? '--' : '$value%';
-
-String _network(int bytes, {required bool available}) {
-  if (!available) return '--';
-  if (bytes >= 1024 * 1024) {
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}M';
-  }
-  if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)}K';
-  return '${bytes}B';
-}
-
-Future<void> _showMetrics(BuildContext context, ServerMetrics metrics) {
-  return showModalBottomSheet<void>(
-    context: context,
-    showDragHandle: true,
-    builder: (context) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _metricDetail(
-              Icons.speed,
-              'CPU',
-              '${metrics.cpuCoreCount ?? '--'} 核 · ${_percent(metrics.cpuPercent)}',
-            ),
-            _metricDetail(
-              Icons.memory,
-              '内存',
-              '${_sizeKiB(metrics.memoryUsedKiB)} / ${_sizeKiB(metrics.memoryTotalKiB)} · ${_percent(metrics.memoryPercent)}',
-            ),
-            _metricDetail(
-              Icons.storage,
-              '硬盘',
-              '${_sizeKiB(metrics.diskUsedKiB)} / ${_sizeKiB(metrics.diskTotalKiB)} · ${_percent(metrics.diskPercent)}',
-            ),
-            _metricDetail(
-              Icons.network_check,
-              '网络',
-              '↓ ${_network(metrics.networkDownloadBytesPerSecond ?? 0, available: metrics.networkDownloadBytesPerSecond != null)}  ↑ ${_network(metrics.networkUploadBytesPerSecond ?? 0, available: metrics.networkUploadBytesPerSecond != null)}',
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-}
-
-Widget _metricDetail(IconData icon, String label, String value) => Padding(
-  padding: const EdgeInsets.symmetric(vertical: 9),
-  child: Row(
-    children: [
-      Icon(icon, size: 19, color: codexAmber),
-      const SizedBox(width: 12),
-      SizedBox(width: 48, child: Text(label)),
-      Expanded(child: Text(value, textAlign: TextAlign.end)),
-    ],
-  ),
-);
-
-String _sizeKiB(int? value) {
-  if (value == null) return '--';
-  final gib = value / (1024 * 1024);
-  return gib >= 1
-      ? '${gib.toStringAsFixed(1)} GB'
-      : '${(value / 1024).toStringAsFixed(0)} MB';
-}
 
 String _errorText(Object error) =>
     error.toString().replaceFirst(RegExp(r'^[^:]+:\s*'), '').trim();

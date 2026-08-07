@@ -56,6 +56,55 @@ void main() {
     expect(normalized.selectedProfileId, normalized.profiles.first.id);
   });
 
+  test('normalizes and deduplicates persisted OpenCode model identities', () {
+    final normalized = normalizeStoredProfiles(
+      const StoredProfiles(
+        profiles: [
+          ServerProfile(
+            id: 'server',
+            activeAgent: AgentKind.openCode,
+            agentModelSettings: {
+              AgentKind.openCode: AgentModelSettings(
+                preferredModel: 'gpt-5.2',
+                testModel: 'codex-remote/gpt-5.1',
+                customModels: [
+                  CustomModelDefinition(modelId: 'gpt-5.2'),
+                  CustomModelDefinition(modelId: 'custom-api/gpt-5.2'),
+                  CustomModelDefinition(modelId: 'openai/gpt-5'),
+                ],
+                hiddenModelIds: [
+                  'gpt-5.2',
+                  'custom-api/gpt-5.2',
+                  'openai/gpt-5',
+                ],
+                managedModelIds: [
+                  'codex-remote/removed-model',
+                  'custom-api/removed-model',
+                ],
+              ),
+            },
+          ),
+        ],
+      ),
+    );
+
+    final settings = normalized.profiles.single.modelSettings(
+      AgentKind.openCode,
+    );
+    expect(settings.preferredModel, 'custom-api/gpt-5.2');
+    expect(settings.testModel, 'custom-api/gpt-5.1');
+    expect(settings.customModels.map((model) => model.modelId), [
+      'custom-api/gpt-5.2',
+      'openai/gpt-5',
+    ]);
+    expect(settings.hiddenModelIds, ['custom-api/gpt-5.2', 'openai/gpt-5']);
+    expect(settings.managedModelIds, [
+      'custom-api/gpt-5.2',
+      'openai/gpt-5',
+      'custom-api/removed-model',
+    ]);
+  });
+
   test('matches native limits and keeps the beginning of oversized drafts', () {
     final oversizedDraft =
         'draft-start${'x' * SecureProfileStore.maxDraftLength}draft-end';

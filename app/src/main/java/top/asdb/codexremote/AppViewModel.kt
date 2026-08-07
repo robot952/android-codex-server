@@ -128,7 +128,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
     private val contextUsageFallbacks = ProfileScopedContextUsageCache()
     private val subAgentNavigationStacks = ProfileScopedBackStack<SubAgentNavigationFrame>()
-    private val pendingApprovalsByAgent = mutableMapOf<AgentConnectionKey, List<ApprovalPrompt>>()
+    /** Pending server requests are isolated by lane and Codex thread. */
+    private val pendingApprovalsByThread =
+        mutableMapOf<AgentConnectionKey, MutableMap<String, List<ApprovalPrompt>>>()
     private val resumeNotificationBuffers = mutableMapOf<AgentConnectionKey, ResumeNotificationBuffer>()
     private val unsupportedGoalAgents = mutableSetOf<AgentConnectionKey>()
     private val goalNotificationVersions = LinkedHashMap<String, Long>()
@@ -374,7 +376,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             clearSetupStates(normalized.id)
             pendingFingerprints.remove(normalized.id)
             fingerprintProfiles.remove(normalized.id)
-            pendingApprovalsByAgent.keys.removeAll { it.profileId == normalized.id }
+            pendingApprovalsByThread.keys.removeAll { it.profileId == normalized.id }
             sessionSnapshots.keys.removeAll { it.profileId == normalized.id }
             remoteModelsByProfile.keys.removeAll { it.profileId == normalized.id }
             effectiveProfiles.remove(normalized.id)
@@ -632,7 +634,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         sessionSnapshots.keys.removeAll { it.profileId == id }
         contextUsageFallbacks.clear(id)
         clearSubAgentNavigation(id)
-        pendingApprovalsByAgent.keys.removeAll { it.profileId == id }
+        pendingApprovalsByThread.keys.removeAll { it.profileId == id }
         cancelSetupJobs(id)
         clearSetupStates(id)
         effectiveProfiles.remove(id)
@@ -1904,7 +1906,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 profileId?.let { id -> sessionSnapshots[sessionKey(id)] = SessionSnapshot.capture(updated) }
             }
         }
-        profileId?.let { pendingApprovalsByAgent[sessionKey(it)] = emptyList() }
         persistProfiles()
         refreshThreads(silent = true)
     }
@@ -2286,7 +2287,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     threadModelPreferences.remove(threadStorageKey(operation.key, threadId))
                     completedTurnTimings.remove(threadStorageKey(operation.key, threadId))
                     contextUsageFallbacks.remove(agentScopeId(operation.key), threadId)
-                    pendingApprovalsByAgent[operation.key] = emptyList()
+                    clearApprovalThread(operation.key, threadId)
                     applySessionState(profileId) {
                         it.copy(
                             screen = AppScreen.Threads,
@@ -2374,10 +2375,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 client.answerApproval(prompt, accept, answers)
-                val remaining = pendingApprovalsByAgent[operation.key].orEmpty()
-                    .filterNot { it.requestId == prompt.requestId }
-                pendingApprovalsByAgent[operation.key] = remaining
-                if (isOperationVisible(operation)) {
+                removeApproval(operation.key, prompt)
+                val promptThreadId = approvalThreadId(prompt.threadId)
+                val activeThreadId = approvalThreadId(_state.value.activeThread?.id)
+                val activeThreadMatches = promptThreadId.isEmpty() ||
+                    activeThreadId.isEmpty() || promptThreadId == activeThreadId
+                if (isOperationVisible(operation) && activeThreadMatches) {
+                    val remaining = approvalQueueFor(operation.key, _state.value.activeThread?.id)
                     _state.update { current ->
                         current.copy(approvalQueue = remaining, approval = remaining.firstOrNull())
                     }
@@ -3588,7 +3592,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             clearSessionFields(cleanBase)
         }
-        val approvals = pendingApprovalsByAgent[AgentConnectionKey(profile.id, profile.activeAgent)].orEmpty()
+        val restoreKey = AgentConnectionKey(profile.id, profile.activeAgent)
+        val approvals = restored.activeThread?.let {
+            approvalQueueFor(restoreKey, it.id)
+        }.orEmpty()
         return restored.copy(
             selectedProfileId = profile.id,
             screen = if (connection.phase == ConnectionPhase.Connected) AppScreen.Threads else AppScreen.Servers,
@@ -3710,7 +3717,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         contextUsageFallbacks.clear(profileId)
         clearSubAgentNavigation(profileId)
         effectiveProfiles.remove(profileId)
-        pendingApprovalsByAgent.keys.removeAll { it.profileId == profileId }
+        pendingApprovalsByThread.keys.removeAll { it.profileId == profileId }
         clearSetupStates(profileId)
         pendingFingerprints.remove(profileId)
         fingerprintProfiles.remove(profileId)
@@ -4156,14 +4163,76 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun approvalThreadId(threadId: String?): String = threadId?.trim().orEmpty()
+
+    private fun approvalQueueFor(
+        key: AgentConnectionKey,
+        threadId: String?,
+    ): List<ApprovalPrompt> {
+        val buckets = pendingApprovalsByThread[key] ?: return emptyList()
+        val normalized = approvalThreadId(threadId)
+        val scoped = buckets[normalized].orEmpty()
+        if (normalized.isEmpty()) return scoped
+        // Older Agent versions may omit threadId. Keep those requests visible as
+        // a lane-level fallback, while real thread IDs remain strictly scoped.
+        return scoped + buckets[""].orEmpty()
+    }
+
+    private fun sameApprovalRequest(
+        left: ApprovalPrompt,
+        right: ApprovalPrompt,
+    ): Boolean = left.requestId == right.requestId &&
+        approvalThreadId(left.threadId) == approvalThreadId(right.threadId)
+
+    private fun bindApprovalToActiveThread(
+        key: AgentConnectionKey,
+        prompt: ApprovalPrompt,
+    ): ApprovalPrompt {
+        if (approvalThreadId(prompt.threadId).isNotEmpty() || !isActiveAgent(key)) return prompt
+        val activeThreadId = approvalThreadId(_state.value.activeThread?.id)
+        return if (activeThreadId.isEmpty()) prompt else prompt.copy(threadId = activeThreadId)
+    }
+
+    private fun approvalBelongsToActiveThread(
+        key: AgentConnectionKey,
+        prompt: ApprovalPrompt,
+    ): Boolean {
+        if (!isActiveAgent(key)) return false
+        val promptThreadId = approvalThreadId(prompt.threadId)
+        val activeThreadId = approvalThreadId(_state.value.activeThread?.id)
+        return promptThreadId.isEmpty() || activeThreadId.isEmpty() || promptThreadId == activeThreadId
+    }
+
+    private fun enqueueApproval(key: AgentConnectionKey, prompt: ApprovalPrompt) {
+        val threadId = approvalThreadId(prompt.threadId)
+        val buckets = pendingApprovalsByThread.getOrPut(key) { mutableMapOf() }
+        val existing = buckets[threadId].orEmpty()
+        buckets[threadId] = existing.filterNot { sameApprovalRequest(it, prompt) } + prompt
+    }
+
+    private fun removeApproval(key: AgentConnectionKey, prompt: ApprovalPrompt) {
+        val buckets = pendingApprovalsByThread[key] ?: return
+        val threadId = approvalThreadId(prompt.threadId)
+        val existing = buckets[threadId] ?: return
+        val remaining = existing.filterNot { sameApprovalRequest(it, prompt) }
+        if (remaining.isEmpty()) buckets.remove(threadId) else buckets[threadId] = remaining
+        if (buckets.isEmpty()) pendingApprovalsByThread.remove(key)
+    }
+
+    private fun clearApprovalThread(key: AgentConnectionKey, threadId: String) {
+        val buckets = pendingApprovalsByThread[key] ?: return
+        buckets.remove(approvalThreadId(threadId))
+        if (buckets.isEmpty()) pendingApprovalsByThread.remove(key)
+    }
+
     private suspend fun receiveProfileApproval(event: ProfiledAgentApproval) {
         val key = event.key
         val profileId = event.profileId
         val client = connections.client(profileId, event.agent) ?: return
         if (!client.isGenerationActive(event.value.generation)) return
-        val approval = event.value.prompt
-        val existing = pendingApprovalsByAgent[key].orEmpty()
-        if (existing.any { it.requestId == approval.requestId }) return
+        val approval = bindApprovalToActiveThread(key, event.value.prompt)
+        val existing = pendingApprovalsByThread[key].orEmpty().values.flatten()
+        if (existing.any { sameApprovalRequest(it, approval) }) return
         if (existing.size >= MAX_PENDING_APPROVALS) {
             // Keep an untrusted server from retaining an unbounded number of request payloads.
             runCatching { client.answerApproval(approval, accept = false) }
@@ -4172,11 +4241,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        val queue = existing + approval
-        pendingApprovalsByAgent[key] = queue
-        if (isActiveAgent(key)) {
+        enqueueApproval(key, approval)
+        if (approvalBelongsToActiveThread(key, approval)) {
+            val queue = approvalQueueFor(key, _state.value.activeThread?.id)
             _state.update { current ->
-                current.copy(approvalQueue = queue, approval = current.approval ?: queue.firstOrNull())
+                current.copy(approvalQueue = queue, approval = queue.firstOrNull())
             }
         }
     }
@@ -4200,7 +4269,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 olderTurnsLoading = false,
             )
         }
-        pendingApprovalsByAgent.remove(key)
+        pendingApprovalsByThread.remove(key)
         if (!isActiveAgent(key)) return
         _state.update {
             it.copy(
@@ -4613,8 +4682,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 attachments = emptyList(),
                 aggregateDiff = "",
                 tokenUsage = null,
-                approvalQueue = pendingApprovalsByAgent[key].orEmpty(),
-                approval = pendingApprovalsByAgent[key]?.firstOrNull(),
+                approvalQueue = approvalQueueFor(key, null),
+                approval = approvalQueueFor(key, null).firstOrNull(),
                 loading = false,
                 error = null,
                 remoteSetup = null,

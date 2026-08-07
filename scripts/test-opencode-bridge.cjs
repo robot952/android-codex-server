@@ -552,4 +552,227 @@ assert.equal(
 );
 assert.equal(resumedActiveTurns[0].status, "inProgress");
 
+assert.deepEqual(bridge.normalizeInitialTurnsPageRequest(), {
+  limit: 4,
+  itemsView: "full",
+  sortDirection: "desc",
+});
+assert.deepEqual(
+  bridge.normalizeInitialTurnsPageRequest({
+    limit: 0,
+    itemsView: "unsupported",
+    sortDirection: "sideways",
+  }),
+  { limit: 4, itemsView: "full", sortDirection: "desc" },
+);
+assert.deepEqual(
+  bridge.normalizeInitialTurnsPageRequest({
+    limit: "2",
+    itemsView: "summary",
+    sortDirection: "asc",
+  }),
+  { limit: 2, itemsView: "summary", sortDirection: "asc" },
+);
+assert.equal(bridge.normalizeInitialTurnsPageRequest({ limit: 1000 }).limit, 100);
+assert.equal(bridge.normalizeInitialTurnsPageRequest({ limit: 1.5 }).limit, 4);
+
+const heavyText = "x".repeat(4000);
+const pageTurns = [
+  {
+    id: "turn-oldest",
+    status: "completed",
+    startedAt: 1000,
+    items: [{ id: "old-user", type: "userMessage", content: [] }],
+  },
+  {
+    id: "turn-middle",
+    status: "completed",
+    startedAt: 2000,
+    items: [{ id: "middle-agent", type: "agentMessage", text: "middle" }],
+  },
+  {
+    id: "turn-newest",
+    status: "inProgress",
+    startedAt: 3000,
+    items: [
+      {
+        id: "new-user",
+        type: "userMessage",
+        content: [
+          { type: "text", text: heavyText },
+          { type: "localImage", path: "/tmp/large-image.png" },
+        ],
+      },
+      {
+        id: "new-reasoning",
+        type: "reasoning",
+        content: [{ text: heavyText }],
+      },
+      {
+        id: "new-command",
+        type: "commandExecution",
+        command: "build",
+        aggregatedOutput: heavyText,
+      },
+      {
+        id: "new-agent",
+        type: "agentMessage",
+        text: heavyText,
+        phase: "final_answer",
+      },
+      { id: "new-compaction", type: "contextCompaction" },
+    ],
+  },
+];
+
+const fullTurnPage = bridge.buildInitialTurnsPage(pageTurns, {
+  limit: 1,
+  sortDirection: "desc",
+  itemsView: "full",
+}, "thread-page");
+assert.ok(fullTurnPage.nextCursor);
+assert.deepEqual(fullTurnPage.data, [pageTurns[2]]);
+assert.deepEqual(
+  bridge.buildInitialTurnsPage(pageTurns, {
+    limit: 2,
+    sortDirection: "desc",
+    itemsView: "full",
+  }, "thread-page").data.map(turn => turn.id),
+  ["turn-newest", "turn-middle"],
+);
+assert.deepEqual(
+  bridge.buildInitialTurnsPage(pageTurns, {
+    limit: 2,
+    sortDirection: "asc",
+    itemsView: "full",
+  }, "thread-page").data.map(turn => turn.id),
+  ["turn-oldest", "turn-middle"],
+);
+assert.deepEqual(
+  bridge.buildInitialTurnsPage(pageTurns, undefined, "thread-page").data.map(turn => turn.id),
+  ["turn-newest", "turn-middle", "turn-oldest"],
+);
+
+const summaryTurnPage = bridge.buildInitialTurnsPage(pageTurns, {
+  limit: 1,
+  sortDirection: "desc",
+  itemsView: "summary",
+}, "thread-page");
+assert.equal(summaryTurnPage.data[0].id, "turn-newest");
+assert.equal(summaryTurnPage.data[0].status, "inProgress");
+assert.deepEqual(
+  summaryTurnPage.data[0].items.map(item => item.type),
+  ["userMessage", "agentMessage", "contextCompaction"],
+);
+assert.equal(summaryTurnPage.data[0].items[0].content.length, 1);
+assert.equal(summaryTurnPage.data[0].items[0].content[0].text.length, 512);
+assert.equal(summaryTurnPage.data[0].items[1].text.length, 512);
+
+const unloadedTurnPage = bridge.buildInitialTurnsPage(pageTurns, {
+  limit: 1,
+  sortDirection: "desc",
+  itemsView: "notLoaded",
+}, "thread-page");
+assert.deepEqual(unloadedTurnPage.data, [{
+  id: "turn-newest",
+  status: "inProgress",
+  startedAt: 3000,
+  items: [],
+}]);
+assert.ok(JSON.stringify(fullTurnPage).length > JSON.stringify(summaryTurnPage).length);
+assert.ok(JSON.stringify(summaryTurnPage).length > JSON.stringify(unloadedTurnPage).length);
+assert.equal(pageTurns[2].items.length, 5, "page projection must not mutate hydrated turns");
+
+const firstCursorPage = bridge.buildTurnsPage(pageTurns, {
+  limit: 1,
+  sortDirection: "desc",
+  itemsView: "notLoaded",
+}, "thread-page");
+assert.ok(firstCursorPage.nextCursor);
+assert.deepEqual(
+  bridge.buildTurnsPage(pageTurns, {
+    limit: 1,
+    sortDirection: "desc",
+    itemsView: "notLoaded",
+  }, "thread-page", firstCursorPage.nextCursor).data.map(turn => turn.id),
+  ["turn-middle"],
+);
+assert.throws(
+  () => bridge.buildTurnsPage(pageTurns, {
+    limit: 1,
+    sortDirection: "desc",
+    itemsView: "notLoaded",
+  }, "another-thread", firstCursorPage.nextCursor),
+  error => error && error.code === -32602,
+);
+
+const hydratedResumeThread = {
+  id: "thread-resume",
+  status: "active",
+  turns: pageTurns,
+  tokenUsage: { totalTokens: 42 },
+};
+const resumeResponse = bridge.buildThreadResumeResponse(hydratedResumeThread, {
+  limit: 1,
+  sortDirection: "desc",
+  itemsView: "notLoaded",
+});
+assert.equal(Object.hasOwn(resumeResponse.thread, "turns"), false);
+assert.equal(resumeResponse.thread.tokenUsage.totalTokens, 42);
+assert.equal(resumeResponse.initialTurnsPage.data[0].id, "turn-newest");
+assert.equal(hydratedResumeThread.turns, pageTurns, "resume response must not mutate its input");
+
+const activeTurnForMutation = { id: "turn-current" };
+assert.deepEqual(
+  bridge.validateActiveTurn(
+    { threadId: "thread-active", expectedTurnId: "turn-current" },
+    activeTurnForMutation,
+    "expectedTurnId",
+  ),
+  { sessionID: "thread-active", turn: activeTurnForMutation },
+);
+assert.deepEqual(
+  bridge.validateActiveTurn(
+    { threadId: "thread-active", turnId: "turn-current" },
+    activeTurnForMutation,
+    "turnId",
+  ),
+  { sessionID: "thread-active", turn: activeTurnForMutation },
+);
+
+function assertStaleTurn(params, active, expectedField) {
+  assert.throws(
+    () => bridge.validateActiveTurn(params, active, expectedField),
+    error => error &&
+      error.code === bridge.staleTurnErrorCode &&
+      error.message.includes("no longer active"),
+  );
+}
+
+assertStaleTurn(
+  { threadId: "thread-active", expectedTurnId: "turn-old" },
+  activeTurnForMutation,
+  "expectedTurnId",
+);
+assertStaleTurn(
+  { threadId: "thread-active", turnId: "turn-old" },
+  activeTurnForMutation,
+  "turnId",
+);
+assertStaleTurn(
+  { threadId: "thread-active", expectedTurnId: "turn-current" },
+  null,
+  "expectedTurnId",
+);
+assertStaleTurn(
+  { threadId: "thread-active", turnId: "turn-current" },
+  activeTurnForMutation,
+  "expectedTurnId",
+);
+assertStaleTurn(
+  { threadId: 123, expectedTurnId: "turn-current" },
+  activeTurnForMutation,
+  "expectedTurnId",
+);
+
 process.stdout.write("OpenCode bridge tests passed\n");

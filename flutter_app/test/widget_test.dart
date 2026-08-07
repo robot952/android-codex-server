@@ -52,6 +52,10 @@ class _BlockingClient implements RemoteServerClient {
   Future<String> probeFingerprint(ServerProfile profile) async => 'SHA256:test';
 
   @override
+  Future<ServerMetrics> readServerMetrics(ServerProfile profile) async =>
+      const ServerMetrics();
+
+  @override
   SSHClient requireSshClient() => throw UnimplementedError();
 
   @override

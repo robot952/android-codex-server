@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:uuid/uuid.dart';
 
@@ -365,6 +367,16 @@ enum ThreadGoalStatus {
   complete,
   unknown;
 
+  String get wireValue => switch (this) {
+    ThreadGoalStatus.active => 'active',
+    ThreadGoalStatus.paused => 'paused',
+    ThreadGoalStatus.blocked => 'blocked',
+    ThreadGoalStatus.usageLimited => 'usageLimited',
+    ThreadGoalStatus.budgetLimited => 'budgetLimited',
+    ThreadGoalStatus.complete => 'complete',
+    ThreadGoalStatus.unknown => 'unknown',
+  };
+
   static ThreadGoalStatus fromWire(String value) => switch (value) {
     'active' => active,
     'paused' => paused,
@@ -527,7 +539,42 @@ abstract class PendingAttachment with _$PendingAttachment {
   }) = _PendingAttachment;
 }
 
-enum AppScreen { servers, threads, work, agentWork, fileManager }
+const int maxLocalAttachmentBytes = 20 * 1024 * 1024;
+const int maxInlineTextAttachmentBytes = 512 * 1024;
+const int maxPendingAttachmentCount = 8;
+const int maxPendingAttachmentTotalBytes = 40 * 1024 * 1024;
+
+/// Bounded local content waiting to be staged through the active SSH lane.
+class LocalAttachmentUpload {
+  LocalAttachmentUpload({
+    required this.name,
+    required this.bytes,
+    required this.mimeType,
+    this.textContent,
+  });
+
+  final String name;
+  final Uint8List bytes;
+  final String mimeType;
+  final String? textContent;
+}
+
+/// One locally selected document streamed into the remote file manager.
+/// Unlike conversation attachments this object is intentionally transient and
+/// never persisted or compared as part of [AppUiState].
+class LocalRemoteFileUpload {
+  const LocalRemoteFileUpload({
+    required this.name,
+    required this.sizeBytes,
+    required this.chunks,
+  });
+
+  final String name;
+  final int sizeBytes;
+  final Stream<List<int>> chunks;
+}
+
+enum AppScreen { servers, threads, work, agentWork, fileManager, terminal }
 
 enum SandboxChoice {
   readOnly('read-only', 'readOnly', '只读'),
@@ -700,6 +747,10 @@ abstract class AppUiState with _$AppUiState {
     Map<AgentConnectionKey, AgentSetupState> agentSetupStates,
     @Default(<AgentConnectionKey, List<AgentThread>>{})
     Map<AgentConnectionKey, List<AgentThread>> agentThreadLists,
+    @Default(<AgentConnectionKey, List<AgentModel>>{})
+    Map<AgentConnectionKey, List<AgentModel>> agentModelLists,
+    @Default(<AgentConnectionKey, bool>{})
+    Map<AgentConnectionKey, bool> agentLoadingStates,
     @Default(<AgentThread>[]) List<AgentThread> threads,
     @Default('') String threadSearch,
     AgentThread? activeThread,
@@ -746,6 +797,7 @@ abstract class AppUiState with _$AppUiState {
     ApprovalPrompt? approval,
     @Default(<ApprovalPrompt>[]) List<ApprovalPrompt> approvalQueue,
     @Default(<PendingAttachment>[]) List<PendingAttachment> attachments,
+    @Default(false) bool attachmentUploading,
     @Default(0) int composerClearNonce,
     @Default('') String composerDraft,
     @Default('') String aggregateDiff,

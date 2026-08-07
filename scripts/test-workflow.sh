@@ -54,11 +54,17 @@ if workflow_stamp_matches "$stamp_path" "$first_hash"; then
 fi
 
 [[ "$(apk_version_name "$ROOT_DIR")" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
-rg -q 'http://192\.168\.8\.109:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
-rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
+rg -q 'http://192\.168\.8\.107/agent\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
+rg -q 'http://frp\.asdb\.top:18080/agent\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 runtime_path="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 expected_runtime_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/opencode-version.txt")"
 [[ "$(workflow_opencode_version "$runtime_path")" == "$expected_runtime_version" ]]
+expected_codex_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/codex-version.txt")"
+expected_node_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/node-version.txt")"
+rg -Fq "const pinnedCodexVersion = '$expected_codex_version';" \
+    "$ROOT_DIR/flutter_app/lib/src/agent/remote_bootstrap.dart"
+rg -Fq "const pinnedNodeVersion = '$expected_node_version';" \
+    "$ROOT_DIR/flutter_app/lib/src/agent/remote_bootstrap.dart"
 
 # A multi-line producer followed by `rg -q` can return SIGPIPE under pipefail.
 # The workflow intentionally captures command output before matching runtime status.

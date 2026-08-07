@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../domain/model_catalog.dart';
 import '../domain/models.dart';
 
 abstract interface class ProfileStore {
@@ -134,14 +135,38 @@ StoredProfiles normalizeStoredProfiles(StoredProfiles value) {
         ? const Uuid().v4()
         : profile.id.trim();
     if (!seen.add(id)) continue;
+    final settings =
+        <AgentKind, AgentModelSettings>{
+          ...profile.agentModelSettings,
+          AgentKind.codex: profile.modelSettings(AgentKind.codex),
+        }.map(
+          (agent, value) =>
+              MapEntry(agent, normalizeAgentModelSettings(agent, value)),
+        );
+    final codexSettings = settings[AgentKind.codex]!;
     profiles.add(
       profile.copyWith(
         id: id,
         name: profile.name.trim().isEmpty ? '我的服务器' : profile.name.trim(),
+        host: profile.host.trim(),
         port: profile.port.clamp(1, 65535),
         username: profile.username.trim().isEmpty
             ? 'root'
             : profile.username.trim(),
+        workspace: profile.workspace.trim(),
+        proxyUrl: profile.proxyUrl.trim(),
+        hostFingerprint: profile.hostFingerprint.trim(),
+        remoteCommand: profile.remoteCommand.trim().isEmpty
+            ? '~/.local/bin/codex-remote app-server --listen stdio://'
+            : profile.remoteCommand.trim(),
+        preferredModel: codexSettings.preferredModel,
+        preferredEffort: codexSettings.preferredEffort,
+        testModel: codexSettings.testModel,
+        customModels: codexSettings.customModels,
+        hiddenModelIds: codexSettings.hiddenModelIds,
+        agentModelSettings: Map<AgentKind, AgentModelSettings>.unmodifiable(
+          settings,
+        ),
       ),
     );
   }
