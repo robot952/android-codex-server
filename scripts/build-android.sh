@@ -35,6 +35,10 @@ resolve_flutter() {
         candidate="$CODEX_FLUTTER_BIN"
     elif command -v flutter >/dev/null 2>&1; then
         candidate="$(command -v flutter)"
+    elif [[ -x "$ROOT_DIR/../.toolchains/flutter-root/bin/flutter" ]]; then
+        candidate="$ROOT_DIR/../.toolchains/flutter-root/bin/flutter"
+    elif [[ -x "$ROOT_DIR/.toolchains/flutter-root/bin/flutter" ]]; then
+        candidate="$ROOT_DIR/.toolchains/flutter-root/bin/flutter"
     elif [[ -x "$ROOT_DIR/../.toolchains/flutter/bin/flutter" ]]; then
         candidate="$ROOT_DIR/../.toolchains/flutter/bin/flutter"
     elif [[ -x "$HOME/flutter/bin/flutter" ]]; then
