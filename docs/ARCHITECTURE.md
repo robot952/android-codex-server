@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.3+123，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.4+124，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -361,7 +361,8 @@ SFTP stdout 混用。
 - 首屏是服务器列表；没有 Profile 时显示添加入口。
 - 每行显示钥匙图标、固定位置的连接状态点、服务器名、用户/连接状态和设置图标。
 - 未连接点击行先询问，确认后探测指纹；已连接点击行进入真实会话列表；断开按钮需二次确认。
-- 连接/探测时显示全屏半透明转圈，阻止其他操作，成功后直接切换页面。
+- 连接/探测时显示全屏半透明转圈，阻止其他操作；遮罩只绑定 SSH 主连接阶段，不会因 Agent
+  加载或成功后的过渡状态残留，成功后直接切换页面。
 - 设置编辑支持名称、host、port、用户名、密码/私钥、私钥密码、指纹和工作目录等表单；私钥文件
   读取限制为 1 MiB，输入页使用 imePadding/可滚动布局。
 - Codex/Agent 标题连续点击 10 次开启 `debugModeEnabled` 并持久化 Debug 日志开关；Debug 日志入口支持
@@ -379,6 +380,8 @@ SSH 已连接后页面按需启动当前 Agent；Codex 或 OpenCode 完成握手
 `thread/list` 会话，搜索（350 ms 防抖）和刷新会请求远端，运行中的会话显示固定尺寸转圈。点击会话
 进入共享 Work 页面；终端图标打开独立 SSH PTY，齿轮菜单在当前 Agent 已连接时提供“选择工作目录”、
 全局配置和文件管理。两种 Agent 的连接、列表、模型和错误状态按 `profileId + AgentKind` 隔离。
+如果远程 Agent 正在首次安装，最小化安装弹窗不会停止任务；对应的 Codex/OpenCode 分段按钮显示独立
+总体进度条和百分比，点击当前进度会恢复该 lane 的安装弹窗，不会重复启动下载。
 点击 CPU、内存、磁盘或网络指标会显示同一个持久 Tooltip，包含 CPU 核心数和占比、内存/磁盘已用与
 总量，以及上下行速度。
 
@@ -605,7 +608,8 @@ $HOME/.local/share/codex-remote/opencode
 $HOME/.local/bin/codex-remote-opencode-bridge
 ~~~
 
-进度协议为 `::progress::<overall>|<download>|<message>|<detail>`；UI 分开显示总体与当前下载进度。
+进度协议为 `::progress::<overall>|<download>|<message>|<detail>`；UI 分开显示总体与当前下载进度，
+最小化后会将总体进度保留在会话页对应 Agent 按钮中，点击后恢复原弹窗。
 同一服务器安装由 `AgentConnectionManager` 的 profile 级锁串行化，每个 `profileId + AgentKind` 独立
 保存弹窗状态。安装中关闭只最小化，任务继续受前台 Service 保护；失败保留弹窗并允许用户修改代理
 后重试。成功后必须再次探测，确认兼容命令，再自动连接和加载模型/会话。
@@ -869,7 +873,7 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 `flutter test --no-pub` 共 338 项全部通过；最终 release APK 位于
 `flutter_app/build/app/outputs/flutter-apk/app-release.apk`，大小 66,240,919 bytes，SHA-256 为
 `c208a45ce9a1225b7d9469ee1471c4d98e47067e6be38e2540669132125781d5`。产物核验结果为
-`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.3`、`versionCode=123`，签名证书
+`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.4`、`versionCode=124`，签名证书
 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 
 同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏
@@ -891,9 +895,9 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 资源指标 | 列表进入时立即采样，前台周期刷新；详情单位正确；断开和切后台后停止更新且不串服务器 |
 | 连接中 | 半透明转圈遮罩覆盖全屏，Back 和重复点击被阻断；成功后无额外空白等待 |
 | Agent lane | SSH 已连接后 Codex/OpenCode 各自 initialize 成功；model/list 与 thread/list 独立失败不让页面崩溃；切换 lane 不串状态 |
-| Codex 安装 | 无/旧版本时显示环境与路径；HTTP/HTTPS 代理、总体/下载进度、最小化、失败重试、复检和自动进入列表；系统同版本直接复用 |
+| Codex 安装 | 无/旧版本时显示环境与路径；HTTP/HTTPS 代理、总体/下载进度、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表；系统同版本直接复用 |
 | Codex 卸载 | 删除整个 Codex Remote 托管 root、wrapper 和附件暂存；运行中的托管 app-server 被关闭；若曾安装 OpenCode 则需重新安装；系统 Codex、VS Code、~/.codex 和工作区保留 |
-| OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、失败重试、复检和自动进入列表正确；固定 1.18.11 与打包 bridge 同时匹配才复用 |
+| OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表正确；固定 1.18.11 与打包 bridge 同时匹配才复用 |
 | OpenCode 卸载 | 只删除 OpenCode 托管子目录和 wrapper；共享 Node、Codex、附件暂存、~/.codex、VS Code 和工作区保留 |
 | Agent 全局配置 | Codex/OpenCode 都从服务器读取实际 URL/Provider/模型/effort/代理/Key；保存后二次确认和断线；测试按显式协议发真实最小请求且不保存 |
 | 工作目录 | 纯 SSH 不弹；当前 Agent 首次成功只弹一次并立即记忆；浏览/上一级/错误/稍后/确认正确；连续请求、切服务器/Agent和断线不串结果 |

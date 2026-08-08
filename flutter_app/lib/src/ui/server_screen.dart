@@ -1333,13 +1333,6 @@ class _ConnectionOverlay extends StatelessWidget {
                       height: 28,
                       child: CircularProgressIndicator(strokeWidth: 2.2),
                     ),
-                    const SizedBox(height: 13),
-                    Text(
-                      connection.message,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
                   ],
                 ),
               ),
@@ -1361,12 +1354,19 @@ ConnectionState? _blockingConnection(AppUiState state) {
       return connection;
     }
   }
+  // Agent runtime loading happens after the SSH host is connected. It must
+  // not keep the server-page modal visible with the stale "SSH 已连接"
+  // message when the user has already returned to the server list.
   if (state.loading && state.selectedProfileId != null) {
-    return state.connectionStates[state.selectedProfileId] ??
-        const ConnectionState(
-          phase: ConnectionPhase.connecting,
-          message: '正在进入服务器',
-        );
+    final connection = state.connectionStates[state.selectedProfileId];
+    if (connection != null &&
+        {
+          ConnectionPhase.probing,
+          ConnectionPhase.connecting,
+          ConnectionPhase.installing,
+        }.contains(connection.phase)) {
+      return connection;
+    }
   }
   return null;
 }

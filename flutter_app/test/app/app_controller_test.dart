@@ -2489,6 +2489,17 @@ void main() {
       controller.minimizeRemoteSetup();
       expect(controller.state.remoteSetup, isNull);
       expect(controller.state.agentSetupStates.values.single.minimized, isTrue);
+      expect(controller.state.agentSetupStates.values.single.percent, 38);
+      expect(
+        controller.state.agentSetupStates.values.single.downloadPercent,
+        37,
+      );
+      controller.resumeRemoteSetup();
+      expect(controller.state.remoteSetup, isNotNull);
+      expect(controller.state.setupInProgress, isTrue);
+      expect(controller.state.setupProgressPercent, 38);
+      expect(controller.state.setupDownloadPercent, 37);
+      controller.minimizeRemoteSetup();
       await controller.ensureActiveAgent();
       expect(controller.state.remoteSetup, isNotNull);
       expect(controller.state.setupInProgress, isTrue);

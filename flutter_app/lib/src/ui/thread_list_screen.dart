@@ -44,6 +44,14 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         : state.agentConnectionStates[key] ?? const ConnectionState();
     final agentConnected = agentState.phase == ConnectionPhase.connected;
     final loading = key != null && state.agentLoadingStates[key] == true;
+    AgentSetupState? setupFor(AgentKind agent) {
+      if (profileId == null) return null;
+      return state.agentSetupStates[AgentConnectionKey(
+        profileId: profileId,
+        agent: agent,
+      )];
+    }
+
     final sourceThreads = key == null
         ? const <AgentThread>[]
         : state.agentThreadLists[key] ?? const <AgentThread>[];
@@ -199,16 +207,30 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
               child: SizedBox(
                 width: double.infinity,
                 child: SegmentedButton<AgentKind>(
-                  segments: const [
+                  segments: [
                     ButtonSegment(
                       value: AgentKind.codex,
-                      label: Text('Codex'),
-                      icon: Icon(Icons.code, size: 18),
+                      label: _AgentSegmentLabel(
+                        agent: AgentKind.codex,
+                        setup: setupFor(AgentKind.codex),
+                        onResume: () => _resumeAgentSetup(
+                          state.activeAgent,
+                          AgentKind.codex,
+                          controller,
+                        ),
+                      ),
                     ),
                     ButtonSegment(
                       value: AgentKind.openCode,
-                      label: Text('OpenCode'),
-                      icon: Icon(Icons.hub_outlined, size: 18),
+                      label: _AgentSegmentLabel(
+                        agent: AgentKind.openCode,
+                        setup: setupFor(AgentKind.openCode),
+                        onResume: () => _resumeAgentSetup(
+                          state.activeAgent,
+                          AgentKind.openCode,
+                          controller,
+                        ),
+                      ),
                     ),
                   ],
                   selected: {state.activeAgent},
@@ -276,6 +298,92 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         ref.read(appControllerProvider.notifier).ensureActiveAgent();
       }
     });
+  }
+
+  void _resumeAgentSetup(
+    AgentKind activeAgent,
+    AgentKind targetAgent,
+    AppController controller,
+  ) {
+    if (activeAgent == targetAgent) {
+      controller.resumeRemoteSetup();
+    } else {
+      controller.selectAgent(targetAgent);
+    }
+  }
+}
+
+class _AgentSegmentLabel extends StatelessWidget {
+  const _AgentSegmentLabel({
+    required this.agent,
+    required this.setup,
+    required this.onResume,
+  });
+
+  final AgentKind agent;
+  final AgentSetupState? setup;
+  final VoidCallback onResume;
+
+  @override
+  Widget build(BuildContext context) {
+    final install = setup;
+    final canResume = install?.prompt != null && install?.minimized == true;
+    final percent = install?.percent.clamp(0, 100) ?? 0;
+    final progress = install?.inProgress == true
+        ? (percent > 0 ? percent / 100 : null)
+        : null;
+    final failed =
+        install != null &&
+        !install.inProgress &&
+        install.prompt != null &&
+        install.progress.toLowerCase().contains('失败');
+
+    final label = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          agent == AgentKind.codex ? Icons.code : Icons.hub_outlined,
+          size: 18,
+        ),
+        const SizedBox(width: 7),
+        Text(agent.label),
+      ],
+    );
+    if (install?.inProgress != true && !failed) return label;
+
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        label,
+        const SizedBox(height: 3),
+        SizedBox(
+          width: 76,
+          child: LinearProgressIndicator(
+            value: failed ? 1 : progress,
+            minHeight: 3,
+            color: failed ? codexRed : codexAmber,
+            backgroundColor: codexBorder,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          failed ? '安装失败' : (progress == null ? '安装中' : '$percent%'),
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+      ],
+    );
+    return canResume
+        ? InkWell(
+            key: ValueKey('resume-${agent.name}-setup'),
+            onTap: onResume,
+            borderRadius: BorderRadius.circular(4),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: content,
+            ),
+          )
+        : content;
   }
 }
 

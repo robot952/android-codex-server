@@ -881,6 +881,22 @@ class AppController extends StateNotifier<AppUiState> {
     );
   }
 
+  /// Reopens a minimized remote runtime installation for the active lane.
+  ///
+  /// The installation task remains owned by [agentSetupStates], so restoring
+  /// the dialog never starts a second download request.
+  void resumeRemoteSetup() {
+    final profileId = state.selectedProfileId;
+    if (profileId == null) return;
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    final setup = state.agentSetupStates[key];
+    if (setup?.prompt == null) return;
+    _showRemoteSetup(key);
+  }
+
   Future<void> uninstallRemoteRuntime(String profileId) async {
     await _ensureInitialized();
     final profile = state.profiles.firstWhereOrNull(
