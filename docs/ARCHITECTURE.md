@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.4+124，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.5+125，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -380,6 +380,10 @@ SSH 已连接后页面按需启动当前 Agent；Codex 或 OpenCode 完成握手
 `thread/list` 会话，搜索（350 ms 防抖）和刷新会请求远端，运行中的会话显示固定尺寸转圈。点击会话
 进入共享 Work 页面；终端图标打开独立 SSH PTY，齿轮菜单在当前 Agent 已连接时提供“选择工作目录”、
 全局配置和文件管理。两种 Agent 的连接、列表、模型和错误状态按 `profileId + AgentKind` 隔离。
+顶部操作顺序与原版一致：终端、刷新、新建会话、设置、切换服务器；设置和切换服务器分别使用独立
+弹窗，服务器弹窗显示连接状态、用户名/地址、当前选中标记和“管理服务器”入口。Agent 选择器使用
+状态圆点和绿色选中边框，任务列表标题显示“最近任务/搜索结果”和当前数量；会话行显示终端图标、
+相对时间、预览、工作目录和来源。
 如果远程 Agent 正在首次安装，最小化安装弹窗不会停止任务；对应的 Codex/OpenCode 分段按钮显示独立
 总体进度条和百分比，点击当前进度会恢复该 lane 的安装弹窗，不会重复启动下载。
 点击 CPU、内存、磁盘或网络指标会显示同一个持久 Tooltip，包含 CPU 核心数和占比、内存/磁盘已用与
@@ -873,7 +877,7 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 `flutter test --no-pub` 共 338 项全部通过；最终 release APK 位于
 `flutter_app/build/app/outputs/flutter-apk/app-release.apk`，大小 66,240,919 bytes，SHA-256 为
 `c208a45ce9a1225b7d9469ee1471c4d98e47067e6be38e2540669132125781d5`。产物核验结果为
-`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.4`、`versionCode=124`，签名证书
+`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.5`、`versionCode=125`，签名证书
 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 
 同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏

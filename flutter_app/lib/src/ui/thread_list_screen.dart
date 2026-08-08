@@ -113,6 +113,11 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         ),
         actions: [
           IconButton(
+            tooltip: '终端',
+            onPressed: hostConnected ? controller.openTerminal : null,
+            icon: const Icon(Icons.terminal),
+          ),
+          IconButton(
             tooltip: '刷新会话',
             onPressed: agentConnected && !loading
                 ? controller.refreshThreads
@@ -132,60 +137,16 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
             icon: const Icon(Icons.add_comment_outlined),
           ),
           IconButton(
-            tooltip: '终端',
-            onPressed: hostConnected ? controller.openTerminal : null,
-            icon: const Icon(Icons.terminal),
-          ),
-          PopupMenuButton<_ThreadSettingsAction>(
-            tooltip: '服务器设置',
+            tooltip: '设置',
+            onPressed: hostConnected
+                ? () => _showThreadSettings(context, state, controller)
+                : null,
             icon: const Icon(Icons.settings),
-            onSelected: (action) {
-              switch (action) {
-                case _ThreadSettingsAction.workspace:
-                  controller.showWorkspacePicker();
-                case _ThreadSettingsAction.agentSettings:
-                  controller.showAgentSettings();
-                case _ThreadSettingsAction.fileManager:
-                  controller.showFileManager();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: _ThreadSettingsAction.workspace,
-                enabled: agentConnected,
-                child: const Row(
-                  children: [
-                    Icon(Icons.folder_outlined, size: 19),
-                    SizedBox(width: 10),
-                    Text('选择工作目录'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: _ThreadSettingsAction.agentSettings,
-                enabled:
-                    agentConnected &&
-                    state.activeAgentCapabilities.globalSettings,
-                child: Row(
-                  children: [
-                    const Icon(Icons.tune, size: 19),
-                    const SizedBox(width: 10),
-                    Text('配置 ${state.activeAgent.label}'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: _ThreadSettingsAction.fileManager,
-                enabled: hostConnected,
-                child: const Row(
-                  children: [
-                    Icon(Icons.folder_open_outlined, size: 19),
-                    SizedBox(width: 10),
-                    Text('文件管理'),
-                  ],
-                ),
-              ),
-            ],
+          ),
+          IconButton(
+            tooltip: '切换服务器',
+            onPressed: () => _showServerSwitcher(context, state, controller),
+            icon: const Icon(Icons.dns),
           ),
         ],
       ),
@@ -203,42 +164,19 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-              child: SizedBox(
-                width: double.infinity,
-                child: SegmentedButton<AgentKind>(
-                  segments: [
-                    ButtonSegment(
-                      value: AgentKind.codex,
-                      label: _AgentSegmentLabel(
-                        agent: AgentKind.codex,
-                        setup: setupFor(AgentKind.codex),
-                        onResume: () => _resumeAgentSetup(
-                          state.activeAgent,
-                          AgentKind.codex,
-                          controller,
-                        ),
-                      ),
-                    ),
-                    ButtonSegment(
-                      value: AgentKind.openCode,
-                      label: _AgentSegmentLabel(
-                        agent: AgentKind.openCode,
-                        setup: setupFor(AgentKind.openCode),
-                        onResume: () => _resumeAgentSetup(
-                          state.activeAgent,
-                          AgentKind.openCode,
-                          controller,
-                        ),
-                      ),
-                    ),
-                  ],
-                  selected: {state.activeAgent},
-                  showSelectedIcon: false,
-                  onSelectionChanged: hostConnected && !loading
-                      ? (selection) => controller.selectAgent(selection.first)
-                      : null,
-                ),
+              padding: const EdgeInsets.fromLTRB(18, 7, 18, 7),
+              child: _AgentSwitcher(
+                activeAgent: state.activeAgent,
+                enabled: hostConnected && !loading,
+                setupFor: setupFor,
+                connectionFor: (agent) =>
+                    state.agentConnectionStates[AgentConnectionKey(
+                      profileId: profileId ?? '',
+                      agent: agent,
+                    )],
+                onSelect: controller.selectAgent,
+                onResume: (agent) =>
+                    _resumeAgentSetup(state.activeAgent, agent, controller),
               ),
             ),
             Padding(
@@ -258,21 +196,37 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
             ),
             const Divider(height: 1),
             Expanded(
-              child: _ThreadListBody(
-                agent: state.activeAgent,
-                hostConnected: hostConnected,
-                connectionState: agentState,
-                loading: loading,
-                query: state.threadSearch,
-                threads: threads,
-                diagnostic: state.diagnostic,
-                onRetry: controller.ensureActiveAgent,
-                onReconnect: profile == null
-                    ? null
-                    : () => controller.requestConnect(profile),
-                onOpen: controller.openThread,
-                hasMoreThreads: controller.activeThreadListHasMore,
-                onLoadMore: controller.loadMoreThreads,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.05, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: _ThreadListBody(
+                  key: ValueKey(state.activeAgent),
+                  agent: state.activeAgent,
+                  hostConnected: hostConnected,
+                  connectionState: agentState,
+                  loading: loading,
+                  query: state.threadSearch,
+                  threads: threads,
+                  diagnostic: state.diagnostic,
+                  onRetry: controller.ensureActiveAgent,
+                  onReconnect: profile == null
+                      ? null
+                      : () => controller.requestConnect(profile),
+                  onOpen: controller.openThread,
+                  hasMoreThreads: controller.activeThreadListHasMore,
+                  onLoadMore: controller.loadMoreThreads,
+                ),
               ),
             ),
           ],
@@ -313,21 +267,425 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
   }
 }
 
-class _AgentSegmentLabel extends StatelessWidget {
-  const _AgentSegmentLabel({
+void _showThreadSettings(
+  BuildContext context,
+  AppUiState state,
+  AppController controller,
+) {
+  showDialog<void>(
+    context: context,
+    builder: (_) => _ThreadSettingsDialog(
+      agent: state.activeAgent,
+      agentConnected:
+          state
+              .agentConnectionStates[AgentConnectionKey(
+                profileId: state.selectedProfileId ?? '',
+                agent: state.activeAgent,
+              )]
+              ?.phase ==
+          ConnectionPhase.connected,
+      canConfigureAgent: state.activeAgentCapabilities.globalSettings,
+      hostConnected:
+          state.selectedProfileId != null &&
+          state.connectionStates[state.selectedProfileId]?.phase ==
+              ConnectionPhase.connected,
+      onSelectWorkspace: () {
+        Navigator.of(context).pop();
+        controller.showWorkspacePicker();
+      },
+      onConfigureAgent: () {
+        Navigator.of(context).pop();
+        controller.showAgentSettings();
+      },
+      onOpenFileManager: () {
+        Navigator.of(context).pop();
+        controller.showFileManager();
+      },
+    ),
+  );
+}
+
+void _showServerSwitcher(
+  BuildContext context,
+  AppUiState state,
+  AppController controller,
+) {
+  showDialog<void>(
+    context: context,
+    builder: (_) => _ServerSwitcherDialog(
+      state: state,
+      onSelect: (profile) {
+        Navigator.of(context).pop();
+        controller.selectProfile(profile.id);
+      },
+      onManage: () {
+        Navigator.of(context).pop();
+        controller.backToServers();
+      },
+    ),
+  );
+}
+
+class _ThreadSettingsDialog extends StatelessWidget {
+  const _ThreadSettingsDialog({
     required this.agent,
+    required this.agentConnected,
+    required this.canConfigureAgent,
+    required this.hostConnected,
+    required this.onSelectWorkspace,
+    required this.onConfigureAgent,
+    required this.onOpenFileManager,
+  });
+
+  final AgentKind agent;
+  final bool agentConnected;
+  final bool canConfigureAgent;
+  final bool hostConnected;
+  final VoidCallback onSelectWorkspace;
+  final VoidCallback onConfigureAgent;
+  final VoidCallback onOpenFileManager;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Material(
+          color: codexRaised,
+          borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+                child: Text(
+                  '设置',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              _SettingsActionRow(
+                icon: Icons.folder,
+                title: '选择工作目录',
+                detail: '切换新会话默认使用的目录',
+                enabled: agentConnected,
+                onTap: onSelectWorkspace,
+              ),
+              _SettingsActionRow(
+                icon: Icons.settings,
+                title: '配置 ${agent.label}',
+                detail: '模型地址、API 密钥和代理',
+                enabled: agentConnected && canConfigureAgent,
+                onTap: onConfigureAgent,
+              ),
+              _SettingsActionRow(
+                icon: Icons.folder_open,
+                title: '文件管理',
+                detail: '浏览和管理服务器文件',
+                enabled: hostConnected,
+                onTap: onOpenFileManager,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsActionRow extends StatelessWidget {
+  const _SettingsActionRow({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String detail;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.38,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 34,
+                height: 34,
+                child: Icon(icon, size: 27, color: codexText),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: Theme.of(context).textTheme.bodyLarge),
+                    Text(detail, style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ServerSwitcherDialog extends StatelessWidget {
+  const _ServerSwitcherDialog({
+    required this.state,
+    required this.onSelect,
+    required this.onManage,
+  });
+
+  final AppUiState state;
+  final ValueChanged<ServerProfile> onSelect;
+  final VoidCallback onManage;
+
+  @override
+  Widget build(BuildContext context) {
+    final connectedCount = state.connectionStates.values
+        .where((connection) => connection.phase == ConnectionPhase.connected)
+        .length;
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440, maxHeight: 560),
+        child: Material(
+          color: codexRaised,
+          borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 8, 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '切换服务器',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          Text(
+                            '$connectedCount 台已连接',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: state.profiles.length,
+                  itemBuilder: (context, index) {
+                    final profile = state.profiles[index];
+                    final connected =
+                        state.connectionStates[profile.id]?.phase ==
+                        ConnectionPhase.connected;
+                    final selected = profile.id == state.selectedProfileId;
+                    return InkWell(
+                      onTap: () => onSelect(profile),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 12,
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: connected
+                                    ? codexGreen
+                                    : codexMuted.withValues(alpha: 0.62),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    profile.name.trim().isEmpty
+                                        ? '未命名服务器'
+                                        : profile.name.trim(),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    '${profile.username.trim().isEmpty ? 'root' : profile.username}@${profile.host.trim().isEmpty ? '待配置' : profile.host}:${profile.port}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(fontFamily: 'monospace'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (selected) const Icon(Icons.check, size: 22),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const Divider(height: 1),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
+                  child: TextButton(
+                    onPressed: onManage,
+                    child: const Text('管理服务器'),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentSwitcher extends StatelessWidget {
+  const _AgentSwitcher({
+    required this.activeAgent,
+    required this.enabled,
+    required this.setupFor,
+    required this.connectionFor,
+    required this.onSelect,
+    required this.onResume,
+  });
+
+  final AgentKind activeAgent;
+  final bool enabled;
+  final AgentSetupState? Function(AgentKind agent) setupFor;
+  final ConnectionState? Function(AgentKind agent) connectionFor;
+  final ValueChanged<AgentKind> onSelect;
+  final ValueChanged<AgentKind> onResume;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = activeAgent == AgentKind.codex;
+    return SizedBox(
+      height: 54,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: codexSurface,
+          border: Border.all(color: codexBorder),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final segmentWidth = constraints.maxWidth / 2;
+            return Stack(
+              children: [
+                AnimatedAlign(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  alignment: selected
+                      ? Alignment.centerLeft
+                      : Alignment.centerRight,
+                  child: SizedBox(
+                    width: segmentWidth,
+                    height: double.infinity,
+                    child: Padding(
+                      padding: const EdgeInsets.all(3),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: codexRaised,
+                          border: Border.all(
+                            color: codexGreen.withValues(alpha: 0.72),
+                          ),
+                          borderRadius: BorderRadius.circular(7),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    _AgentSegment(
+                      agent: AgentKind.codex,
+                      selected: selected,
+                      enabled: enabled,
+                      setup: setupFor(AgentKind.codex),
+                      connection: connectionFor(AgentKind.codex),
+                      onTap: () => onSelect(AgentKind.codex),
+                      onResume: () => onResume(AgentKind.codex),
+                    ),
+                    _AgentSegment(
+                      agent: AgentKind.openCode,
+                      selected: !selected,
+                      enabled: enabled,
+                      setup: setupFor(AgentKind.openCode),
+                      connection: connectionFor(AgentKind.openCode),
+                      onTap: () => onSelect(AgentKind.openCode),
+                      onResume: () => onResume(AgentKind.openCode),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentSegment extends StatelessWidget {
+  const _AgentSegment({
+    required this.agent,
+    required this.selected,
+    required this.enabled,
     required this.setup,
+    required this.connection,
+    required this.onTap,
     required this.onResume,
   });
 
   final AgentKind agent;
+  final bool selected;
+  final bool enabled;
   final AgentSetupState? setup;
+  final ConnectionState? connection;
+  final VoidCallback onTap;
   final VoidCallback onResume;
 
   @override
   Widget build(BuildContext context) {
     final install = setup;
-    final canResume = install?.prompt != null && install?.minimized == true;
+    final canResume =
+        enabled && install?.prompt != null && install?.minimized == true;
     final percent = install?.percent.clamp(0, 100) ?? 0;
     final progress = install?.inProgress == true
         ? (percent > 0 ? percent / 100 : null)
@@ -337,60 +695,86 @@ class _AgentSegmentLabel extends StatelessWidget {
         !install.inProgress &&
         install.prompt != null &&
         install.progress.toLowerCase().contains('失败');
+    final phase = connection?.phase;
+    final statusColor = phase == ConnectionPhase.connected
+        ? codexGreen
+        : phase == ConnectionPhase.failed || failed
+        ? codexRed
+        : phase == ConnectionPhase.installing || install?.inProgress == true
+        ? codexAmber
+        : codexMuted.withValues(alpha: 0.62);
 
     final label = Row(
       mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(
-          agent == AgentKind.codex ? Icons.code : Icons.hub_outlined,
-          size: 18,
+        Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
         ),
         const SizedBox(width: 7),
-        Text(agent.label),
+        Text(
+          agent.label,
+          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? codexText : codexMuted,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        if (install?.inProgress == true && progress != null) ...[
+          const SizedBox(width: 7),
+          Text(
+            '$percent%',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: codexGreen,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ],
     );
-    if (install?.inProgress != true && !failed) return label;
+    if (install?.inProgress != true && !failed) {
+      return Expanded(
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          child: Center(child: label),
+        ),
+      );
+    }
 
     final content = Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        label,
+        Center(child: label),
         const SizedBox(height: 3),
-        SizedBox(
-          width: 76,
-          child: LinearProgressIndicator(
-            value: failed ? 1 : progress,
-            minHeight: 3,
-            color: failed ? codexRed : codexAmber,
-            backgroundColor: codexBorder,
-            borderRadius: BorderRadius.circular(2),
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          failed ? '安装失败' : (progress == null ? '安装中' : '$percent%'),
-          style: Theme.of(context).textTheme.labelSmall,
+        LinearProgressIndicator(
+          value: failed ? 1 : progress,
+          minHeight: 3,
+          color: failed ? codexRed : codexGreen,
+          backgroundColor: codexBorder,
+          borderRadius: BorderRadius.circular(2),
         ),
       ],
     );
-    return canResume
-        ? InkWell(
-            key: ValueKey('resume-${agent.name}-setup'),
-            onTap: onResume,
-            borderRadius: BorderRadius.circular(4),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: content,
-            ),
-          )
-        : content;
+    return Expanded(
+      child: InkWell(
+        key: ValueKey('resume-${agent.name}-setup'),
+        onTap: canResume ? onResume : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: content,
+        ),
+      ),
+    );
   }
 }
 
-enum _ThreadSettingsAction { workspace, agentSettings, fileManager }
-
 class _ThreadListBody extends StatefulWidget {
   const _ThreadListBody({
+    super.key,
     required this.agent,
     required this.hostConnected,
     required this.connectionState,
@@ -466,6 +850,24 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
     final onRetry = widget.onRetry;
     final onReconnect = widget.onReconnect;
     final onOpen = widget.onOpen;
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(18, 7, 18, 7),
+      child: Row(
+        children: [
+          Text(
+            query.trim().isEmpty ? '最近任务' : '搜索结果',
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: codexMuted),
+          ),
+          const Spacer(),
+          Text(
+            '${threads.length}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
     if (threads.isNotEmpty) {
       return NotificationListener<ScrollNotification>(
         onNotification: _handleScroll,
@@ -484,6 +886,7 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                   ),
                 ),
               ),
+            header,
             Expanded(
               child: ListView.separated(
                 keyboardDismissBehavior:
@@ -518,15 +921,22 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
 
     if (hostConnected &&
         (loading || connectionState.phase == ConnectionPhase.connecting)) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(strokeWidth: 2),
-            const SizedBox(height: 12),
-            Text(connectionState.message),
-          ],
-        ),
+      return Column(
+        children: [
+          header,
+          Expanded(
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(strokeWidth: 2),
+                  const SizedBox(height: 12),
+                  Text(connectionState.message),
+                ],
+              ),
+            ),
+          ),
+        ],
       );
     }
 
@@ -537,31 +947,42 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
       (_, _, true) => '没有匹配任务',
       _ => '暂无任务',
     };
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              failed ? Icons.error_outline : Icons.terminal,
-              size: 34,
-              color: failed ? Theme.of(context).colorScheme.error : codexMuted,
-            ),
-            const SizedBox(height: 10),
-            Text(message, textAlign: TextAlign.center),
-            if ((!hostConnected && onReconnect != null) ||
-                (failed && hostConnected)) ...[
-              const SizedBox(height: 12),
-              IconButton.filledTonal(
-                tooltip: hostConnected ? '重新连接 ${agent.label}' : '重新连接服务器',
-                onPressed: hostConnected ? onRetry : onReconnect,
-                icon: const Icon(Icons.refresh),
+    return Column(
+      children: [
+        header,
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    failed ? Icons.error_outline : Icons.terminal,
+                    size: 30,
+                    color: failed
+                        ? Theme.of(context).colorScheme.error
+                        : codexMuted,
+                  ),
+                  const SizedBox(height: 9),
+                  Text(message, textAlign: TextAlign.center),
+                  if ((!hostConnected && onReconnect != null) ||
+                      (failed && hostConnected)) ...[
+                    const SizedBox(height: 12),
+                    IconButton.filledTonal(
+                      tooltip: hostConnected
+                          ? '重新连接 ${agent.label}'
+                          : '重新连接服务器',
+                      onPressed: hostConnected ? onRetry : onReconnect,
+                      icon: const Icon(Icons.refresh),
+                    ),
+                  ],
+                ],
               ),
-            ],
-          ],
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -576,36 +997,127 @@ class _ThreadRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final running = isAgentThreadRunning(thread);
     final updatedAt = _updatedAtLabel(thread.updatedAt);
-    final subtitle = <String>[
-      if (thread.preview.trim().isNotEmpty) thread.preview.trim(),
-      if (thread.cwd.trim().isNotEmpty) thread.cwd.trim(),
-    ].join('\n');
-    return ListTile(
-      onTap: onTap,
-      minTileHeight: 68,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      leading: SizedBox.square(
-        dimension: 32,
-        child: Center(
-          child: running
-              ? const SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.chat_bubble_outline, size: 20),
+    return Column(
+      children: [
+        Material(
+          color: running ? codexRaised : Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: Center(
+                      child: running
+                          ? const SizedBox.square(
+                              dimension: 17,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: codexGreen,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.terminal,
+                              size: 17,
+                              color: codexMuted,
+                            ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                thread.title.trim().isEmpty
+                                    ? '未命名任务'
+                                    : thread.title.trim(),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodyLarge
+                                    ?.copyWith(
+                                      fontWeight: running
+                                          ? FontWeight.w500
+                                          : FontWeight.normal,
+                                    ),
+                              ),
+                            ),
+                            if (updatedAt != null) ...[
+                              const SizedBox(width: 10),
+                              Text(
+                                updatedAt,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (thread.preview.trim().isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            thread.preview.trim(),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                        const SizedBox(height: 6),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.folder_open,
+                              size: 14,
+                              color: codexMuted,
+                            ),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                thread.cwd.trim().isEmpty
+                                    ? '未指定目录'
+                                    : thread.cwd.trim(),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(fontFamily: 'monospace'),
+                              ),
+                            ),
+                            if (thread.source.trim().isNotEmpty) ...[
+                              const SizedBox(width: 8),
+                              const Icon(
+                                Icons.code,
+                                size: 13,
+                                color: codexMuted,
+                              ),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  thread.source.trim(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
-      ),
-      title: Text(
-        thread.title.trim().isEmpty ? '未命名任务' : thread.title.trim(),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: subtitle.isEmpty
-          ? null
-          : Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
-      trailing: updatedAt != null
-          ? Text(updatedAt, style: Theme.of(context).textTheme.bodySmall)
-          : null,
+        const Divider(height: 1, indent: 46),
+      ],
     );
   }
 }

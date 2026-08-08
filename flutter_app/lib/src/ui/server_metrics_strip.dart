@@ -84,8 +84,8 @@ class ServerMetricsStrip extends StatelessWidget {
               label: compactForServerList ? '网络总速率' : '网络',
               displayValue: compactForServerList
                   ? _formatNetworkTotalRate(totalNetworkRate)
-                  : '↓${_formatNetworkRate(download, compact: false)} '
-                        '↑${_formatNetworkRate(upload, compact: false)}',
+                  : '↓${_formatNetworkRate(download, compact: true)} '
+                        '↑${_formatNetworkRate(upload, compact: true)}',
               detail: detail,
             ),
           ),
