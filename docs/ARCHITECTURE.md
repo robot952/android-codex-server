@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.5+125，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.6+126，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -411,6 +411,13 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 ### 8.3 WorkScreen（Agent 对话）
 
 Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当前 `AgentCapabilities` 控制：
+
+- 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
+  助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、
+  完成状态和展开箭头的独立卡片，图片工具统一使用双眼睛图标、`查看了图片` 和单行远程路径。不要把所有时间线条目重新套成同一种消息卡片。
+- Composer 保持固定底部的一体化边框区域：输入框上方可显示附件，底部顺序固定为加号、更多、权限、上下文空心圆环、模型/思考强度、
+  发送或停止圆形按钮。输入框最小高度稳定在约 72 dp；IME 通过 viewInsets 与时间线同帧移动，不能让键盘盖住输入框或让正文滞后。
+- 当用户滚离最新消息时，跳转按钮居中悬浮在时间线和 Composer 之间；只在确实存在更新内容时显示，不能固定在右下角遮住命令卡片。
 
 - 打开会话先从 `ThreadSessionCache` 显示最近快照，再以 `thread/resume` 校准；请求按
   `profileId + AgentKind + threadId` 去重，超时可保留过期快照作为回退；
@@ -861,6 +868,7 @@ flutter test --no-pub
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
 | test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待和后台继续的 Widget 状态切换 |
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
+| test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和 1.5K 竖横屏无溢出 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 `scripts/test-opencode-bridge-scheduling.cjs`、`scripts/test-opencode-bridge-question.cjs` 和
@@ -879,6 +887,12 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 `c208a45ce9a1225b7d9469ee1471c4d98e47067e6be38e2540669132125781d5`。产物核验结果为
 `applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.5`、`versionCode=125`，签名证书
 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+本轮对话页视觉迁移（2026-08-08）将 Flutter Work 时间线恢复为原版结构：助手 Markdown 直接铺底、思考/计划
+折叠行、命令状态卡、图片查看卡、居中回到底部按钮和一体化 Composer；新增 `work_screen_layout_test.dart`
+覆盖 1.5K 竖横屏和展开交互。完整 Flutter test 已增至 340 项，Analyze、Debug/Release 编译和 Android 14
+模拟器 smoke 均通过。Release 产物为 `versionName=1.8.6`、`versionCode=126`，SHA-256 为
+`65b6d36ce8f78d8226ad54c93597ece9d6c0f0c194f6c40cac937272a85294cb`，继续使用原稳定签名。
 
 同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏
 1220x2712、横屏 2712x1220 均启动成功，进程存活，最近 1200 行该包 logcat 无 FATAL/ANR。截图位于

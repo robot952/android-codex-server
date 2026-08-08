@@ -111,6 +111,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     return Scaffold(
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
+        toolbarHeight: 64,
         leading: IconButton(
           tooltip: backTooltip,
           onPressed: back,
@@ -121,13 +122,14 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              state.activeAgentName?.isNotEmpty == true
+              thread.title.isNotEmpty
+                  ? thread.title
+                  : state.activeAgentName?.isNotEmpty == true
                   ? state.activeAgentName!
-                  : thread.title.isEmpty
-                  ? '未命名任务'
-                  : thread.title,
+                  : '未命名任务',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
             ),
             if (thread.cwd.isNotEmpty)
               Text(
@@ -1867,7 +1869,7 @@ class _Transcript extends StatelessWidget {
             builder: _buildOlderHistoryIndicator,
           ),
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 18),
           sliver: SliverList(
             delegate: SliverChildBuilderDelegate((context, index) {
               final row = rows[index];
@@ -1920,16 +1922,17 @@ class _Transcript extends StatelessWidget {
         Positioned.fill(child: list),
         if (showJumpToBottom)
           Positioned(
-            right: 14,
-            bottom: 14,
+            left: 0,
+            right: 0,
+            bottom: 16,
             child: Material(
               color: codexRaised,
-              shape: const CircleBorder(),
-              elevation: 4,
+              shape: const CircleBorder(side: BorderSide(color: codexBorder)),
+              elevation: 3,
               child: IconButton(
                 tooltip: '回到底部',
                 onPressed: onJumpToBottom,
-                icon: const Icon(Icons.keyboard_arrow_down),
+                icon: const Icon(Icons.arrow_downward_rounded),
               ),
             ),
           ),
@@ -2153,6 +2156,32 @@ class _TimelineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (entry.kind == TimelineKind.userMessage) {
+      return _UserMessageTimelineCard(
+        entry: entry,
+        onOpenImage: onOpenImage,
+        imageLoadingPath: imageLoadingPath,
+      );
+    }
+    if (entry.kind == TimelineKind.agentMessage) {
+      return _MarkdownMessage(entry.text, onOpenRemoteFile: onOpenRemoteFile);
+    }
+    if (entry.kind == TimelineKind.reasoning ||
+        entry.kind == TimelineKind.plan) {
+      return _CollapsibleTimelineRow(entry: entry);
+    }
+    if (entry.kind == TimelineKind.command) {
+      return _CommandTimelineCard(entry: entry);
+    }
+    final imagePath = imagePreviewPath(entry);
+    if (imagePath != null) {
+      return _ImageTimelineCard(
+        entry: entry,
+        path: imagePath,
+        loading: imagePath == imageLoadingPath,
+        onOpenImage: onOpenImage,
+      );
+    }
     final isUser = entry.kind == TimelineKind.userMessage;
     final previewPath = imagePreviewPath(entry);
     final loadingImage = previewPath != null && previewPath == imageLoadingPath;
@@ -2307,6 +2336,337 @@ class _TimelineCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _UserMessageTimelineCard extends StatelessWidget {
+  const _UserMessageTimelineCard({
+    required this.entry,
+    required this.onOpenImage,
+    required this.imageLoadingPath,
+  });
+
+  final TimelineEntry entry;
+  final _OpenRemoteImage onOpenImage;
+  final String? imageLoadingPath;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: codexSurface,
+      borderRadius: BorderRadius.circular(7),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (entry.text.isNotEmpty) SelectableText(entry.text),
+            if (entry.attachments.isNotEmpty) ...[
+              if (entry.text.isNotEmpty) const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final attachment in entry.attachments)
+                    _AttachmentChip(
+                      attachment: attachment,
+                      loading: imageLoadingPath == attachment.remotePath,
+                      onOpenImage: onOpenImage,
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CollapsibleTimelineRow extends StatefulWidget {
+  const _CollapsibleTimelineRow({required this.entry});
+
+  final TimelineEntry entry;
+
+  @override
+  State<_CollapsibleTimelineRow> createState() =>
+      _CollapsibleTimelineRowState();
+}
+
+class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
+  late bool _expanded = widget.entry.kind == TimelineKind.plan;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final title = entry.title.trim().isEmpty ? '思考过程' : entry.title.trim();
+    final text = entry.text.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          borderRadius: BorderRadius.circular(5),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 3),
+            child: Row(
+              children: [
+                Icon(
+                  entry.kind == TimelineKind.plan
+                      ? Icons.pending_outlined
+                      : Icons.search,
+                  size: 22,
+                  color: codexMuted,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.titleSmall?.copyWith(color: codexMuted),
+                  ),
+                ),
+                Icon(
+                  _expanded
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down,
+                  size: 24,
+                  color: codexMuted,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded && text.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(35, 2, 8, 5),
+            child: SelectableText(
+              text,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: codexMuted, height: 1.35),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _CommandTimelineCard extends StatefulWidget {
+  const _CommandTimelineCard({required this.entry});
+
+  final TimelineEntry entry;
+
+  @override
+  State<_CommandTimelineCard> createState() => _CommandTimelineCardState();
+}
+
+class _CommandTimelineCardState extends State<_CommandTimelineCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final status = _commandStatus(entry.status);
+    return Material(
+      color: codexRaised,
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: codexBorder),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(11, 9, 9, 9),
+              child: Row(
+                children: [
+                  const Icon(Icons.terminal, size: 20),
+                  const SizedBox(width: 9),
+                  const Expanded(
+                    child: Text(
+                      '运行了命令',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  if (status != null)
+                    Text(
+                      status.label,
+                      style: TextStyle(color: status.color, fontSize: 14),
+                    ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 23,
+                    color: codexMuted,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded) ...[
+            if (entry.command.isNotEmpty) _CommandOutputBlock(entry.command),
+            if (entry.output.isNotEmpty) ...[
+              if (entry.command.isNotEmpty)
+                const Divider(height: 1, color: codexBorder),
+              _CommandOutputBlock(entry.output),
+            ],
+            if (entry.command.isEmpty && entry.output.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(11, 8, 11, 10),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('未提供命令内容', style: TextStyle(color: codexMuted)),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CommandOutputBlock extends StatelessWidget {
+  const _CommandOutputBlock(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    constraints: const BoxConstraints(maxHeight: 340),
+    color: codexBackground,
+    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: SelectableText(
+        text,
+        style: const TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 12,
+          color: codexText,
+          letterSpacing: 0,
+        ),
+      ),
+    ),
+  );
+}
+
+class _ImageTimelineCard extends StatelessWidget {
+  const _ImageTimelineCard({
+    required this.entry,
+    required this.path,
+    required this.loading,
+    required this.onOpenImage,
+  });
+
+  final TimelineEntry entry;
+  final String path;
+  final bool loading;
+  final _OpenRemoteImage onOpenImage;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: codexRaised,
+      borderRadius: BorderRadius.circular(7),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: loading ? null : () => onOpenImage(path),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 11, 8, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.visibility, size: 23, color: codexText),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      '查看了图片',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  loading
+                      ? const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : IconButton(
+                          tooltip: '查看图片',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => onOpenImage(path),
+                          icon: const Icon(Icons.visibility, size: 23),
+                        ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                path,
+                maxLines: 1,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  color: codexMuted,
+                  letterSpacing: 0,
+                ),
+              ),
+              if (entry.attachments.isNotEmpty) ...[
+                const SizedBox(height: 7),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final attachment in entry.attachments)
+                      _AttachmentChip(
+                        attachment: attachment,
+                        loading: false,
+                        onOpenImage: onOpenImage,
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CommandStatus {
+  const _CommandStatus(this.label, this.color);
+
+  final String label;
+  final Color color;
+}
+
+_CommandStatus? _commandStatus(String raw) {
+  return switch (raw.trim().toLowerCase()) {
+    'completed' ||
+    'complete' ||
+    'done' => const _CommandStatus('完成', codexGreen),
+    'failed' || 'error' => const _CommandStatus('失败', codexRed),
+    'declined' || 'rejected' => const _CommandStatus('已拒绝', codexRed),
+    'inprogress' ||
+    'in_progress' ||
+    'running' ||
+    'active' => const _CommandStatus('运行中', codexAmber),
+    _ => null,
+  };
 }
 
 class _MarkdownMessage extends StatelessWidget {
@@ -2777,7 +3137,7 @@ class _Composer extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
+          padding: const EdgeInsets.fromLTRB(8, 5, 8, 8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -2794,7 +3154,7 @@ class _Composer extends StatelessWidget {
               Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: codexSurface,
+                  color: const Color(0xFF1B1B1B),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: codexBorder),
                 ),
@@ -2849,7 +3209,7 @@ class _Composer extends StatelessWidget {
                       controller: controller,
                       focusNode: focusNode,
                       enabled: !state.submitting,
-                      minLines: 2,
+                      minLines: 3,
                       maxLines: 6,
                       textInputAction: TextInputAction.newline,
                       onChanged: onChanged,
@@ -2858,11 +3218,6 @@ class _Composer extends StatelessWidget {
                         border: InputBorder.none,
                         isDense: true,
                         contentPadding: EdgeInsets.zero,
-                        prefixIcon: const Icon(Icons.edit_outlined, size: 19),
-                        prefixIconConstraints: const BoxConstraints(
-                          minWidth: 28,
-                          minHeight: 28,
-                        ),
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -2876,6 +3231,10 @@ class _Composer extends StatelessWidget {
                               !state.submitting &&
                               !attachmentBusy,
                           padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 36,
+                            height: 36,
+                          ),
                           onSelected: (value) {
                             if (value == 'image') {
                               onAttachImage();
@@ -2903,12 +3262,16 @@ class _Composer extends StatelessWidget {
                               ),
                             ),
                           ],
-                          icon: const Icon(Icons.attach_file, size: 20),
+                          icon: const Icon(Icons.add, size: 23),
                         ),
                         PopupMenuButton<String>(
                           tooltip: '会话操作',
                           enabled: !state.loading && !attachmentBusy,
                           padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 36,
+                            height: 36,
+                          ),
                           onSelected: (value) => unawaited(onAction(value)),
                           itemBuilder: (context) => [
                             if (state.activeAgentCapabilities.threadGoals)
@@ -3007,6 +3370,9 @@ class _Composer extends StatelessWidget {
                                   style: IconButton.styleFrom(
                                     backgroundColor: codexRed,
                                     foregroundColor: Colors.white,
+                                    shape: const CircleBorder(),
+                                    minimumSize: const Size.square(42),
+                                    padding: EdgeInsets.zero,
                                   ),
                                   icon: const Icon(Icons.stop_rounded),
                                 )
@@ -3020,6 +3386,11 @@ class _Composer extends StatelessWidget {
                                               state.attachments.isEmpty)
                                       ? null
                                       : onSend,
+                                  style: IconButton.styleFrom(
+                                    shape: const CircleBorder(),
+                                    minimumSize: const Size.square(42),
+                                    padding: EdgeInsets.zero,
+                                  ),
                                   icon: const Icon(Icons.arrow_upward_rounded),
                                 ),
                         ),
@@ -3221,19 +3592,16 @@ class _ContextUsageButton extends StatelessWidget {
         ),
       ],
       child: SizedBox.square(
-        dimension: 28,
+        dimension: 32,
         child: Stack(
           alignment: Alignment.center,
           children: [
             CircularProgressIndicator(
-              value: window > 0 ? ratio : null,
-              strokeWidth: 3,
+              value: known ? ratio : 0,
+              strokeWidth: 2.5,
+              constraints: const BoxConstraints.tightFor(width: 19, height: 19),
               backgroundColor: codexBorder,
               color: ratio > .85 ? codexRed : codexAmber,
-            ),
-            Text(
-              window > 0 ? '${(ratio * 100).round()}%' : '?',
-              style: const TextStyle(fontSize: 8, letterSpacing: 0),
             ),
           ],
         ),

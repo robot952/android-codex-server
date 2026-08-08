@@ -41,15 +41,17 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 
 ## Work view
 
-- Compact back/title/working-directory bar
+- Compact back/title/working-directory bar; the title is the active thread title, with the remote cwd as a monospace subtitle and a vertical-ellipsis menu at the end
 - Full-width timeline, not chat cards nested inside section cards
 - User messages use a restrained surface; agent output is native Markdown
-- Reasoning and plan sections are collapsible
-- Command items show command, status, and expandable output
+- Reasoning and plan sections are single-line rows with a search/pending icon and a chevron; they expand in place only when tapped
+- Command items use a raised bordered row with a terminal icon, the fixed label `运行了命令`, a localized status (`完成`/`失败`/`运行中`) and an expandable output
+- Image tool items use a raised row with an eye icon on both sides, the fixed label `查看了图片`, and a one-line selectable remote path
 - File changes show aggregate additions/deletions and a row per changed file
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
-- Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions.
+- Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions. Its stable order is add, more, permission,
+  hollow context ring, model/effort, and the circular send/stop action; the task input has a minimum height of roughly 72 dp.
   The permission action always uses the short visible label `权限`; its icon identifies the selected
   mode. Context usage and model form one compact, right-aligned group next to the send/stop button;
   a long model label expands left only as far as the permission action, then truncates with an ellipsis.
@@ -108,3 +110,5 @@ Protocol mapping: `turn/start`, `turn/steer`, `turn/interrupt`, `review/start`, 
 - No gradients, decorative orbs, nested cards, oversized typography, or WebView UI
 - Text uses zero letter spacing and stable control dimensions
 - Diffs use green/red only for semantic additions/deletions; blue and amber cover other states
+- Keep assistant Markdown unframed and reserve cards for commands, image tools, user input, and file changes. The centered down-arrow is a floating
+  control between the transcript and composer, never a right-edge overlay on a timeline row.
