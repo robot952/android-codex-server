@@ -11,8 +11,55 @@ import 'codex_protocol.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
 
+/// The small part of an SSH exec session used by the JSONL adapter.
+///
+/// Keeping this boundary separate from [SSHSession] makes teardown and stream
+/// ordering testable without opening a real socket.
+abstract interface class CodexSession {
+  Stream<Uint8List> get stdout;
+  Stream<Uint8List> get stderr;
+  Future<void> get done;
+
+  void write(Uint8List data);
+
+  /// Immediately stops the channel and its local upload stream.
+  void terminate();
+}
+
 typedef CodexSessionOpener =
-    Future<SSHSession> Function(SSHClient client, String command);
+    Future<CodexSession> Function(RemoteServerClient host, String command);
+
+final class _SshCodexSession implements CodexSession {
+  _SshCodexSession(this._session);
+
+  final SSHSession _session;
+
+  @override
+  Stream<Uint8List> get stdout => _session.stdout;
+
+  @override
+  Stream<Uint8List> get stderr => _session.stderr;
+
+  @override
+  Future<void> get done => _session.done;
+
+  @override
+  void write(Uint8List data) => _session.write(data);
+
+  @override
+  void terminate() {
+    // A graceful SSHSession.close() waits for the remote peer and can send
+    // EOF after the host transport has already gone away. Destruction is the
+    // same teardown used by SSHClient.close() and is idempotent.
+    try {
+      _session.channel.destroy();
+    } catch (_) {
+      try {
+        _session.close();
+      } catch (_) {}
+    }
+  }
+}
 
 final class CodexResponseTooLargeException implements Exception {
   const CodexResponseTooLargeException(this.message, {this.id});
@@ -63,7 +110,7 @@ class CodexAgentClient
   final StreamController<RemoteAgentEvent> _eventController =
       StreamController<RemoteAgentEvent>.broadcast(sync: true);
 
-  SSHSession? _session;
+  CodexSession? _session;
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
   CodexProtocolGeneration? _scope;
@@ -157,9 +204,9 @@ class CodexAgentClient
 
     final scope = _protocol.beginGeneration();
     final command = buildCodexAppServerCommand(profile);
-    final SSHSession session;
+    final CodexSession session;
     try {
-      session = await _sessionOpener(host.requireSshClient(), command);
+      session = await _sessionOpener(host, command);
     } catch (_) {
       _protocol.invalidateGeneration();
       rethrow;
@@ -612,7 +659,11 @@ class CodexAgentClient
     final session = _session;
     _session = null;
     await _cancelReaders();
-    session?.close();
+    try {
+      session?.terminate();
+    } catch (_) {
+      // A transport may already have closed while the host state propagated.
+    }
     await session?.done.catchError((_) {});
   }
 
@@ -757,13 +808,15 @@ class CodexAgentClient
         throw StateError('${kind.label} 通道已断开');
       }
       session.write(Uint8List.fromList(utf8.encode(line)));
-      await session.flush();
+      // Do not call SSHSession.flush() here. dartssh2 implements flush by
+      // binding the raw Socket sink to a stream; the channel upload loop can
+      // concurrently add the packet and raises "StreamSink is bound".
     });
     _writeTail = next;
     return next;
   }
 
-  void _listen(SSHSession session, CodexProtocolGeneration scope) {
+  void _listen(CodexSession session, CodexProtocolGeneration scope) {
     final decodedStdout = utf8.decoder.bind(session.stdout);
     final decodedStderr = utf8.decoder.bind(session.stderr);
     _stdoutSubscription = decodedStdout.listen(
@@ -1009,8 +1062,13 @@ class CodexAgentClient
   }
 }
 
-Future<SSHSession> _openSession(SSHClient client, String command) =>
-    client.execute(command);
+Future<CodexSession> _openSession(
+  RemoteServerClient host,
+  String command,
+) async {
+  final session = await host.requireSshClient().execute(command);
+  return _SshCodexSession(session);
+}
 
 String buildCodexAppServerCommand(ServerProfile profile) {
   final remoteCommand = profile.remoteCommand.trim();

@@ -558,8 +558,35 @@ class AppController extends StateNotifier<AppUiState> {
       _invalidateFileManagerRequests();
     }
     try {
-      await _connections.disconnect(profileId);
-      await _agents.disconnect(profileId);
+      Object? agentError;
+      StackTrace? agentErrorStack;
+      final agentDisconnect = _agents
+          .disconnect(profileId)
+          .then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stack) {
+              agentError = error;
+              agentErrorStack = stack;
+            },
+          );
+      // Give the app-server channel a short chance to stop while the host
+      // socket is still usable. A hung remote process is unblocked by closing
+      // SSH below, then its cleanup is bounded as well.
+      await Future.any<void>([
+        agentDisconnect,
+        Future<void>.delayed(const Duration(milliseconds: 300)),
+      ]);
+      try {
+        await _connections.disconnect(profileId);
+      } finally {
+        await agentDisconnect.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () {},
+        );
+      }
+      if (agentError != null) {
+        Error.throwWithStackTrace(agentError!, agentErrorStack!);
+      }
       if (mounted) _clearSetupStates(profileId);
       _pendingApprovalsByThread.removeWhere(
         (key, _) => key.profileId == profileId,

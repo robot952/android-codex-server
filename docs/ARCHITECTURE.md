@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.2+122，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.3+123，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -490,6 +490,11 @@ Profile workspace，然后执行 `remoteCommand`。stdin/stdout 每行一个 JSO
 连接顺序是 initialize -> initialized；普通请求默认 120 秒，会话请求默认 180 秒，单条 stdout
 最大 8 MiB，stderr 单行最大 8 KiB。
 
+JSONL 写入只把完整行加入当前 SSH session 的 stdin，并由 `_writeTail` 串行化；不能在 channel 上传
+循环并发运行时调用 `SSHSession.flush()`，因为 dartssh2 会暂时绑定底层 Socket sink，迟到的 channel
+数据会触发 `StreamSink is bound to a stream`。Agent 断开先销毁自己的 exec channel，再关闭主 SSH；
+异常断线时销毁操作必须幂等并吞掉已关闭 transport 的 EOF/close 错误。
+
 当前 RPC 覆盖：model/list、thread/list、thread/start、thread/resume、thread/turns/list、turn/start、
 turn/interrupt、审批/用户输入响应、thread/compact/start、thread/rollback、thread/archive、
 thread/name/set、review/start 和 thread/goal/get|set|clear。协议层保持 thread、turn、item 三层概念；
@@ -861,10 +866,10 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
 
 最近一次本机验收记录（2026-08-08，当前工作树）：`flutter analyze --no-pub` 为 0 问题，完整
-`flutter test --no-pub` 共 337 项全部通过；最终 release APK 位于
+`flutter test --no-pub` 共 338 项全部通过；最终 release APK 位于
 `flutter_app/build/app/outputs/flutter-apk/app-release.apk`，大小 66,240,919 bytes，SHA-256 为
-`46927cfbea6f7ffbaf509bb968f533bacb854c99de7417ad1d183001494ff303`。产物核验结果为
-`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.2`、`versionCode=122`，签名证书
+`c208a45ce9a1225b7d9469ee1471c4d98e47067e6be38e2540669132125781d5`。产物核验结果为
+`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.3`、`versionCode=123`，签名证书
 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 
 同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏
@@ -1093,7 +1098,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 337 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 338 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。

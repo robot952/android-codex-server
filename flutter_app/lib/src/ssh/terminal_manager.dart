@@ -464,7 +464,15 @@ class _TerminalConnection {
     _stderrSubscription = null;
     final session = _session;
     _session = null;
-    session?.close();
+    if (session != null) {
+      try {
+        session.channel.destroy();
+      } catch (_) {
+        try {
+          session.close();
+        } catch (_) {}
+      }
+    }
   }
 }
 

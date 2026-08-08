@@ -600,6 +600,7 @@ class _BlockingThreadListAgent extends _FailingTurnAgent {
 
 class _HostBoundDisconnectAgent extends _FailingTurnAgent {
   RemoteServerClient? connectedHost;
+  bool hostWasConnectedWhenDisconnectStarted = false;
 
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
@@ -609,6 +610,7 @@ class _HostBoundDisconnectAgent extends _FailingTurnAgent {
 
   @override
   Future<void> disconnect() async {
+    hostWasConnectedWhenDisconnectStarted = connectedHost?.isConnected ?? false;
     connected = false;
     await connectedHost?.done;
   }
@@ -1237,7 +1239,7 @@ void main() {
     );
   });
 
-  test('disconnects SSH before an Agent that waits for host closure', () async {
+  test('stops Agent before SSH and unblocks a host-bound Agent', () async {
     final store = _MemoryProfileStore(
       const StoredProfiles(
         profiles: [_firstProfile],
@@ -1265,6 +1267,7 @@ void main() {
         .disconnectProfile(_firstProfile.id)
         .timeout(const Duration(seconds: 1));
 
+    expect(agent.hostWasConnectedWhenDisconnectStarted, isTrue);
     expect(host.isConnected, isFalse);
     expect(agent.isConnected, isFalse);
     expect(

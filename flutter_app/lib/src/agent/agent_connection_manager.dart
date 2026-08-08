@@ -722,8 +722,8 @@ class AgentConnectionManager {
       await entry.lock.synchronized(() async {
         if (!_isCurrent(key, entry)) return;
         entry.generation++;
+        _setState(key, const ConnectionState());
         await _disconnectClient(entry);
-        if (_isCurrent(key, entry)) _setState(key, const ConnectionState());
       });
     }
   }
