@@ -34,12 +34,14 @@ Runner 还必须能读取 Android SDK。构建脚本会优先识别仓库同级�
 sudo groupadd --force codexci
 sudo usermod -aG codexci codexci
 sudo install -d -o root -g codexci -m 2775 /var/www/html/agent-releases
+sudo mv /var/www/html/codex.apk /var/www/html/agent-releases/codex.apk
 sudo mv /var/www/html/agent.apk /var/www/html/agent-releases/agent.apk
+sudo ln -s agent-releases/codex.apk /var/www/html/codex.apk
 sudo ln -s agent-releases/agent.apk /var/www/html/agent.apk
 ~~~
 
-`codexci` 重新登录后才会获得新组。Nginx 保持 `/agent.apk` URL；发布脚本只会原子替换
-`/var/www/html/agent-releases/agent.apk`。
+`codexci` 重新登录后才会获得新组。Nginx 以 `/codex.apk` 为主下载 URL，并保留 `/agent.apk`
+兼容地址；发布脚本会原子替换专用目录中的两个文件。
 
 ## 2. 在 Gitee 注册自建 Runner
 
@@ -63,7 +65,7 @@ Runner 只应允许受保护分支和受保护标签使用。不要把注册 tok
 export GRADLE_USER_HOME=/opt/codex-remote-ci/gradle
 export CODEX_SIGNING_KEYSTORE=/opt/codex-remote-ci/codex-remote-stable.keystore
 export CODEX_RELEASE_PUBLISH_DIR=/var/www/html/agent-releases
-export CODEX_RELEASE_VERIFY_URLS=http://192.168.8.107/agent.apk,http://frp.asdb.top:18080/agent.apk
+export CODEX_RELEASE_VERIFY_URLS=http://192.168.8.107/codex.apk,http://frp.asdb.top:18080/codex.apk
 ./scripts/publish-tag-release.sh
 ~~~
 
@@ -101,8 +103,8 @@ git push origin v<versionName>
 3. 验证 release APK 证书 SHA-256 必须为
    `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 4. 生成 `dist/Agent-<versionName>.apk` 和 `dist/release-metadata.txt`。
-5. 原子替换下载文件，并检查内网 `http://192.168.8.107/agent.apk` 与外网
-   `http://frp.asdb.top:18080/agent.apk` 返回相同 SHA-256。
+5. 原子替换下载文件，并检查内网 `http://192.168.8.107/codex.apk` 与外网
+   `http://frp.asdb.top:18080/codex.apk` 返回相同 SHA-256。
 
 失败时不要移动或复用标签，也不要重复发布同一 `versionCode`。修复后增加版本号，重新提交并创建新标签，例如
 `v1.7.20`。Gitee 流水线重跑只适用于同一提交的构建环境故障，不应用于内容变更。

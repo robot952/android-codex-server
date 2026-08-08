@@ -76,6 +76,8 @@ class ConnectionForegroundService : Service() {
         ).apply {
             description = getString(R.string.connection_notification_channel_description)
             setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
         }
         getSystemService(NotificationManager::class.java)
             ?.createNotificationChannel(channel)
@@ -99,7 +101,8 @@ class ConnectionForegroundService : Service() {
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .setSilent(true)
+                .setDefaults(0)
+                .setSound(null)
                 .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .build()
         } else {

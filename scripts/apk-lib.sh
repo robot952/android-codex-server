@@ -17,6 +17,47 @@ apk_version_name() {
     printf '%s' "$version_name"
 }
 
+apk_version_code() {
+    local root_dir="$1"
+    local version_code
+    version_code="$(sed -nE 's/^[[:space:]]*version:[[:space:]]*[0-9A-Za-z.-]+\+([0-9]+)[[:space:]]*$/\1/p' "$root_dir/flutter_app/pubspec.yaml")"
+    if [[ ! "$version_code" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Unable to read a positive version code from flutter_app/pubspec.yaml" >&2
+        return 1
+    fi
+    printf '%s' "$version_code"
+}
+
+apk_find_apkanalyzer() {
+    local android_home="$1"
+    local candidate
+    candidate="$(find "$android_home/cmdline-tools" -type f -name apkanalyzer -perm -u+x \
+        -printf '%p\n' 2>/dev/null | sort -V | tail -n 1)"
+    if [[ -z "$candidate" ]]; then
+        echo "apkanalyzer was not found under $android_home/cmdline-tools" >&2
+        return 1
+    fi
+    printf '%s' "$candidate"
+}
+
+apk_version_code_from_apk() {
+    local android_home="$1"
+    local apk_path="$2"
+    local analyzer
+    local version_code
+    [[ -f "$apk_path" ]] || {
+        echo "APK was not produced: $apk_path" >&2
+        return 1
+    }
+    analyzer="$(apk_find_apkanalyzer "$android_home")"
+    version_code="$("$analyzer" manifest version-code "$apk_path" 2>/dev/null || true)"
+    if [[ ! "$version_code" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Unable to read APK version code: $apk_path" >&2
+        return 1
+    fi
+    printf '%s' "$version_code"
+}
+
 apk_find_build_tool() {
     local android_home="$1"
     local tool_name="$2"

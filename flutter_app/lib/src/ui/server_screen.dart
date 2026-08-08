@@ -1,14 +1,16 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app/app_controller.dart';
 import '../domain/models.dart';
+import '../platform/app_update_manager.dart';
 import '../platform/diagnostic_logger.dart';
+import 'app_update_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'server_metrics_strip.dart';
 import 'theme.dart';
@@ -29,12 +31,15 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   bool _editorVisible = false;
   bool _advanced = false;
   bool _passwordVisible = false;
+  bool _updateDialogVisible = false;
+  String? _deferredUpdateVersion;
   final DebugTapCounter _debugTapCounter = DebugTapCounter();
   String? _shownFingerprint;
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
+    ref.listen<AppUpdateState>(appUpdateProvider, _scheduleUpdatePrompt);
     _scheduleFingerprintDialog(state.pendingFingerprint);
     final blocking = _blockingConnection(state);
 
@@ -66,7 +71,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
               ),
               actions: [
                 if (!_editorVisible) _PromotionAction(onOpen: _openPromotion),
-                const _AppVersion(),
+                _AppVersion(onTap: _handleUpdateTap),
               ],
             ),
             body: AnimatedSwitcher(
@@ -367,6 +372,61 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     if (!opened && mounted) _showMessage('无法打开系统浏览器');
   }
 
+  void _scheduleUpdatePrompt(AppUpdateState? previous, AppUpdateState next) {
+    final update = next.availableUpdate;
+    if (update == null ||
+        !next.shouldPromptUpdate ||
+        _deferredUpdateVersion == update.versionName ||
+        _updateDialogVisible) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _updateDialogVisible) return;
+      unawaited(_showUpdateDialog(update));
+    });
+  }
+
+  Future<void> _handleUpdateTap() async {
+    final controller = ref.read(appUpdateProvider.notifier);
+    var update = ref.read(appUpdateProvider).availableUpdate;
+    if (update == null) {
+      await controller.checkForUpdates();
+      if (!mounted) return;
+      final updateState = ref.read(appUpdateProvider);
+      update = updateState.availableUpdate;
+      if (update == null) {
+        _showMessage(
+          updateState.checkError == null
+              ? '当前已是最新版本'
+              : '检查更新失败：${updateState.checkError}',
+        );
+        return;
+      }
+    }
+    if (!_updateDialogVisible) await _showUpdateDialog(update);
+  }
+
+  Future<void> _showUpdateDialog(AppUpdateInfo update) async {
+    if (!mounted || _updateDialogVisible) return;
+    _updateDialogVisible = true;
+    final ignored = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => AppUpdateDialog(
+        update: update,
+        onLater: () => Navigator.of(dialogContext).pop(false),
+        onIgnore: () => Navigator.of(dialogContext).pop(true),
+      ),
+    );
+    _updateDialogVisible = false;
+    _deferredUpdateVersion = update.versionName;
+    if (ignored == true && mounted) {
+      await ref
+          .read(appUpdateProvider.notifier)
+          .ignoreVersion(update.versionName);
+    }
+  }
+
   void _handleLogoTap(bool debugEnabled) {
     if (debugEnabled) {
       _showMessage('Debug 模式已开启');
@@ -491,26 +551,86 @@ class _PromotionAction extends StatelessWidget {
   }
 }
 
-class _AppVersion extends StatefulWidget {
-  const _AppVersion();
+class _AppVersion extends ConsumerWidget {
+  const _AppVersion({required this.onTap});
+
+  final VoidCallback onTap;
 
   @override
-  State<_AppVersion> createState() => _AppVersionState();
-}
-
-class _AppVersionState extends State<_AppVersion> {
-  late final Future<PackageInfo> _packageInfo = PackageInfo.fromPlatform();
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<PackageInfo>(
-      future: _packageInfo,
-      builder: (context, snapshot) => Padding(
-        padding: const EdgeInsets.only(right: 10),
-        child: Center(
-          child: Text(
-            snapshot.hasData ? 'v${snapshot.data!.version}' : 'v--',
-            style: Theme.of(context).textTheme.bodySmall,
+  Widget build(BuildContext context, WidgetRef ref) {
+    final updateState = ref.watch(appUpdateProvider);
+    final description = updateState.availableUpdate != null
+        ? '有新版本，查看更新'
+        : updateState.checking
+        ? '检查更新中'
+        : '检查更新';
+    return Padding(
+      padding: const EdgeInsets.only(right: 10),
+      child: Center(
+        child: Tooltip(
+          message: description,
+          child: Semantics(
+            button: true,
+            label: description,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(5),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'v${updateState.installedVersion}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (updateState.availableUpdate != null) ...[
+                          const SizedBox(width: 5),
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: codexGreen,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    SizedBox(
+                      height: 16,
+                      child: updateState.checking
+                          ? const Align(
+                              alignment: Alignment.centerRight,
+                              child: SizedBox.square(
+                                dimension: 11,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                ),
+                              ),
+                            )
+                          : Text(
+                              updateState.availableUpdate == null
+                                  ? '检查更新'
+                                  : '有更新',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: updateState.availableUpdate == null
+                                        ? Theme.of(
+                                            context,
+                                          ).colorScheme.onSurfaceVariant
+                                        : codexGreen,
+                                  ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
       ),

@@ -196,12 +196,13 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
 脚本读取 `flutter_app/pubspec.yaml` 的版本，使用
-`keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/agent.apk`，然后用
+`keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/codex.apk`（同时保留
+`agent.apk` 兼容别名），然后用
 `curl --noproxy '*'` 校验：
 
 ```text
-内网：http://192.168.8.107/agent.apk
-外网：http://frp.asdb.top:18080/agent.apk
+内网：http://192.168.8.107/codex.apk
+外网：http://frp.asdb.top:18080/codex.apk
 ```
 
 两个地址返回的 SHA-256 必须与 Release APK 相同。发布报告必须同时给出这两个完整地址；网络代理

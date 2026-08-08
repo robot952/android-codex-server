@@ -273,7 +273,11 @@ async function main() {
     assert.deepEqual(prompt.params.questions[0].options.map(option => option.label), ["快速", "完整"]);
 
     const resumed = await sendRpc("thread/resume", { threadId: "session-1" });
-    const resumedTurn = resumed.thread.turns[resumed.thread.turns.length - 1];
+    // The paged resume contract keeps turns in initialTurnsPage.data and removes
+    // the legacy thread.turns field. The fake session has one active turn here.
+    assert(resumed.initialTurnsPage && Array.isArray(resumed.initialTurnsPage.data));
+    assert.equal(resumed.initialTurnsPage.data.length, 1);
+    const resumedTurn = resumed.initialTurnsPage.data[0];
     assert.equal(resumedTurn.status, "inProgress");
     assert.equal(
       resumedTurn.id,

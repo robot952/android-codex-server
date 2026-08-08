@@ -67,7 +67,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.0+120`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.1+121`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |
@@ -157,10 +157,10 @@ keystore/codex-remote-stable.keystore
 ```
 
 脚本把产物归档为 `dist/Agent-<version>.apk`，原子更新
-`/var/www/html/agent.apk`，并绕过代理校验以下两个地址的 SHA-256：
+`/var/www/html/codex.apk`（同时保留 `agent.apk` 兼容别名），并绕过代理校验以下两个地址的 SHA-256：
 
-- 内网：<http://192.168.8.107/agent.apk>
-- 外网：<http://frp.asdb.top:18080/agent.apk>
+- 内网：<http://192.168.8.107/codex.apk>
+- 外网：<http://frp.asdb.top:18080/codex.apk>
 
 交付 APK 时必须同时给出内网和外网完整地址。地址属于部署环境，不要写入 App 业务逻辑，也不要在
 文档、命令或 Git 中记录 FRP token。

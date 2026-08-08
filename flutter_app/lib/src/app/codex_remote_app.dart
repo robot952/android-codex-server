@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/models.dart';
 import '../domain/models.dart' as domain;
+import '../platform/app_update_manager.dart';
 import '../platform/background_connection_bridge.dart';
 import '../platform/turn_completion_notifications.dart';
 import '../ui/agent_settings_dialog.dart';
@@ -76,6 +77,9 @@ class _AppRootState extends ConsumerState<_AppRoot>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
     _syncMetricsPolling(ref.read(appControllerProvider));
+    if (state == AppLifecycleState.resumed) {
+      unawaited(ref.read(appUpdateProvider.notifier).refreshAfterResume());
+    }
   }
 
   @override

@@ -190,7 +190,9 @@ void main() {
     // field that is already laid out beneath the inset.
     final proxy = find.byKey(const ValueKey('remote-setup-proxy'));
     await tester.ensureVisible(proxy);
+    expect(proxy.hitTestable(), findsOneWidget);
     await tester.tap(proxy);
+    await tester.pumpAndSettle();
     expect(
       tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
       isTrue,
@@ -219,7 +221,12 @@ void main() {
       find.byKey(const ValueKey('remote-setup-keyboard-padding')),
     );
     expect((padding.padding as EdgeInsets).bottom, 276);
+    expect(proxy.hitTestable(), findsOneWidget);
     expect(tester.getRect(proxy).bottom, lessThanOrEqualTo(540));
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
 }

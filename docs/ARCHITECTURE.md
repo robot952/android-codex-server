@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.0+120，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.1+121，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -69,18 +69,21 @@ OpenCode Agent，将事件渲染为接近 VS Code Codex 插件的移动端工作
   （浏览、上传、下载、重命名、删除、复制/移动）；
 - Android 后台连接保护（前台 Service、partial wake lock）、回合完成通知/去重/点击直达，以及可选的
   Debug 日志采集、崩溃记录、脱敏、轮转、预览和系统分享；
+- Android 应用内更新：启动自动检查与手动检查 Gitee 稳定 Release、SemVer 比较、更新日志、忽略版本、
+  可恢复的 DownloadManager 下载进度、未知来源授权后的系统 APK 安装，以及包名/版本/稳定签名校验；
 - Agent 首次成功连接时的一次性工作目录提示、SFTP 目录浏览、确认保存和设置菜单手动重开；
 - Codex 与 OpenCode 固定版本运行时探测、当前 SSH 用户目录隔离安装、HTTP/HTTPS 下载代理、流式安装
   进度、最小化/失败重试、安装后复检和自动连接，以及只触碰当前用户托管路径的卸载脚本；
 - Codex 与 OpenCode 全局配置读取/保存、真实 API 连通性测试、OpenCode 自定义模型同步，以及按服务器 +
   Agent 的本地默认值持久化。
 
-仍未形成可交付端到端验收的部分必须明确标为“缺口”：本轮尚未在授权真实服务器验证 OpenCode 固定版本
-下载/安装/卸载、真实 Provider/API、长时 turn/steer/interrupt、断线和后台行为，也尚未完成 Flutter test、
-新 APK 和高分辨率模拟器 UI 回归。Codex 子 Agent 独立 thread 导航/父子返回栈已经接入 Flutter，但仍需
-真实设备长时回归。两种 Agent 的自动安装、终端、文件管理、后台保护、完成通知和 Debug 日志已经有
-Flutter/Android 实现，但仍需在目标设备上做权限、厂商后台限制和长时运行回归；不要因为代码和纯单元
-测试已经接入，就把真实服务器或 APK 验收写成已完成。
+仍未形成可交付端到端验收的部分必须明确标为“缺口”：本轮 Flutter test、新 debug APK 和高分辨率
+模拟器启动回归已经通过，但尚未在授权真实服务器验证 OpenCode 固定版本下载/安装/卸载、真实
+Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在真机完成应用内更新的下载、未知来源授权
+与覆盖安装。Codex 子 Agent 独立 thread 导航/父子返回栈已经接入 Flutter，但仍需真实设备长时回归。
+两种 Agent 的自动安装、终端、文件管理、后台保护、完成通知和 Debug 日志已经有 Flutter/Android 实现，
+但仍需在目标设备上做权限、厂商后台限制和长时运行回归；不要因为代码、纯单元测试和启动 smoke 已通过，
+就把真实服务器或系统安装流程写成已完成。
 
 下列内容不属于仓库提交内容：真实服务器密码、私钥、Codex 登录缓存、OpenAI API key、FRP token、
 本机 .workflow-cache/、.codegraph/ 索引和本地资料目录 codex-manual-markdown (8)。不要把它们
@@ -125,14 +128,17 @@ Flutter/Android 实现，但仍需在目标设备上做权限、厂商后台限�
 | flutter_app/lib/src/platform/background_connection_bridge.dart | Flutter 到 Android 前台连接保护 Service 的启停桥接 | 当前运行；平台失败隔离 |
 | flutter_app/lib/src/platform/turn_completion_notifications.dart | 回合完成通知、bounded 去重、子 Agent 过滤和点击深链 | 当前运行；通知权限/插件失败降级 |
 | flutter_app/lib/src/platform/diagnostic_logger.dart | 持久化 Debug 日志、崩溃记录、脱敏、分段轮转、导出和分享 | 当前运行；普通日志需显式开启 |
+| flutter_app/lib/src/platform/app_update_manager.dart | Gitee Release 检查、SemVer/资源筛选、忽略版本持久化、下载/安装状态机和 Android MethodChannel 抽象 | 当前运行；只在 Android 自动检查 |
 | flutter_app/lib/src/ui/diagnostic_log_sheet.dart | Debug 日志预览、复制、清空、分享和关闭 Debug | 当前运行 |
+| flutter_app/lib/src/ui/app_update_dialog.dart | 更新日志、下载进度、后台继续、忽略版本、失败重试和安装操作 | 当前运行 |
 | flutter_app/lib/src/ssh/terminal_manager.dart | 每 profile 独立 SSH PTY、输出历史、resize、重试和 generation 隔离 | 当前运行 |
 | flutter_app/lib/src/ui/terminal_screen.dart | xterm 终端显示、输入、重连、隐藏和显式关闭 | 当前运行 |
 | flutter_app/lib/src/ui/file_manager_screen.dart | SFTP 文件浏览、上传/下载、重命名、删除、复制/移动和 SAF 保存 | 当前运行；尚需真机回归 |
 | flutter_app/android/app/src/main/kotlin/top/asdb/agent/ConnectionForegroundService.kt | Android 前台连接保护通知和 partial wake lock | 当前运行；`START_NOT_STICKY`，不承诺进程重启恢复 |
 | flutter_app/lib/src/ui/server_metrics_strip.dart | 两个列表共用的紧凑资源指标和点击详情 | 当前运行 |
 | flutter_app/lib/src/ui/theme.dart | Flutter 主题和产品色值 | 当前运行 |
-| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | legacy Profile、file_export 和 background Service MethodChannel | 当前运行；负责旧 Profile 导入、SAF 分块文件导出及服务启停 |
+| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | legacy Profile、file_export、background Service 和 app_update MethodChannel | 当前运行；负责旧 Profile 导入、SAF 分块文件导出、服务启停及系统下载/安装 |
+| flutter_app/android/app/src/main/AndroidManifest.xml | Android 权限、Activity、前台 Service 和应用名 | 当前运行；包含联网、通知、wake lock、dataSync 和未知来源安装声明 |
 | flutter_app/lib/src/domain/models.freezed.dart、models.g.dart | 生成代码 | 不要手工编辑 |
 | flutter_app/test | Flutter 单元测试和 Widget 测试 | 当前门禁 |
 | app/ | Kotlin/Compose、Codex 协议、终端、文件管理等旧实现 | 历史参考，不是入口 |
@@ -179,10 +185,13 @@ main.dart
                                                                                  +-- OpenCodeAgentClient
                                                                                        +-- bundled bridge -> loopback OpenCode serve
               +-- platform bridges: foreground service, local notifications,
-                  diagnostic logger and Android SAF file export
+                  diagnostic logger, Android SAF file export and app update
+              +-- AppUpdateController -> Gitee Release API
+                                      -> app_update MethodChannel -> DownloadManager/installer
 ~~~
 
-AppController 是当前唯一业务编排点。Widget 可以保留弹窗、草稿编辑和焦点等短生命周期状态，
+AppController 是 SSH、Agent 和工作区业务的唯一编排点；独立的 `AppUpdateController` 只管理应用自身版本、
+Release 检查和系统下载/安装，不进入 profile 或会话状态。Widget 可以保留弹窗、草稿编辑和焦点等短生命周期状态，
 但不能自己复制一份长期 Profile 或连接状态。连接状态通过 ServerConnectionManager.stateChanges
 流回控制器，再由 AppUiState.connectionStates 按 profile 更新页面；资源采样通过独立的
 serverMetricChanges 流回 AppUiState.serverMetrics，不得把采样失败写成全局连接错误。
@@ -219,6 +228,10 @@ AppUiState 是 Flutter 展示状态，字段分为：
 | 工作区 | workspacePickerVisible、workspaceLoading、workspaceCurrentPath、workspaceParentPath、workspaceDirectories、workspaceError | 已接入首次提示和手动目录浏览 |
 | 文件管理 | fileManagerProfileId、fileManagerLoading、fileManagerCurrentPath、fileManagerEntries、clipboard、operation、error | 控制器和 `FileManagerScreen` 已接入；按 profile/generation 校验 |
 | 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 探测、安装/卸载、进度弹窗、全局设置和 API 模型选项请求均已接入 |
+
+应用自身更新不属于 `AppUiState`：`appUpdateProvider` 持有独立 `AppUpdateState`，记录已安装版本、检查中、
+可用 Release、是否自动提示和 DownloadManager 状态。不要把它混入某个服务器 profile，也不要把远程
+Codex/OpenCode runtime 安装状态与手机 APK 更新状态混为一谈。
 
 ServerProfile 当前保存名称、主机、端口、用户名、密码/私钥、指纹、工作目录、代理、权限模式、
 `remoteCommand` 和 Agent 偏好。新增字段必须有默认值并保持旧 JSON 可解析。`AgentCapabilities` 描述
@@ -353,6 +366,8 @@ SFTP stdout 混用。
   读取限制为 1 MiB，输入页使用 imePadding/可滚动布局。
 - Codex/Agent 标题连续点击 10 次开启 `debugModeEnabled` 并持久化 Debug 日志开关；Debug 日志入口支持
   预览、选择性复制、清空、脱敏导出和系统分享，关闭 Debug 会停止普通事件记录但仍保留崩溃记录。
+- 顶部版本区域显示当前 `PackageInfo` 版本；启动后自动检查 Gitee 稳定 Release，检查中显示小转圈，发现
+  更新显示绿色状态点。点击版本区域可手动检查或重开更新弹窗，网络/格式错误只显示短提示，不影响服务器连接。
 - https://lowapi.asdb.top 通过 url_launcher 交给系统浏览器，不能改成内嵌 WebView。
 - 每个已连接服务器显示 CPU、内存、磁盘和上下行合计网速；指标位置在无数据时保持稳定，-- 表示尚无
   有效采样，不代表服务器返回了零值。
@@ -658,7 +673,17 @@ provider 与 URL、key、代理是否已配置，绝不记录其实际值。
 包含占位符时二次替换；Shell fixture 覆盖 `sh -n`、临时 HOME、Provider 保留、清空默认值、权限、
 密钥泄漏和 Responses/Chat 错误映射。
 
-## 10. 后台、终端、文件和诊断（当前实现）
+## 10. Android 平台桥接、后台、文件、诊断和更新（当前实现）
+
+`MainActivity` 当前注册四个 MethodChannel。新增原生能力必须沿用有界参数、中文错误边界和主线程回调，
+不能让 Widget 直接调用 Android API：
+
+| Channel | Flutter -> Android 方法 | 职责 |
+| --- | --- | --- |
+| `top.asdb.agent/legacy` | `readLegacyProfiles`、`clearLegacyProfiles` | 一次性读取/清理当前包内旧加密 Profile |
+| `top.asdb.agent/file_export` | `beginExport`、`writeExportChunk`、`finishExport` | 通过 SAF 选择目标并按最多 256 KiB 分块写入，失败清理半成品 |
+| `top.asdb.agent/background` | `start`、`stop` | 启停连接保护前台 Service |
+| `top.asdb.agent/app_update` | `enqueueDownload`、`queryDownload`、`installDownload` | 提交系统 APK 下载、查询字节/状态，以及申请权限或打开系统安装页 |
 
 Android Manifest 声明网络、通知、wake lock 和 `foreground-service:dataSync` 权限。Flutter 的
 `BackgroundConnectionBridge` 在任一 SSH/Agent lane 连接或回合运行时启停
@@ -682,6 +707,20 @@ Debug 模式由 Agent 图标连续十次点击开启。`DiagnosticLogger` 将普
 每段最多 128 KiB、最多保留 32 段；FlutterError、PlatformDispatcher 和 Zone 未捕获异常始终以 FATAL 级别
 记录。写入前会移除 ANSI、私钥、URL 凭据、Bearer/API key、password/token/secret 等敏感值；日志 sheet
 支持预览、复制、清空、导出和系统分享。当前没有把崩溃日志自动作为对话附件的功能。
+
+`AppUpdateController` 从 `PackageInfo` 读取已安装版本，Android 启动时以 5 秒超时查询 Gitee Release API；
+只接受非 prerelease、合法 SemVer 且包含 `Agent-<version>.apk` 或历史兼容
+`CodexRemote-<version>.apk` 的 Release。响应、标签、资源名和更新日志都有大小/条数上限；Build metadata
+不参与版本先后。自动提示受 SharedPreferences 中的忽略版本约束，手动点击版本区域仍可再次查看已发现更新。
+
+下载交给 Android `DownloadManager`，目标文件名附加时间戳避免同名覆盖；Flutter 以约 1 秒节流轮询下载
+字节数并展示下载中、完成、等待未知来源权限、等待系统安装和失败状态。“后台继续”只关闭弹窗，不取消
+系统下载。下载版本、资源名和 `downloadId` 以受校验的 JSON 持久化；启动时会重绑仍存在的任务，已完成的
+任务继续显示安装入口，失败或已安装版本会清理记录。回到前台时会重新查询处于安装/授权状态的任务；
+用户取消系统安装后可重新打开安装，不会永久卡在禁用状态。查询和 APK 元数据读取在独立后台 executor，
+MethodChannel 结果统一回主线程。安装前检查下载文件位于应用专属目录，并验证 `applicationId`、版本号递增
+和当前 APK 的签名证书一致；随后由系统未知来源设置页授权，再使用下载任务返回的 content URI 打开系统
+安装器。Manifest 的 `REQUEST_INSTALL_PACKAGES` 只允许发起该流程，不会绕过 Android 安装确认。
 
 远端 stderr 的非致命 HTTP 403/MCP 错误会以有界诊断消息显示，不能用原始 JSON/Rust 日志遮挡仍可用的会话；
 真正断线、认证失败和不可恢复错误仍明确显示。上述后台、通知、终端、文件和日志实现仍需在目标
@@ -731,11 +770,12 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 - 证书 SHA-256 为 72:72:22:18:70:9A:6D:7F:D0:E8:0B:94:49:03:AE:29:61:B4:CF:A8:AB:E0:35:86:F6:02:AC:DC:1E:A0:F5:2A；
 - 不删除、重生成、替换 keystore 或 alias；每个可覆盖安装发布都增加 Pubspec build number。
 
-本机发布脚本会验签、原子替换 /var/www/html/agent.apk，并绕过代理校验：
+本机发布脚本会验签、原子替换 `/var/www/html/codex.apk`，同时更新兼容别名
+`/var/www/html/agent.apk`，并绕过代理校验：
 
 ~~~text
-内网：http://192.168.8.107/agent.apk
-外网：http://frp.asdb.top:18080/agent.apk
+内网：http://192.168.8.107/codex.apk
+外网：http://frp.asdb.top:18080/codex.apk
 ~~~
 
 交付时必须同时给出两个完整地址和 APK SHA-256。不要在文档、提交或回复中写访问 token。
@@ -799,12 +839,14 @@ flutter test --no-pub
 | test/platform/local_file_exporter_test.dart | Android 导出会话 begin/write/complete/abort、分块上限和关闭后拒绝写入 |
 | test/platform/turn_completion_notifications_test.dart | 完成通知 payload、稳定通知 id、bounded 去重、子 Agent 过滤和点击导航解析 |
 | test/platform/diagnostic_logger_test.dart | 十次点击计数、日志开关、分段/轮转、脱敏、崩溃记录、预览、导出和分享 |
+| test/platform/app_update_manager_test.dart | Gitee Release/资源筛选、SemVer 与 prerelease 排序、忽略提示、进度/容量辅助函数，以及下载到安装的状态机 |
 | test/ssh/terminal_manager_test.dart | 每 profile PTY session、generation/身份失效、输入/输出上限、历史恢复、断开和重试 |
 | test/ui/markdown_links_test.dart | HTTP 链接可见化、远程路径安全编码/解码、非法路径和保存文件名清理 |
 | test/ui/work_content_test.dart | 图片工具路径提取、非图片工具拒绝、图片 MIME 映射、保存文件名清理和附件 MIME/文本分类 |
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
+| test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待和后台继续的 Widget 状态切换 |
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
@@ -818,11 +860,18 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 当前 `codex_agent_client_test.dart` 也未覆盖握手、请求超时、事件、审批或断线。新增共享状态、持久化、
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
 
-最近一次受限环境记录（不要据此声称完整验收）：`flutter analyze --no-pub` 和
-`flutter build bundle --debug --no-pub` 已通过；`flutter test` 在当前沙箱因不能绑定 `127.0.0.1:0` 而在
-测试加载阶段失败，不是测试断言失败。Android/Gradle 构建仍可能受本地 socket/FileLockContentionHandler
-限制，`adb`/模拟器也可能因 daemon 无法监听端口而无法做高分辨率截图回归。恢复权限或切换到可运行
-环境后，必须重新执行完整门禁并记录结果，旧 APK 不得冒充本轮产物。
+最近一次本机验收记录（2026-08-08，当前工作树）：`flutter analyze --no-pub` 为 0 问题，完整
+`flutter test --no-pub` 共 336 项全部通过；最终 release APK 位于
+`flutter_app/build/app/outputs/flutter-apk/app-release.apk`，大小 66,240,919 bytes，SHA-256 为
+`b3d3af88a6c61628be97a977312c9987af7eb86058ec6d9b92485975a70b12c7`。产物核验结果为
+`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.1`、`versionCode=121`，签名证书
+SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏
+1220x2712、横屏 2712x1220 均启动成功，进程存活，最近 1200 行该包 logcat 无 FATAL/ANR。截图位于
+`.workflow-cache/emulator/latest-release.png` 和 `.workflow-cache/emulator/latest-release-landscape.png`。
+该 smoke 只证明安装、启动、方向、包名和基础页面稳定，不代表真实 Gitee 下载、未知来源授权、覆盖安装、
+SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍按下方手工清单真机验证。
 
 ### 13.2 当前手工回归清单
 
@@ -851,6 +900,7 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 | 终端 | 会话列表进入 PTY；键盘输入、resize、输出历史、隐藏/重试/显式关闭；Codex JSONL 不被污染 |
 | 后台与通知 | 切后台保持服务和 SSH；回合完成只发一次通知；点击通知恢复正确服务器/会话；拒绝通知权限不崩溃 |
 | Debug | 连点十次开启；日志持续写入并轮转；预览、复制、清空、系统分享；敏感值不出现在导出文本 |
+| 应用内更新 | 自动/手动检查、无更新和失败提示、绿点与更新日志、忽略版本、下载进度、弹窗后台继续、失败重试、未知来源授权、系统安装页；升级后确认 Profile 仍在且签名未变 |
 | 并发与返回 | resume 同时收到 delta、列表与 Work 来回、系统 Back、SSH 断开、切后台再回来不会覆盖错误 thread |
 | 旋转/字体 | 推荐 1220x2712 与 2712x1220、放大字体无截断；同时核对实际截图尺寸 |
 | 进程重建 | 加密 Profile 可恢复，断线不会伪装成已连接 |
@@ -871,6 +921,7 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 | 后台 | Flutter bridge + Android foreground Service、partial wake lock；进程存活时 Dart stream 继续 | 真机权限/厂商后台限制、进程被杀后的恢复不保证 |
 | 完成通知 | 后台回合通知、稳定 id、bounded 去重、子 Agent 过滤、点击直达 | 真机通知权限、锁屏/厂商通知策略和完整端到端回归 |
 | Debug | 十次点击开启；日志持久化、FATAL 捕获、脱敏、128 KiB 分段/32 段轮转、预览/复制/清空/系统分享 | 真机崩溃复现、分享目标兼容；崩溃自动作为附件尚未实现 |
+| 应用内更新 | Gitee 稳定 Release 自动/手动检查、两种 APK 资源名兼容、忽略版本、DownloadManager 进度、后台继续、任务持久化/重绑、未知来源授权、取消后重试、包名/版本/证书校验和系统安装 | 真机弱网/断网、权限拒绝、下载失败、覆盖升级、真实安装器行为和进程重建回归 |
 | 终端/文件 | 每 profile 独立 SSH PTY；SFTP 浏览/上传/下载/重命名/删除/复制移动；SAF 分块导出 | 真机键盘、超大文件、断线和厂商文件选择器回归 |
 | 全局配置 | Codex/OpenCode 远程用户全局 Provider、认证、代理读取/保存和真实 API 测试；OpenCode 自定义模型同步/tombstone、Provider 前缀和显式协议已接入 | 真实服务器 Provider 差异、权限/登录/协议和模型缓存刷新回归；不得把 API key 放入命令参数或手机持久化 |
 
@@ -894,7 +945,8 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 13. 所有输入页面适配键盘、横竖屏和大字体，不允许控件重叠。
 14. Codex/OpenCode 自动安装有可见总体/下载进度，按服务器保存 HTTP/HTTPS 下载代理；安装中可最小化，失败可重试，卸载不得触碰系统 Codex、VS Code、~/.codex 或工作区（两种 Agent 当前均已接入，仍需真实服务器/真机长时验收）。
 15. 视觉接近 VS Code Codex：安静、紧凑、工作导向，不使用营销式大卡片、渐变或装饰背景。
-16. APK 签名永不变化，发布 build number 必增，交付同时给内网和外网地址。
+16. APK 签名永不变化，发布 build number 必增，交付同时给内网和外网地址；应用内更新只能安装同包名、
+    同稳定证书且版本递增的正式 APK，不能用换签名绕过覆盖升级问题。
 17. 本机构建下载优先使用 127.0.0.1:7890；已有依赖保持离线增量构建。
 18. 每次修改按风险自行测试，不能只以“编译通过”代替模拟器和真实流程验证。
 19. Git 提交信息使用中文；得到授权后才同步配置好的 Gitee origin。
@@ -954,6 +1006,20 @@ Codex schema / AgentKind / AgentCapabilities / RemoteAgentClient
 先定义 wire 模型、字段上限和 generation 过滤，再接 reducer/控制器/UI；不能把服务器响应直接塞入
 全局字符串。新增审批、附件或子 Agent 行为必须同时验证 thread 隔离、返回栈和 resume/delta 竞态。
 
+### 修改应用内更新
+
+~~~text
+app_update_manager.dart（Release 解析和状态机）
+  -> server_screen.dart + app_update_dialog.dart
+  -> top.asdb.agent/app_update MethodChannel
+  -> MainActivity DownloadManager/系统安装器 + AndroidManifest 权限
+  -> app_update_manager_test + app_update_dialog_test
+  -> analyze/test -> APK 包名/版本/签名校验 -> 模拟器 smoke -> 真机更新安装
+~~~
+
+Release 资源命名、仓库地址、版本比较或原生状态字符串变化时必须同时更新 Dart 和 Kotlin 两端；自动测试
+不覆盖系统未知来源设置和安装确认，最终仍要用上一稳定版真机执行一次真实覆盖升级。
+
 ## 16. 故障定位
 
 ### 16.1 Flutter 构建/分析失败
@@ -993,7 +1059,14 @@ model/list/thread/list -> thread/resume -> turn/start|turn/steer -> notification
 签名、证书 SHA-256 是否一致。旧版 top.asdb.codexremote 与 Agent 独立安装、数据互不共享；绝不能换签名、
 卸载用户数据或删除 keystore 解决升级问题。
 
-### 16.7 远端 403/503
+### 16.7 应用内更新失败
+
+先检查 Gitee API 是否返回非 prerelease Release、tag 是否为合法 SemVer、assets 是否包含精确的
+`Agent-<version>.apk` 或 `CodexRemote-<version>.apk`，再看 Debug 日志中的 `Update` 分类。下载失败检查
+DownloadManager 错误、网络和存储空间；安装失败检查未知来源授权、`top.asdb.agent` 包名、versionCode 和
+稳定签名。不要关闭 `usesCleartextTraffic=false` 来兼容 HTTP 更新源，也不要替换 keystore。
+
+### 16.8 远端 403/503
 
 若 Agent 出现 MCP/上游 HTTP 403，普通页面只应显示简短中文说明，详情写入当前的脱敏 Debug 日志；
 主 app-server 仍连接时不要把辅助 worker 错误显示成 SSH 断线。503、resume 超时应使用缓存和可取消
@@ -1004,7 +1077,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - OpenCode adapter、bridge、真实会话/回合协议、固定版本安装/卸载、全局配置和模型同步代码均已接入，
   但尚未在授权真实服务器验证固定版本下载、实际 Provider/API、长时 turn/steer/interrupt、断线和后台
   行为；rollback、review、thread goals、subagents、archive 和独立历史 cursor capability 当前关闭。
-- Codex/OpenCode runtime 探测、安装/卸载和进度 UI 已实现，但尚未在本轮受限环境完成真实远端下载、
+- Codex/OpenCode runtime 探测、安装/卸载和进度 UI 已实现，但尚未在本轮完成真实远端下载、
   断线中止、重装空间累积和 Android 后台长时安装回归。Codex 卸载当前会删除共享托管 root，因此也会
   移除其中的 OpenCode 和共享 Node；OpenCode 独立卸载没有这个范围问题。
 - 终端、SFTP 文件管理、后台前台服务、完成通知和 Debug 日志分享已有实现，但缺少 Android integration
@@ -1016,9 +1089,12 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - thread/list 下一页入口已接入 Flutter 列表，按 lane 游标分页并自动去重；resume 已有有界通知缓冲、
   快照协调和顺序重放，OpenCode bridge 也会投影 `initialTurnsPage` 并遵守 `itemsView`，但超大活动
   会话、分页游标失效、缓冲溢出和降级链仍需真实服务器压测。
+- 应用内更新已接入 Gitee 检查、DownloadManager 和系统安装器；下载任务以受校验记录跨进程持久化并在
+  启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
+  仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 流程。本次受限环境的 Flutter test 因本地 socket 权限未
-  启动，Gradle 构建受 FileLockContentionHandler 限制，也尚未完成 ADB 高分辨率模拟器回归或生成新 APK。
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 336 项 Flutter test、release APK
+  和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。
 - Flutter iOS 目录是生成骨架，未作为可发布 iOS 版本验收。
