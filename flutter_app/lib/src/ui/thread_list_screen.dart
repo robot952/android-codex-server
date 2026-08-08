@@ -109,7 +109,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
             onPressed: agentConnected && !loading
                 ? controller.refreshThreads
                 : null,
-            icon: loading
+            icon: hostConnected && loading
                 ? const SizedBox.square(
                     dimension: 19,
                     child: CircularProgressIndicator(strokeWidth: 2),
@@ -245,6 +245,9 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
                 threads: threads,
                 diagnostic: state.diagnostic,
                 onRetry: controller.ensureActiveAgent,
+                onReconnect: profile == null
+                    ? null
+                    : () => controller.requestConnect(profile),
                 onOpen: controller.openThread,
                 hasMoreThreads: controller.activeThreadListHasMore,
                 onLoadMore: controller.loadMoreThreads,
@@ -288,6 +291,7 @@ class _ThreadListBody extends StatefulWidget {
     required this.threads,
     required this.diagnostic,
     required this.onRetry,
+    required this.onReconnect,
     required this.onOpen,
     required this.hasMoreThreads,
     required this.onLoadMore,
@@ -301,6 +305,7 @@ class _ThreadListBody extends StatefulWidget {
   final List<AgentThread> threads;
   final String? diagnostic;
   final Future<void> Function() onRetry;
+  final Future<void> Function()? onReconnect;
   final void Function(AgentThread thread) onOpen;
   final bool hasMoreThreads;
   final Future<void> Function() onLoadMore;
@@ -351,6 +356,7 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
     final threads = widget.threads;
     final diagnostic = widget.diagnostic;
     final onRetry = widget.onRetry;
+    final onReconnect = widget.onReconnect;
     final onOpen = widget.onOpen;
     if (threads.isNotEmpty) {
       return NotificationListener<ScrollNotification>(
@@ -402,7 +408,8 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
       );
     }
 
-    if (loading || connectionState.phase == ConnectionPhase.connecting) {
+    if (hostConnected &&
+        (loading || connectionState.phase == ConnectionPhase.connecting)) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -435,11 +442,12 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
             ),
             const SizedBox(height: 10),
             Text(message, textAlign: TextAlign.center),
-            if (failed && hostConnected) ...[
+            if ((!hostConnected && onReconnect != null) ||
+                (failed && hostConnected)) ...[
               const SizedBox(height: 12),
               IconButton.filledTonal(
-                tooltip: '重新连接 ${agent.label}',
-                onPressed: onRetry,
+                tooltip: hostConnected ? '重新连接 ${agent.label}' : '重新连接服务器',
+                onPressed: hostConnected ? onRetry : onReconnect,
                 icon: const Icon(Icons.refresh),
               ),
             ],

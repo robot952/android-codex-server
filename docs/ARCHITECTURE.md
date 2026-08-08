@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.1+121，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.2+122，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -861,10 +861,10 @@ app-server、Android 前台 Service 和系统通知展示仍没有自动化覆�
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
 
 最近一次本机验收记录（2026-08-08，当前工作树）：`flutter analyze --no-pub` 为 0 问题，完整
-`flutter test --no-pub` 共 336 项全部通过；最终 release APK 位于
+`flutter test --no-pub` 共 337 项全部通过；最终 release APK 位于
 `flutter_app/build/app/outputs/flutter-apk/app-release.apk`，大小 66,240,919 bytes，SHA-256 为
-`b3d3af88a6c61628be97a977312c9987af7eb86058ec6d9b92485975a70b12c7`。产物核验结果为
-`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.1`、`versionCode=121`，签名证书
+`46927cfbea6f7ffbaf509bb968f533bacb854c99de7417ad1d183001494ff303`。产物核验结果为
+`applicationId=top.asdb.agent`、应用名 `Agent`、`versionName=1.8.2`、`versionCode=122`，签名证书
 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 
 同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏
@@ -1093,7 +1093,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 336 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 337 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。

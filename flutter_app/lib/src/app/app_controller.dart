@@ -108,6 +108,7 @@ class AppController extends StateNotifier<AppUiState> {
   final SubAgentThreadRegistry _subAgentThreadRegistry =
       SubAgentThreadRegistry();
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
+  final Map<AgentConnectionKey, int> _agentLoadRevisions = {};
   final Map<AgentConnectionKey, String?> _agentThreadNextCursors = {};
   final Map<AgentConnectionKey, String> _agentThreadCursorSearches = {};
   final Map<AgentConnectionKey, Future<void>> _agentThreadPageRequests = {};
@@ -3930,6 +3931,8 @@ class AppController extends StateNotifier<AppUiState> {
   }) {
     final pending = _agentLoadRequests[key];
     if (pending != null) return pending;
+    final loadRevision = (_agentLoadRevisions[key] ?? 0) + 1;
+    _agentLoadRevisions[key] = loadRevision;
     late final Future<void> request;
     request =
         _performAgentLoad(
@@ -3937,6 +3940,7 @@ class AppController extends StateNotifier<AppUiState> {
           profile,
           includeModels: includeModels,
           runtimePrepared: runtimePrepared,
+          loadRevision: loadRevision,
         ).whenComplete(() {
           if (identical(_agentLoadRequests[key], request)) {
             _agentLoadRequests.remove(key);
@@ -3951,7 +3955,9 @@ class AppController extends StateNotifier<AppUiState> {
     ServerProfile profile, {
     required bool includeModels,
     required bool runtimePrepared,
+    required int loadRevision,
   }) async {
+    if (!_isAgentLoadCurrent(key, loadRevision)) return;
     _agentThreadCursorSearches[key] = '';
     _agentThreadNextCursors[key] = null;
     _setAgentLoading(key, true);
@@ -3959,8 +3965,11 @@ class AppController extends StateNotifier<AppUiState> {
       final effectiveProfile = runtimePrepared
           ? profile
           : await _prepareRemoteRuntime(key, profile);
-      if (effectiveProfile == null) return;
+      if (effectiveProfile == null || !_isAgentLoadCurrent(key, loadRevision)) {
+        return;
+      }
       await _agents.connect(effectiveProfile, key.agent);
+      if (!_isAgentLoadCurrent(key, loadRevision)) return;
       _showInitialWorkspacePickerIfNeeded(key, effectiveProfile);
       final generation = _agents.generation(key);
       AgentThreadPage? threadPage;
@@ -3987,7 +3996,10 @@ class AppController extends StateNotifier<AppUiState> {
             }
           }(),
       ]);
-      if (!mounted || !_agents.isCurrentGeneration(key, generation)) return;
+      if (!_isAgentLoadCurrent(key, loadRevision) ||
+          !_agents.isCurrentGeneration(key, generation)) {
+        return;
+      }
 
       final threadLists = Map<AgentConnectionKey, List<AgentThread>>.of(
         state.agentThreadLists,
@@ -4041,15 +4053,22 @@ class AppController extends StateNotifier<AppUiState> {
       }
       _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
     } catch (error) {
-      if (mounted && _isActiveKey(key)) {
+      if (_isAgentLoadCurrent(key, loadRevision) && _isActiveKey(key)) {
         state = state.copyWith(
           error: _message(error, '${key.agent.label} 连接失败'),
         );
       }
     } finally {
-      if (mounted) _setAgentLoading(key, false);
+      if (_isAgentLoadCurrent(key, loadRevision)) {
+        _setAgentLoading(key, false);
+      }
     }
   }
+
+  bool _isAgentLoadCurrent(AgentConnectionKey key, int revision) =>
+      mounted &&
+      _agentLoadRevisions[key] == revision &&
+      _connections.states[key.profileId]?.phase == ConnectionPhase.connected;
 
   Future<ServerProfile?> _prepareRemoteRuntime(
     AgentConnectionKey key,
@@ -4362,6 +4381,28 @@ class AppController extends StateNotifier<AppUiState> {
   void _applyConnectionStates(Map<String, ConnectionState> connections) {
     if (!mounted) return;
     final selected = state.selectedProfileId;
+    final loadingStates = Map<AgentConnectionKey, bool>.of(
+      state.agentLoadingStates,
+    );
+    var activeAgentLoadInvalidated = false;
+    final invalidLoads =
+        <AgentConnectionKey>{
+          ..._agentLoadRequests.keys,
+          ...loadingStates.entries
+              .where((entry) => entry.value)
+              .map((entry) => entry.key),
+        }.where(
+          (key) =>
+              connections[key.profileId]?.phase != ConnectionPhase.connected,
+        );
+    for (final key in invalidLoads) {
+      _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
+      _agentLoadRequests.remove(key);
+      loadingStates[key] = false;
+      if (key.profileId == selected && key.agent == state.activeAgent) {
+        activeAgentLoadInvalidated = true;
+      }
+    }
     final settingsDisconnected =
         state.agentSettingsVisible &&
         selected != null &&
@@ -4383,6 +4424,8 @@ class AppController extends StateNotifier<AppUiState> {
       connection: selected == null
           ? const ConnectionState()
           : connections[selected] ?? const ConnectionState(),
+      agentLoadingStates: Map.unmodifiable(loadingStates),
+      loading: activeAgentLoadInvalidated ? false : state.loading,
       serverMetrics: _connectedServerMetrics(state.serverMetrics, connections),
       workspacePickerVisible: workspaceDisconnected
           ? false
@@ -5057,6 +5100,7 @@ class AppController extends StateNotifier<AppUiState> {
     _agentThreadNextCursors.clear();
     _agentThreadCursorSearches.clear();
     _agentThreadPageRequests.clear();
+    _agentLoadRevisions.clear();
     for (final timer in _customModelSyncTimers.values) {
       timer.cancel();
     }

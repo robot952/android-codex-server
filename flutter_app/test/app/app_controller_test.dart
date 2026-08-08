@@ -120,6 +120,33 @@ class _FingerprintClient implements RemoteServerClient {
   }
 }
 
+class _ReconnectableHost extends _FingerprintClient {
+  Completer<void> _connectionDone = Completer<void>();
+
+  @override
+  Future<void> connect(ServerProfile profile) async {
+    if (_connectionDone.isCompleted) {
+      _connectionDone = Completer<void>();
+    }
+    connected = true;
+  }
+
+  @override
+  Future<void> disconnect() async {
+    connected = false;
+    if (!_connectionDone.isCompleted) _connectionDone.complete();
+  }
+
+  @override
+  Future<void> get done => _connectionDone.future;
+
+  @override
+  void close() {
+    connected = false;
+    if (!_connectionDone.isCompleted) _connectionDone.complete();
+  }
+}
+
 class _AttachmentHost extends _FingerprintClient
     implements RemoteServerAttachmentClient {
   static const remotePath = '/tmp/codex-remote/uploads/notes.txt';
@@ -555,6 +582,19 @@ class _ConnectFailingAgent extends _FailingTurnAgent {
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
     throw StateError('Agent 启动失败');
+  }
+}
+
+class _BlockingThreadListAgent extends _FailingTurnAgent {
+  final Completer<AgentThreadPage> firstThreadList =
+      Completer<AgentThreadPage>();
+  int threadListCalls = 0;
+
+  @override
+  Future<AgentThreadPage> listThreads({String? searchTerm}) {
+    threadListCalls++;
+    if (threadListCalls == 1) return firstThreadList.future;
+    return super.listThreads(searchTerm: searchTerm);
   }
 }
 
@@ -1232,6 +1272,75 @@ void main() {
       ConnectionPhase.disconnected,
     );
   });
+
+  test(
+    'host loss stops Agent loading and a reconnect ignores the stale load',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _ReconnectableHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _BlockingThreadListAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+
+      await controller.requestConnect(_firstProfile);
+      final key = const AgentConnectionKey(
+        profileId: 'first',
+        agent: AgentKind.codex,
+      );
+      await _waitUntil(
+        () =>
+            agent.threadListCalls == 1 &&
+            controller.state.agentLoadingStates[key] == true,
+      );
+
+      await connections.disconnect(_firstProfile.id);
+      await _waitUntil(
+        () =>
+            controller.state.connectionStates[_firstProfile.id]?.phase ==
+                ConnectionPhase.disconnected &&
+            controller.state.agentLoadingStates[key] == false &&
+            !controller.state.loading,
+      );
+
+      await controller.requestConnect(_firstProfile);
+      await controller.ensureActiveAgent();
+      expect(
+        controller.state.connectionStates[_firstProfile.id]?.phase,
+        ConnectionPhase.connected,
+      );
+      expect(controller.state.agentLoadingStates[key], isFalse);
+      expect(controller.state.threads, [_FailingTurnAgent.thread]);
+      expect(controller.state.error, isNull);
+
+      agent.firstThreadList.complete(
+        const AgentThreadPage(
+          threads: <AgentThread>[
+            AgentThread(id: 'stale', title: 'Stale result'),
+          ],
+        ),
+      );
+      await _drainAsyncWork();
+
+      expect(controller.state.threads, [_FailingTurnAgent.thread]);
+      expect(controller.state.agentLoadingStates[key], isFalse);
+      expect(controller.state.error, isNull);
+    },
+  );
 
   test(
     'restores draft and uploaded attachment when starting a turn fails',
