@@ -143,8 +143,11 @@ class DiagnosticLogger {
 
   static final DiagnosticLogger instance = DiagnosticLogger();
 
-  static const maxSegmentBytes = 128 * 1024;
-  static const maxSegments = 32;
+  /// One on-disk file is kept close to 100 KiB so sharing and attachment stay
+  /// responsive on mobile networks.
+  static const maxSegmentBytes = 100 * 1024;
+  static const maxSegments = 100;
+  static const maxTotalBytes = 10 * 1024 * 1024;
   static const maxMessageChars = 4_000;
   static const maxStackChars = 24_000;
   static const maxPreviewBytes = 64 * 1024;
@@ -309,6 +312,15 @@ class DiagnosticLogger {
     return file == null ? null : _readFileSafely(file);
   }
 
+  /// Returns a redacted, bounded copy suitable for a text attachment. The
+  /// file is read only after pending writes have drained so a crash record can
+  /// be selected immediately after launch.
+  Future<String?> attachmentText(String id, {int maxBytes = 512 * 1024}) async {
+    if (maxBytes <= 0) throw ArgumentError.value(maxBytes, 'maxBytes');
+    final text = await readLog(id);
+    return text == null ? null : _boundUtf8(text, maxBytes);
+  }
+
   Future<File> exportLog({Iterable<String>? ids}) async {
     await initialize();
     await _drainWrites();
@@ -318,7 +330,9 @@ class DiagnosticLogger {
         : entries
               .where((entry) => ids.contains(entry.id))
               .toList(growable: false);
-    final files = selected.isEmpty
+    final files = ids != null && selected.isEmpty
+        ? const <File>[]
+        : selected.isEmpty
         ? entries
               .map(
                 (entry) => File(
@@ -376,6 +390,21 @@ class DiagnosticLogger {
         // The next refresh will simply omit files that were deleted.
       }
     }
+    // Export files are temporary copies created for the system share sheet.
+    // Only remove files owned by this logger; other app temporary files stay
+    // untouched.
+    try {
+      final outputDirectory = await _exportDirectoryProvider();
+      if (outputDirectory.existsSync()) {
+        for (final file in outputDirectory.listSync().whereType<File>()) {
+          if (file.basename.startsWith('agent-diagnostic-')) {
+            try {
+              await file.delete();
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
     _sessionStartedAt = 0;
     _segment = 0;
   }
@@ -437,10 +466,15 @@ class DiagnosticLogger {
     final directory = _directory;
     if (directory == null) return;
     final files = _sessionFiles(directory);
-    if (files.length <= maxSegments) return;
-    for (final file in files.take(files.length - maxSegments)) {
+    var totalBytes = files.fold<int>(0, (sum, file) => sum + file.lengthSync());
+    var remainingCount = files.length;
+    for (final file in files) {
+      if (remainingCount <= maxSegments && totalBytes <= maxTotalBytes) break;
       try {
+        final size = file.lengthSync();
         await file.delete();
+        totalBytes -= size;
+        remainingCount--;
       } catch (_) {
         // A transient cleanup failure must not interrupt active logging.
       }
@@ -457,6 +491,7 @@ class DiagnosticLogger {
           if (parsed == null) return null;
           final created = DateTime.fromMillisecondsSinceEpoch(parsed.$1);
           final updatedMillis = file.lastModifiedSync().millisecondsSinceEpoch;
+          final contents = _readFileSafely(file);
           return DiagnosticLogEntry(
             id: file.basename,
             fileName: file.basename,
@@ -469,7 +504,7 @@ class DiagnosticLogger {
                 _enabled &&
                 parsed.$1 == _sessionStartedAt &&
                 parsed.$2 == _segment,
-            hasCrash: _readFileSafely(file).contains('FATAL Crash'),
+            hasCrash: RegExp(r'(^|\n).*\sFATAL\s').hasMatch(contents),
           );
         })
         .whereType<DiagnosticLogEntry>()

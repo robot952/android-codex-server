@@ -24,7 +24,9 @@ Future<void> shareDiagnosticLogs(
   required DiagnosticLogger logger,
 }) async {
   try {
-    await logger.share();
+    final ids = await pickDiagnosticLogIds(context, logger: logger);
+    if (ids == null || ids.isEmpty) return;
+    await logger.share(ids: ids);
     if (context.mounted) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -39,6 +41,155 @@ Future<void> shareDiagnosticLogs(
         );
     }
   }
+}
+
+/// Opens the bounded log selector used by both system sharing and work-page
+/// attachments. A crash session is selected first when requested; the user
+/// can add or remove any other retained session before confirming.
+Future<List<String>?> pickDiagnosticLogIds(
+  BuildContext context, {
+  required DiagnosticLogger logger,
+  bool preferLatestCrash = false,
+  String title = '选择 Debug 日志',
+  int? maxSelection,
+}) async {
+  final entries = await logger.listLogs();
+  if (!context.mounted) return null;
+  final initial = <String>{};
+  if (entries.isNotEmpty) {
+    final preferred = preferLatestCrash
+        ? entries.where((entry) => entry.hasCrash).firstOrNull
+        : null;
+    initial.add((preferred ?? entries.first).id);
+  }
+  return showDialog<List<String>>(
+    context: context,
+    builder: (context) => _DiagnosticLogPicker(
+      title: title,
+      entries: entries,
+      initialSelection: initial,
+      maxSelection: maxSelection,
+    ),
+  );
+}
+
+class _DiagnosticLogPicker extends StatefulWidget {
+  const _DiagnosticLogPicker({
+    required this.title,
+    required this.entries,
+    required this.initialSelection,
+    this.maxSelection,
+  });
+
+  final String title;
+  final List<DiagnosticLogEntry> entries;
+  final Set<String> initialSelection;
+  final int? maxSelection;
+
+  @override
+  State<_DiagnosticLogPicker> createState() => _DiagnosticLogPickerState();
+}
+
+class _DiagnosticLogPickerState extends State<_DiagnosticLogPicker> {
+  late final Set<String> _selected = {...widget.initialSelection};
+
+  int get _selectAllCount {
+    final maximum = widget.maxSelection;
+    return maximum == null || maximum > widget.entries.length
+        ? widget.entries.length
+        : maximum;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 500,
+        child: widget.entries.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Text('暂无可用日志'),
+              )
+            : ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 480),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: widget.entries.length,
+                  itemBuilder: (context, index) {
+                    final entry = widget.entries[index];
+                    final selected = _selected.contains(entry.id);
+                    final selectionFull =
+                        widget.maxSelection != null &&
+                        _selected.length >= widget.maxSelection!;
+                    final date = _formatLogDate(entry.updatedAt);
+                    final marker = entry.hasCrash ? ' · 崩溃' : '';
+                    return CheckboxListTile(
+                      value: selected,
+                      onChanged: !selected && selectionFull
+                          ? null
+                          : (value) => setState(() {
+                              if (value == true) {
+                                _selected.add(entry.id);
+                              } else {
+                                _selected.remove(entry.id);
+                              }
+                            }),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: Text(
+                        '$date$marker',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${entry.fileName} · ${_formatBytes(entry.sizeBytes)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    );
+                  },
+                ),
+              ),
+      ),
+      actions: [
+        if (widget.entries.isNotEmpty)
+          TextButton(
+            onPressed: () => setState(() {
+              if (_selected.length >= _selectAllCount) {
+                _selected.clear();
+              } else {
+                final entries = widget.maxSelection == null
+                    ? widget.entries
+                    : widget.entries.take(widget.maxSelection!);
+                _selected
+                  ..clear()
+                  ..addAll(entries.map((entry) => entry.id));
+              }
+            }),
+            child: Text(_selected.length >= _selectAllCount ? '清除选择' : '全选'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(_selected.toList()),
+          child: Text('确定 (${_selected.length})'),
+        ),
+      ],
+    );
+  }
+}
+
+String _formatLogDate(DateTime value) {
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} '
+      '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
 }
 
 class DiagnosticLogSheet extends StatefulWidget {
@@ -78,7 +229,9 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      await widget.logger.share();
+      final ids = await pickDiagnosticLogIds(context, logger: widget.logger);
+      if (ids == null || ids.isEmpty) return;
+      await widget.logger.share(ids: ids);
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()

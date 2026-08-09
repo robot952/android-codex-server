@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -523,10 +524,12 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> _connectVerified(ServerProfile profile) async {
     _clearSubAgentNavigationForProfile(profile.id);
+    _diagnostics.info('SSH', 'connect_requested profile=${profile.id}');
     state = state.copyWith(loading: true, error: null);
     try {
       await _connections.connect(profile);
       if (!mounted) return;
+      _diagnostics.info('SSH', 'connect_success profile=${profile.id}');
       state = state.copyWith(
         selectedProfileId: profile.id,
         connection:
@@ -546,12 +549,19 @@ class AppController extends StateNotifier<AppUiState> {
         error: null,
       );
       unawaited(ensureActiveAgent());
-    } catch (error) {
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'SSH',
+        'connect_failed profile=${profile.id}',
+        error,
+        stack,
+      );
       _setError(error, 'SSH 连接失败');
     }
   }
 
   Future<void> disconnectProfile(String profileId) async {
+    _diagnostics.info('SSH', 'disconnect_requested profile=$profileId');
     _clearSubAgentNavigationForProfile(profileId);
     if (_agentSettingsProfileId == profileId) _closeAgentSettings();
     if (state.fileManagerProfileId == profileId) {
@@ -592,11 +602,18 @@ class AppController extends StateNotifier<AppUiState> {
         (key, _) => key.profileId == profileId,
       );
       if (!mounted) return;
+      _diagnostics.info('SSH', 'disconnect_success profile=$profileId');
       if (state.selectedProfileId == profileId &&
           state.screen != AppScreen.servers) {
         state = _resetFileManagerState(state, screen: AppScreen.servers);
       }
-    } catch (error) {
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'SSH',
+        'disconnect_failed profile=$profileId',
+        error,
+        stack,
+      );
       _setError(error, '断开服务器失败');
     }
   }
@@ -1867,6 +1884,47 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
+  /// Stages selected local diagnostic sessions as ordinary text attachments.
+  /// Nothing is sent here; the existing composer send action remains the only
+  /// operation that submits them to the active conversation.
+  Future<void> addDebugLogAttachments(Iterable<String> logIds) async {
+    await _ensureInitialized();
+    final ids = logIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (ids.isEmpty) return;
+    final availableSlots = maxPendingAttachmentCount - state.attachments.length;
+    if (availableSlots <= 0) {
+      state = state.copyWith(error: '输入框最多保留 $maxPendingAttachmentCount 个附件');
+      return;
+    }
+    final uploads = <LocalAttachmentUpload>[];
+    Object? firstError;
+    for (final id in ids.take(availableSlots)) {
+      try {
+        final text = await _diagnostics.attachmentText(id);
+        if (text == null || text.trim().isEmpty) {
+          throw StateError('所选 Debug 日志已不可用');
+        }
+        uploads.add(
+          LocalAttachmentUpload(
+            name: 'agent-diagnostic-$id.txt',
+            bytes: Uint8List.fromList(utf8.encode(text)),
+            mimeType: 'text/plain',
+            textContent: text,
+          ),
+        );
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (uploads.isNotEmpty) await uploadAttachments(uploads);
+    if (firstError != null && mounted) {
+      state = state.copyWith(error: _message(firstError, '添加 Debug 日志失败'));
+    }
+  }
+
   void removeAttachment(String remotePath) {
     if (!mounted || remotePath.trim().isEmpty) return;
     state = state.copyWith(
@@ -2472,6 +2530,12 @@ class AppController extends StateNotifier<AppUiState> {
         ? null
         : modelSettings.preferredEffort.trim();
     final attachments = List<PendingAttachment>.unmodifiable(state.attachments);
+    _diagnostics.info(
+      'Message',
+      'send_requested profile=$profileId agent=${state.activeAgent.name} '
+          'thread=${thread.id} bytes=${utf8.encode(content).length} '
+          'attachments=${attachments.length} steering=${steeringTurnId?.isNotEmpty == true}',
+    );
     final optimisticId =
         'local-user-${DateTime.now().microsecondsSinceEpoch.toString()}';
     final optimistic = TimelineEntry(
@@ -2555,6 +2619,11 @@ class AppController extends StateNotifier<AppUiState> {
         );
       }
       if (mounted && _isActiveThread(key, thread.id)) {
+        _diagnostics.info(
+          'Message',
+          'send_accepted profile=$profileId agent=${key.agent.name} '
+              'thread=${thread.id} turn=$turnId',
+        );
         final startedAt = DateTime.now().millisecondsSinceEpoch;
         state = state.copyWith(
           submitting: false,
@@ -2580,7 +2649,13 @@ class AppController extends StateNotifier<AppUiState> {
                 ),
         );
       }
-    } catch (error) {
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'Message',
+        'send_failed profile=$profileId agent=${key.agent.name} thread=${thread.id}',
+        error,
+        stack,
+      );
       if (mounted && _isActiveThread(key, thread.id)) {
         state = state.copyWith(
           submitting: false,
@@ -4423,6 +4498,20 @@ class AppController extends StateNotifier<AppUiState> {
 
   void _applyConnectionStates(Map<String, ConnectionState> connections) {
     if (!mounted) return;
+    for (final profileId in <String>{
+      ...state.connectionStates.keys,
+      ...connections.keys,
+    }) {
+      final previous = state.connectionStates[profileId]?.phase;
+      final next = connections[profileId]?.phase;
+      if (previous != next) {
+        _diagnostics.info(
+          'SSH',
+          'state profile=$profileId from=${previous?.name ?? 'none'} '
+              'to=${next?.name ?? 'none'}',
+        );
+      }
+    }
     final selected = state.selectedProfileId;
     final loadingStates = Map<AgentConnectionKey, bool>.of(
       state.agentLoadingStates,
@@ -4505,6 +4594,11 @@ class AppController extends StateNotifier<AppUiState> {
       final previousPhase = previousConnections[key]?.phase;
       final nextPhase = connections[key]?.phase;
       if (previousPhase == nextPhase) continue;
+      _diagnostics.info(
+        'Agent',
+        'state profile=${key.profileId} agent=${key.agent.name} '
+            'from=${previousPhase?.name ?? 'none'} to=${nextPhase?.name ?? 'none'}',
+      );
       if (previousPhase == ConnectionPhase.connected &&
           nextPhase != ConnectionPhase.connected) {
         _clearSubAgentNavigation(key);
@@ -5133,6 +5227,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   void _setError(Object error, String fallback) {
     if (!mounted) return;
+    _diagnostics.warn('AppError', 'operation_failed fallback=$fallback', error);
     state = state.copyWith(loading: false, error: _message(error, fallback));
   }
 

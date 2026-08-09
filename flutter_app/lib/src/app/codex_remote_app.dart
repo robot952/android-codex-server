@@ -111,6 +111,17 @@ class _AppRootState extends ConsumerState<_AppRoot>
     _syncBackgroundProtection(state);
     final target = _pageFor(state.screen);
     final navigationTarget = _AppNavigationTarget.fromState(state);
+    if (_previousTarget.animationKey != navigationTarget.animationKey) {
+      ref
+          .read(appControllerProvider.notifier)
+          .diagnosticLogger
+          .info(
+            'Navigation',
+            'screen=${navigationTarget.screen.name} '
+                'profile=${state.selectedProfileId ?? 'none'} '
+                'thread=${navigationTarget.threadId ?? 'none'}',
+          );
+    }
     final forward = _movesForward(_previousTarget, navigationTarget);
     _previousTarget = navigationTarget;
     _syncSetupProxyDraft(state);

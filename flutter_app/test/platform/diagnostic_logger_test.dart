@@ -109,6 +109,66 @@ void main() {
     },
   );
 
+  test('retains at most one hundred newest log files', () async {
+    for (var index = 0; index < 105; index++) {
+      final started = (1_800_000_000_000 + index).toString();
+      await File(
+        '${directory.path}/session-$started-000000.log',
+      ).writeAsString('2026-01-01T00:00:00Z INFO Test entry-$index\n');
+    }
+    final logger = createLogger(enabled: true);
+    await logger.initialize();
+
+    final snapshot = await logger.snapshot();
+    expect(snapshot.entries, hasLength(DiagnosticLogger.maxSegments));
+    expect(snapshot.bytes, lessThanOrEqualTo(DiagnosticLogger.maxTotalBytes));
+    expect(snapshot.preview, isNot(contains('entry-0\n')));
+    expect(snapshot.preview, contains('entry-104'));
+  });
+
+  test('clear removes share copies but keeps Debug enabled', () async {
+    final logger = createLogger(enabled: true);
+    await logger.initialize();
+    logger.info('Test', 'before-clear');
+    final exported = await logger.exportLog();
+    final unrelated = File('${exportDirectory.path}/unrelated.tmp');
+    await unrelated.writeAsString('keep');
+
+    await logger.clear();
+    expect(await exported.exists(), isFalse);
+    expect(await unrelated.exists(), isTrue);
+    expect(logger.isEnabled, isTrue);
+    expect((await logger.snapshot()).entries, isEmpty);
+
+    logger.info('Test', 'after-clear');
+    final restarted = await logger.snapshot();
+    expect(restarted.entries, hasLength(1));
+    expect(restarted.preview, contains('after-clear'));
+  });
+
+  test('selected export and attachment are independently redacted', () async {
+    final logger = createLogger(enabled: true);
+    await logger.initialize();
+    logger.info('Test', 'first-session');
+    await logger.setEnabled(false);
+    await logger.setEnabled(true);
+    logger.info('Test', 'second-session api_key=top-secret');
+    final entries = await logger.listLogs();
+    expect(entries.length, greaterThanOrEqualTo(2));
+
+    final newest = entries.first;
+    final exported = await logger.exportLog(ids: [newest.id]);
+    final exportText = await exported.readAsString();
+    expect(exportText, contains('second-session'));
+    expect(exportText, isNot(contains('first-session')));
+    expect(exportText, isNot(contains('top-secret')));
+
+    final attachment = await logger.attachmentText(newest.id, maxBytes: 256);
+    expect(attachment, contains('[REDACTED]'));
+    expect(attachment, isNot(contains('top-secret')));
+    expect(attachment!.length, lessThanOrEqualTo(256));
+  });
+
   test('rapid tap counter enables exactly on the tenth tap', () {
     final counter = DebugTapCounter();
     final start = DateTime(2026, 1, 1);

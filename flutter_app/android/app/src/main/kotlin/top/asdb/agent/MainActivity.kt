@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.Bundle
 import android.provider.Settings
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -40,6 +41,11 @@ class MainActivity : FlutterActivity() {
 
     @Volatile
     private var appUpdateDestroyed = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        DiagnosticLogBridge.initialize(applicationContext)
+        super.onCreate(savedInstanceState)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)

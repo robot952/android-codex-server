@@ -97,8 +97,10 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - Transient remote diagnostics use a compact, dark, width-bounded Snackbar. Raw stderr, nested JSON,
   request ids, and stack-like text never occupy the work surface; a nonfatal MCP/rmcp 403 explains
   that the main session remains usable while the related tool may be unavailable.
-- In Debug mode, the work menu opens retained crash and diagnostic sessions for direct attachment.
-  Crash sessions are visibly marked and the newest crash is preselected.
+- In Debug mode, the work menu opens a multi-select crash/diagnostic log picker for direct attachment.
+  Crash sessions are visibly marked and the newest crash is preselected. Confirming only stages redacted
+  text attachments in the composer; it never sends automatically. The server Debug log sheet uses the same
+  picker for one-or-many file system sharing, while clearing logs also removes this app's temporary share copies.
 
 Protocol mapping: `turn/start`, `turn/steer`, `turn/interrupt`, `review/start`, `item/*`,
 `turn/diff/updated`, and server request/response approval methods.

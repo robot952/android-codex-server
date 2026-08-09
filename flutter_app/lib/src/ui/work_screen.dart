@@ -14,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app/app_controller.dart';
 import '../domain/models.dart';
 import '../platform/local_file_exporter.dart';
+import 'diagnostic_log_sheet.dart';
 import 'markdown_links.dart';
 import 'model_selection_presentation.dart';
 import 'sub_agent_presentation.dart';
@@ -191,6 +192,15 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                     title: Text(state.activeGoal == null ? '设置目标' : '编辑目标'),
                   ),
                 ),
+              const PopupMenuItem(
+                value: 'debug-logs',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.bug_report_outlined),
+                  title: Text('添加崩溃 / Debug 日志'),
+                ),
+              ),
             ],
           ),
         ],
@@ -260,6 +270,37 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         await _confirmArchive(state, controller);
       case 'goal':
         await _showGoalDialog(state, controller);
+      case 'debug-logs':
+        await _addDebugLogs(controller);
+    }
+  }
+
+  Future<void> _addDebugLogs(AppController controller) async {
+    try {
+      final availableSlots =
+          maxPendingAttachmentCount -
+          ref.read(appControllerProvider).attachments.length;
+      if (availableSlots <= 0) {
+        _showNotice(context, '输入框最多保留 $maxPendingAttachmentCount 个附件');
+        return;
+      }
+      final ids = await pickDiagnosticLogIds(
+        context,
+        logger: controller.diagnosticLogger,
+        preferLatestCrash: true,
+        title: '添加崩溃 / Debug 日志',
+        maxSelection: availableSlots,
+      );
+      if (ids == null || ids.isEmpty || !mounted) return;
+      final before = ref.read(appControllerProvider).attachments.length;
+      await controller.addDebugLogAttachments(ids);
+      if (!mounted) return;
+      final after = ref.read(appControllerProvider).attachments.length;
+      if (after > before) {
+        _showNotice(context, '日志已添加到输入框，请点击发送');
+      }
+    } catch (error) {
+      if (mounted) _showNotice(context, _displayError(error, '添加 Debug 日志失败'));
     }
   }
 
