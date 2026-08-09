@@ -107,6 +107,7 @@ class _AppRootState extends ConsumerState<_AppRoot>
       });
     });
     final state = ref.watch(appControllerProvider);
+    final backgroundConnectionRequired = keepsAppAliveInBackground(state);
     _syncMetricsPolling(state);
     _syncBackgroundProtection(state);
     final target = _pageFor(state.screen);
@@ -136,7 +137,8 @@ class _AppRootState extends ConsumerState<_AppRoot>
           state.remoteSetup == null &&
           !state.agentSettingsVisible &&
           !state.workspacePickerVisible &&
-          state.screen == AppScreen.servers,
+          state.screen == AppScreen.servers &&
+          !backgroundConnectionRequired,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         final controller = ref.read(appControllerProvider.notifier);
@@ -163,7 +165,9 @@ class _AppRootState extends ConsumerState<_AppRoot>
             case AppScreen.threads:
               controller.backToServers();
             case AppScreen.servers:
-              break;
+              if (backgroundConnectionRequired) {
+                unawaited(backgroundConnectionBridge.moveTaskToBackground());
+              }
           }
         }
       },
@@ -347,10 +351,7 @@ class _AppRootState extends ConsumerState<_AppRoot>
   }
 
   void _syncBackgroundProtection(AppUiState state) {
-    final required =
-        state.connectionStates.values.any(_keepsBackgroundConnection) ||
-        state.agentConnectionStates.values.any(_keepsBackgroundConnection) ||
-        state.running;
+    final required = keepsAppAliveInBackground(state);
     if (required == _backgroundProtectionEnabled) return;
     _backgroundProtectionEnabled = required;
     unawaited(backgroundConnectionBridge.setEnabled(required));
@@ -413,3 +414,8 @@ bool _keepsBackgroundConnection(domain.ConnectionState state) =>
       ConnectionPhase.probing ||
       ConnectionPhase.failed => false,
     };
+
+bool keepsAppAliveInBackground(AppUiState state) =>
+    state.connectionStates.values.any(_keepsBackgroundConnection) ||
+    state.agentConnectionStates.values.any(_keepsBackgroundConnection) ||
+    state.running;

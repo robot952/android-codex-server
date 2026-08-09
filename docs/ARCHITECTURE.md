@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.9+129，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.10+130，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -138,7 +138,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/android/app/src/main/kotlin/top/asdb/agent/DiagnosticLogBridge.kt | Java/Native/ANR 历史退出恢复、主线程 watchdog、原生日志轮转与脱敏 | 当前运行；Android 11+ 使用 `ApplicationExitInfo`，旧系统使用进程标记兜底 |
 | flutter_app/lib/src/ui/server_metrics_strip.dart | 两个列表共用的紧凑资源指标和点击详情 | 当前运行 |
 | flutter_app/lib/src/ui/theme.dart | Flutter 主题和产品色值 | 当前运行 |
-| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | legacy Profile、file_export、background Service 和 app_update MethodChannel | 当前运行；负责旧 Profile 导入、SAF 分块文件导出、服务启停及系统下载/安装 |
+| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | legacy Profile、file_export、background Service 和 app_update MethodChannel | 当前运行；负责旧 Profile 导入、SAF 分块文件导出、服务启停、连接期 FlutterEngine 保留及系统下载/安装 |
 | flutter_app/android/app/src/main/AndroidManifest.xml | Android 权限、Activity、前台 Service 和应用名 | 当前运行；包含联网、通知、wake lock、dataSync 和未知来源安装声明 |
 | flutter_app/lib/src/domain/models.freezed.dart、models.g.dart | 生成代码 | 不要手工编辑 |
 | flutter_app/test | Flutter 单元测试和 Widget 测试 | 当前门禁 |
@@ -706,14 +706,17 @@ provider 与 URL、key、代理是否已配置，绝不记录其实际值。
 | --- | --- | --- |
 | `top.asdb.agent/legacy` | `readLegacyProfiles`、`clearLegacyProfiles` | 一次性读取/清理当前包内旧加密 Profile |
 | `top.asdb.agent/file_export` | `beginExport`、`writeExportChunk`、`finishExport` | 通过 SAF 选择目标并按最多 256 KiB 分块写入，失败清理半成品 |
-| `top.asdb.agent/background` | `start`、`stop` | 启停连接保护前台 Service |
+| `top.asdb.agent/background` | `start`、`stop`、`moveToBackground` | 启停连接保护前台 Service；有连接时将根页面系统返回转换为移到后台 |
 | `top.asdb.agent/app_update` | `enqueueDownload`、`queryDownload`、`installDownload` | 提交系统 APK 下载、查询字节/状态，以及申请权限或打开系统安装页 |
 
 Android Manifest 声明网络、通知、wake lock 和 `foreground-service:dataSync` 权限。Flutter 的
 `BackgroundConnectionBridge` 在任一 SSH/Agent lane 连接或回合运行时启停
 `ConnectionForegroundService`；Service 创建低重要度 ongoing notification，并以有界 partial wake lock
 提高进程在后台的存活机会。前台服务和回合完成通知都使用专用白色连接图标并声明 private 锁屏可见性，
-不使用彩色启动图标作为 Android small icon。协议状态仍由 Dart 持有，Service 不会自行重建 app-server；`START_NOT_STICKY`
+不使用彩色启动图标作为 Android small icon。有活动连接时，服务器根页面的系统返回调用
+`moveTaskToBack(true)`，不能 finish Activity；若最近任务移除等场景仍销毁 Activity，`MainActivity` 通过
+`FlutterEngineCache` 保留并在下次打开时复用同一 Dart 引擎，SSH/Agent socket 因此前台服务进程存活期间
+不会跟随 Activity 关闭。协议状态仍由 Dart 持有，Service 不会自行重建 app-server；`START_NOT_STICKY`
 意味着进程被系统杀死后不能保证自动恢复，厂商省电策略也可能中断连接。
 
 `TurnCompletionNotifier` 监听非当前 lane 的回合终态，在 App 不处于前台时发送本地通知。通知 payload 携带
@@ -961,7 +964,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 历史滚动 | Cupertino sliver 分页、三态提示、正文下移留白、位置补偿和回底部箭头 | 真实超长历史与连续分页回归 |
 | Markdown/图片/文件 | Markdown HTTP 链接确认；图片识别、SFTP 预览/保存；远程绝对文件链接经 SAF 流式保存 | 裸 URL、大文件、断线和厂商文件选择器异常路径回归 |
 | 子 Agent | 紧凑图标/名称/逐个状态、同 turn 终态保护、真实 child `thread/resume`、父快照栈、最多 8 层返回、失败重试和迟到回调过滤 | 真机长时导航、真实服务器连续协作事件和大历史回归 |
-| 后台 | Flutter bridge + Android foreground Service、partial wake lock；进程存活时 Dart stream 继续 | 真机权限/厂商后台限制、进程被杀后的恢复不保证 |
+| 后台 | Flutter bridge + Android foreground Service、partial wake lock；根 Back 移到后台；Activity 销毁/重建复用连接期 FlutterEngine，进程存活时 Dart stream 和 SSH 继续 | 真机权限/厂商后台限制、进程被杀后的恢复不保证 |
 | 完成通知 | 后台回合通知、稳定 id、bounded 去重、子 Agent 过滤、点击直达 | 真机通知权限、锁屏/厂商通知策略和完整端到端回归 |
 | Debug | 十次点击开启；100 KiB/100 文件/10 MiB 轮转、FATAL/Java/ANR 线索、二次脱敏、多选分享、清空临时副本、日志附件待发送 | 真机崩溃复现、Native 信号和分享目标兼容 |
 | 应用内更新 | Gitee 稳定 Release 自动/手动检查、两种 APK 资源名兼容、忽略版本、DownloadManager 进度、后台继续、任务持久化/重绑、未知来源授权、取消后重试、包名/版本/证书校验和系统安装 | 真机弱网/断网、权限拒绝、下载失败、覆盖升级、真实安装器行为和进程重建回归 |
@@ -978,6 +981,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 3. 工作目录第一次连接 Agent 后选择一次并记住；仅 SSH 登录不弹，之后不重复打扰。
 4. 输入草稿、模型、思考强度按服务器 + Agent + 会话独立并持久保存；自定义模型管理和远端模型隐藏也按服务器 + Agent 隔离（当前已接入）。
 5. 后台返回不得自动弹键盘；IME 出现时输入区和消息同步移动（已有 inset/viewport 处理，仍需真机验收）。
+   有 SSH/Agent 连接或活动回合时，根页面系统返回只能将任务移到后台；Activity 重建不得销毁 FlutterEngine
+   或关闭 SSH。只有用户明确断开、强制停止或系统杀死整个进程时才允许连接结束。
 6. 会话重进优先显示缓存，较大历史允许更长的后台恢复，不长期白屏（当前缓存 + 180 秒 thread timeout）。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
 8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
@@ -1137,7 +1142,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 350 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 353 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。
@@ -1147,16 +1152,20 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.9+129`。
-- Flutter 测试：350 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
+- 应用版本：`1.8.10+130`。
+- Flutter 测试：353 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
+- 后台 SSH 实测：Debug 版 Home 后台 65 秒、正式版根页面系统 Back 后台 35 秒，以及 Android 14
+  `removeTask` 销毁任务后，前台 Service、partial wake lock、App 进程和同一组服务端 sshd PID 均保持；
+  重新打开后复用连接并显示已连接，未发现 `StreamSink is bound to a stream`、FATAL、ANR 或
+  `MissingPluginException`。强制停止或系统杀死整个进程仍会断开，这是 Android 进程边界内的预期行为。
 - 本机 `codexemu` 端到端：进入 Work、发送、运行中白色耗时圈、停止、返回列表、重新进入和保留数据的
   冷启动均通过；未发现 `StreamSink` 或 SSH 状态异常。
 - 本轮再次连接本机 `codexemu`，进入真实 Codex 历史会话并截图核对顶部菜单和 Composer：顶部菜单宽
   196 dp、行高 48 dp；底部加号/更多为 36 dp，权限高 36 dp，输入区只有一层外框；约
   `873x2048` 的窄屏 Widget 画布也无布局溢出。
-- APK：`dist/Agent-1.8.9.apk`；构建产物大小 `66,797,023` bytes，SHA-256
-  `ab8e7462686e857512a78e20b8885aa2b69af46d1eb9f828defec1f3a7a4a3f3`。
+- APK：`dist/Agent-1.8.10.apk`；构建产物大小 `66,797,023` bytes，SHA-256
+  `9bb9c9ca526ffb20f8bdd122e53e0e6e24daa8bb7834e3cf6183f3a578747b7b`。
 
 ## 18. 文档维护规则
 

@@ -1,4 +1,8 @@
-import 'package:codex_remote/src/domain/models.dart';
+import 'package:codex_remote/src/app/codex_remote_app.dart';
+import 'package:codex_remote/src/domain/models.dart' hide ConnectionState;
+import 'package:codex_remote/src/domain/models.dart'
+    as domain
+    show ConnectionState;
 import 'package:codex_remote/src/ui/thread_list_screen.dart';
 import 'package:codex_remote/src/ui/work_screen.dart';
 import 'package:flutter/material.dart';
@@ -54,5 +58,35 @@ void main() {
     expect(shouldDismissWorkKeyboard(AppLifecycleState.paused), isTrue);
     expect(shouldDismissWorkKeyboard(AppLifecycleState.hidden), isTrue);
     expect(shouldDismissWorkKeyboard(AppLifecycleState.detached), isTrue);
+  });
+
+  test('keeps the app process alive for host, Agent, or running work', () {
+    expect(keepsAppAliveInBackground(const AppUiState()), isFalse);
+    expect(
+      keepsAppAliveInBackground(
+        const AppUiState(
+          connectionStates: {
+            'server': domain.ConnectionState(phase: ConnectionPhase.connected),
+          },
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      keepsAppAliveInBackground(
+        AppUiState(
+          agentConnectionStates: {
+            const AgentConnectionKey(
+              profileId: 'server',
+              agent: AgentKind.codex,
+            ): const domain.ConnectionState(
+              phase: ConnectionPhase.installing,
+            ),
+          },
+        ),
+      ),
+      isTrue,
+    );
+    expect(keepsAppAliveInBackground(const AppUiState(running: true)), isTrue);
   });
 }

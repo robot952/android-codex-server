@@ -3,6 +3,7 @@ package top.asdb.agent
 import android.app.Activity
 import android.app.DownloadManager
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -18,6 +19,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -47,8 +49,19 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
     }
 
+    /**
+     * The foreground service keeps this process alive while SSH is connected.
+     * Reusing the same engine keeps Dart-owned sockets alive if Android destroys
+     * only the Activity, such as after root Back navigation or task removal.
+     */
+    override fun provideFlutterEngine(context: Context): FlutterEngine? =
+        FlutterEngineCache.getInstance().get(RETAINED_ENGINE_ID)
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        FlutterEngineCache.getInstance().put(RETAINED_ENGINE_ID, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LEGACY_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -88,6 +101,16 @@ class MainActivity : FlutterActivity() {
                             result.error(
                                 "background_service_stop_failed",
                                 it.message ?: "无法停止后台连接保护",
+                                null,
+                            )
+                        }
+
+                    "moveToBackground" -> runCatching { moveTaskToBack(true) }
+                        .onSuccess(result::success)
+                        .onFailure {
+                            result.error(
+                                "move_to_background_failed",
+                                it.message ?: "无法将应用移到后台",
                                 null,
                             )
                         }
@@ -643,6 +666,7 @@ class MainActivity : FlutterActivity() {
         const val LEGACY_CHANNEL = "top.asdb.agent/legacy"
         const val FILE_EXPORT_CHANNEL = "top.asdb.agent/file_export"
         const val BACKGROUND_CHANNEL = "top.asdb.agent/background"
+        const val RETAINED_ENGINE_ID = "agent_connection_engine"
         const val APP_UPDATE_CHANNEL = "top.asdb.agent/app_update"
         const val APP_UPDATE_ACTIVITY_DESTROYED = "app_update_activity_destroyed"
         const val LEGACY_PREFERENCES = "codex_remote_profiles"

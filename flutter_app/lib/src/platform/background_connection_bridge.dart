@@ -20,6 +20,16 @@ class BackgroundConnectionBridge {
       // A service failure must not tear down an active SSH lane.
     }
   }
+
+  Future<bool> moveTaskToBackground() async {
+    try {
+      return await _channel.invokeMethod<bool>('moveToBackground') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
 }
 
 const backgroundConnectionBridge = BackgroundConnectionBridge();
