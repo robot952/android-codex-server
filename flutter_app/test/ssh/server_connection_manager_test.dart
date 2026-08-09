@@ -41,6 +41,13 @@ class _FakeClient implements RemoteServerClient {
   @override
   Future<void> get done => closed.future;
 
+  void failConnection(Object error) {
+    connected = false;
+    if (!closed.isCompleted) {
+      closed.completeError(error, StackTrace.current);
+    }
+  }
+
   @override
   bool get isConnected => connected;
 
@@ -879,6 +886,19 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(manager.states['first']?.phase, ConnectionPhase.connected);
+    await manager.close();
+  });
+
+  test('reports the transport reason for an unexpected disconnect', () async {
+    final client = _FakeClient();
+    final manager = ServerConnectionManager(clientFactory: () => client);
+    await manager.connect(first);
+
+    client.failConnection(StateError('network unreachable'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(manager.states['first']?.phase, ConnectionPhase.disconnected);
+    expect(manager.states['first']?.message, contains('network unreachable'));
     await manager.close();
   });
 

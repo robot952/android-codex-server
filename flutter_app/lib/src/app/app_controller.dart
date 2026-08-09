@@ -69,8 +69,12 @@ class AppController extends StateNotifier<AppUiState> {
     this._connections, [
     AgentConnectionManager? agentConnections,
     DiagnosticLogger? diagnosticLogger,
+    List<Duration>? reconnectDelays,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
+       _reconnectDelays = List<Duration>.unmodifiable(
+         reconnectDelays ?? _defaultReconnectDelays,
+       ),
        _ownsAgentConnections = agentConnections == null,
        super(const AppUiState(loading: true)) {
     _connectionSubscription = _connections.stateChanges.listen(
@@ -92,6 +96,7 @@ class AppController extends StateNotifier<AppUiState> {
   final ServerConnectionManager _connections;
   final AgentConnectionManager _agents;
   final DiagnosticLogger _diagnostics;
+  final List<Duration> _reconnectDelays;
   final bool _ownsAgentConnections;
   late final StreamSubscription<Map<String, ConnectionState>>
   _connectionSubscription;
@@ -110,6 +115,12 @@ class AppController extends StateNotifier<AppUiState> {
       SubAgentThreadRegistry();
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
   final Map<AgentConnectionKey, int> _agentLoadRevisions = {};
+  final Set<String> _retainedHostConnections = <String>{};
+  final Set<AgentConnectionKey> _retainedAgentConnections =
+      <AgentConnectionKey>{};
+  final Map<String, int> _connectionRecoveryRevisions = <String, int>{};
+  final Map<String, Future<void>> _connectionRecoveryRequests =
+      <String, Future<void>>{};
   final Map<AgentConnectionKey, String?> _agentThreadNextCursors = {};
   final Map<AgentConnectionKey, String> _agentThreadCursorSearches = {};
   final Map<AgentConnectionKey, Future<void>> _agentThreadPageRequests = {};
@@ -221,7 +232,10 @@ class AppController extends StateNotifier<AppUiState> {
     );
     final connectionIdentityChanged =
         existing != null && !existing.hasSameConnectionIdentity(normalized);
-    if (connectionIdentityChanged) _clearSetupStates(normalized.id);
+    if (connectionIdentityChanged) {
+      _forgetRetainedConnection(normalized.id);
+      _clearSetupStates(normalized.id);
+    }
     if (existing != null &&
         !connectionIdentityChanged &&
         existing.workspacePromptShown &&
@@ -326,6 +340,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> deleteProfile(String profileId) async {
     await _ensureInitialized();
+    _forgetRetainedConnection(profileId);
     _cancelCustomModelSync(profileId);
     _clearSubAgentNavigationForProfile(profileId);
     _clearSetupStates(profileId);
@@ -523,12 +538,14 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   Future<void> _connectVerified(ServerProfile profile) async {
+    _invalidateConnectionRecovery(profile.id);
     _clearSubAgentNavigationForProfile(profile.id);
     _diagnostics.info('SSH', 'connect_requested profile=${profile.id}');
     state = state.copyWith(loading: true, error: null);
     try {
       await _connections.connect(profile);
       if (!mounted) return;
+      _retainedHostConnections.add(profile.id);
       _diagnostics.info('SSH', 'connect_success profile=${profile.id}');
       state = state.copyWith(
         selectedProfileId: profile.id,
@@ -561,6 +578,7 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   Future<void> disconnectProfile(String profileId) async {
+    _forgetRetainedConnection(profileId);
     _diagnostics.info('SSH', 'disconnect_requested profile=$profileId');
     _clearSubAgentNavigationForProfile(profileId);
     if (_agentSettingsProfileId == profileId) _closeAgentSettings();
@@ -4518,20 +4536,220 @@ class AppController extends StateNotifier<AppUiState> {
     if (state.error != null) state = state.copyWith(error: null);
   }
 
+  void _invalidateConnectionRecovery(String profileId) {
+    _connectionRecoveryRevisions[profileId] =
+        (_connectionRecoveryRevisions[profileId] ?? 0) + 1;
+  }
+
+  void _forgetRetainedConnection(String profileId) {
+    _retainedHostConnections.remove(profileId);
+    _retainedAgentConnections.removeWhere((key) => key.profileId == profileId);
+    _invalidateConnectionRecovery(profileId);
+  }
+
+  bool _isConnectionRecoveryCurrent(String profileId, int revision) =>
+      mounted &&
+      _retainedHostConnections.contains(profileId) &&
+      (_connectionRecoveryRevisions[profileId] ?? 0) == revision;
+
+  void _scheduleConnectionRecovery(String profileId, {required String source}) {
+    if (!_retainedHostConnections.contains(profileId) ||
+        _connectionRecoveryRequests.containsKey(profileId)) {
+      return;
+    }
+    final revision = _connectionRecoveryRevisions[profileId] ?? 0;
+    _diagnostics.info(
+      'SSH',
+      'reconnect_scheduled profile=$profileId source=$source',
+    );
+    _showConnectionRecoveryPending(profileId, attempt: 1);
+    late final Future<void> request;
+    request = _recoverConnection(profileId, revision).whenComplete(() {
+      if (identical(_connectionRecoveryRequests[profileId], request)) {
+        _connectionRecoveryRequests.remove(profileId);
+        if (_connectionNeedsRecovery(profileId)) {
+          _scheduleConnectionRecovery(profileId, source: 'recovery_completion');
+        }
+      }
+    });
+    _connectionRecoveryRequests[profileId] = request;
+  }
+
+  Future<void> _recoverConnection(String profileId, int revision) async {
+    var attempt = 0;
+    while (_isConnectionRecoveryCurrent(profileId, revision)) {
+      final delay = _reconnectDelay(attempt);
+      // Always yield once so a synchronous host -> Agent state cascade can
+      // finish publishing its disconnected snapshot before reconnect emits.
+      await Future<void>.delayed(delay);
+      if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
+      final profile = state.profiles.firstWhereOrNull(
+        (candidate) => candidate.id == profileId,
+      );
+      if (profile == null) {
+        _forgetRetainedConnection(profileId);
+        return;
+      }
+
+      attempt++;
+      _showConnectionRecoveryPending(profileId, attempt: attempt);
+      _diagnostics.info(
+        'SSH',
+        'reconnect_attempt profile=$profileId attempt=$attempt',
+      );
+      try {
+        await _connections.connect(profile);
+        if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
+
+        final agentKeys = _retainedAgentConnections
+            .where((key) => key.profileId == profileId)
+            .toList(growable: false);
+        for (final key in agentKeys) {
+          await _agents.connect(profile, key.agent);
+          if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
+        }
+        await _restoreActiveConnectionView(profile, agentKeys);
+        if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
+        if (_connections.states[profileId]?.phase !=
+                ConnectionPhase.connected ||
+            agentKeys.any(
+              (key) => _agents.states[key]?.phase != ConnectionPhase.connected,
+            )) {
+          throw StateError('恢复期间连接再次断开');
+        }
+        _diagnostics.info(
+          'SSH',
+          'reconnect_success profile=$profileId attempt=$attempt '
+              'agents=${agentKeys.length}',
+        );
+        return;
+      } catch (error, stack) {
+        if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
+        _diagnostics.warn(
+          'SSH',
+          'reconnect_failed profile=$profileId attempt=$attempt',
+          error,
+          stack,
+        );
+        _showConnectionRecoveryPending(profileId, attempt: attempt + 1);
+      }
+    }
+  }
+
+  bool _connectionNeedsRecovery(String profileId) {
+    if (!mounted || !_retainedHostConnections.contains(profileId)) return false;
+    final hostPhase = _connections.states[profileId]?.phase;
+    if (hostPhase == ConnectionPhase.disconnected ||
+        hostPhase == ConnectionPhase.failed) {
+      return true;
+    }
+    if (hostPhase != ConnectionPhase.connected) return false;
+    return _retainedAgentConnections
+        .where((key) => key.profileId == profileId)
+        .any(
+          (key) =>
+              _agents.states[key]?.phase == ConnectionPhase.disconnected ||
+              _agents.states[key]?.phase == ConnectionPhase.failed,
+        );
+  }
+
+  Duration _reconnectDelay(int attempt) {
+    if (_reconnectDelays.isEmpty) return const Duration(seconds: 30);
+    final index = attempt < _reconnectDelays.length
+        ? attempt
+        : _reconnectDelays.length - 1;
+    return _reconnectDelays[index];
+  }
+
+  void _showConnectionRecoveryPending(
+    String profileId, {
+    required int attempt,
+  }) {
+    if (!mounted || !_retainedHostConnections.contains(profileId)) return;
+    if (_connections.states[profileId]?.phase == ConnectionPhase.connected) {
+      return;
+    }
+    final reconnecting = ConnectionState(
+      phase: ConnectionPhase.connecting,
+      message: 'SSH 意外断开，正在重连（第 $attempt 次）',
+    );
+    final connections = Map<String, ConnectionState>.of(state.connectionStates)
+      ..[profileId] = reconnecting;
+    state = state.copyWith(
+      connectionStates: Map.unmodifiable(connections),
+      connection: state.selectedProfileId == profileId
+          ? reconnecting
+          : state.connection,
+    );
+  }
+
+  Future<void> _restoreActiveConnectionView(
+    ServerProfile profile,
+    List<AgentConnectionKey> restoredAgents,
+  ) async {
+    if (!mounted || state.selectedProfileId != profile.id) return;
+    final key = AgentConnectionKey(
+      profileId: profile.id,
+      agent: state.activeAgent,
+    );
+    if (!restoredAgents.contains(key) ||
+        _agents.states[key]?.phase != ConnectionPhase.connected) {
+      return;
+    }
+    final thread = state.activeThread;
+    final targetScreen = state.screen;
+    if (thread != null &&
+        (targetScreen == AppScreen.work ||
+            targetScreen == AppScreen.agentWork)) {
+      final requestKey = threadPreferenceKey(profile.id, key.agent, thread.id);
+      final snapshot = _SessionSnapshot.capture(state);
+      final generation = _advanceSessionNavigation(key);
+      final accepted = await _openThreadInternal(
+        thread: thread,
+        targetScreen: targetScreen,
+        agentName: state.activeAgentName,
+        navigationGeneration: generation,
+        requestKey: requestKey,
+        initialSnapshot: snapshot,
+        subAgentBackNavigation: state.subAgentBackNavigation,
+      );
+      if (accepted) await _threadOpenRequests[requestKey]?.future;
+      return;
+    }
+    if (targetScreen == AppScreen.threads) {
+      await _loadAgentData(
+        key,
+        profile,
+        includeModels: false,
+        runtimePrepared: true,
+      );
+    }
+  }
+
   void _applyConnectionStates(Map<String, ConnectionState> connections) {
     if (!mounted) return;
+    final recoverProfiles = <String>{};
     for (final profileId in <String>{
       ...state.connectionStates.keys,
       ...connections.keys,
     }) {
       final previous = state.connectionStates[profileId]?.phase;
-      final next = connections[profileId]?.phase;
+      final nextState = connections[profileId];
+      final next = nextState?.phase;
       if (previous != next) {
+        final detail = nextState?.message.trim();
         _diagnostics.info(
           'SSH',
           'state profile=$profileId from=${previous?.name ?? 'none'} '
-              'to=${next?.name ?? 'none'}',
+              'to=${next?.name ?? 'none'}'
+              '${detail == null || detail.isEmpty ? '' : ' detail=$detail'}',
         );
+      }
+      if (_retainedHostConnections.contains(profileId) &&
+          (next == ConnectionPhase.disconnected ||
+              next == ConnectionPhase.failed) &&
+          previous != next) {
+        recoverProfiles.add(profileId);
       }
     }
     final selected = state.selectedProfileId;
@@ -4590,6 +4808,9 @@ class AppController extends StateNotifier<AppUiState> {
     if (fileManagerDisconnected) {
       state = _resetFileManagerState(state, screen: AppScreen.servers);
     }
+    for (final profileId in recoverProfiles) {
+      _scheduleConnectionRecovery(profileId, source: 'ssh_state');
+    }
   }
 
   void _applyServerMetrics(Map<String, ServerMetrics> metrics) {
@@ -4609,6 +4830,7 @@ class AppController extends StateNotifier<AppUiState> {
         ? null
         : AgentConnectionKey(profileId: profileId, agent: state.activeAgent);
     var clearVisibleApprovals = false;
+    final recoverProfiles = <String>{};
     for (final key in <AgentConnectionKey>{
       ...previousConnections.keys,
       ...connections.keys,
@@ -4621,10 +4843,21 @@ class AppController extends StateNotifier<AppUiState> {
         'state profile=${key.profileId} agent=${key.agent.name} '
             'from=${previousPhase?.name ?? 'none'} to=${nextPhase?.name ?? 'none'}',
       );
+      if (nextPhase == ConnectionPhase.connected &&
+          _retainedHostConnections.contains(key.profileId)) {
+        _retainedAgentConnections.add(key);
+      }
+      final recoverableLoss =
+          _retainedHostConnections.contains(key.profileId) &&
+          _retainedAgentConnections.contains(key) &&
+          (nextPhase == ConnectionPhase.disconnected ||
+              nextPhase == ConnectionPhase.failed);
       if (previousPhase == ConnectionPhase.connected &&
-          nextPhase != ConnectionPhase.connected) {
+          nextPhase != ConnectionPhase.connected &&
+          !recoverableLoss) {
         _clearSubAgentNavigation(key);
       }
+      if (recoverableLoss) recoverProfiles.add(key.profileId);
       if (nextPhase != ConnectionPhase.connected &&
           _pendingApprovalsByThread.remove(key) != null &&
           key == activeKey) {
@@ -4658,6 +4891,9 @@ class AppController extends StateNotifier<AppUiState> {
       workspaceLoading: workspaceDisconnected ? false : state.workspaceLoading,
       workspaceError: workspaceDisconnected ? null : state.workspaceError,
     );
+    for (final profileId in recoverProfiles) {
+      _scheduleConnectionRecovery(profileId, source: 'agent_state');
+    }
   }
 
   void _applyAgentEvent(
@@ -4670,6 +4906,11 @@ class AppController extends StateNotifier<AppUiState> {
       case RemoteAgentDiagnostic(:final message):
         if (active) state = state.copyWith(diagnostic: message);
       case RemoteAgentConnectionLost(:final message):
+        _diagnostics.info(
+          'Agent',
+          'connection_lost profile=${envelope.key.profileId} '
+              'agent=${envelope.key.agent.name} detail=$message',
+        );
         final resumeBuffer = _resumeNotificationBuffers[envelope.key];
         if (resumeBuffer != null) {
           _releaseResumeNotifications(
@@ -4682,7 +4923,17 @@ class AppController extends StateNotifier<AppUiState> {
             snapshotSequence: -1,
           );
         }
-        _clearSubAgentNavigation(envelope.key);
+        final recoverable =
+            _retainedHostConnections.contains(envelope.key.profileId) &&
+            _retainedAgentConnections.contains(envelope.key);
+        if (recoverable) {
+          _scheduleConnectionRecovery(
+            envelope.key.profileId,
+            source: 'agent_event',
+          );
+        } else {
+          _clearSubAgentNavigation(envelope.key);
+        }
         _pendingApprovalsByThread.remove(envelope.key);
         if (active) {
           state = state.copyWith(
@@ -5255,6 +5506,11 @@ class AppController extends StateNotifier<AppUiState> {
 
   @override
   void dispose() {
+    for (final profileId in _retainedHostConnections.toList()) {
+      _invalidateConnectionRecovery(profileId);
+    }
+    _retainedHostConnections.clear();
+    _retainedAgentConnections.clear();
     _threadSearchTimer?.cancel();
     _draftPersistTimer?.cancel();
     _agentThreadNextCursors.clear();
@@ -5277,6 +5533,15 @@ class AppController extends StateNotifier<AppUiState> {
 }
 
 const int maxSubAgentNavigationDepth = 8;
+const List<Duration> _defaultReconnectDelays = <Duration>[
+  Duration.zero,
+  Duration(seconds: 1),
+  Duration(seconds: 2),
+  Duration(seconds: 5),
+  Duration(seconds: 10),
+  Duration(seconds: 30),
+  Duration(seconds: 60),
+];
 const int _maxSessionSnapshotEntries = 512;
 const int _maxSessionSnapshotWeightChars = 2 * 1024 * 1024;
 const Duration _customModelSyncDebounce = Duration(milliseconds: 350);

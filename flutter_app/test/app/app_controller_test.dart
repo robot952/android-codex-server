@@ -122,13 +122,25 @@ class _FingerprintClient implements RemoteServerClient {
 
 class _ReconnectableHost extends _FingerprintClient {
   Completer<void> _connectionDone = Completer<void>();
+  int connectCount = 0;
 
   @override
   Future<void> connect(ServerProfile profile) async {
+    connectCount++;
     if (_connectionDone.isCompleted) {
       _connectionDone = Completer<void>();
     }
     connected = true;
+  }
+
+  void drop([Object? error]) {
+    connected = false;
+    if (_connectionDone.isCompleted) return;
+    if (error == null) {
+      _connectionDone.complete();
+    } else {
+      _connectionDone.completeError(error, StackTrace.current);
+    }
   }
 
   @override
@@ -285,6 +297,9 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   ];
 
   bool connected = false;
+  int connectCount = 0;
+  int disconnectCount = 0;
+  int resumeCalls = 0;
   String? startedThreadId;
   String? startedText;
   List<PendingAttachment>? startedAttachments;
@@ -315,11 +330,13 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
 
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
+    connectCount++;
     connected = true;
   }
 
   @override
   Future<void> disconnect() async {
+    disconnectCount++;
     connected = false;
   }
 
@@ -339,7 +356,10 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   Future<AgentSession> resumeThread(
     String threadId, {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
-  }) async => const AgentSession(thread: thread, timeline: initialTimeline);
+  }) async {
+    resumeCalls++;
+    return const AgentSession(thread: thread, timeline: initialTimeline);
+  }
 
   @override
   Future<AgentTurnsPage> loadOlderTurns({
@@ -1283,7 +1303,7 @@ void main() {
   });
 
   test(
-    'host loss stops Agent loading and a reconnect ignores the stale load',
+    'host loss automatically reconnects and ignores the stale Agent load',
     () async {
       final store = _MemoryProfileStore(
         const StoredProfiles(
@@ -1317,21 +1337,19 @@ void main() {
             controller.state.agentLoadingStates[key] == true,
       );
 
-      await connections.disconnect(_firstProfile.id);
+      host.drop(StateError('network switched'));
       await _waitUntil(
         () =>
+            host.connectCount == 2 &&
+            agent.connectCount == 2 &&
+            agent.threadListCalls == 2 &&
             controller.state.connectionStates[_firstProfile.id]?.phase ==
-                ConnectionPhase.disconnected &&
+                ConnectionPhase.connected &&
             controller.state.agentLoadingStates[key] == false &&
             !controller.state.loading,
       );
 
-      await controller.requestConnect(_firstProfile);
-      await controller.ensureActiveAgent();
-      expect(
-        controller.state.connectionStates[_firstProfile.id]?.phase,
-        ConnectionPhase.connected,
-      );
+      expect(agent.disconnectCount, greaterThanOrEqualTo(1));
       expect(controller.state.agentLoadingStates[key], isFalse);
       expect(controller.state.threads, [_FailingTurnAgent.thread]);
       expect(controller.state.error, isNull);
@@ -1348,6 +1366,88 @@ void main() {
       expect(controller.state.threads, [_FailingTurnAgent.thread]);
       expect(controller.state.agentLoadingStates[key], isFalse);
       expect(controller.state.error, isNull);
+    },
+  );
+
+  test(
+    'host loss reconnects the Agent and resumes the visible thread',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _ReconnectableHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(
+        store,
+        connections,
+        agents,
+        null,
+        const <Duration>[Duration.zero],
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+
+      await controller.requestConnect(_firstProfile);
+      final key = const AgentConnectionKey(
+        profileId: 'first',
+        agent: AgentKind.codex,
+      );
+      await _waitUntil(
+        () =>
+            controller.state.agentConnectionStates[key]?.phase ==
+                ConnectionPhase.connected &&
+            controller.state.agentLoadingStates[key] == false,
+      );
+      controller.openThread(_FailingTurnAgent.thread);
+      await _waitUntil(
+        () =>
+            controller.state.screen == AppScreen.work &&
+            controller.state.activeThread?.id == _FailingTurnAgent.thread.id &&
+            agent.resumeCalls == 1 &&
+            !controller.state.loading,
+      );
+
+      host.drop(StateError('mobile network changed'));
+
+      await _waitUntil(
+        () =>
+            host.connectCount == 2 &&
+            agent.connectCount == 2 &&
+            agent.resumeCalls == 2 &&
+            controller.state.connectionStates[_firstProfile.id]?.phase ==
+                ConnectionPhase.connected &&
+            controller.state.agentConnectionStates[key]?.phase ==
+                ConnectionPhase.connected &&
+            !controller.state.loading,
+      );
+      expect(controller.state.screen, AppScreen.work);
+      expect(controller.state.activeThread?.id, _FailingTurnAgent.thread.id);
+      expect(controller.state.timeline, _FailingTurnAgent.initialTimeline);
+      expect(controller.state.error, isNull);
+
+      await controller.disconnectProfile(_firstProfile.id);
+      await _drainAsyncWork();
+      expect(
+        host.connectCount,
+        2,
+        reason: 'explicit disconnect must cancel recovery',
+      );
+      expect(
+        controller.state.connectionStates[_firstProfile.id]?.phase,
+        ConnectionPhase.disconnected,
+      );
     },
   );
 

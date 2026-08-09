@@ -476,18 +476,21 @@ class ServerConnectionManager {
     _ServerEntry entry,
     int generation,
   ) async {
+    Object? closeError;
     try {
       await entry.client.done;
-    } catch (_) {
-      // The visible state below is the same for clean and exceptional closure.
+    } catch (error) {
+      closeError = error;
     }
     if (_isCurrent(profileId, entry) && generation == entry.generation) {
       entry.metricsRequest = null;
       _setState(
         profileId,
-        const ConnectionState(
+        ConnectionState(
           phase: ConnectionPhase.disconnected,
-          message: 'SSH 连接已断开',
+          message: closeError == null
+              ? 'SSH 连接已断开（远端已关闭）'
+              : 'SSH 连接已断开：${_message(closeError, '传输异常')}',
         ),
       );
     }

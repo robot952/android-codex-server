@@ -67,13 +67,28 @@ void main() {
       ),
     );
 
+    final reconnectResume = agent.gateNextResume(_threadA.id);
     resume.completeError(StateError('channel closed'));
     agent.emitLoss('Codex channel closed');
-    await _drainAsyncWork();
+    await _waitUntil(
+      () =>
+          harness.controller.state.loading &&
+          harness.controller.state.activeThread?.status == 'idle',
+    );
 
     expect(harness.controller.state.running, isFalse);
     expect(harness.controller.state.activeTurnId, isNull);
     expect(harness.controller.state.activeThread?.status, 'idle');
+
+    reconnectResume.complete(
+      const AgentSession(
+        thread: _threadA,
+        timeline: <TimelineEntry>[],
+        responseSequence: 11,
+      ),
+    );
+    await _waitUntil(() => !harness.controller.state.loading);
+    expect(harness.controller.state.running, isFalse);
   });
 
   test(
@@ -629,6 +644,7 @@ class _ResumeAgent implements RemoteAgentClient, RemoteAgentGenerationClient {
   }
 
   void emitLoss(String message) {
+    connected = false;
     _events.add(RemoteAgentConnectionLost(message));
   }
 

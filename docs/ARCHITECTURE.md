@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.10+130，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.11+131，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -719,6 +719,14 @@ Android Manifest 声明网络、通知、wake lock 和 `foreground-service:dataS
 不会跟随 Activity 关闭。协议状态仍由 Dart 持有，Service 不会自行重建 app-server；`START_NOT_STICKY`
 意味着进程被系统杀死后不能保证自动恢复，厂商省电策略也可能中断连接。
 
+进程仍存活时，`AppController` 会区分“用户明确断开”和 SSH/Agent 意外关闭。成功连接后保留每台服务器及
+已连接 Agent lane 的连接意图；意外关闭按 `0/1/2/5/10/30/60` 秒退避（之后每 60 秒）持续恢复，等待期
+仍向 UI 投影 `connecting`，使前台 Service 和 wake lock 保持。SSH 恢复后自动连接原 Agent；当前位于
+Work/AgentWork 时重新 resume 可见会话，位于会话列表时刷新列表。用户明确断开、删除服务器、修改 SSH
+连接身份或 Controller dispose 会使恢复代次失效，旧异步任务不能重新建立连接。SSH transport 的异常文本
+会写入状态日志；仅进程标记未清理但 `ApplicationExitInfo` 没有 crash/native crash/ANR 证据时记录为 WARN，
+不能再标成 FATAL 崩溃。
+
 `TurnCompletionNotifier` 监听非当前 lane 的回合终态，在 App 不处于前台时发送本地通知。通知 payload 携带
 `profileId + AgentKind + threadId`，由稳定哈希生成 id；`TurnCompletionDeduplicator` 按
 `profileId + AgentKind + threadId + turnId` 有界去重，子 Agent thread 会被 registry 过滤。点击通知时通过
@@ -1142,7 +1150,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 353 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 355 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。
@@ -1152,20 +1160,26 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.10+130`。
-- Flutter 测试：353 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
+- 应用版本：`1.8.11+131`。
+- Flutter 测试：355 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
 - 后台 SSH 实测：Debug 版 Home 后台 65 秒、正式版根页面系统 Back 后台 35 秒，以及 Android 14
   `removeTask` 销毁任务后，前台 Service、partial wake lock、App 进程和同一组服务端 sshd PID 均保持；
   重新打开后复用连接并显示已连接，未发现 `StreamSink is bound to a stream`、FATAL、ANR 或
   `MissingPluginException`。强制停止或系统杀死整个进程仍会断开，这是 Android 进程边界内的预期行为。
+- SSH 意外断线恢复实测：在真实 Codex Work 页面从服务端终止 sshd 子进程，前台约 `1.03` 秒恢复；Home
+  后台两轮分别约 `2.06` 秒和 `1.33` 秒恢复，正式包同场景约 `0.44` 秒恢复。最新 Debug 构建恢复后继续
+  后台 65 秒，App 进程、前台 Service、partial wake lock 和新 sshd PID 均保持，重新打开仍为原 Work
+  会话；诊断日志完整记录
+  `reconnect_scheduled -> reconnect_attempt -> SSH/Agent connected -> reconnect_success`，未发现 Zone mismatch、
+  `StreamSink is bound to a stream`、FATAL、ANR 或二次断线。
 - 本机 `codexemu` 端到端：进入 Work、发送、运行中白色耗时圈、停止、返回列表、重新进入和保留数据的
   冷启动均通过；未发现 `StreamSink` 或 SSH 状态异常。
 - 本轮再次连接本机 `codexemu`，进入真实 Codex 历史会话并截图核对顶部菜单和 Composer：顶部菜单宽
   196 dp、行高 48 dp；底部加号/更多为 36 dp，权限高 36 dp，输入区只有一层外框；约
   `873x2048` 的窄屏 Widget 画布也无布局溢出。
-- APK：`dist/Agent-1.8.10.apk`；构建产物大小 `66,797,023` bytes，SHA-256
-  `9bb9c9ca526ffb20f8bdd122e53e0e6e24daa8bb7834e3cf6183f3a578747b7b`。
+- APK：`dist/Agent-1.8.11.apk`；构建产物大小 `66,829,791` bytes，SHA-256
+  `10df3eebfb196c747919734ad14ea5c020fe9ccf7cb15a4ae65dac487e165683`。
 
 ## 18. 文档维护规则
 

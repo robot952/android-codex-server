@@ -119,7 +119,10 @@ object DiagnosticLogBridge {
         val token = marker.takeIf { it.isFile }?.readText()?.substringBefore(' ').orEmpty()
         val clean = markerFileLocked(CLEAN_MARKER).takeIf { it.isFile }?.readText()?.trim()
         if (token.isNotEmpty() && clean != token) {
-            appendLocked("FATAL", "Crash", "previous_process_exit_unclean token=$token")
+            // Android normally kills app processes without running JVM shutdown hooks.
+            // ApplicationExitInfo above is the authoritative crash/ANR source; this
+            // marker only proves that the previous process did not shut down cleanly.
+            appendLocked("WARN", "Process", "previous_process_exit_unclean token=$token")
         }
         markerFileLocked(CLEAN_MARKER).delete()
     }
