@@ -60,6 +60,12 @@ void main() {
         activeAgentCapabilities: AgentCapabilities.codex,
         selectedModel: 'gpt-5.6',
         selectedEffort: 'xhigh',
+        turnTiming: const TurnTiming(
+          threadId: 'thread-1',
+          startedAtMillis: 1786210800000,
+          completedAtMillis: 1786210802000,
+          stopped: true,
+        ),
         timeline: const [
           TimelineEntry(
             id: 'assistant-1',
@@ -97,12 +103,15 @@ void main() {
     expect(find.text('/home/yan/ygy/example.png'), findsOneWidget);
     expect(find.text('运行了命令'), findsOneWidget);
     expect(find.text('完成'), findsOneWidget);
+    expect(find.text('已停止  2s'), findsOneWidget);
     expect(find.text('描述任务'), findsOneWidget);
     expect(find.text('权限'), findsOneWidget);
     expect(find.byIcon(Icons.add), findsOneWidget);
     expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
     expect(find.byIcon(Icons.search), findsOneWidget);
     expect(find.byIcon(Icons.visibility), findsNWidgets(2));
+    expect(tester.widget<Icon>(find.byIcon(Icons.search)).size, 17);
+    expect(tester.widget<Icon>(find.byIcon(Icons.terminal)).size, 17);
     expect(tester.takeException(), isNull);
 
     tester.view.physicalSize = const Size(2712, 1220);
@@ -157,5 +166,60 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('echo details'), findsOneWidget);
     expect(find.text('command output'), findsOneWidget);
+  });
+
+  testWidgets('renders original file-change cards and opens the full diff', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 2.75;
+    tester.view.physicalSize = const Size(1220, 2712);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async {
+      await manager.close();
+    });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(
+          id: 'thread-files',
+          title: '文件修改',
+          cwd: '/home/yan/ygy',
+        ),
+        aggregateDiff: '@@ -1 +1 @@\n-old\n+new',
+        timeline: [
+          TimelineEntry(
+            id: 'files-1',
+            kind: TimelineKind.fileChange,
+            changes: [
+              FileChange(path: '/tmp/a.dart', diff: '-old\n+new'),
+              FileChange(path: '/tmp/b.dart', diff: '+line'),
+              FileChange(path: '/tmp/c.dart', diff: '-line'),
+              FileChange(path: '/tmp/d.dart', diff: '+line'),
+            ],
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('已编辑 4 个文件'), findsOneWidget);
+    expect(find.text('再显示 1 个文件'), findsOneWidget);
+    expect(find.text('工作区差异'), findsOneWidget);
+    await tester.tap(find.text('/tmp/a.dart'));
+    await tester.pumpAndSettle();
+    expect(find.text('文件差异'), findsOneWidget);
+    expect(find.text('/tmp/a.dart'), findsOneWidget);
+    expect(find.text('-old\n+new'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

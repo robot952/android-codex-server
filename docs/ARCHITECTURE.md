@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.7+127，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.8+128，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -900,6 +900,13 @@ SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`�
 模拟器 smoke 均通过。Release 产物为 `versionName=1.8.6`、`versionCode=126`，SHA-256 为
 `65b6d36ce8f78d8226ad54c93597ece9d6c0f0c194f6c40cac937272a85294cb`，继续使用原稳定签名。
 
+2026-08-09 再次以旧版 Compose Work 页面和真机截图逐项核对：Flutter 工作页使用原版局部颜色、6 dp
+思考/命令/图片表面、17 dp 主图标和 36 dp 浅色发送/停止按钮；补齐运行中、完成和已停止耗时尾行，
+并恢复文件修改、工作区差异卡和全屏差异查看。模型、思考强度、权限和上下文仍按会话实际状态显示，
+不为截图写死。主动停止成功后本地停止标记优先于 app-server 随后的 `completed` 状态；最近一次完成或
+停止耗时会按服务器、Agent 和会话持久化，返回重进及冷启动均恢复。`work_screen_layout_test.dart` 同步
+覆盖停止耗时和文件差异入口。
+
 同一产物经 `./scripts/emulator-smoke.sh release --force-install` 验收：Android 14 模拟器竖屏
 1220x2712、横屏 2712x1220 均启动成功，进程存活，最近 1200 行该包 logcat 无 FATAL/ANR。截图位于
 `.workflow-cache/emulator/latest-release.png` 和 `.workflow-cache/emulator/latest-release-landscape.png`。
@@ -1127,7 +1134,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 345 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 349 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。
@@ -1137,11 +1144,13 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.7+127`。
-- Flutter 测试：345 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
+- 应用版本：`1.8.8+128`。
+- Flutter 测试：349 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
-- APK：`dist/Agent-1.8.7.apk`；SHA-256
-  `5c74139081a47a6557d97331774145460aa5812b7fab6e88d34b20e1ff8ff687`。
+- 本机 `codexemu` 端到端：进入 Work、发送、运行中白色耗时圈、停止、返回列表、重新进入和保留数据的
+  冷启动均通过；未发现 `StreamSink` 或 SSH 状态异常。
+- APK：`dist/Agent-1.8.8.apk`；构建产物大小 `66,796,939` bytes，SHA-256
+  `12e33eca9fd706a5f8f3787f0ca0cec2bb3d18724a74ca9c4359d9859e8d8e02`。
 
 ## 18. 文档维护规则
 

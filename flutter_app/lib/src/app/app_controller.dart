@@ -2699,6 +2699,15 @@ class AppController extends StateNotifier<AppUiState> {
     );
     try {
       await _agents.interruptTurn(key, threadId: thread.id, turnId: turnId);
+      if (mounted && _isActiveThread(key, thread.id)) {
+        final timing = state.turnTiming;
+        if (timing != null &&
+            timing.threadId == thread.id &&
+            (timing.turnId == null || timing.turnId == turnId) &&
+            timing.completedAtMillis == null) {
+          state = state.copyWith(turnTiming: timing.copyWith(stopped: true));
+        }
+      }
     } catch (error) {
       if (mounted && _isActiveThread(key, thread.id)) {
         state = state.copyWith(error: _message(error, '停止消息失败'));
@@ -3435,14 +3444,27 @@ class AppController extends StateNotifier<AppUiState> {
     final timelineTurnId = _activeTimelineTurnId(snapshot.timeline);
     final activeTurnId = snapshot.thread.activeTurnId ?? timelineTurnId;
     final running = _threadIsRunning(snapshot.thread) || activeTurnId != null;
-    final retainedTiming = sameInitialThread
+    final currentTiming = sameInitialThread
         ? initialSnapshot!.turnTiming
         : state.turnTiming?.threadId == snapshot.thread.id
         ? state.turnTiming
         : null;
+    final storedTiming = active && snapshot.thread.id.isNotEmpty
+        ? _stored.completedTurnTimings[threadPreferenceKey(
+            key.profileId,
+            key.agent,
+            snapshot.thread.id,
+          )]
+        : null;
+    final completedTiming = currentTiming?.completedAtMillis != null
+        ? currentTiming
+        : storedTiming?.threadId == snapshot.thread.id &&
+              storedTiming?.completedAtMillis != null
+        ? storedTiming
+        : null;
     final reusableTiming =
-        _canReuseTurnTiming(retainedTiming, snapshot.thread.id, activeTurnId)
-        ? retainedTiming
+        _canReuseTurnTiming(currentTiming, snapshot.thread.id, activeTurnId)
+        ? currentTiming
         : null;
     final resolvedReusableTiming =
         reusableTiming != null &&
@@ -3465,7 +3487,7 @@ class AppController extends StateNotifier<AppUiState> {
                       turnId: activeTurnId,
                       startedAtMillis: DateTime.now().millisecondsSinceEpoch,
                     )
-        : null;
+        : completedTiming;
     state = state.copyWith(
       screen: targetScreen,
       subAgentBackNavigation: subAgentBackNavigation,

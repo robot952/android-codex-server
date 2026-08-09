@@ -216,6 +216,8 @@ void main() {
     );
     await _waitUntil(() => !harness.controller.state.loading);
     expect(harness.controller.state.running, isFalse);
+    final completedTiming = harness.controller.state.turnTiming;
+    expect(completedTiming?.completedAtMillis, isNotNull);
 
     harness.controller.backToThreadList();
     final inspectCache = agent.gateNextResume(_threadA.id);
@@ -224,7 +226,44 @@ void main() {
 
     expect(harness.controller.state.activeThread?.status, 'idle');
     expect(harness.controller.state.running, isFalse);
+    expect(harness.controller.state.turnTiming, completedTiming);
     inspectCache.complete(const AgentSession(thread: _threadA, timeline: []));
+  });
+
+  test('restores a completed stopped timing after a cold start', () async {
+    final storageKey = threadPreferenceKey(
+      _profile.id,
+      AgentKind.codex,
+      _threadA.id,
+    );
+    const stoppedTiming = TurnTiming(
+      threadId: 'thread-a',
+      turnId: 'turn-stopped',
+      startedAtMillis: 100,
+      completedAtMillis: 200,
+      stopped: true,
+    );
+    final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+    final harness = await _createHarness(
+      agent,
+      storedProfiles: StoredProfiles(
+        profiles: const [_profile],
+        selectedProfileId: _profile.id,
+        completedTurnTimings: {storageKey: stoppedTiming},
+      ),
+    );
+    final resume = agent.gateNextResume(_threadA.id);
+
+    harness.controller.openThread(_threadA);
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id == _threadA.id &&
+          harness.controller.state.loading,
+    );
+
+    expect(harness.controller.state.running, isFalse);
+    expect(harness.controller.state.turnTiming, stoppedTiming);
+    resume.complete(const AgentSession(thread: _threadA, timeline: []));
   });
 
   test('active resume rejects completed retained turn timing', () async {
@@ -470,9 +509,13 @@ class _Harness {
   final AppController controller;
 }
 
-Future<_Harness> _createHarness(_ResumeAgent agent) async {
+Future<_Harness> _createHarness(
+  _ResumeAgent agent, {
+  StoredProfiles? storedProfiles,
+}) async {
   final store = _MemoryProfileStore(
-    const StoredProfiles(profiles: [_profile], selectedProfileId: 'server'),
+    storedProfiles ??
+        const StoredProfiles(profiles: [_profile], selectedProfileId: 'server'),
   );
   final connections = ServerConnectionManager(clientFactory: _Host.new);
   final agents = AgentConnectionManager(

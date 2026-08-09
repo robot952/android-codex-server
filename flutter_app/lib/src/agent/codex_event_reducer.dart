@@ -112,7 +112,9 @@ AppUiState reduceCodexNotification(
           ? timing.copyWith(
               turnId: resolvedTurnId.isEmpty ? timing.turnId : resolvedTurnId,
               completedAtMillis: now,
-              stopped: _isStoppedStatus(_string(turn, const ['status'])),
+              stopped:
+                  timing.stopped ||
+                  _isStoppedStatus(_string(turn, const ['status'])),
             )
           : timing;
       next = next.copyWith(
@@ -699,7 +701,7 @@ TurnTiming? _completeTiming(
   return current.copyWith(
     turnId: turnId?.isEmpty == true ? current.turnId : turnId,
     completedAtMillis: now,
-    stopped: stopped,
+    stopped: current.stopped || stopped,
   );
 }
 

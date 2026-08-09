@@ -24,6 +24,15 @@ import 'work_content.dart';
 typedef _OpenRemoteImage =
     Future<void> Function(String path, {String? fileName});
 
+// Keep the Work page visually aligned with the original Compose screen
+// without changing the palette used by the newer server and settings pages.
+const _workSurface = Color(0xFF1F1F1F);
+const _workRaised = Color(0xFF272727);
+const _workBorder = Color(0xFF373737);
+const _workGreen = Color(0xFF68C77B);
+const _workLink = Color(0xFF64B5F6);
+const _workAmber = Color(0xFFE5B567);
+
 /// The active Codex transcript. The screen deliberately consumes domain
 /// objects only; JSON-RPC parsing and connection lifetime stay in the agent
 /// and controller layers.
@@ -130,7 +139,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   : '未命名任务',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
             ),
             if (thread.cwd.isNotEmpty)
               Text(
@@ -216,6 +225,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   _openRemoteImage(path, fileName: fileName),
               imageLoadingPath: _imageLoadingPath,
               onOpenRemoteFile: _downloadRemoteFile,
+              onOpenDiff: _openDiff,
               onOpenSubAgent: controller.openSubAgentThread,
               onRefresh: state.olderTurnsCursor == null
                   ? null
@@ -744,6 +754,10 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       last?.text.length,
       last?.output.length,
       state.aggregateDiff.length,
+      state.running,
+      state.turnTiming?.startedAtMillis,
+      state.turnTiming?.completedAtMillis,
+      state.turnTiming?.stopped,
     );
     final transcriptChanged = signature != _timelineSignature;
     final viewportShrank = bottomInset > _lastBottomInset;
@@ -795,6 +809,16 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         _scrollController.position.maxScrollExtent,
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
+      ),
+    );
+  }
+
+  void _openDiff(FileChange change) {
+    unawaited(
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (context) => _DiffScreen(change: change),
+        ),
       ),
     );
   }
@@ -1859,6 +1883,7 @@ class _Transcript extends StatelessWidget {
     required this.onOpenImage,
     required this.imageLoadingPath,
     required this.onOpenRemoteFile,
+    required this.onOpenDiff,
     required this.onOpenSubAgent,
     required this.onRefresh,
     required this.showJumpToBottom,
@@ -1872,6 +1897,7 @@ class _Transcript extends StatelessWidget {
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
   final Future<void> Function(String path) onOpenRemoteFile;
+  final ValueChanged<FileChange> onOpenDiff;
   final void Function(String threadId, String agentName) onOpenSubAgent;
   final Future<void> Function()? onRefresh;
   final bool showJumpToBottom;
@@ -1895,6 +1921,75 @@ class _Transcript extends StatelessWidget {
         break;
       }
     }
+    final contentItems = <Widget>[];
+    for (final row in rows) {
+      final child = switch (row) {
+        TimelineEntryRenderRow(:final entry) => _TimelineCard(
+          entry: entry,
+          onOpenImage: onOpenImage,
+          imageLoadingPath: imageLoadingPath,
+          onOpenRemoteFile: onOpenRemoteFile,
+          onOpenDiff: onOpenDiff,
+          canReview:
+              entry.kind == TimelineKind.fileChange &&
+              entry.changes.isNotEmpty &&
+              state.activeAgentCapabilities.reviewChanges &&
+              !state.loading &&
+              !state.submitting &&
+              !state.running,
+          canRollback:
+              entry.id == latestFileChangeId &&
+              entry.changes.isNotEmpty &&
+              state.activeAgentCapabilities.rollbackThread &&
+              !state.loading &&
+              !state.submitting &&
+              !state.running,
+          onReview: onReview,
+          onRollback: onRollback,
+        ),
+        SubAgentTimelineRenderRow(:final entries) =>
+          _SubAgentActivityGroupBlock(
+            entries: entries,
+            enabled: canOpenSubAgents,
+            onOpenSubAgent: onOpenSubAgent,
+          ),
+      };
+      contentItems.add(
+        KeyedSubtree(
+          key: ValueKey('${state.activeThread?.id}:${row.stableKey}'),
+          child: child,
+        ),
+      );
+    }
+    if (state.aggregateDiff.trim().isNotEmpty) {
+      final aggregate = FileChange(
+        path: '工作区差异',
+        kind: 'diff',
+        diff: state.aggregateDiff,
+      );
+      contentItems.add(
+        _AggregateDiffTimelineCard(
+          key: const ValueKey('aggregate-diff'),
+          change: aggregate,
+          onOpen: () => onOpenDiff(aggregate),
+        ),
+      );
+    }
+    final threadId = state.activeThread?.id;
+    final timing = state.turnTiming?.threadId == threadId
+        ? state.turnTiming
+        : null;
+    final showTiming = state.running || timing?.completedAtMillis != null;
+    if (showTiming) {
+      contentItems.add(
+        _TurnTimingFooter(
+          key: const ValueKey('turn-timing-footer'),
+          running: state.running,
+          timing: timing,
+        ),
+      );
+    }
+    contentItems.add(const SizedBox(height: 6));
     final list = CustomScrollView(
       controller: controller,
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -1910,55 +2005,23 @@ class _Transcript extends StatelessWidget {
             builder: _buildOlderHistoryIndicator,
           ),
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 10, 18),
+          padding: const EdgeInsets.fromLTRB(9, 10, 9, 10),
           sliver: SliverList(
             delegate: SliverChildBuilderDelegate((context, index) {
-              final row = rows[index];
-              final child = switch (row) {
-                TimelineEntryRenderRow(:final entry) => _TimelineCard(
-                  entry: entry,
-                  onOpenImage: onOpenImage,
-                  imageLoadingPath: imageLoadingPath,
-                  onOpenRemoteFile: onOpenRemoteFile,
-                  canReview:
-                      entry.kind == TimelineKind.fileChange &&
-                      entry.changes.isNotEmpty &&
-                      state.activeAgentCapabilities.reviewChanges &&
-                      !state.loading &&
-                      !state.submitting &&
-                      !state.running,
-                  canRollback:
-                      entry.id == latestFileChangeId &&
-                      entry.changes.isNotEmpty &&
-                      state.activeAgentCapabilities.rollbackThread &&
-                      !state.loading &&
-                      !state.submitting &&
-                      !state.running,
-                  onReview: onReview,
-                  onRollback: onRollback,
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: index == contentItems.length - 1 ? 0 : 10,
                 ),
-                SubAgentTimelineRenderRow(:final entries) =>
-                  _SubAgentActivityGroupBlock(
-                    entries: entries,
-                    enabled: canOpenSubAgents,
-                    onOpenSubAgent: onOpenSubAgent,
-                  ),
-              };
-              return KeyedSubtree(
-                key: ValueKey('${state.activeThread?.id}:${row.stableKey}'),
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: child,
-                ),
+                child: contentItems[index],
               );
-            }, childCount: rows.length),
+            }, childCount: contentItems.length),
           ),
         ),
       ],
     );
     return Stack(
       children: [
-        if (entries.isEmpty && !state.loading)
+        if (entries.isEmpty && !state.loading && !showTiming)
           const Center(child: Text('暂无消息')),
         Positioned.fill(child: list),
         if (showJumpToBottom)
@@ -1967,8 +2030,8 @@ class _Transcript extends StatelessWidget {
             right: 0,
             bottom: 16,
             child: Material(
-              color: codexRaised,
-              shape: const CircleBorder(side: BorderSide(color: codexBorder)),
+              color: _workRaised,
+              shape: const CircleBorder(side: BorderSide(color: _workBorder)),
               elevation: 3,
               child: IconButton(
                 tooltip: '回到底部',
@@ -2180,6 +2243,7 @@ class _TimelineCard extends StatelessWidget {
     required this.onOpenImage,
     required this.imageLoadingPath,
     required this.onOpenRemoteFile,
+    required this.onOpenDiff,
     required this.canReview,
     required this.canRollback,
     required this.onReview,
@@ -2190,6 +2254,7 @@ class _TimelineCard extends StatelessWidget {
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
   final Future<void> Function(String path) onOpenRemoteFile;
+  final ValueChanged<FileChange> onOpenDiff;
   final bool canReview;
   final bool canRollback;
   final Future<void> Function() onReview;
@@ -2223,159 +2288,28 @@ class _TimelineCard extends StatelessWidget {
         onOpenImage: onOpenImage,
       );
     }
-    final isUser = entry.kind == TimelineKind.userMessage;
-    final previewPath = imagePreviewPath(entry);
-    final loadingImage = previewPath != null && previewPath == imageLoadingPath;
-    final color = isUser ? codexBlue : codexText;
-    final icon = previewPath != null
-        ? Icons.visibility_outlined
-        : switch (entry.kind) {
-            TimelineKind.userMessage => Icons.person_outline,
-            TimelineKind.agentMessage => Icons.auto_awesome,
-            TimelineKind.reasoning => Icons.psychology_outlined,
-            TimelineKind.plan => Icons.list_alt,
-            TimelineKind.command => Icons.terminal,
-            TimelineKind.fileChange => Icons.edit_note,
-            TimelineKind.tool => Icons.build_outlined,
-            TimelineKind.subAgent => Icons.account_tree_outlined,
-            TimelineKind.review => Icons.rate_review_outlined,
-            TimelineKind.notice => Icons.info_outline,
-          };
-    final title = switch (entry.kind) {
-      TimelineKind.userMessage => '你',
-      TimelineKind.agentMessage => 'Codex',
-      TimelineKind.reasoning => '思考过程',
-      TimelineKind.plan => '计划',
-      TimelineKind.command => entry.title.isEmpty ? '终端' : entry.title,
-      TimelineKind.fileChange => entry.title.isEmpty ? '文件修改' : entry.title,
-      TimelineKind.tool => entry.title.isEmpty ? '工具' : entry.title,
-      TimelineKind.subAgent => '协作活动',
-      TimelineKind.review => entry.title,
-      TimelineKind.notice => entry.title.isEmpty ? '提示' : entry.title,
-    };
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
-        child: Material(
-          color: isUser ? const Color(0xFF213A55) : codexSurface,
-          shape: RoundedRectangleBorder(
-            side: const BorderSide(color: codexBorder),
-            borderRadius: BorderRadius.circular(7),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: previewPath == null ? null : () => onOpenImage(previewPath),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(icon, size: 17, color: color),
-                      const SizedBox(width: 7),
-                      Expanded(
-                        child: Text(
-                          title,
-                          style: Theme.of(
-                            context,
-                          ).textTheme.labelLarge?.copyWith(color: color),
-                        ),
-                      ),
-                      if (loadingImage)
-                        const SizedBox.square(
-                          dimension: 17,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      else if (previewPath != null)
-                        IconButton(
-                          tooltip: '查看图片',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: () => onOpenImage(previewPath),
-                          icon: const Icon(Icons.visibility_outlined, size: 18),
-                        )
-                      else if (entry.status.isNotEmpty &&
-                          entry.status != 'completed' &&
-                          entry.status != 'idle')
-                        _StatusDot(status: entry.status),
-                    ],
-                  ),
-                  if (entry.text.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    if (previewPath != null || entry.kind == TimelineKind.tool)
-                      _BoundedSelectableText(entry.text)
-                    else
-                      _MarkdownMessage(
-                        entry.text,
-                        onOpenRemoteFile: onOpenRemoteFile,
-                      ),
-                  ],
-                  if (entry.command.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    _CodeBlock(entry.command),
-                  ],
-                  if (entry.output.isNotEmpty &&
-                      entry.output != previewPath) ...[
-                    const SizedBox(height: 7),
-                    _CodeBlock(entry.output),
-                  ],
-                  if (entry.changes.isNotEmpty) ...[
-                    const SizedBox(height: 7),
-                    for (final change in entry.changes)
-                      _ChangeLine(change: change),
-                    if (canReview || canRollback) ...[
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          if (canReview)
-                            TextButton.icon(
-                              onPressed: () => unawaited(onReview()),
-                              icon: const Icon(Icons.rate_review_outlined),
-                              label: const Text('审核'),
-                            ),
-                          if (canRollback)
-                            TextButton.icon(
-                              onPressed: () => unawaited(onRollback()),
-                              icon: const Icon(Icons.undo_outlined),
-                              label: const Text('撤销'),
-                            ),
-                        ],
-                      ),
-                    ],
-                  ],
-                  if (entry.subAgentPath.isNotEmpty) ...[
-                    const SizedBox(height: 5),
-                    Text(
-                      entry.subAgentPath,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                  if (entry.attachments.isNotEmpty) ...[
-                    const SizedBox(height: 7),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: [
-                        for (final attachment in entry.attachments)
-                          _AttachmentChip(
-                            attachment: attachment,
-                            loading: imageLoadingPath == attachment.remotePath,
-                            onOpenImage: onOpenImage,
-                          ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ),
+    return switch (entry.kind) {
+      TimelineKind.fileChange => _FileChangeTimelineCard(
+        entry: entry,
+        onOpenDiff: onOpenDiff,
+        canReview: canReview,
+        canRollback: canRollback,
+        onReview: onReview,
+        onRollback: onRollback,
       ),
-    );
+      TimelineKind.tool => _ToolTimelineCard(entry: entry),
+      TimelineKind.review => _ReviewTimelineCard(
+        entry: entry,
+        onOpenRemoteFile: onOpenRemoteFile,
+      ),
+      TimelineKind.notice || TimelineKind.subAgent => Text(
+        entry.text.trim().isEmpty ? entry.title : entry.text,
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(color: codexMuted),
+      ),
+      _ => const SizedBox.shrink(),
+    };
   }
 }
 
@@ -2393,10 +2327,10 @@ class _UserMessageTimelineCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: codexSurface,
-      borderRadius: BorderRadius.circular(7),
+      color: _workRaised,
+      borderRadius: BorderRadius.circular(6),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2423,6 +2357,555 @@ class _UserMessageTimelineCard extends StatelessWidget {
   }
 }
 
+class _FileChangeTimelineCard extends StatefulWidget {
+  const _FileChangeTimelineCard({
+    required this.entry,
+    required this.onOpenDiff,
+    required this.canReview,
+    required this.canRollback,
+    required this.onReview,
+    required this.onRollback,
+  });
+
+  final TimelineEntry entry;
+  final ValueChanged<FileChange> onOpenDiff;
+  final bool canReview;
+  final bool canRollback;
+  final Future<void> Function() onReview;
+  final Future<void> Function() onRollback;
+
+  @override
+  State<_FileChangeTimelineCard> createState() =>
+      _FileChangeTimelineCardState();
+}
+
+class _FileChangeTimelineCardState extends State<_FileChangeTimelineCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final additions = entry.changes.fold<int>(
+      0,
+      (total, change) => total + change.additions,
+    );
+    final deletions = entry.changes.fold<int>(
+      0,
+      (total, change) => total + change.deletions,
+    );
+    final visibleChanges = _expanded
+        ? entry.changes
+        : entry.changes.take(3).toList(growable: false);
+    final hiddenCount = entry.changes.length - visibleChanges.length;
+    final shape = RoundedRectangleBorder(
+      side: const BorderSide(color: _workBorder),
+      borderRadius: BorderRadius.circular(8),
+    );
+    return Material(
+      color: const Color(0xFF1B1B1B),
+      shape: shape,
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+            child: Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: _workRaised,
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.description_outlined, size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '已编辑 ${entry.changes.length} 个文件',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      Row(
+                        children: [
+                          Text(
+                            '+$additions',
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodySmall?.copyWith(color: _workGreen),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            '-$deletions',
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodySmall?.copyWith(color: codexRed),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.canRollback)
+                  SizedBox.square(
+                    dimension: 36,
+                    child: IconButton(
+                      tooltip: '撤销上一轮会话',
+                      padding: EdgeInsets.zero,
+                      onPressed: () => unawaited(widget.onRollback()),
+                      icon: const Icon(Icons.undo, size: 19),
+                    ),
+                  ),
+                if (widget.canReview) ...[
+                  const SizedBox(width: 4),
+                  SizedBox(
+                    height: 36,
+                    child: OutlinedButton(
+                      onPressed: () => unawaited(widget.onReview()),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: codexText,
+                        side: const BorderSide(color: _workBorder),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(7),
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                      ),
+                      child: Text(
+                        '审核',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          for (final change in visibleChanges) ...[
+            const Divider(height: 1, color: _workBorder),
+            InkWell(
+              onTap: () => widget.onOpenDiff(change),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 9,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        change.path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                          color: codexMuted,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '+${change.additions}',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: _workGreen),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      '-${change.deletions}',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: codexRed),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          if (entry.changes.length > 3) ...[
+            const Divider(height: 1, color: _workBorder),
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 9,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _expanded ? '收起文件' : '再显示 $hiddenCount 个文件',
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodyMedium?.copyWith(color: codexMuted),
+                      ),
+                    ),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_up
+                          : Icons.keyboard_arrow_down,
+                      size: 19,
+                      color: codexMuted,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AggregateDiffTimelineCard extends StatelessWidget {
+  const _AggregateDiffTimelineCard({
+    super.key,
+    required this.change,
+    required this.onOpen,
+  });
+
+  final FileChange change;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: _workRaised,
+    shape: RoundedRectangleBorder(
+      side: const BorderSide(color: _workBorder),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        child: Row(
+          children: [
+            const Icon(Icons.code, size: 18),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '工作区差异',
+                    style: TextStyle(fontWeight: FontWeight.w500),
+                  ),
+                  Row(
+                    children: [
+                      Text(
+                        '+${change.additions}',
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodySmall?.copyWith(color: _workGreen),
+                      ),
+                      const SizedBox(width: 7),
+                      Text(
+                        '-${change.deletions}',
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodySmall?.copyWith(color: codexRed),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            TextButton(onPressed: onOpen, child: const Text('查看差异')),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _ToolTimelineCard extends StatelessWidget {
+  const _ToolTimelineCard({required this.entry});
+
+  final TimelineEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = _commandStatus(entry.status);
+    return Material(
+      color: _workRaised,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.all(11),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.code, size: 17),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    entry.title.trim().isEmpty ? '工具' : entry.title,
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                if (status != null)
+                  Text(
+                    status.label,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: status.color),
+                  ),
+              ],
+            ),
+            if (entry.text.trim().isNotEmpty) ...[
+              const SizedBox(height: 7),
+              _BoundedSelectableText(entry.text),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewTimelineCard extends StatelessWidget {
+  const _ReviewTimelineCard({
+    required this.entry,
+    required this.onOpenRemoteFile,
+  });
+
+  final TimelineEntry entry;
+  final Future<void> Function(String path) onOpenRemoteFile;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: _workRaised,
+    borderRadius: BorderRadius.circular(6),
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.rate_review_outlined, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  entry.title,
+                  style: const TextStyle(fontWeight: FontWeight.w500),
+                ),
+              ),
+            ],
+          ),
+          if (entry.text.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _MarkdownMessage(entry.text, onOpenRemoteFile: onOpenRemoteFile),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
+class _TurnTimingFooter extends StatefulWidget {
+  const _TurnTimingFooter({
+    super.key,
+    required this.running,
+    required this.timing,
+  });
+
+  final bool running;
+  final TurnTiming? timing;
+
+  @override
+  State<_TurnTimingFooter> createState() => _TurnTimingFooterState();
+}
+
+class _TurnTimingFooterState extends State<_TurnTimingFooter> {
+  Timer? _timer;
+  int _nowMillis = DateTime.now().millisecondsSinceEpoch;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TurnTimingFooter oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.running != widget.running ||
+        oldWidget.timing?.startedAtMillis != widget.timing?.startedAtMillis) {
+      _syncTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _syncTimer() {
+    _timer?.cancel();
+    _timer = null;
+    _nowMillis = DateTime.now().millisecondsSinceEpoch;
+    if (!widget.running) return;
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() => _nowMillis = DateTime.now().millisecondsSinceEpoch);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final timing = widget.timing;
+    if (widget.running) {
+      final elapsed = timing == null
+          ? null
+          : _formatTurnElapsed(timing.startedAtMillis, _nowMillis);
+      return Semantics(
+        label: elapsed == null ? 'Codex 正在处理' : 'Codex 正在处理，已运行 $elapsed',
+        child: Row(
+          children: [
+            const SizedBox.square(
+              dimension: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: codexText,
+              ),
+            ),
+            const SizedBox(width: 9),
+            _ProcessingStatusText(elapsed: elapsed),
+          ],
+        ),
+      );
+    }
+    final completedAt = timing?.completedAtMillis;
+    if (timing == null || completedAt == null) {
+      return const SizedBox.shrink();
+    }
+    final elapsed = _formatTurnElapsed(timing.startedAtMillis, completedAt);
+    final stopped = timing.stopped;
+    return Semantics(
+      label: stopped
+          ? '已停止，已处理 $elapsed'
+          : '本次耗时 $elapsed，完成于 ${_formatTurnCompletionTime(completedAt)}',
+      child: Row(
+        children: [
+          Icon(
+            stopped ? Icons.stop : Icons.check_circle,
+            size: 16,
+            color: stopped ? _workAmber : _workGreen,
+          ),
+          const SizedBox(width: 9),
+          Text(
+            stopped
+                ? '已停止  $elapsed'
+                : '$elapsed  完成于 ${_formatTurnCompletionTime(completedAt)}',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: codexMuted),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProcessingStatusText extends StatefulWidget {
+  const _ProcessingStatusText({required this.elapsed});
+
+  final String? elapsed;
+
+  @override
+  State<_ProcessingStatusText> createState() => _ProcessingStatusTextState();
+}
+
+class _ProcessingStatusTextState extends State<_ProcessingStatusText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 2),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final baseColor = codexMuted.withValues(alpha: 0.64);
+    return Row(
+      children: [
+        AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) => ShaderMask(
+            blendMode: BlendMode.srcIn,
+            shaderCallback: (bounds) => LinearGradient(
+              colors: [
+                baseColor,
+                Colors.white.withValues(alpha: 0.68),
+                Colors.white.withValues(alpha: 0.92),
+                Colors.white.withValues(alpha: 0.68),
+                baseColor,
+              ],
+              stops: const [0, 0.34, 0.5, 0.66, 1],
+              begin: Alignment(-3 + _controller.value * 6, 0),
+              end: Alignment(-1 + _controller.value * 6, 0),
+            ).createShader(bounds),
+            child: child,
+          ),
+          child: Text('正在处理', style: Theme.of(context).textTheme.bodySmall),
+        ),
+        if (widget.elapsed != null) ...[
+          const SizedBox(width: 6),
+          Text(
+            widget.elapsed!,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: baseColor),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+String _formatTurnElapsed(int startedAtMillis, int endedAtMillis) {
+  final normalizedStart =
+      _normalizeEpochMillis(startedAtMillis) ?? endedAtMillis;
+  final seconds = ((endedAtMillis - normalizedStart).clamp(0, 1 << 62)) ~/ 1000;
+  final hours = seconds ~/ 3600;
+  final minutes = (seconds % 3600) ~/ 60;
+  final remainderSeconds = seconds % 60;
+  if (hours > 0) return '${hours}h ${minutes}m ${remainderSeconds}s';
+  if (minutes > 0) return '${minutes}m ${remainderSeconds}s';
+  return '${remainderSeconds}s';
+}
+
+String _formatTurnCompletionTime(int completedAtMillis) {
+  final normalized =
+      _normalizeEpochMillis(completedAtMillis) ?? completedAtMillis;
+  final value = DateTime.fromMillisecondsSinceEpoch(normalized).toLocal();
+  String twoDigits(int number) => number.toString().padLeft(2, '0');
+  return '${twoDigits(value.hour)}:${twoDigits(value.minute)}:'
+      '${twoDigits(value.second)}';
+}
+
+int? _normalizeEpochMillis(int timestamp) {
+  if (timestamp <= 0) return null;
+  return timestamp < 100000000000 ? timestamp * 1000 : timestamp;
+}
+
 class _CollapsibleTimelineRow extends StatefulWidget {
   const _CollapsibleTimelineRow({required this.entry});
 
@@ -2446,19 +2929,19 @@ class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
       children: [
         InkWell(
           onTap: () => setState(() => _expanded = !_expanded),
-          borderRadius: BorderRadius.circular(5),
+          borderRadius: BorderRadius.circular(4),
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 3),
+            padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
               children: [
                 Icon(
                   entry.kind == TimelineKind.plan
                       ? Icons.pending_outlined
                       : Icons.search,
-                  size: 22,
+                  size: 17,
                   color: codexMuted,
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     title,
@@ -2466,14 +2949,14 @@ class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(
                       context,
-                    ).textTheme.titleSmall?.copyWith(color: codexMuted),
+                    ).textTheme.labelLarge?.copyWith(color: codexMuted),
                   ),
                 ),
                 Icon(
                   _expanded
                       ? Icons.keyboard_arrow_up
                       : Icons.keyboard_arrow_down,
-                  size: 24,
+                  size: 18,
                   color: codexMuted,
                 ),
               ],
@@ -2482,12 +2965,12 @@ class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
         ),
         if (_expanded && text.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.fromLTRB(35, 2, 8, 5),
+            padding: const EdgeInsets.only(left: 25, top: 4),
             child: SelectableText(
               text,
               style: Theme.of(
                 context,
-              ).textTheme.bodySmall?.copyWith(color: codexMuted, height: 1.35),
+              ).textTheme.bodySmall?.copyWith(color: codexMuted),
             ),
           ),
       ],
@@ -2514,8 +2997,8 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
     return Material(
       color: codexRaised,
       shape: RoundedRectangleBorder(
-        side: const BorderSide(color: codexBorder),
-        borderRadius: BorderRadius.circular(7),
+        side: const BorderSide(color: _workBorder),
+        borderRadius: BorderRadius.circular(6),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -2523,32 +3006,30 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(11, 9, 9, 9),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
               child: Row(
                 children: [
-                  const Icon(Icons.terminal, size: 20),
-                  const SizedBox(width: 9),
-                  const Expanded(
+                  const Icon(Icons.terminal, size: 17),
+                  const SizedBox(width: 8),
+                  Expanded(
                     child: Text(
                       '运行了命令',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                      ),
+                      style: Theme.of(context).textTheme.labelLarge,
                     ),
                   ),
                   if (status != null)
                     Text(
                       status.label,
-                      style: TextStyle(color: status.color, fontSize: 14),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: status.color),
                     ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 4),
                   Icon(
                     _expanded
                         ? Icons.keyboard_arrow_up
                         : Icons.keyboard_arrow_down,
-                    size: 23,
-                    color: codexMuted,
+                    size: 18,
                   ),
                 ],
               ),
@@ -2558,7 +3039,7 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
             if (entry.command.isNotEmpty) _CommandOutputBlock(entry.command),
             if (entry.output.isNotEmpty) ...[
               if (entry.command.isNotEmpty)
-                const Divider(height: 1, color: codexBorder),
+                const Divider(height: 1, color: _workBorder),
               _CommandOutputBlock(entry.output),
             ],
             if (entry.command.isEmpty && entry.output.isEmpty)
@@ -2585,7 +3066,7 @@ class _CommandOutputBlock extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     width: double.infinity,
     constraints: const BoxConstraints(maxHeight: 340),
-    color: codexBackground,
+    color: const Color(0xFF151515),
     padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
     child: SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -2618,43 +3099,43 @@ class _ImageTimelineCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: codexRaised,
-      borderRadius: BorderRadius.circular(7),
+      color: _workRaised,
+      borderRadius: BorderRadius.circular(6),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: loading ? null : () => onOpenImage(path),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 11, 8, 12),
+          padding: const EdgeInsets.all(11),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
-                  const Icon(Icons.visibility, size: 23, color: codexText),
-                  const SizedBox(width: 10),
-                  const Expanded(
+                  const Icon(Icons.visibility, size: 17, color: codexText),
+                  const SizedBox(width: 8),
+                  Expanded(
                     child: Text(
                       '查看了图片',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                      ),
+                      style: Theme.of(context).textTheme.labelLarge,
                     ),
                   ),
                   loading
                       ? const SizedBox.square(
-                          dimension: 20,
+                          dimension: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : IconButton(
-                          tooltip: '查看图片',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: () => onOpenImage(path),
-                          icon: const Icon(Icons.visibility, size: 23),
+                      : SizedBox.square(
+                          dimension: 30,
+                          child: IconButton(
+                            tooltip: '查看图片',
+                            padding: EdgeInsets.zero,
+                            onPressed: () => onOpenImage(path),
+                            icon: const Icon(Icons.visibility, size: 18),
+                          ),
                         ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 7),
               SelectableText(
                 path,
                 maxLines: 1,
@@ -2726,12 +3207,12 @@ class _MarkdownMessage extends StatelessWidget {
       softLineBreak: true,
       styleSheet: base.copyWith(
         a: const TextStyle(
-          color: codexBlue,
+          color: _workLink,
           decoration: TextDecoration.underline,
-          decorationColor: codexBlue,
+          decorationColor: _workLink,
           letterSpacing: 0,
         ),
-        p: theme.textTheme.bodyMedium?.copyWith(height: 1.35),
+        p: theme.textTheme.bodyMedium?.copyWith(fontSize: 15, height: 1.2),
         code: theme.textTheme.bodySmall?.copyWith(
           fontFamily: 'monospace',
           color: codexText,
@@ -2814,28 +3295,99 @@ class _AttachmentChip extends StatelessWidget {
     final image =
         attachment.mimeType.startsWith('image/') &&
         attachment.remotePath.startsWith('/');
-    final avatar = loading
-        ? const SizedBox.square(
-            dimension: 15,
-            child: CircularProgressIndicator(strokeWidth: 1.8),
-          )
-        : Icon(image ? Icons.image_outlined : Icons.attach_file, size: 16);
-    if (!image) {
-      return Chip(
-        avatar: avatar,
-        label: Text(attachment.name),
-        visualDensity: VisualDensity.compact,
-      );
-    }
-    return ActionChip(
-      avatar: avatar,
-      label: Text(attachment.name),
-      visualDensity: VisualDensity.compact,
-      onPressed: loading
-          ? null
-          : () => onOpenImage(attachment.remotePath, fileName: attachment.name),
+    final displayName = attachment.name.trim().isEmpty
+        ? image
+              ? '图片'
+              : '文件'
+        : attachment.name;
+    return Material(
+      color: _workSurface,
+      borderRadius: BorderRadius.circular(6),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: !image || loading
+            ? null
+            : () =>
+                  onOpenImage(attachment.remotePath, fileName: attachment.name),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 260),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (loading)
+                  const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  Icon(
+                    image ? Icons.image_outlined : Icons.description_outlined,
+                    size: 17,
+                    color: image ? _workGreen : codexMuted,
+                  ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
+}
+
+class _DiffScreen extends StatelessWidget {
+  const _DiffScreen({required this.change});
+
+  final FileChange change;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('文件差异'),
+          Text(
+            change.path,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+          ),
+        ],
+      ),
+    ),
+    body: SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(12),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SelectableText(
+            change.diff.trim().isEmpty ? '没有可显示的差异' : change.diff,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12,
+              color: codexText,
+              letterSpacing: 0,
+              height: 1.35,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _RemoteImageDialog extends StatefulWidget {
@@ -3052,27 +3604,6 @@ Future<Uint8List> _readPickedFile(
   return bytes;
 }
 
-class _ChangeLine extends StatelessWidget {
-  const _ChangeLine({required this.change});
-
-  final FileChange change;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      const Icon(Icons.insert_drive_file_outlined, size: 16, color: codexAmber),
-      const SizedBox(width: 6),
-      Expanded(
-        child: Text(change.path, maxLines: 1, overflow: TextOverflow.ellipsis),
-      ),
-      Text(
-        '+${change.additions} -${change.deletions}',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-    ],
-  );
-}
-
 class _CodeBlock extends StatelessWidget {
   const _CodeBlock(this.text);
 
@@ -3101,34 +3632,6 @@ class _CodeBlock extends StatelessWidget {
       ),
     ),
   );
-}
-
-class _StatusDot extends StatelessWidget {
-  const _StatusDot({required this.status});
-
-  final String status;
-
-  @override
-  Widget build(BuildContext context) {
-    final active = switch (status.toLowerCase()) {
-      'active' || 'inprogress' || 'in_progress' || 'running' => true,
-      _ => false,
-    };
-    return active
-        ? const SizedBox.square(
-            dimension: 14,
-            child: CircularProgressIndicator(strokeWidth: 1.7),
-          )
-        : Icon(
-            status.toLowerCase().contains('error')
-                ? Icons.error_outline
-                : Icons.check_circle_outline,
-            size: 15,
-            color: status.toLowerCase().contains('error')
-                ? codexRed
-                : codexGreen,
-          );
-  }
 }
 
 class _Composer extends StatelessWidget {
@@ -3169,283 +3672,314 @@ class _Composer extends StatelessWidget {
   final Future<void> Function() onClearGoal;
 
   @override
-  Widget build(BuildContext context) => AnimatedPadding(
-    duration: const Duration(milliseconds: 170),
-    curve: Curves.easeOutCubic,
-    padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-    child: Material(
-      color: codexBackground,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 5, 8, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (state.activeGoal != null) ...[
-                _ThreadGoalBar(
-                  goal: state.activeGoal!,
-                  mutationInProgress: state.submitting,
-                  onEdit: onEditGoal,
-                  onTogglePause: onToggleGoal,
-                  onDelete: onClearGoal,
-                ),
-                const SizedBox(height: 6),
-              ],
-              Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1B1B1B),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: codexBorder),
-                ),
-                padding: const EdgeInsets.fromLTRB(10, 8, 7, 5),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (state.attachments.isNotEmpty) ...[
-                      SizedBox(
-                        height: 34,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: state.attachments.length,
-                          separatorBuilder: (_, _) => const SizedBox(width: 6),
-                          itemBuilder: (context, index) {
-                            final attachment = state.attachments[index];
-                            return InputChip(
-                              key: ValueKey(attachment.remotePath),
-                              avatar: Icon(
-                                attachment.mimeType.startsWith('image/')
-                                    ? Icons.image_outlined
-                                    : Icons.description_outlined,
+  Widget build(BuildContext context) {
+    final canSend =
+        (controller.text.trim().isNotEmpty || state.attachments.isNotEmpty) &&
+        !state.loading &&
+        !state.submitting &&
+        !attachmentBusy;
+    final actionEnabled = switch ((state.submitting, state.running)) {
+      (true, _) => false,
+      (_, true) => !state.loading,
+      _ => canSend,
+    };
+    final actionActive = actionEnabled || state.submitting;
+    final permissionColor = state.approvalMode == ApprovalMode.fullAccess
+        ? _workAmber
+        : codexMuted;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 170),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: Material(
+        color: codexBackground,
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 5, 8, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (state.activeGoal != null) ...[
+                  _ThreadGoalBar(
+                    goal: state.activeGoal!,
+                    mutationInProgress: state.submitting,
+                    onEdit: onEditGoal,
+                    onTogglePause: onToggleGoal,
+                    onDelete: onClearGoal,
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1B1B1B),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _workBorder),
+                  ),
+                  padding: const EdgeInsets.fromLTRB(10, 8, 7, 5),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (state.attachments.isNotEmpty) ...[
+                        SizedBox(
+                          height: 34,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: state.attachments.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(width: 6),
+                            itemBuilder: (context, index) {
+                              final attachment = state.attachments[index];
+                              return InputChip(
+                                key: ValueKey(attachment.remotePath),
+                                avatar: Icon(
+                                  attachment.mimeType.startsWith('image/')
+                                      ? Icons.image_outlined
+                                      : Icons.description_outlined,
+                                  size: 16,
+                                ),
+                                label: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 150,
+                                  ),
+                                  child: Text(
+                                    attachment.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                onDeleted: attachmentBusy || state.submitting
+                                    ? null
+                                    : () => onRemoveAttachment(
+                                        attachment.remotePath,
+                                      ),
+                                visualDensity: VisualDensity.compact,
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                      ],
+                      if (attachmentBusy) ...[
+                        const LinearProgressIndicator(minHeight: 2),
+                        const SizedBox(height: 6),
+                      ],
+                      TextField(
+                        controller: controller,
+                        focusNode: focusNode,
+                        enabled: !state.submitting,
+                        minLines: 3,
+                        maxLines: 6,
+                        textInputAction: TextInputAction.newline,
+                        onChanged: onChanged,
+                        decoration: InputDecoration(
+                          hintText: state.running ? '提出后续变更要求' : '描述任务',
+                          border: InputBorder.none,
+                          isDense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          PopupMenuButton<String>(
+                            tooltip: '添加附件',
+                            enabled:
+                                !state.loading &&
+                                !state.submitting &&
+                                !attachmentBusy,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 36,
+                              height: 36,
+                            ),
+                            onSelected: (value) {
+                              if (value == 'image') {
+                                onAttachImage();
+                              } else if (value == 'file') {
+                                onAttachFile();
+                              }
+                            },
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: 'image',
+                                child: ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: Icon(Icons.image_outlined),
+                                  title: Text('上传图片'),
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'file',
+                                child: ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  leading: Icon(Icons.folder_open_outlined),
+                                  title: Text('上传文件'),
+                                ),
+                              ),
+                            ],
+                            icon: const Icon(Icons.add, size: 20),
+                          ),
+                          PopupMenuButton<String>(
+                            tooltip: '会话操作',
+                            enabled: !state.loading && !attachmentBusy,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 36,
+                              height: 36,
+                            ),
+                            onSelected: (value) => unawaited(onAction(value)),
+                            itemBuilder: (context) => [
+                              if (state.activeAgentCapabilities.threadGoals)
+                                PopupMenuItem(
+                                  value: 'goal',
+                                  enabled: !state.submitting,
+                                  child: Text(
+                                    state.activeGoal == null ? '设置目标' : '编辑目标',
+                                  ),
+                                ),
+                              if (state.activeGoal != null &&
+                                  (state.activeGoal!.status ==
+                                          ThreadGoalStatus.active ||
+                                      state.activeGoal!.status ==
+                                          ThreadGoalStatus.paused))
+                                PopupMenuItem(
+                                  value: 'toggle-goal',
+                                  enabled: !state.submitting,
+                                  child: Text(
+                                    state.activeGoal!.status ==
+                                            ThreadGoalStatus.paused
+                                        ? '继续目标'
+                                        : '暂停目标',
+                                  ),
+                                ),
+                              if (state.activeGoal != null)
+                                PopupMenuItem(
+                                  value: 'clear-goal',
+                                  enabled: !state.submitting,
+                                  child: const Text('删除目标'),
+                                ),
+                              if (state.activeAgentCapabilities.compactThread)
+                                PopupMenuItem(
+                                  value: 'compact',
+                                  enabled:
+                                      !state.loading &&
+                                      !state.submitting &&
+                                      !state.running,
+                                  child: const Text('压缩会话'),
+                                ),
+                            ],
+                            icon: const Icon(Icons.more_vert, size: 20),
+                          ),
+                          if (state.activeAgentCapabilities.approvals)
+                            TextButton.icon(
+                              onPressed: state.submitting
+                                  ? null
+                                  : () => unawaited(onPermissionTap()),
+                              icon: Icon(
+                                _approvalModeIcon(state.approvalMode),
                                 size: 16,
                               ),
-                              label: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxWidth: 150,
-                                ),
-                                child: Text(
-                                  attachment.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                              label: Text(
+                                '权限',
+                                style: Theme.of(context).textTheme.labelMedium,
                               ),
-                              onDeleted: attachmentBusy || state.submitting
-                                  ? null
-                                  : () => onRemoveAttachment(
-                                      attachment.remotePath,
-                                    ),
-                              visualDensity: VisualDensity.compact,
-                            );
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 5),
-                    ],
-                    if (attachmentBusy) ...[
-                      const LinearProgressIndicator(minHeight: 2),
-                      const SizedBox(height: 6),
-                    ],
-                    TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      enabled: !state.submitting,
-                      minLines: 3,
-                      maxLines: 6,
-                      textInputAction: TextInputAction.newline,
-                      onChanged: onChanged,
-                      decoration: InputDecoration(
-                        hintText: state.running ? '提出后续变更要求' : '描述任务',
-                        border: InputBorder.none,
-                        isDense: true,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        PopupMenuButton<String>(
-                          tooltip: '添加附件',
-                          enabled:
-                              !state.loading &&
-                              !state.submitting &&
-                              !attachmentBusy,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints.tightFor(
-                            width: 36,
-                            height: 36,
-                          ),
-                          onSelected: (value) {
-                            if (value == 'image') {
-                              onAttachImage();
-                            } else if (value == 'file') {
-                              onAttachFile();
-                            }
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(
-                              value: 'image',
-                              child: ListTile(
-                                dense: true,
-                                contentPadding: EdgeInsets.zero,
-                                leading: Icon(Icons.image_outlined),
-                                title: Text('上传图片'),
-                              ),
-                            ),
-                            PopupMenuItem(
-                              value: 'file',
-                              child: ListTile(
-                                dense: true,
-                                contentPadding: EdgeInsets.zero,
-                                leading: Icon(Icons.folder_open_outlined),
-                                title: Text('上传文件'),
-                              ),
-                            ),
-                          ],
-                          icon: const Icon(Icons.add, size: 23),
-                        ),
-                        PopupMenuButton<String>(
-                          tooltip: '会话操作',
-                          enabled: !state.loading && !attachmentBusy,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints.tightFor(
-                            width: 36,
-                            height: 36,
-                          ),
-                          onSelected: (value) => unawaited(onAction(value)),
-                          itemBuilder: (context) => [
-                            if (state.activeAgentCapabilities.threadGoals)
-                              PopupMenuItem(
-                                value: 'goal',
-                                enabled: !state.submitting,
-                                child: Text(
-                                  state.activeGoal == null ? '设置目标' : '编辑目标',
-                                ),
-                              ),
-                            if (state.activeGoal != null &&
-                                (state.activeGoal!.status ==
-                                        ThreadGoalStatus.active ||
-                                    state.activeGoal!.status ==
-                                        ThreadGoalStatus.paused))
-                              PopupMenuItem(
-                                value: 'toggle-goal',
-                                enabled: !state.submitting,
-                                child: Text(
-                                  state.activeGoal!.status ==
-                                          ThreadGoalStatus.paused
-                                      ? '继续目标'
-                                      : '暂停目标',
-                                ),
-                              ),
-                            if (state.activeGoal != null)
-                              PopupMenuItem(
-                                value: 'clear-goal',
-                                enabled: !state.submitting,
-                                child: const Text('删除目标'),
-                              ),
-                            if (state.activeAgentCapabilities.compactThread)
-                              PopupMenuItem(
-                                value: 'compact',
-                                enabled:
-                                    !state.loading &&
-                                    !state.submitting &&
-                                    !state.running,
-                                child: const Text('压缩会话'),
-                              ),
-                          ],
-                          icon: const Icon(Icons.more_vert, size: 20),
-                        ),
-                        if (state.activeAgentCapabilities.approvals)
-                          TextButton.icon(
-                            onPressed: state.submitting
-                                ? null
-                                : () => unawaited(onPermissionTap()),
-                            icon: Icon(
-                              _approvalModeIcon(state.approvalMode),
-                              size: 17,
-                            ),
-                            label: const Text('权限'),
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                              ),
-                              minimumSize: const Size(0, 36),
-                            ),
-                          ),
-                        const Spacer(),
-                        _ContextUsageButton(usage: state.tokenUsage),
-                        if (state.activeAgentCapabilities.models) ...[
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: InkWell(
-                              onTap: state.loading ? null : onModelTap,
-                              borderRadius: BorderRadius.circular(5),
-                              child: Padding(
+                              style: TextButton.styleFrom(
+                                foregroundColor: permissionColor,
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 4,
-                                  vertical: 7,
+                                  horizontal: 2,
                                 ),
-                                child: Text(
-                                  modelSelectionLabel(
-                                    state.models,
-                                    state.selectedModel,
-                                    state.selectedEffort,
+                                minimumSize: const Size(0, 36),
+                                maximumSize: const Size(64, 36),
+                              ),
+                            ),
+                          const Spacer(),
+                          _ContextUsageButton(usage: state.tokenUsage),
+                          if (state.activeAgentCapabilities.models) ...[
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: InkWell(
+                                onTap: state.loading ? null : onModelTap,
+                                borderRadius: BorderRadius.circular(5),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                    vertical: 7,
                                   ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.end,
-                                  style: Theme.of(context).textTheme.bodySmall,
+                                  child: Text(
+                                    modelSelectionLabel(
+                                      state.models,
+                                      state.selectedModel,
+                                      state.selectedEffort,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.end,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
                                 ),
                               ),
+                            ),
+                          ],
+                          const SizedBox(width: 4),
+                          SizedBox.square(
+                            dimension: 36,
+                            child: IconButton(
+                              tooltip: state.running ? '停止' : '发送',
+                              onPressed: actionEnabled
+                                  ? state.running
+                                        ? () => unawaited(onStop())
+                                        : onSend
+                                  : null,
+                              style: IconButton.styleFrom(
+                                backgroundColor: actionActive
+                                    ? codexText
+                                    : const Color(0xFF555555),
+                                disabledBackgroundColor: actionActive
+                                    ? codexText
+                                    : const Color(0xFF555555),
+                                foregroundColor: const Color(0xFF171717),
+                                disabledForegroundColor: const Color(
+                                  0xFFB0B0B0,
+                                ),
+                                shape: const CircleBorder(),
+                                minimumSize: const Size.square(36),
+                                padding: EdgeInsets.zero,
+                              ),
+                              icon: state.submitting
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Color(0xFF171717),
+                                      ),
+                                    )
+                                  : Icon(
+                                      state.running
+                                          ? Icons.stop_rounded
+                                          : Icons.arrow_upward_rounded,
+                                      size: state.running ? 18 : 20,
+                                    ),
                             ),
                           ),
                         ],
-                        const SizedBox(width: 4),
-                        SizedBox.square(
-                          dimension: 42,
-                          child: state.running
-                              ? IconButton.filled(
-                                  tooltip: '停止',
-                                  onPressed: onStop,
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: codexRed,
-                                    foregroundColor: Colors.white,
-                                    shape: const CircleBorder(),
-                                    minimumSize: const Size.square(42),
-                                    padding: EdgeInsets.zero,
-                                  ),
-                                  icon: const Icon(Icons.stop_rounded),
-                                )
-                              : IconButton.filled(
-                                  tooltip: '发送',
-                                  onPressed:
-                                      state.submitting ||
-                                          state.loading ||
-                                          attachmentBusy ||
-                                          (controller.text.trim().isEmpty &&
-                                              state.attachments.isEmpty)
-                                      ? null
-                                      : onSend,
-                                  style: IconButton.styleFrom(
-                                    shape: const CircleBorder(),
-                                    minimumSize: const Size.square(42),
-                                    padding: EdgeInsets.zero,
-                                  ),
-                                  icon: const Icon(Icons.arrow_upward_rounded),
-                                ),
-                        ),
-                      ],
-                    ),
-                  ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _ThreadGoalBar extends StatelessWidget {
@@ -3600,6 +4134,8 @@ class _ContextUsageButton extends StatelessWidget {
     final ratio = window > 0 ? (used / window).clamp(0.0, 1.0) : 0.0;
     final known = window > 0;
     final remaining = known ? (window - used).clamp(0, window) : 0;
+    final usedPercent = (ratio * 100).floor();
+    final remainingPercent = 100 - usedPercent;
     return PopupMenuButton<void>(
       tooltip: '上下文用量',
       padding: EdgeInsets.zero,
@@ -3607,26 +4143,41 @@ class _ContextUsageButton extends StatelessWidget {
         PopupMenuItem<void>(
           enabled: false,
           child: SizedBox(
-            width: 220,
+            width: 232,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('背景信息窗口'),
-                const SizedBox(height: 6),
                 Text(
-                  known
-                      ? '已用 ${(ratio * 100).floor()}%  ·  '
-                            '${_formatTokens(used)} / ${_formatTokens(window)}'
-                      : '等待服务器返回上下文用量',
-                  style: Theme.of(context).textTheme.bodySmall,
+                  '背景信息窗口：',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelMedium?.copyWith(color: codexMuted),
                 ),
-                if (known)
+                const SizedBox(height: 4),
+                if (!known)
                   Text(
-                    '剩余 ${100 - (ratio * 100).floor()}%  ·  '
-                    '${_formatTokens(remaining)} tokens',
-                    style: Theme.of(context).textTheme.bodySmall,
+                    '等待服务器返回上下文用量',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: codexMuted),
+                  )
+                else ...[
+                  Text(
+                    '$usedPercent% 已用（剩余 $remainingPercent%）',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '已用 ${_formatTokens(used)} 标记，剩余 '
+                    '${_formatTokens(remaining)}，共 ${_formatTokens(window)}',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: codexMuted),
+                  ),
+                ],
               ],
             ),
           ),
@@ -3639,10 +4190,10 @@ class _ContextUsageButton extends StatelessWidget {
           children: [
             CircularProgressIndicator(
               value: known ? ratio : 0,
-              strokeWidth: 2.5,
-              constraints: const BoxConstraints.tightFor(width: 19, height: 19),
-              backgroundColor: codexBorder,
-              color: ratio > .85 ? codexRed : codexAmber,
+              strokeWidth: 2,
+              constraints: const BoxConstraints.tightFor(width: 18, height: 18),
+              backgroundColor: const Color(0xFF555555),
+              color: Colors.white.withValues(alpha: 0.94),
             ),
           ],
         ),

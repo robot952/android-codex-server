@@ -50,11 +50,18 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
 - File changes show aggregate additions/deletions and a row per changed file
 - Selecting a file opens a full-screen unified diff view
 - Review is a direct action associated with file changes
+- The final timeline row mirrors the original client: an active turn shows a 16 dp spinner with
+  `正在处理` and live elapsed time; a finished or interrupted turn shows the green completion or
+  amber stop icon, elapsed time, and completion time where applicable. An explicit user stop remains
+  stopped even if the server reports the terminal status as completed, and the latest terminal timing
+  is restored after returning to the thread or restarting the app.
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions. Its stable order is add, more, permission,
   hollow context ring, model/effort, and the circular send/stop action; the task input has a minimum height of roughly 72 dp.
   The permission action always uses the short visible label `权限`; its icon identifies the selected
   mode. Context usage and model form one compact, right-aligned group next to the send/stop button;
   a long model label expands left only as far as the permission action, then truncates with an ellipsis.
+  The circular action is 36 dp like the original client: active send/stop uses a light surface with
+  a dark arrow or square, while an unavailable action uses the fixed gray disabled treatment.
 - The jump-to-latest action is visible only while the transcript can actually scroll toward newer
   content. Dragging against an already reached bottom keeps output following enabled and never leaves
   a stale down arrow on screen.

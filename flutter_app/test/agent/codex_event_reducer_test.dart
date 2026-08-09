@@ -98,6 +98,32 @@ void main() {
     );
   });
 
+  test('keeps an explicit stop marker when completion reports completed', () {
+    final state = _state().copyWith(
+      running: true,
+      activeTurnId: 'turn-1',
+      turnTiming: const TurnTiming(
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        startedAtMillis: 100,
+        stopped: true,
+      ),
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('turn/completed', {
+        'threadId': 'thread-1',
+        'turn': {'id': 'turn-1', 'status': 'completed'},
+      }),
+      nowMillis: 200,
+    );
+
+    expect(next.running, isFalse);
+    expect(next.turnTiming?.completedAtMillis, 200);
+    expect(next.turnTiming?.stopped, isTrue);
+  });
+
   test('does not replace a known context window with incomplete usage', () {
     final state = _state();
     final next = reduceCodexNotification(

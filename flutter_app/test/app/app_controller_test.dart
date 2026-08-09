@@ -293,6 +293,8 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   ApprovalMode? startedApprovalMode;
   SandboxChoice? startedSandbox;
   String? startedCwd;
+  String? interruptedThreadId;
+  String? interruptedTurnId;
 
   @override
   AgentCapabilities get capabilities => const AgentCapabilities(
@@ -372,7 +374,10 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   Future<void> interruptTurn({
     required String threadId,
     required String turnId,
-  }) async {}
+  }) async {
+    interruptedThreadId = threadId;
+    interruptedTurnId = turnId;
+  }
 }
 
 class _SteeringAgent extends _FailingTurnAgent
@@ -396,6 +401,7 @@ class _SteeringAgent extends _FailingTurnAgent
     steerTurn: true,
     archiveThread: false,
     renameThread: false,
+    interruptTurn: true,
   );
 
   @override
@@ -1488,6 +1494,45 @@ void main() {
     expect(controller.state.running, isTrue);
     expect(controller.state.activeTurnId, 'turn-running');
     expect(controller.state.timeline.last.text, 'Continue with tests');
+  });
+
+  test('marks the active turn as stopped after interrupt succeeds', () async {
+    final store = _MemoryProfileStore(
+      const StoredProfiles(
+        profiles: [_firstProfile],
+        selectedProfileId: 'first',
+      ),
+    );
+    final host = _AttachmentHost();
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agent = _SteeringAgent();
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => agent,
+    );
+    final controller = AppController(store, connections, agents);
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    await controller.requestConnect(_firstProfile);
+    await controller.ensureActiveAgent();
+
+    controller.openThread(_SteeringAgent.activeThread);
+    await _waitUntil(
+      () =>
+          controller.state.activeThread?.id == _SteeringAgent.activeThread.id &&
+          !controller.state.loading,
+    );
+
+    await controller.stopMessage();
+
+    expect(agent.interruptedThreadId, _SteeringAgent.activeThread.id);
+    expect(agent.interruptedTurnId, 'turn-running');
+    expect(controller.state.turnTiming?.stopped, isTrue);
+    expect(controller.state.turnTiming?.completedAtMillis, isNull);
   });
 
   test(
