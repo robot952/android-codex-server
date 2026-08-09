@@ -162,8 +162,16 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
               ),
             ),
           PopupMenuButton<String>(
+            key: const Key('work-action-menu'),
             tooltip: '会话操作',
             enabled: !state.loading && !state.attachmentUploading,
+            color: _workSurface,
+            surfaceTintColor: Colors.transparent,
+            constraints: const BoxConstraints(minWidth: 196, maxWidth: 280),
+            menuPadding: const EdgeInsets.symmetric(vertical: 8),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4),
+            ),
             onSelected: (value) =>
                 unawaited(_handleWorkAction(value, state, controller)),
             itemBuilder: (context) => [
@@ -171,11 +179,11 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                 PopupMenuItem(
                   value: 'rename',
                   enabled: !state.submitting,
-                  child: const ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.edit_outlined),
-                    title: Text('重命名'),
+                  height: 48,
+                  padding: EdgeInsets.zero,
+                  child: const _WorkPopupMenuRow(
+                    icon: Icons.edit,
+                    label: '重命名',
                   ),
                 ),
               if (state.activeAgentCapabilities.archiveThread &&
@@ -183,33 +191,35 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                 PopupMenuItem(
                   value: 'archive',
                   enabled: !state.submitting && !state.running,
-                  child: const ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.archive_outlined),
-                    title: Text('归档'),
+                  height: 48,
+                  padding: EdgeInsets.zero,
+                  child: const _WorkPopupMenuRow(
+                    icon: Icons.archive,
+                    label: '归档',
                   ),
                 ),
               if (state.activeAgentCapabilities.threadGoals)
                 PopupMenuItem(
                   value: 'goal',
                   enabled: !state.submitting,
-                  child: ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.track_changes_outlined),
-                    title: Text(state.activeGoal == null ? '设置目标' : '编辑目标'),
+                  height: 48,
+                  padding: EdgeInsets.zero,
+                  child: _WorkPopupMenuRow(
+                    icon: Icons.track_changes,
+                    label: state.activeGoal == null ? '设置目标' : '编辑目标',
                   ),
                 ),
-              const PopupMenuItem(
-                value: 'debug-logs',
-                child: ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.bug_report_outlined),
-                  title: Text('添加崩溃 / Debug 日志'),
+              if (state.debugModeEnabled) const PopupMenuDivider(height: 1),
+              if (state.debugModeEnabled)
+                const PopupMenuItem(
+                  value: 'debug-logs',
+                  height: 48,
+                  padding: EdgeInsets.zero,
+                  child: _WorkPopupMenuRow(
+                    icon: Icons.bug_report,
+                    label: '添加崩溃 / Debug 日志',
+                  ),
                 ),
-              ),
             ],
           ),
         ],
@@ -3696,7 +3706,7 @@ class _Composer extends StatelessWidget {
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 5, 8, 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -3717,7 +3727,10 @@ class _Composer extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: _workBorder),
                   ),
-                  padding: const EdgeInsets.fromLTRB(10, 8, 7, 5),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -3766,6 +3779,7 @@ class _Composer extends StatelessWidget {
                         const SizedBox(height: 6),
                       ],
                       TextField(
+                        key: const Key('composer-input'),
                         controller: controller,
                         focusNode: focusNode,
                         enabled: !state.submitting,
@@ -3775,126 +3789,153 @@ class _Composer extends StatelessWidget {
                         onChanged: onChanged,
                         decoration: InputDecoration(
                           hintText: state.running ? '提出后续变更要求' : '描述任务',
+                          filled: false,
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          disabledBorder: InputBorder.none,
+                          errorBorder: InputBorder.none,
+                          focusedErrorBorder: InputBorder.none,
                           isDense: true,
                           contentPadding: EdgeInsets.zero,
                         ),
                       ),
-                      const SizedBox(height: 3),
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          PopupMenuButton<String>(
-                            tooltip: '添加附件',
-                            enabled:
-                                !state.loading &&
-                                !state.submitting &&
-                                !attachmentBusy,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints.tightFor(
-                              width: 36,
-                              height: 36,
+                          SizedBox.square(
+                            dimension: 36,
+                            child: PopupMenuButton<String>(
+                              key: const Key('composer-attachment-menu'),
+                              tooltip: '添加附件',
+                              enabled:
+                                  !state.loading &&
+                                  !state.submitting &&
+                                  !attachmentBusy,
+                              padding: EdgeInsets.zero,
+                              iconSize: 20,
+                              onSelected: (value) {
+                                if (value == 'image') {
+                                  onAttachImage();
+                                } else if (value == 'file') {
+                                  onAttachFile();
+                                }
+                              },
+                              itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: 'image',
+                                  child: ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.image_outlined),
+                                    title: Text('上传图片'),
+                                  ),
+                                ),
+                                PopupMenuItem(
+                                  value: 'file',
+                                  child: ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.folder_open_outlined),
+                                    title: Text('上传文件'),
+                                  ),
+                                ),
+                              ],
+                              icon: const Icon(Icons.add),
                             ),
-                            onSelected: (value) {
-                              if (value == 'image') {
-                                onAttachImage();
-                              } else if (value == 'file') {
-                                onAttachFile();
-                              }
-                            },
-                            itemBuilder: (context) => const [
-                              PopupMenuItem(
-                                value: 'image',
-                                child: ListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  leading: Icon(Icons.image_outlined),
-                                  title: Text('上传图片'),
-                                ),
-                              ),
-                              PopupMenuItem(
-                                value: 'file',
-                                child: ListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  leading: Icon(Icons.folder_open_outlined),
-                                  title: Text('上传文件'),
-                                ),
-                              ),
-                            ],
-                            icon: const Icon(Icons.add, size: 20),
                           ),
-                          PopupMenuButton<String>(
-                            tooltip: '会话操作',
-                            enabled: !state.loading && !attachmentBusy,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints.tightFor(
-                              width: 36,
-                              height: 36,
-                            ),
-                            onSelected: (value) => unawaited(onAction(value)),
-                            itemBuilder: (context) => [
-                              if (state.activeAgentCapabilities.threadGoals)
-                                PopupMenuItem(
-                                  value: 'goal',
-                                  enabled: !state.submitting,
-                                  child: Text(
-                                    state.activeGoal == null ? '设置目标' : '编辑目标',
+                          SizedBox.square(
+                            dimension: 36,
+                            child: PopupMenuButton<String>(
+                              key: const Key('composer-action-menu'),
+                              tooltip: '会话操作',
+                              enabled: !state.loading && !attachmentBusy,
+                              padding: EdgeInsets.zero,
+                              iconSize: 20,
+                              onSelected: (value) => unawaited(onAction(value)),
+                              itemBuilder: (context) => [
+                                if (state.activeAgentCapabilities.threadGoals)
+                                  PopupMenuItem(
+                                    value: 'goal',
+                                    enabled: !state.submitting,
+                                    child: Text(
+                                      state.activeGoal == null
+                                          ? '设置目标'
+                                          : '编辑目标',
+                                    ),
                                   ),
-                                ),
-                              if (state.activeGoal != null &&
-                                  (state.activeGoal!.status ==
-                                          ThreadGoalStatus.active ||
+                                if (state.activeGoal != null &&
+                                    (state.activeGoal!.status ==
+                                            ThreadGoalStatus.active ||
+                                        state.activeGoal!.status ==
+                                            ThreadGoalStatus.paused))
+                                  PopupMenuItem(
+                                    value: 'toggle-goal',
+                                    enabled: !state.submitting,
+                                    child: Text(
                                       state.activeGoal!.status ==
-                                          ThreadGoalStatus.paused))
-                                PopupMenuItem(
-                                  value: 'toggle-goal',
-                                  enabled: !state.submitting,
-                                  child: Text(
-                                    state.activeGoal!.status ==
-                                            ThreadGoalStatus.paused
-                                        ? '继续目标'
-                                        : '暂停目标',
+                                              ThreadGoalStatus.paused
+                                          ? '继续目标'
+                                          : '暂停目标',
+                                    ),
                                   ),
-                                ),
-                              if (state.activeGoal != null)
-                                PopupMenuItem(
-                                  value: 'clear-goal',
-                                  enabled: !state.submitting,
-                                  child: const Text('删除目标'),
-                                ),
-                              if (state.activeAgentCapabilities.compactThread)
-                                PopupMenuItem(
-                                  value: 'compact',
-                                  enabled:
-                                      !state.loading &&
-                                      !state.submitting &&
-                                      !state.running,
-                                  child: const Text('压缩会话'),
-                                ),
-                            ],
-                            icon: const Icon(Icons.more_vert, size: 20),
+                                if (state.activeGoal != null)
+                                  PopupMenuItem(
+                                    value: 'clear-goal',
+                                    enabled: !state.submitting,
+                                    child: const Text('删除目标'),
+                                  ),
+                                if (state.activeAgentCapabilities.compactThread)
+                                  PopupMenuItem(
+                                    value: 'compact',
+                                    enabled:
+                                        !state.loading &&
+                                        !state.submitting &&
+                                        !state.running,
+                                    child: const Text('压缩会话'),
+                                  ),
+                              ],
+                              icon: const Icon(Icons.more_vert),
+                            ),
                           ),
                           if (state.activeAgentCapabilities.approvals)
-                            TextButton.icon(
-                              onPressed: state.submitting
-                                  ? null
-                                  : () => unawaited(onPermissionTap()),
-                              icon: Icon(
-                                _approvalModeIcon(state.approvalMode),
-                                size: 16,
-                              ),
-                              label: Text(
-                                '权限',
-                                style: Theme.of(context).textTheme.labelMedium,
-                              ),
-                              style: TextButton.styleFrom(
-                                foregroundColor: permissionColor,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 2,
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 64),
+                              child: SizedBox(
+                                height: 36,
+                                child: TextButton(
+                                  key: const Key('composer-permission-button'),
+                                  onPressed: state.submitting
+                                      ? null
+                                      : () => unawaited(onPermissionTap()),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: permissionColor,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 2,
+                                    ),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        _approvalModeIcon(state.approvalMode),
+                                        size: 16,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        '权限',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.labelMedium,
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                minimumSize: const Size(0, 36),
-                                maximumSize: const Size(64, 36),
                               ),
                             ),
                           const Spacer(),
@@ -3977,6 +4018,34 @@ class _Composer extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _WorkPopupMenuRow extends StatelessWidget {
+  const _WorkPopupMenuRow({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Row(
+        children: [
+          Icon(icon, size: 24),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+          ),
+        ],
       ),
     );
   }

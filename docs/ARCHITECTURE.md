@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.8+128，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.9+129，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -417,7 +417,10 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、
   完成状态和展开箭头的独立卡片，图片工具统一使用双眼睛图标、`查看了图片` 和单行远程路径。不要把所有时间线条目重新套成同一种消息卡片。
 - Composer 保持固定底部的一体化边框区域：输入框上方可显示附件，底部顺序固定为加号、更多、权限、上下文空心圆环、模型/思考强度、
-  发送或停止圆形按钮。输入框最小高度稳定在约 72 dp；IME 通过 viewInsets 与时间线同帧移动，不能让键盘盖住输入框或让正文滞后。
+  发送或停止圆形按钮。输入框最小高度稳定在约 72 dp，只有 Composer 外层 1 dp 边框，内部编辑区不得继承全局输入框填充或焦点边框；
+  加号和更多按钮均固定 36 dp，权限按钮高 36 dp、最宽 64 dp，不能由 Material 默认 48 dp 点击区挤压右侧模型文字。IME 通过
+  viewInsets 与时间线同帧移动，不能让键盘盖住输入框或让正文滞后。顶部更多菜单使用旧版 48 dp 行高和填充图标；Debug 日志项仅在
+  Debug 模式开启时显示，并与普通会话操作之间保留分隔线。
 - 当用户滚离最新消息时，跳转按钮居中悬浮在时间线和 Composer 之间；只在确实存在更新内容时显示，不能固定在右下角遮住命令卡片。
 
 - 打开会话先从 `ThreadSessionCache` 显示最近快照，再以 `thread/resume` 校准；请求按
@@ -1134,7 +1137,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 349 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 350 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。
@@ -1144,13 +1147,16 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.8+128`。
-- Flutter 测试：349 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
+- 应用版本：`1.8.9+129`。
+- Flutter 测试：350 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
 - 本机 `codexemu` 端到端：进入 Work、发送、运行中白色耗时圈、停止、返回列表、重新进入和保留数据的
   冷启动均通过；未发现 `StreamSink` 或 SSH 状态异常。
-- APK：`dist/Agent-1.8.8.apk`；构建产物大小 `66,796,939` bytes，SHA-256
-  `12e33eca9fd706a5f8f3787f0ca0cec2bb3d18724a74ca9c4359d9859e8d8e02`。
+- 本轮再次连接本机 `codexemu`，进入真实 Codex 历史会话并截图核对顶部菜单和 Composer：顶部菜单宽
+  196 dp、行高 48 dp；底部加号/更多为 36 dp，权限高 36 dp，输入区只有一层外框；约
+  `873x2048` 的窄屏 Widget 画布也无布局溢出。
+- APK：`dist/Agent-1.8.9.apk`；构建产物大小 `66,797,023` bytes，SHA-256
+  `ab8e7462686e857512a78e20b8885aa2b69af46d1eb9f828defec1f3a7a4a3f3`。
 
 ## 18. 文档维护规则
 

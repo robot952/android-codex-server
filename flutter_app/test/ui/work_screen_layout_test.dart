@@ -112,11 +112,83 @@ void main() {
     expect(find.byIcon(Icons.visibility), findsNWidgets(2));
     expect(tester.widget<Icon>(find.byIcon(Icons.search)).size, 17);
     expect(tester.widget<Icon>(find.byIcon(Icons.terminal)).size, 17);
+    expect(
+      tester.getSize(find.byKey(const Key('composer-attachment-menu'))),
+      const Size.square(36),
+    );
+    expect(
+      tester.getSize(find.byKey(const Key('composer-action-menu'))),
+      const Size.square(36),
+    );
+    expect(
+      tester
+          .getSize(find.byKey(const Key('composer-permission-button')))
+          .height,
+      36,
+    );
+    final composerInput = tester.widget<TextField>(
+      find.byKey(const Key('composer-input')),
+    );
+    expect(composerInput.decoration?.filled, isFalse);
+    expect(composerInput.decoration?.border, InputBorder.none);
+    expect(composerInput.decoration?.enabledBorder, InputBorder.none);
+    expect(composerInput.decoration?.focusedBorder, InputBorder.none);
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(873, 2048);
+    await tester.pumpAndSettle();
+    expect(find.text('gpt-5.6 极高'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     tester.view.physicalSize = const Size(2712, 1220);
     await tester.pumpAndSettle();
     expect(find.text('安卓 Codex APP (3)'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('matches the original work menu and gates Debug logs', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async {
+      await manager.close();
+    });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    const menuState = AppUiState(
+      screen: AppScreen.work,
+      activeThread: AgentThread(id: 'thread-menu', title: '菜单样式'),
+      activeAgentCapabilities: AgentCapabilities.codex,
+    );
+    controller.showState(menuState);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('work-action-menu')));
+    await tester.pumpAndSettle();
+    expect(find.text('重命名'), findsOneWidget);
+    expect(find.text('归档'), findsOneWidget);
+    expect(find.text('设置目标'), findsOneWidget);
+    expect(find.text('添加崩溃 / Debug 日志'), findsNothing);
+    expect(find.byIcon(Icons.edit), findsOneWidget);
+    expect(find.byIcon(Icons.archive), findsOneWidget);
+    expect(find.byIcon(Icons.track_changes), findsOneWidget);
+    expect(find.byType(PopupMenuDivider), findsNothing);
+    await tester.tapAt(const Offset(8, 8));
+    await tester.pumpAndSettle();
+
+    controller.showState(menuState.copyWith(debugModeEnabled: true));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('work-action-menu')));
+    await tester.pumpAndSettle();
+    expect(find.text('添加崩溃 / Debug 日志'), findsOneWidget);
+    expect(find.byIcon(Icons.bug_report), findsOneWidget);
+    expect(find.byType(PopupMenuDivider), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

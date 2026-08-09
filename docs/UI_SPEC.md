@@ -57,6 +57,9 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   is restored after returning to the thread or restarting the app.
 - Composer remains fixed at the bottom with attachment, permission, model, stop, and send actions. Its stable order is add, more, permission,
   hollow context ring, model/effort, and the circular send/stop action; the task input has a minimum height of roughly 72 dp.
+  The composer has one outer 1 dp frame only: the editable text area must not inherit a filled background, enabled border, or focus border.
+  Add and more use fixed 36 dp trigger boxes, permission is 36 dp high and at most 64 dp wide, and none of these controls may consume the
+  model label's flexible width through a default 48 dp tap target.
   The permission action always uses the short visible label `权限`; its icon identifies the selected
   mode. Context usage and model form one compact, right-aligned group next to the send/stop button;
   a long model label expands left only as far as the permission action, then truncates with an ellipsis.
@@ -105,6 +108,8 @@ Protocol mapping: `thread/list`, `thread/start`, `thread/resume`, `thread/read`,
   request ids, and stack-like text never occupy the work surface; a nonfatal MCP/rmcp 403 explains
   that the main session remains usable while the related tool may be unavailable.
 - In Debug mode, the work menu opens a multi-select crash/diagnostic log picker for direct attachment.
+  The top overflow menu follows the original 48 dp row layout and filled edit/archive/target/bug icons. The Debug item is absent while Debug
+  mode is off; when enabled it appears after a divider instead of remaining as an unconditional fourth action.
   Crash sessions are visibly marked and the newest crash is preselected. Confirming only stages redacted
   text attachments in the composer; it never sends automatically. The server Debug log sheet uses the same
   picker for one-or-many file system sharing, while clearing logs also removes this app's temporary share copies.
