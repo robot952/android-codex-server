@@ -5,6 +5,7 @@ import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
 import 'package:codex_remote/src/ui/work_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -58,8 +59,15 @@ void main() {
           cwd: '/home/yan/ygy',
         ),
         activeAgentCapabilities: AgentCapabilities.codex,
+        models: const [
+          AgentModel(id: 'gpt-5.6', model: 'gpt-5.6', displayName: 'GPT-5.6'),
+        ],
         selectedModel: 'gpt-5.6',
         selectedEffort: 'xhigh',
+        tokenUsage: const TokenUsage(
+          last: TokenUsageBreakdown(totalTokens: 36),
+          modelContextWindow: 100,
+        ),
         turnTiming: const TurnTiming(
           threadId: 'thread-1',
           startedAtMillis: 1786210800000,
@@ -106,6 +114,7 @@ void main() {
     expect(find.text('已停止  2s'), findsOneWidget);
     expect(find.text('描述任务'), findsOneWidget);
     expect(find.text('权限'), findsOneWidget);
+    expect(find.text('36%'), findsOneWidget);
     expect(find.byIcon(Icons.add), findsOneWidget);
     expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
     expect(find.byIcon(Icons.search), findsOneWidget);
@@ -136,8 +145,40 @@ void main() {
     expect(tester.takeException(), isNull);
 
     tester.view.physicalSize = const Size(873, 2048);
+    controller.showState(
+      controller.state.copyWith(
+        models: const [
+          AgentModel(
+            id: 'gpt-5.6-terra-preview',
+            model: 'gpt-5.6-terra-preview',
+            displayName: 'GPT-5.6-Terra-Preview',
+          ),
+        ],
+        selectedModel: 'gpt-5.6-terra-preview',
+      ),
+    );
     await tester.pumpAndSettle();
-    expect(find.text('gpt-5.6 极高'), findsOneWidget);
+    expect(find.text('5.6-Terra-Preview 极高'), findsOneWidget);
+    final permissionRect = tester.getRect(
+      find.byKey(const Key('composer-permission-button')),
+    );
+    final contextRect = tester.getRect(
+      find.byKey(const Key('composer-context-usage')),
+    );
+    final modelRect = tester.getRect(
+      find.byKey(const Key('composer-model-label')),
+    );
+    final sendRect = tester.getRect(find.byTooltip('发送'));
+    expect(contextRect.left, greaterThanOrEqualTo(permissionRect.right));
+    expect(modelRect.right, lessThanOrEqualTo(sendRect.left));
+    expect(
+      tester
+          .renderObject<RenderParagraph>(
+            find.byKey(const Key('composer-model-label')),
+          )
+          .didExceedMaxLines,
+      isFalse,
+    );
     expect(tester.takeException(), isNull);
 
     tester.view.physicalSize = const Size(2712, 1220);

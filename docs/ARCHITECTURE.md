@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.11+131，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.12+132，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -416,7 +416,7 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 - 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、
   完成状态和展开箭头的独立卡片，图片工具统一使用双眼睛图标、`查看了图片` 和单行远程路径。不要把所有时间线条目重新套成同一种消息卡片。
-- Composer 保持固定底部的一体化边框区域：输入框上方可显示附件，底部顺序固定为加号、更多、权限、上下文空心圆环、模型/思考强度、
+- Composer 保持固定底部的一体化边框区域：输入框上方可显示附件，底部顺序固定为加号、更多、权限、上下文圆环、模型/思考强度、
   发送或停止圆形按钮。输入框最小高度稳定在约 72 dp，只有 Composer 外层 1 dp 边框，内部编辑区不得继承全局输入框填充或焦点边框；
   加号和更多按钮均固定 36 dp，权限按钮高 36 dp、最宽 64 dp，不能由 Material 默认 48 dp 点击区挤压右侧模型文字。IME 通过
   viewInsets 与时间线同帧移动，不能让键盘盖住输入框或让正文滞后。顶部更多菜单使用旧版 48 dp 行高和填充图标；Debug 日志项仅在
@@ -444,8 +444,9 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 - 顶部下拉使用 `CupertinoSliverRefreshControl` 请求更早 turns，释放后调用 cursor 分页；提示只随拖动
   出现，依次显示“下拉加载更多”“松开加载更多”“正在加载更多...”，sliver 会把正文向下推开并保留
   指示区。加载完成后按新增 extent 修正滚动位置；阅读旧消息时显示回到底部箭头；
-- 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，点击显示已用/剩余 tokens；
-  有效 TokenUsage 在 lane cache 中保留，返回同一会话可立即恢复；未知窗口显示 `?`，不猜比例；
+- 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，中心显示已用百分比，点击显示已用/剩余 tokens；
+  圆环和模型名称组成靠右的弹性区域，模型变长时向权限按钮方向扩展并单行缩放，不能因固定空白提前省略；有效
+  TokenUsage 在 lane cache 中保留，返回同一会话可立即恢复；未知窗口显示 `?`，不猜比例；
 - Markdown 可选择文本，解析出的 HTTP/HTTPS Markdown link 显示蓝色、点击先确认后交给系统浏览器；
   `[名称](/absolute/server/path)` 会转换成仅 App 内部识别的安全链接，点击后通过系统保存位置选择器
   流式下载，内部链接不会交给浏览器；同一 Work 页面一次只允许一个远程文件下载；
@@ -1160,7 +1161,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.11+131`。
+- 应用版本：`1.8.12+132`。
 - Flutter 测试：355 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
 - 后台 SSH 实测：Debug 版 Home 后台 65 秒、正式版根页面系统 Back 后台 35 秒，以及 Android 14
@@ -1178,8 +1179,12 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 本轮再次连接本机 `codexemu`，进入真实 Codex 历史会话并截图核对顶部菜单和 Composer：顶部菜单宽
   196 dp、行高 48 dp；底部加号/更多为 36 dp，权限高 36 dp，输入区只有一层外框；约
   `873x2048` 的窄屏 Widget 画布也无布局溢出。
-- APK：`dist/Agent-1.8.11.apk`；构建产物大小 `66,829,791` bytes，SHA-256
-  `10df3eebfb196c747919734ad14ea5c020fe9ccf7cb15a4ae65dac487e165683`。
+- `1.8.12` 再次在真实 `1220x2712` Work 页面核对 Composer：上下文圆环和模型靠右，权限文字完整，
+  `5.6-Sol 低` 全量显示；运行态切换停止按钮不改变布局。约 `873x2048` 的 Widget 画布使用更长的
+  `5.6-Terra-Preview 极高` 验证圆环不会越过权限、模型不会侵入发送按钮且单行不溢出；圆环中心显示
+  服务器返回的真实已用百分比，未知用量显示 `?`。
+- APK：`dist/Agent-1.8.12.apk`；构建产物大小 `66,829,791` bytes，SHA-256
+  `e53cd92319d985cefdef4642cadba9c33a7054da094c7e510383e35aea38003f`。
 
 ## 18. 文档维护规则
 

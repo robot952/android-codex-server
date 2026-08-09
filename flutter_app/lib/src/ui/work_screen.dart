@@ -3938,36 +3938,50 @@ class _Composer extends StatelessWidget {
                                 ),
                               ),
                             ),
-                          const Spacer(),
-                          _ContextUsageButton(usage: state.tokenUsage),
-                          if (state.activeAgentCapabilities.models) ...[
-                            const SizedBox(width: 6),
-                            Flexible(
-                              child: InkWell(
-                                onTap: state.loading ? null : onModelTap,
-                                borderRadius: BorderRadius.circular(5),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                    vertical: 7,
-                                  ),
-                                  child: Text(
-                                    modelSelectionLabel(
-                                      state.models,
-                                      state.selectedModel,
-                                      state.selectedEffort,
+                          Expanded(
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                _ContextUsageButton(usage: state.tokenUsage),
+                                if (state.activeAgentCapabilities.models) ...[
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: InkWell(
+                                      key: const Key('composer-model-button'),
+                                      onTap: state.loading ? null : onModelTap,
+                                      borderRadius: BorderRadius.circular(5),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 2,
+                                          vertical: 7,
+                                        ),
+                                        child: FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          alignment: Alignment.centerRight,
+                                          child: Text(
+                                            modelSelectionLabel(
+                                              state.models,
+                                              state.selectedModel,
+                                              state.selectedEffort,
+                                            ),
+                                            key: const Key(
+                                              'composer-model-label',
+                                            ),
+                                            maxLines: 1,
+                                            softWrap: false,
+                                            textAlign: TextAlign.right,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                          ),
+                                        ),
+                                      ),
                                     ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.end,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodySmall,
                                   ),
-                                ),
-                              ),
+                                ],
+                              ],
                             ),
-                          ],
+                          ),
                           const SizedBox(width: 4),
                           SizedBox.square(
                             dimension: 36,
@@ -4253,6 +4267,7 @@ class _ContextUsageButton extends StatelessWidget {
         ),
       ],
       child: SizedBox.square(
+        key: const Key('composer-context-usage'),
         dimension: 32,
         child: Stack(
           alignment: Alignment.center,
@@ -4260,9 +4275,27 @@ class _ContextUsageButton extends StatelessWidget {
             CircularProgressIndicator(
               value: known ? ratio : 0,
               strokeWidth: 2,
-              constraints: const BoxConstraints.tightFor(width: 18, height: 18),
+              constraints: const BoxConstraints.tightFor(width: 20, height: 20),
               backgroundColor: const Color(0xFF555555),
               color: Colors.white.withValues(alpha: 0.94),
+            ),
+            SizedBox(
+              width: 14,
+              height: 8,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  known ? '$usedPercent%' : '?',
+                  key: const Key('composer-context-percent'),
+                  maxLines: 1,
+                  style: TextStyle(
+                    color: known ? codexText : codexMuted,
+                    fontSize: 6.5,
+                    height: 1,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
             ),
           ],
         ),
