@@ -1,4 +1,4 @@
-name: Flutter Refactor Mobile Release
+name: Flutter Refactor Cross-platform Release
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: flutter-refactor-mobile-${{ github.ref }}
+  group: flutter-refactor-cross-platform-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -154,11 +154,86 @@ jobs:
           if-no-files-found: error
           path: flutter_app/dist/android
 
+  windows-compile:
+    name: Windows x64 release compile
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+          cache: true
+
+      - name: Prepare Windows runner
+        run: |
+          flutter config --enable-windows-desktop
+          flutter create --platforms=windows --org top.asdb --project-name codex_remote .
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows x64 release
+        run: flutter build windows --release --target-platform windows-x64 --no-pub
+
+      - name: Package Windows x64 release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $versionMatch = Select-String -Path "pubspec.yaml" -Pattern '^version:\s*(\S+)' |
+            Select-Object -First 1
+          if (-not $versionMatch) { throw "Version was not found in pubspec.yaml" }
+          $version = $versionMatch.Matches[0].Groups[1].Value
+          $releaseVersion = $version.Split('+')[0]
+          $sourceDir = "build\windows\x64\runner\Release"
+          $outputDir = "dist\windows"
+          $packageName = "Agent-flutter-refactor-$releaseVersion-windows-x64"
+          $packageDir = Join-Path $outputDir $packageName
+          $zipPath = "$packageDir.zip"
+          $executable = Join-Path $sourceDir "codex_remote.exe"
+          if (-not (Test-Path $executable -PathType Leaf)) {
+            throw "Windows executable was not produced: $executable"
+          }
+
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item -Path (Join-Path $sourceDir '*') -Destination $packageDir -Recurse -Force
+          Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal
+          if (-not (Test-Path $zipPath -PathType Leaf)) {
+            throw "Windows archive was not produced: $zipPath"
+          }
+          $zipSha256 = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
+          @(
+            "sourceBranch=flutter-refactor"
+            "gitCommit=$env:GITHUB_SHA"
+            "version=$version"
+            "architecture=x64"
+            "archive=$packageName.zip"
+            "archiveSha256=$zipSha256"
+            "codesign=disabled"
+          ) | Set-Content -Path (Join-Path $outputDir "flutter-refactor-windows-build.txt") -Encoding ascii
+          Get-ChildItem $outputDir | Format-Table Name, Length
+
+      - name: Upload Windows x64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-remote-windows-x64-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            flutter_app/dist/windows/*.zip
+            flutter_app/dist/windows/flutter-refactor-windows-build.txt
+
   publish-release:
-    name: Publish mobile prerelease
+    name: Publish cross-platform prerelease
     needs:
       - ios-compile
       - android-compile
+      - windows-compile
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -178,6 +253,12 @@ jobs:
           name: codex-remote-android-${{ github.sha }}
           path: release-assets/android
 
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codex-remote-windows-x64-${{ github.sha }}
+          path: release-assets/windows
+
       - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -190,17 +271,18 @@ jobs:
           notes_file="release-assets/flutter-refactor-release.md"
           mapfile -t assets < <(
             find release-assets -type f \
-              \( -name '*.ipa' -o -name '*.apk' -o -name '*-build.txt' \) \
+              \( -name '*.ipa' -o -name '*.apk' -o -name '*.zip' -o -name '*-build.txt' \) \
               -print | sort
           )
-          test "${#assets[@]}" -eq 4
+          test "${#assets[@]}" -eq 6
 
           {
-            printf 'Mobile builds from `flutter-refactor`.\n\n'
+            printf 'Cross-platform builds from `flutter-refactor`.\n\n'
             printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- Android: signed Release APK for standard Android devices\n'
             printf -- '- iOS: ad-hoc signed IPA without an Apple Developer certificate\n'
             printf -- '- iOS installation requires AppSync, TrollStore, or an equivalent bypass\n'
+            printf -- '- Windows: unsigned x64 portable ZIP\n'
           } > "$notes_file"
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
