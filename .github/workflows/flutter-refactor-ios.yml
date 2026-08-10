@@ -262,12 +262,95 @@ jobs:
           ) | Set-Content -Path (Join-Path $outputDir "flutter-refactor-windows-build.txt") -Encoding ascii
           Get-ChildItem $outputDir | Format-Table Name, Length
 
+      - name: Build Windows x64 installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $versionMatch = Select-String -Path "pubspec.yaml" -Pattern '^version:\s*(\S+)' |
+            Select-Object -First 1
+          if (-not $versionMatch) { throw "Version was not found in pubspec.yaml" }
+          $releaseVersion = $versionMatch.Matches[0].Groups[1].Value.Split('+')[0]
+          $outputDir = (Resolve-Path "dist\windows").Path
+          $packageName = "Agent-flutter-refactor-$releaseVersion-windows-x64"
+          $packageDir = (Resolve-Path (Join-Path $outputDir $packageName)).Path
+          $installerName = "$packageName-setup"
+          $installerPath = Join-Path $outputDir "$installerName.exe"
+          $iconPath = (Resolve-Path "windows\runner\resources\app_icon.ico").Path
+
+          $isccCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $isccPath = $isccCandidates |
+            Where-Object { Test-Path $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $isccPath) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) {
+              throw "Chocolatey failed to install Inno Setup"
+            }
+            $isccPath = $isccCandidates |
+              Where-Object { Test-Path $_ -PathType Leaf } |
+              Select-Object -First 1
+          }
+          if (-not $isccPath) { throw "Inno Setup compiler was not found" }
+
+          $installerScript = @"
+          [Setup]
+          AppId=top.asdb.agent.windows
+          AppName=Codex Remote
+          AppVersion=$releaseVersion
+          AppPublisher=robot952
+          DefaultDirName={localappdata}\Programs\Codex Remote
+          DefaultGroupName=Codex Remote
+          DisableProgramGroupPage=yes
+          OutputDir=$outputDir
+          OutputBaseFilename=$installerName
+          SetupIconFile=$iconPath
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+          UninstallDisplayIcon={app}\codex_remote.exe
+          CloseApplications=yes
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+          [Files]
+          Source: "$packageDir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{autoprograms}\Codex Remote"; Filename: "{app}\codex_remote.exe"
+          Name: "{autodesktop}\Codex Remote"; Filename: "{app}\codex_remote.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\codex_remote.exe"; Description: "Launch Codex Remote"; Flags: nowait postinstall skipifsilent
+          "@
+          $issPath = Join-Path $env:RUNNER_TEMP "codex-remote-installer.iss"
+          $installerScript | Set-Content -Path $issPath -Encoding ascii
+          & $isccPath $issPath
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+          if (-not (Test-Path $installerPath -PathType Leaf)) {
+            throw "Windows installer was not produced: $installerPath"
+          }
+
+          $installerSha256 = (Get-FileHash -Algorithm SHA256 -Path $installerPath).Hash.ToLowerInvariant()
+          @(
+            "installer=$installerName.exe"
+            "installerSha256=$installerSha256"
+          ) | Add-Content -Path (Join-Path $outputDir "flutter-refactor-windows-build.txt") -Encoding ascii
+          Get-ChildItem $outputDir -File | Format-Table Name, Length
+
       - name: Upload Windows x64 package
         uses: actions/upload-artifact@v4
         with:
           name: codex-remote-windows-x64-${{ github.sha }}
           if-no-files-found: error
           path: |
+            flutter_app/dist/windows/*.exe
             flutter_app/dist/windows/*.zip
             flutter_app/dist/windows/flutter-refactor-windows-build.txt
 
@@ -314,10 +397,10 @@ jobs:
           notes_file="release-assets/flutter-refactor-release.md"
           mapfile -t assets < <(
             find release-assets -type f \
-              \( -name '*.ipa' -o -name '*.apk' -o -name '*.zip' -o -name '*-build.txt' \) \
+              \( -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name '*-build.txt' \) \
               -print | sort
           )
-          test "${#assets[@]}" -eq 7
+          test "${#assets[@]}" -eq 8
 
           {
             printf 'Cross-platform builds from `flutter-refactor`.\n\n'
@@ -325,7 +408,7 @@ jobs:
             printf -- '- Android: signed Release APK for standard Android devices\n'
             printf -- '- iOS AppSync/TrollStore: ad-hoc signed unsigned IPA\n'
             printf -- '- iOS Sideloadly: clean IPA requiring local Apple ID re-signing\n'
-            printf -- '- Windows: unsigned x64 portable ZIP\n'
+            printf -- '- Windows x64: unsigned setup EXE and portable ZIP\n'
           } > "$notes_file"
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
