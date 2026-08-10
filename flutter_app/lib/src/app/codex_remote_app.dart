@@ -42,6 +42,10 @@ class _AppRoot extends ConsumerStatefulWidget {
 
 class _AppRootState extends ConsumerState<_AppRoot>
     with WidgetsBindingObserver {
+  static const _foregroundMetricsRefreshInterval = Duration(seconds: 10);
+  static const _backgroundMetricsRefreshInterval = Duration(minutes: 1);
+  static const _backgroundMetricsMaxDuration = Duration(hours: 2);
+
   _AppNavigationTarget _previousTarget = const _AppNavigationTarget(
     AppScreen.servers,
     null,
@@ -49,10 +53,14 @@ class _AppRootState extends ConsumerState<_AppRoot>
   );
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   Timer? _metricsTimer;
+  Timer? _backgroundMetricsTimer;
+  Timer? _backgroundMetricsExpiryTimer;
   String? _metricsPollingKey;
+  String? _backgroundMetricsPollingKey;
+  bool _backgroundMetricsExpired = false;
   StreamSubscription<TurnCompletion>? _completionSubscription;
   StreamSubscription<CompletedThreadNavigation>? _navigationSubscription;
-  bool _backgroundProtectionEnabled = false;
+  String? _backgroundProtectionSignature;
   bool _notificationPermissionRequested = false;
   String? _setupProxyKey;
   String _setupProxyDraft = '';
@@ -64,19 +72,42 @@ class _AppRootState extends ConsumerState<_AppRoot>
     _lifecycleState =
         WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
     final controller = ref.read(appControllerProvider.notifier);
+    controller.diagnosticLogger.info(
+      'Lifecycle',
+      'initial state=${_lifecycleState.name}',
+    );
     _completionSubscription = controller.turnCompletions.listen(
       _handleTurnCompletion,
     );
     _navigationSubscription = turnCompletionNotifier.navigationEvents.listen(
       _handleCompletedThreadNavigation,
     );
+    backgroundConnectionBridge.registerHeartbeat(() async {
+      // The native service is the single scheduler for transport heartbeats.
+      // Run it while visible as well: having one scheduler avoids a built-in
+      // dartssh2 ping racing this callback on the same SSH socket, and keeps
+      // lifecycle transitions on the same transport path.
+      await controller.keepAliveRetainedConnections();
+    });
     unawaited(turnCompletionNotifier.initialize());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final previous = _lifecycleState;
     _lifecycleState = state;
-    _syncMetricsPolling(ref.read(appControllerProvider));
+    final controller = ref.read(appControllerProvider.notifier);
+    controller.diagnosticLogger.info(
+      'Lifecycle',
+      'state from=${previous.name} to=${state.name}',
+    );
+    final current = ref.read(appControllerProvider);
+    _syncMetricsPolling(current);
+    // Synchronize the foreground service at the lifecycle boundary as well as
+    // during build. Android can pause the Activity before another frame is
+    // produced, and that frame is the last opportunity to persist the exact
+    // active SSH/Agent intent before the process is backgrounded.
+    _syncBackgroundProtection(current, controller.backgroundConnectionIntent);
     if (state == AppLifecycleState.resumed) {
       unawaited(ref.read(appUpdateProvider.notifier).refreshAfterResume());
     }
@@ -85,8 +116,11 @@ class _AppRootState extends ConsumerState<_AppRoot>
   @override
   void dispose() {
     _metricsTimer?.cancel();
+    _backgroundMetricsTimer?.cancel();
+    _backgroundMetricsExpiryTimer?.cancel();
     unawaited(_completionSubscription?.cancel());
     unawaited(_navigationSubscription?.cancel());
+    backgroundConnectionBridge.unregisterHeartbeat();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -107,9 +141,13 @@ class _AppRootState extends ConsumerState<_AppRoot>
       });
     });
     final state = ref.watch(appControllerProvider);
-    final backgroundConnectionRequired = keepsAppAliveInBackground(state);
+    final backgroundIntent = ref
+        .read(appControllerProvider.notifier)
+        .backgroundConnectionIntent;
+    final backgroundConnectionRequired =
+        keepsAppAliveInBackground(state) || !backgroundIntent.isEmpty;
     _syncMetricsPolling(state);
-    _syncBackgroundProtection(state);
+    _syncBackgroundProtection(state, backgroundIntent);
     final target = _pageFor(state.screen);
     final navigationTarget = _AppNavigationTarget.fromState(state);
     if (_previousTarget.animationKey != navigationTarget.animationKey) {
@@ -279,19 +317,34 @@ class _AppRootState extends ConsumerState<_AppRoot>
   }
 
   void _syncMetricsPolling(AppUiState state) {
-    final visible =
-        state.screen == AppScreen.servers || state.screen == AppScreen.threads;
-    if (!visible || _lifecycleState != AppLifecycleState.resumed) {
-      _stopMetricsPolling();
-      return;
-    }
-
     final connectedIds =
         state.connectionStates.entries
             .where((entry) => entry.value.phase == ConnectionPhase.connected)
             .map((entry) => entry.key)
             .toList()
           ..sort();
+
+    if (_lifecycleState != AppLifecycleState.resumed) {
+      _stopForegroundMetricsPolling();
+      // A Work page can have a long-running Agent turn. Metrics use a second
+      // SSH exec channel and closing that channel while the Agent stream is
+      // active can race inside dartssh2. Keep the last samples visible and
+      // leave the connection/Agent lane exclusively to the conversation.
+      if (!shouldPollBackgroundMetricsInBackground(state)) {
+        _stopBackgroundMetricsPolling();
+      } else {
+        _syncBackgroundMetricsPolling(connectedIds);
+      }
+      return;
+    }
+
+    _stopBackgroundMetricsPolling();
+    final visible =
+        state.screen == AppScreen.servers || state.screen == AppScreen.threads;
+    if (!visible) {
+      _stopForegroundMetricsPolling();
+      return;
+    }
     final profileIds = state.screen == AppScreen.servers
         ? connectedIds
         : connectedIds.contains(state.selectedProfileId)
@@ -300,7 +353,7 @@ class _AppRootState extends ConsumerState<_AppRoot>
     final pollingKey = '${state.screen.name}:${profileIds.join(',')}';
     if (_metricsPollingKey == pollingKey) return;
 
-    _stopMetricsPolling();
+    _stopForegroundMetricsPolling();
     _metricsPollingKey = pollingKey;
     if (profileIds.isEmpty) return;
 
@@ -314,15 +367,82 @@ class _AppRootState extends ConsumerState<_AppRoot>
 
     WidgetsBinding.instance.addPostFrameCallback((_) => refresh());
     _metricsTimer = Timer.periodic(
-      const Duration(seconds: 10),
+      _foregroundMetricsRefreshInterval,
       (_) => refresh(),
     );
   }
 
-  void _stopMetricsPolling() {
+  void _syncBackgroundMetricsPolling(List<String> connectedIds) {
+    final pollingKey = 'background:${connectedIds.join(',')}';
+    if (connectedIds.isEmpty) {
+      _stopBackgroundMetricsPolling();
+      return;
+    }
+    if (_backgroundMetricsExpired &&
+        _backgroundMetricsPollingKey == pollingKey) {
+      return;
+    }
+    if (_backgroundMetricsPollingKey == pollingKey &&
+        _backgroundMetricsTimer != null) {
+      return;
+    }
+
+    _stopBackgroundMetricsPolling(resetExpired: false);
+    _backgroundMetricsPollingKey = pollingKey;
+    _backgroundMetricsExpired = false;
+    final controller = ref.read(appControllerProvider.notifier);
+
+    void refresh() {
+      if (!mounted || _backgroundMetricsPollingKey != pollingKey) return;
+      for (final profileId in connectedIds) {
+        unawaited(controller.refreshServerMetrics(profileId));
+      }
+      controller.diagnosticLogger.info(
+        'Metrics',
+        'background_metrics_sample profiles=${connectedIds.length}',
+      );
+    }
+
+    refresh();
+    _backgroundMetricsTimer = Timer.periodic(
+      _backgroundMetricsRefreshInterval,
+      (_) => refresh(),
+    );
+    _backgroundMetricsExpiryTimer = Timer(_backgroundMetricsMaxDuration, () {
+      if (!mounted || _backgroundMetricsPollingKey != pollingKey) return;
+      _backgroundMetricsExpired = true;
+      _backgroundMetricsTimer?.cancel();
+      _backgroundMetricsTimer = null;
+      ref
+          .read(appControllerProvider.notifier)
+          .diagnosticLogger
+          .info('Metrics', 'background_metrics_expired duration=2h');
+    });
+    controller.diagnosticLogger.info(
+      'Metrics',
+      'background_metrics_started profiles=${connectedIds.length} duration=2h',
+    );
+  }
+
+  void _stopForegroundMetricsPolling() {
     _metricsTimer?.cancel();
     _metricsTimer = null;
     _metricsPollingKey = null;
+  }
+
+  void _stopBackgroundMetricsPolling({bool resetExpired = true}) {
+    if (_backgroundMetricsPollingKey != null && mounted) {
+      ref
+          .read(appControllerProvider.notifier)
+          .diagnosticLogger
+          .info('Metrics', 'background_metrics_stopped');
+    }
+    _backgroundMetricsTimer?.cancel();
+    _backgroundMetricsExpiryTimer?.cancel();
+    _backgroundMetricsTimer = null;
+    _backgroundMetricsExpiryTimer = null;
+    _backgroundMetricsPollingKey = null;
+    if (resetExpired) _backgroundMetricsExpired = false;
   }
 
   void _handleTurnCompletion(TurnCompletion completion) {
@@ -350,11 +470,15 @@ class _AppRootState extends ConsumerState<_AppRoot>
     );
   }
 
-  void _syncBackgroundProtection(AppUiState state) {
-    final required = keepsAppAliveInBackground(state);
-    if (required == _backgroundProtectionEnabled) return;
-    _backgroundProtectionEnabled = required;
-    unawaited(backgroundConnectionBridge.setEnabled(required));
+  void _syncBackgroundProtection(
+    AppUiState state,
+    BackgroundConnectionIntent intent,
+  ) {
+    final required = keepsAppAliveInBackground(state) || !intent.isEmpty;
+    final signature = '${required ? 1 : 0}:${intent.signature}';
+    if (_backgroundProtectionSignature == signature) return;
+    _backgroundProtectionSignature = signature;
+    unawaited(backgroundConnectionBridge.setEnabled(required, intent: intent));
     if (required && !_notificationPermissionRequested) {
       _notificationPermissionRequested = true;
       unawaited(turnCompletionNotifier.requestPermission());
@@ -419,3 +543,11 @@ bool keepsAppAliveInBackground(AppUiState state) =>
     state.connectionStates.values.any(_keepsBackgroundConnection) ||
     state.agentConnectionStates.values.any(_keepsBackgroundConnection) ||
     state.running;
+
+/// Background sampling opens short-lived SSH exec channels. Keep it for the
+/// server/thread surfaces, but leave the transport dedicated to a Work page's
+/// long-running Agent stream.
+bool shouldPollBackgroundMetricsInBackground(AppUiState state) =>
+    !state.running &&
+    state.screen != AppScreen.work &&
+    state.screen != AppScreen.agentWork;

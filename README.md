@@ -4,8 +4,9 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 当前 Android 构建入口是 `flutter_app/`；旧 Kotlin/Jetpack Compose 工程保留为行为基线，Flutter
 版本已经覆盖服务器、Agent、会话和工作区的主要链路。
 
-> 当前状态（2026-08-07）：Flutter Agent 核心迁移已提交到 `flutter-refactor` 分支，Codex/OpenCode
-> 共用会话协议和 Work 页面。真实服务器长时运行、最终 APK 构建和高分辨率模拟器回归仍是验收项。
+> 当前状态（2026-08-09）：Flutter Agent 核心迁移已提交到 `flutter-refactor` 分支，Codex/OpenCode
+> 共用会话协议和 Work 页面。后台 SSH/Agent 恢复、Release APK 和约 1.5K 模拟器回归已完成，目标真实
+> 服务器的长时 Provider/API 与厂商后台策略仍需单独验收。
 
 ## 当前可用
 
@@ -30,11 +31,12 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 - 在目标真实服务器上验证 OpenCode 固定版本的安装、卸载和真实 Provider/API 连通性。
 - 长时间 turn、steer、interrupt、断线重连和 Android 厂商后台限制下的持续运行。
-- 新代码对应的完整 Flutter test 和 Debug/Release APK 重编译。
-- 约 1220x2712 高分辨率模拟器上的竖屏/横屏逐页截图对比。
+- 目标真实服务器上的长时 turn、steer、interrupt、Provider/API 和厂商后台策略。
+- Android 真机上的通知权限、未知来源安装和极端省电策略。
 
-当前沙箱禁止测试器和 Gradle 创建本地 socket；已有签名 APK 和所有 Flutter/Pub/Gradle/AVD 缓存均保留，
-环境恢复后应优先运行 `./scripts/dev-workflow.sh full --force` 完成这些门禁。
+本轮门禁已完成 Flutter analyze、358 项测试、Debug/Release APK 编译和约 `1220x2712` 竖屏/
+`2712x1220` 横屏模拟器冒烟；后续源码改动按
+`./scripts/dev-workflow.sh quick/check/full/publish` 的顺序复用缓存验证。
 
 完整的当前实现边界、迁移顺序和长期产品约束见
 [架构与协作手册](docs/ARCHITECTURE.md)。
@@ -67,7 +69,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.12+132`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.13+133`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |

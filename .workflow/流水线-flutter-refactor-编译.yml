@@ -1,0 +1,117 @@
+version: "1.0"
+name: Flutter Refactor 编译
+displayName: Flutter Refactor 编译
+stages:
+- name: flutter_refactor_build
+  displayName: Flutter Refactor Android 编译
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: build@android
+    name: flutter_refactor_android_build
+    displayName: Flutter Android Release
+    jdkVersion: "17"
+    gradleVersion: "9.1"
+    buildToolsVersion: "36.0.0"
+    ndkVersion: 28.2.13676358
+    commands:
+    - |
+      set -euo pipefail
+
+      export FLUTTER_VERSION="3.44.8"
+      export FLUTTER_REVISION="058e0af2c2b57e369d905a03ac9748b0ebf543c6"
+      export FLUTTER_ROOT="$HOME/.cache/codex/flutter-$FLUTTER_VERSION"
+      export CODEX_FLUTTER_BIN="$FLUTTER_ROOT/bin/flutter"
+      export PUB_CACHE="$HOME/.pub-cache"
+      export GRADLE_USER_HOME="$HOME/.gradle"
+      export CODEX_BUILD_ONLINE=1
+      export GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=4"
+      export PATH="$FLUTTER_ROOT/bin:$PATH"
+
+      mkdir -p "$(dirname "$FLUTTER_ROOT")" "$PUB_CACHE" "$GRADLE_USER_HOME"
+      CURRENT_FLUTTER_REVISION="$(git -C "$FLUTTER_ROOT" rev-parse HEAD 2>/dev/null || true)"
+      if [ ! -x "$CODEX_FLUTTER_BIN" ] || [ "$CURRENT_FLUTTER_REVISION" != "$FLUTTER_REVISION" ]; then
+        rm -rf "$FLUTTER_ROOT"
+        git clone --branch "$FLUTTER_VERSION" --depth 1 \
+          https://github.com/flutter/flutter.git "$FLUTTER_ROOT"
+      fi
+
+      ACTUAL_FLUTTER_REVISION="$(git -C "$FLUTTER_ROOT" rev-parse HEAD)"
+      if [ "$ACTUAL_FLUTTER_REVISION" != "$FLUTTER_REVISION" ]; then
+        echo "Flutter revision mismatch: expected $FLUTTER_REVISION, got $ACTUAL_FLUTTER_REVISION" >&2
+        exit 1
+      fi
+
+      SDKMANAGER="$(command -v sdkmanager || true)"
+      if [ -z "$SDKMANAGER" ]; then
+        for CANDIDATE in \
+          "${ANDROID_SDK_ROOT:-}/cmdline-tools/latest/bin/sdkmanager" \
+          "${ANDROID_HOME:-}/cmdline-tools/latest/bin/sdkmanager" \
+          "${ANDROID_SDK_ROOT:-}/tools/bin/sdkmanager" \
+          "${ANDROID_HOME:-}/tools/bin/sdkmanager"; do
+          if [ -x "$CANDIDATE" ]; then
+            SDKMANAGER="$CANDIDATE"
+            break
+          fi
+        done
+      fi
+      if [ -z "$SDKMANAGER" ]; then
+        echo "sdkmanager was not found" >&2
+        exit 1
+      fi
+
+      yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+      "$SDKMANAGER" \
+        "platforms;android-36" \
+        "build-tools;36.0.0" \
+        "ndk;28.2.13676358"
+      "$CODEX_FLUTTER_BIN" precache --android
+
+      # This is a compile-only pipeline. It deliberately does not call the
+      # release publisher, create tags, or require CODEX_RELEASE_TOKEN.
+      ./scripts/build-android.sh release --force
+
+      version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' flutter_app/pubspec.yaml | head -n 1)"
+      release_apk="flutter_app/build/app/outputs/flutter-apk/app-release.apk"
+      if [ -z "$version" ] || [ ! -f "$release_apk" ]; then
+        echo "Flutter Release APK was not produced" >&2
+        exit 1
+      fi
+
+      mkdir -p dist
+      artifact="dist/Agent-flutter-refactor-${version%%+*}.apk"
+      install -m 0644 "$release_apk" "$artifact"
+      apk_sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+      {
+        printf 'sourceBranch=flutter-refactor\n'
+        printf 'gitCommit=%s\n' "$(git rev-parse HEAD)"
+        printf 'version=%s\n' "$version"
+        printf 'apkSha256=%s\n' "$apk_sha256"
+      } > dist/flutter-refactor-build-metadata.txt
+      ls -lh dist
+    artifacts:
+    - name: FLUTTER_REFACTOR_BUILD_ARTIFACT
+      path:
+      - dist
+      type: .tar.gz
+    caches:
+    - "~/.cache/codex/flutter-3.44.8"
+    - "~/.pub-cache"
+    - "~/.gradle/caches"
+    - "~/.gradle/wrapper"
+    strategy:
+      retry: "0"
+      resource:
+        cpu: "4"
+        memory: "8"
+triggers:
+  trigger: auto
+  push:
+    branches:
+      prefix: []
+      precise:
+      - flutter-refactor
+      include: []
+notify: []
+strategy:
+  blocking: true

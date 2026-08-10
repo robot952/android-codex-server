@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.12+132，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.13+133，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -134,7 +134,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/ssh/terminal_manager.dart | 每 profile 独立 SSH PTY、输出历史、resize、重试和 generation 隔离 | 当前运行 |
 | flutter_app/lib/src/ui/terminal_screen.dart | xterm 终端显示、输入、重连、隐藏和显式关闭 | 当前运行 |
 | flutter_app/lib/src/ui/file_manager_screen.dart | SFTP 文件浏览、上传/下载、重命名、删除、复制/移动和 SAF 保存 | 当前运行；尚需真机回归 |
-| flutter_app/android/app/src/main/kotlin/top/asdb/agent/ConnectionForegroundService.kt | Android 前台连接保护通知和 partial wake lock | 当前运行；`START_NOT_STICKY`，不承诺进程重启恢复 |
+| flutter_app/android/app/src/main/kotlin/top/asdb/agent/ConnectionForegroundService.kt | Android 前台连接保护通知、partial wake lock 和粘性进程恢复 | 当前运行；`START_STICKY`，强制停止/厂商限制除外 |
 | flutter_app/android/app/src/main/kotlin/top/asdb/agent/DiagnosticLogBridge.kt | Java/Native/ANR 历史退出恢复、主线程 watchdog、原生日志轮转与脱敏 | 当前运行；Android 11+ 使用 `ApplicationExitInfo`，旧系统使用进程标记兜底 |
 | flutter_app/lib/src/ui/server_metrics_strip.dart | 两个列表共用的紧凑资源指标和点击详情 | 当前运行 |
 | flutter_app/lib/src/ui/theme.dart | Flutter 主题和产品色值 | 当前运行 |
@@ -717,8 +717,17 @@ Android Manifest 声明网络、通知、wake lock 和 `foreground-service:dataS
 不使用彩色启动图标作为 Android small icon。有活动连接时，服务器根页面的系统返回调用
 `moveTaskToBack(true)`，不能 finish Activity；若最近任务移除等场景仍销毁 Activity，`MainActivity` 通过
 `FlutterEngineCache` 保留并在下次打开时复用同一 Dart 引擎，SSH/Agent socket 因此前台服务进程存活期间
-不会跟随 Activity 关闭。协议状态仍由 Dart 持有，Service 不会自行重建 app-server；`START_NOT_STICKY`
-意味着进程被系统杀死后不能保证自动恢复，厂商省电策略也可能中断连接。
+不会跟随 Activity 关闭。
+
+为覆盖整个 App 进程被系统回收的情况，Service 使用 `START_STICKY`。Flutter 在成功连接后只把需要恢复的
+Profile ID 和 Agent lane 写入原生 `SharedPreferences`，不保存密码、私钥或 Token；Service 被重建时读取这份
+意图，创建无界面 FlutterEngine，并通过 `--agent-background-*` 启动参数交给 `AppController`。Dart 会在
+Activity 尚未回到前台时直接执行 SSH 和 Agent 恢复，日志顺序应为
+`service_start -> sticky_service_restored_flutter_engine -> background_restore_requested -> reconnect_success`。
+显式断开、删除服务器、修改 SSH 连接身份或 Controller dispose 会清空恢复意图并停止 Service，避免偷偷重连。
+这条机制只覆盖系统普通回收和 Service 的粘性重启；用户“强制停止”应用、设备重启、厂商禁止后台启动或系统
+撤销前台服务权限时，Android 不保证重新启动 Service，SSH 仍会断开。进程死亡后不会自动恢复原 Work 页面，
+但连接和 Agent 会在后台恢复，重新打开 App 后会显示已连接并可进入会话。
 
 进程仍存活时，`AppController` 会区分“用户明确断开”和 SSH/Agent 意外关闭。成功连接后保留每台服务器及
 已连接 Agent lane 的连接意图；意外关闭按 `0/1/2/5/10/30/60` 秒退避（之后每 60 秒）持续恢复，等待期
@@ -1151,7 +1160,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
 - 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
-  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 355 项 Flutter test、release APK
+  方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 358 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
   server/ 或旧 app/ smoke test 都不能替代授权真实服务器与 Android 端到端验收。
@@ -1161,8 +1170,8 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.12+132`。
-- Flutter 测试：355 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
+- 应用版本：`1.8.13+133`。
+- Flutter 测试：358 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
 - 后台 SSH 实测：Debug 版 Home 后台 65 秒、正式版根页面系统 Back 后台 35 秒，以及 Android 14
   `removeTask` 销毁任务后，前台 Service、partial wake lock、App 进程和同一组服务端 sshd PID 均保持；
@@ -1179,12 +1188,12 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 本轮再次连接本机 `codexemu`，进入真实 Codex 历史会话并截图核对顶部菜单和 Composer：顶部菜单宽
   196 dp、行高 48 dp；底部加号/更多为 36 dp，权限高 36 dp，输入区只有一层外框；约
   `873x2048` 的窄屏 Widget 画布也无布局溢出。
-- `1.8.12` 再次在真实 `1220x2712` Work 页面核对 Composer：上下文圆环和模型靠右，权限文字完整，
+- `1.8.13` 再次在真实 `1220x2712` Work 页面核对 Composer：上下文圆环和模型靠右，权限文字完整，
   `5.6-Sol 低` 全量显示；运行态切换停止按钮不改变布局。约 `873x2048` 的 Widget 画布使用更长的
   `5.6-Terra-Preview 极高` 验证圆环不会越过权限、模型不会侵入发送按钮且单行不溢出；圆环中心显示
   服务器返回的真实已用百分比，未知用量显示 `?`。
-- APK：`dist/Agent-1.8.12.apk`；构建产物大小 `66,829,791` bytes，SHA-256
-  `e53cd92319d985cefdef4642cadba9c33a7054da094c7e510383e35aea38003f`。
+- APK：本轮发布后以 `dist/Agent-1.8.13.apk` 为准；SHA-256 记录在
+  `dist/local-release-metadata.txt`，交付时必须同时核对内网和外网下载结果。
 
 ## 18. 文档维护规则
 

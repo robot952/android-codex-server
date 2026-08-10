@@ -17,6 +17,7 @@ import '../domain/model_catalog.dart';
 import '../domain/models.dart';
 import 'profile_scoped_back_stack.dart';
 import '../persistence/profile_store.dart';
+import '../platform/background_connection_bridge.dart';
 import '../platform/diagnostic_logger.dart';
 import '../platform/turn_completion_notifications.dart';
 import '../ssh/server_connection_manager.dart';
@@ -56,11 +57,19 @@ final appControllerProvider = StateNotifierProvider<AppController, AppUiState>((
     ref.watch(serverConnectionManagerProvider),
     ref.watch(agentConnectionManagerProvider),
     ref.watch(diagnosticLoggerProvider),
+    null,
+    ref.watch(backgroundRestoreIntentProvider),
   );
 });
 
 final diagnosticLoggerProvider = Provider<DiagnosticLogger>((ref) {
   return DiagnosticLogger.instance;
+});
+
+final backgroundRestoreIntentProvider = Provider<BackgroundConnectionIntent>((
+  ref,
+) {
+  return const BackgroundConnectionIntent();
 });
 
 class AppController extends StateNotifier<AppUiState> {
@@ -70,11 +79,14 @@ class AppController extends StateNotifier<AppUiState> {
     AgentConnectionManager? agentConnections,
     DiagnosticLogger? diagnosticLogger,
     List<Duration>? reconnectDelays,
+    BackgroundConnectionIntent? backgroundRestoreIntent,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
        _reconnectDelays = List<Duration>.unmodifiable(
          reconnectDelays ?? _defaultReconnectDelays,
        ),
+       _backgroundRestoreIntent =
+           backgroundRestoreIntent ?? const BackgroundConnectionIntent(),
        _ownsAgentConnections = agentConnections == null,
        super(const AppUiState(loading: true)) {
     _connectionSubscription = _connections.stateChanges.listen(
@@ -97,6 +109,7 @@ class AppController extends StateNotifier<AppUiState> {
   final AgentConnectionManager _agents;
   final DiagnosticLogger _diagnostics;
   final List<Duration> _reconnectDelays;
+  final BackgroundConnectionIntent _backgroundRestoreIntent;
   final bool _ownsAgentConnections;
   late final StreamSubscription<Map<String, ConnectionState>>
   _connectionSubscription;
@@ -169,6 +182,22 @@ class AppController extends StateNotifier<AppUiState> {
   Stream<TurnCompletion> get turnCompletions =>
       _turnCompletionController.stream;
 
+  BackgroundConnectionIntent get backgroundConnectionIntent {
+    final hosts = _retainedHostConnections.toList()..sort();
+    final agents =
+        _retainedAgentConnections
+            .map(
+              (key) =>
+                  backgroundAgentConnectionKey(key.profileId, key.agent.name),
+            )
+            .toList()
+          ..sort();
+    return BackgroundConnectionIntent(
+      hostProfileIds: List<String>.unmodifiable(hosts),
+      agentConnectionKeys: List<String>.unmodifiable(agents),
+    );
+  }
+
   Future<void> _initialize() async {
     try {
       _stored = await _store.load();
@@ -176,6 +205,7 @@ class AppController extends StateNotifier<AppUiState> {
         _connections.registerProfile(profile);
         _agents.registerProfile(profile);
       }
+      _restoreRetainedConnectionIntent(_stored.profiles);
       if (!mounted) return;
       final selected =
           _stored.selectedProfileId ?? _stored.profiles.firstOrNull?.id;
@@ -206,6 +236,7 @@ class AppController extends StateNotifier<AppUiState> {
         serverMetrics: _connectedServerMetrics(
           _connections.serverMetrics,
           connections,
+          _retainedHostConnections,
         ),
         agentConnectionStates: _agents.states,
         threads: activeKey == null
@@ -216,9 +247,41 @@ class AppController extends StateNotifier<AppUiState> {
             : state.agentModelLists[activeKey] ?? const <AgentModel>[],
         loading: false,
       );
+      if (_retainedHostConnections.isNotEmpty) {
+        _diagnostics.info(
+          'SSH',
+          'background_restore_requested profiles=${_retainedHostConnections.length} '
+              'agents=${_retainedAgentConnections.length}',
+        );
+        for (final profileId in _retainedHostConnections) {
+          _scheduleConnectionRecovery(profileId, source: 'process_restart');
+        }
+      }
     } catch (error) {
       if (!mounted) return;
       state = state.copyWith(loading: false, error: _message(error, '读取配置失败'));
+    }
+  }
+
+  void _restoreRetainedConnectionIntent(List<ServerProfile> profiles) {
+    if (_backgroundRestoreIntent.isEmpty) return;
+    final validProfileIds = profiles.map((profile) => profile.id).toSet();
+    _retainedHostConnections.addAll(
+      _backgroundRestoreIntent.hostProfileIds.where(validProfileIds.contains),
+    );
+    for (final encoded in _backgroundRestoreIntent.agentConnectionKeys) {
+      final decoded = decodeBackgroundAgentConnectionKey(encoded);
+      if (decoded == null || !validProfileIds.contains(decoded.profileId)) {
+        continue;
+      }
+      final agent = AgentKind.values.firstWhereOrNull(
+        (candidate) => candidate.name == decoded.agent,
+      );
+      if (agent == null) continue;
+      _retainedHostConnections.add(decoded.profileId);
+      _retainedAgentConnections.add(
+        AgentConnectionKey(profileId: decoded.profileId, agent: agent),
+      );
     }
   }
 
@@ -641,6 +704,9 @@ class AppController extends StateNotifier<AppUiState> {
     if (!mounted) return;
     final connection = _connections.states[profileId];
     if (connection?.phase != ConnectionPhase.connected) {
+      // A transport recovery briefly reports disconnected/connecting. Keep
+      // the last sample visible until the user explicitly disconnects.
+      if (_retainedHostConnections.contains(profileId)) return;
       final metrics = _withoutServerMetrics(state.serverMetrics, profileId);
       if (metrics.length != state.serverMetrics.length) {
         state = state.copyWith(serverMetrics: metrics);
@@ -648,6 +714,18 @@ class AppController extends StateNotifier<AppUiState> {
       return;
     }
     await _connections.refreshServerMetrics(profileId);
+  }
+
+  /// Called by the Android foreground service while the Activity is paused.
+  /// Keepalive is host-only and does not touch the Agent exec channel, so an
+  /// active turn remains the sole long-lived channel on the connection.
+  Future<void> keepAliveRetainedConnections() async {
+    await _initialization;
+    if (!mounted) return;
+    final profileIds = _retainedHostConnections.toList(growable: false);
+    for (final profileId in profileIds) {
+      await _connections.keepAlive(profileId);
+    }
   }
 
   void selectAgent(AgentKind agent) {
@@ -4798,7 +4876,11 @@ class AppController extends StateNotifier<AppUiState> {
           : connections[selected] ?? const ConnectionState(),
       agentLoadingStates: Map.unmodifiable(loadingStates),
       loading: activeAgentLoadInvalidated ? false : state.loading,
-      serverMetrics: _connectedServerMetrics(state.serverMetrics, connections),
+      serverMetrics: _connectedServerMetrics(
+        state.serverMetrics,
+        connections,
+        _retainedHostConnections,
+      ),
       workspacePickerVisible: workspaceDisconnected
           ? false
           : state.workspacePickerVisible,
@@ -4816,7 +4898,11 @@ class AppController extends StateNotifier<AppUiState> {
   void _applyServerMetrics(Map<String, ServerMetrics> metrics) {
     if (!mounted) return;
     state = state.copyWith(
-      serverMetrics: _connectedServerMetrics(metrics, _connections.states),
+      serverMetrics: _connectedServerMetrics(
+        metrics,
+        _connections.states,
+        _retainedHostConnections,
+      ),
     );
   }
 
@@ -5739,11 +5825,14 @@ int? _subAgentThreadCreatedAt(AgentThread thread) {
 
 Map<String, ServerMetrics> _connectedServerMetrics(
   Map<String, ServerMetrics> metrics,
-  Map<String, ConnectionState> connections,
-) => Map.unmodifiable(
+  Map<String, ConnectionState> connections, [
+  Set<String>? retainedProfileIds,
+]) => Map.unmodifiable(
   Map.fromEntries(
     metrics.entries.where(
-      (entry) => connections[entry.key]?.phase == ConnectionPhase.connected,
+      (entry) =>
+          connections[entry.key]?.phase == ConnectionPhase.connected ||
+          retainedProfileIds?.contains(entry.key) == true,
     ),
   ),
 );

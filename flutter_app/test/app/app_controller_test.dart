@@ -8,6 +8,7 @@ import 'package:codex_remote/src/agent/remote_bootstrap.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/platform/background_connection_bridge.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -121,6 +122,8 @@ class _FingerprintClient implements RemoteServerClient {
 }
 
 class _ReconnectableHost extends _FingerprintClient {
+  _ReconnectableHost({super.metrics});
+
   Completer<void> _connectionDone = Completer<void>();
   int connectCount = 0;
 
@@ -1238,6 +1241,55 @@ void main() {
     expect(controller.state.serverMetrics, isNot(contains(_firstProfile.id)));
   });
 
+  test('retains server metrics across an automatic reconnect', () async {
+    const metrics = ServerMetrics(
+      cpuPercent: 31,
+      memoryPercent: 52,
+      diskPercent: 67,
+      sampledAtEpochMillis: 456,
+    );
+    final store = _MemoryProfileStore(
+      const StoredProfiles(
+        profiles: [_firstProfile],
+        selectedProfileId: 'first',
+      ),
+    );
+    final host = _ReconnectableHost(metrics: metrics);
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => _FailingTurnAgent(),
+    );
+    final controller = AppController(
+      store,
+      connections,
+      agents,
+      null,
+      const <Duration>[Duration.zero],
+    );
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    await controller.requestConnect(_firstProfile);
+    await controller.refreshServerMetrics(_firstProfile.id);
+    expect(controller.state.serverMetrics[_firstProfile.id], metrics);
+
+    host.drop(StateError('network switched'));
+    await _waitUntil(
+      () =>
+          host.connectCount == 2 &&
+          controller.state.connectionStates[_firstProfile.id]?.phase ==
+              ConnectionPhase.connected,
+    );
+    expect(controller.state.serverMetrics[_firstProfile.id], metrics);
+
+    await controller.disconnectProfile(_firstProfile.id);
+    expect(controller.state.serverMetrics, isNot(contains(_firstProfile.id)));
+  });
+
   test('keeps metrics failures out of the app-level error', () async {
     final store = _MemoryProfileStore(
       const StoredProfiles(
@@ -1366,6 +1418,66 @@ void main() {
       expect(controller.state.threads, [_FailingTurnAgent.thread]);
       expect(controller.state.agentLoadingStates[key], isFalse);
       expect(controller.state.error, isNull);
+    },
+  );
+
+  test(
+    'sticky service restart restores SSH and Agent while headless',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _ReconnectableHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(
+        store,
+        connections,
+        agents,
+        null,
+        const <Duration>[Duration.zero],
+        const BackgroundConnectionIntent(
+          hostProfileIds: <String>['first'],
+          agentConnectionKeys: <String>['first\u0000codex'],
+        ),
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntil(
+        () =>
+            host.connectCount == 1 &&
+            agent.connectCount == 1 &&
+            controller.state.connectionStates['first']?.phase ==
+                ConnectionPhase.connected &&
+            controller
+                    .state
+                    .agentConnectionStates[const AgentConnectionKey(
+                      profileId: 'first',
+                      agent: AgentKind.codex,
+                    )]
+                    ?.phase ==
+                ConnectionPhase.connected,
+      );
+
+      expect(controller.state.screen, AppScreen.servers);
+      expect(controller.backgroundConnectionIntent.hostProfileIds, ['first']);
+      expect(controller.backgroundConnectionIntent.agentConnectionKeys, [
+        'first\u0000codex',
+      ]);
+
+      await controller.disconnectProfile('first');
+      expect(controller.backgroundConnectionIntent.isEmpty, isTrue);
     },
   );
 

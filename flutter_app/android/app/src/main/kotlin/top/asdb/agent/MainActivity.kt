@@ -85,7 +85,21 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BACKGROUND_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "start" -> runCatching { ConnectionForegroundService.start(this) }
+                    "start" -> runCatching {
+                        val arguments = call.arguments as? Map<*, *>
+                        val hostProfileIds = (arguments?.get("hostProfileIds") as? List<*>)
+                            .orEmpty()
+                            .filterIsInstance<String>()
+                        val agentConnectionKeys =
+                            (arguments?.get("agentConnectionKeys") as? List<*>)
+                                .orEmpty()
+                                .filterIsInstance<String>()
+                        ConnectionForegroundService.start(
+                            this,
+                            hostProfileIds,
+                            agentConnectionKeys,
+                        )
+                    }
                         .onSuccess { result.success(null) }
                         .onFailure {
                             result.error(

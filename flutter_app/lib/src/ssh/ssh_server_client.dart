@@ -20,6 +20,13 @@ abstract interface class RemoteServerClient {
   void close();
 }
 
+/// Optional transport-level keepalive used by the Android foreground service.
+/// Keeping this capability separate means lightweight test clients and desktop
+/// hosts do not need to emulate SSH global requests.
+abstract interface class RemoteServerKeepAliveClient {
+  Future<void> keepAlive();
+}
+
 /// Optional bounded SFTP capability used by image previews. Test doubles and
 /// host implementations without file support can keep implementing only
 /// [RemoteServerClient].
@@ -141,7 +148,8 @@ class DartSshServerClient
         RemoteServerDirectoryClient,
         RemoteServerScriptClient,
         RemoteServerStreamingScriptClient,
-        RemoteServerTerminalClient {
+        RemoteServerTerminalClient,
+        RemoteServerKeepAliveClient {
   DartSshServerClient({
     this.connectTimeout = const Duration(seconds: 20),
     this.authTimeout = const Duration(seconds: 20),
@@ -154,10 +162,33 @@ class DartSshServerClient
   SSHClient? _pendingClient;
   SSHSocket? _pendingSocket;
   Future<void> _done = Future<void>.value();
+  Future<void>? _keepAliveRequest;
   int _operationGeneration = 0;
 
   @override
   bool get isConnected => _client != null && !_client!.isClosed;
+
+  @override
+  Future<void> keepAlive() {
+    final client = _client;
+    if (client == null || client.isClosed) return Future<void>.value();
+    final pending = _keepAliveRequest;
+    if (pending != null) return pending;
+
+    late final Future<void> request;
+    request = client
+        .ping()
+        // A server or an intermediate proxy that ignores the global request
+        // must not block every later heartbeat forever.
+        .timeout(const Duration(seconds: 8))
+        .whenComplete(() {
+          if (identical(_keepAliveRequest, request)) {
+            _keepAliveRequest = null;
+          }
+        });
+    _keepAliveRequest = request;
+    return request;
+  }
 
   @override
   Future<void> get done => _done;
@@ -241,7 +272,12 @@ class DartSshServerClient
         onUserInfoRequest: profile.authMode == AuthMode.password
             ? (request) => List<String>.filled(request.prompts.length, password)
             : null,
-        keepAliveInterval: const Duration(seconds: 15),
+        // Heartbeats are driven by the Android foreground service through
+        // [RemoteServerKeepAliveClient]. Do not also let dartssh2 schedule its
+        // own timer: two independent ping loops can write global requests at
+        // the same time as an Agent channel upload and make mobile sockets
+        // abort during backgrounding.
+        keepAliveInterval: null,
         handshakeTimeout: connectTimeout,
         authTimeout: authTimeout,
         onVerifyHostKey: (_, fingerprint) {

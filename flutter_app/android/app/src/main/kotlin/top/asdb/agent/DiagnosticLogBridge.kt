@@ -138,30 +138,56 @@ object DiagnosticLogBridge {
         }.getOrDefault(emptyList())
         exits.asSequence()
             .filter { it.timestamp > lastSeen }
-            .filter {
-                it.reason == ApplicationExitInfo.REASON_CRASH ||
-                    it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE ||
-                    it.reason == ApplicationExitInfo.REASON_ANR
-            }
             .sortedBy { it.timestamp }
             .forEach { exit ->
-                val reason = when (exit.reason) {
-                    ApplicationExitInfo.REASON_CRASH -> "java_crash"
-                    ApplicationExitInfo.REASON_CRASH_NATIVE -> "native_crash"
-                    ApplicationExitInfo.REASON_ANR -> "anr"
-                    else -> "unknown"
+                val reason = applicationExitReason(exit.reason)
+                val crash = exit.reason == ApplicationExitInfo.REASON_CRASH ||
+                    exit.reason == ApplicationExitInfo.REASON_CRASH_NATIVE ||
+                    exit.reason == ApplicationExitInfo.REASON_ANR
+                if (crash) {
+                    appendLocked(
+                        "FATAL",
+                        "Crash",
+                        "previous_android_exit reason=$reason timestamp=${exit.timestamp} " +
+                            "status=${exit.status} importance=${exit.importance} " +
+                            "pssKb=${exit.pss} rssKb=${exit.rss} " +
+                            "description=${exit.description.orEmpty()}",
+                        stackText = readExitTrace(exit),
+                    )
+                } else {
+                    appendLocked(
+                        if (exit.reason == ApplicationExitInfo.REASON_EXIT_SELF) "INFO" else "WARN",
+                        "Process",
+                        "previous_android_exit reason=$reason timestamp=${exit.timestamp} " +
+                            "status=${exit.status} importance=${exit.importance} " +
+                            "pssKb=${exit.pss} rssKb=${exit.rss} " +
+                            "description=${exit.description.orEmpty()}",
+                    )
                 }
-                appendLocked(
-                    "FATAL",
-                    "Crash",
-                    "previous_android_exit reason=$reason timestamp=${exit.timestamp} " +
-                        "description=${exit.description.orEmpty()}",
-                    stackText = readExitTrace(exit),
-                )
             }
         exits.maxOfOrNull { it.timestamp }?.let { latest ->
             if (latest > lastSeen) runCatching { checkpoint.writeText(latest.toString()) }
         }
+    }
+
+    private fun applicationExitReason(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_EXIT_SELF -> "exit_self"
+        ApplicationExitInfo.REASON_SIGNALED -> "signaled"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "low_memory"
+        ApplicationExitInfo.REASON_CRASH -> "java_crash"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "native_crash"
+        ApplicationExitInfo.REASON_ANR -> "anr"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "initialization_failure"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "permission_change"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "excessive_resource_usage"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "user_requested"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency_died"
+        ApplicationExitInfo.REASON_OTHER -> "other"
+        ApplicationExitInfo.REASON_FREEZER -> "freezer"
+        ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "package_state_change"
+        ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "package_updated"
+        else -> "unknown_$reason"
     }
 
     private fun readExitTrace(exit: ApplicationExitInfo): String? = runCatching {

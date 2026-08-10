@@ -43,6 +43,7 @@ class ServerConnectionManager {
     if (existing != null) {
       existing.generation++;
       existing.metricsRequest = null;
+      _clearServerMetrics(profile.id);
       existing.client.close();
     }
     final entry = _ServerEntry(profile, _clientFactory());
@@ -239,6 +240,23 @@ class ServerConnectionManager {
         });
     entry.metricsRequest = request;
     return request;
+  }
+
+  /// Sends one SSH-level keepalive without opening an exec channel. This is
+  /// intentionally independent from metrics polling because the latter can
+  /// race with a long-running Agent JSONL channel.
+  Future<void> keepAlive(String profileId) async {
+    if (_closed) return;
+    final entry = _entries[profileId];
+    if (entry == null || !_isConnected(profileId, entry)) return;
+    final client = entry.client;
+    if (client is! RemoteServerKeepAliveClient) return;
+    try {
+      await (client as RemoteServerKeepAliveClient).keepAlive();
+    } catch (_) {
+      // The normal transport watcher publishes the disconnect and recovery
+      // scheduler reconnects it. A heartbeat must never surface as a UI error.
+    }
   }
 
   Future<Uint8List> readRemoteImage(
@@ -584,7 +602,6 @@ class ServerConnectionManager {
     if (_closed) return;
     if (state.phase != ConnectionPhase.connected) {
       _entries[profileId]?.metricsRequest = null;
-      _clearServerMetrics(profileId);
     }
     _states[profileId] = state;
     _emitStates();

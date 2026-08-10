@@ -89,4 +89,37 @@ void main() {
     );
     expect(keepsAppAliveInBackground(const AppUiState(running: true)), isTrue);
   });
+
+  test('pauses background metrics while a conversation surface is active', () {
+    expect(
+      shouldPollBackgroundMetricsInBackground(
+        const AppUiState(screen: AppScreen.servers),
+      ),
+      isTrue,
+    );
+    expect(
+      shouldPollBackgroundMetricsInBackground(
+        const AppUiState(screen: AppScreen.threads),
+      ),
+      isTrue,
+    );
+    expect(
+      shouldPollBackgroundMetricsInBackground(
+        const AppUiState(screen: AppScreen.work),
+      ),
+      isFalse,
+    );
+    expect(
+      shouldPollBackgroundMetricsInBackground(
+        const AppUiState(screen: AppScreen.agentWork),
+      ),
+      isFalse,
+    );
+    expect(
+      shouldPollBackgroundMetricsInBackground(
+        const AppUiState(screen: AppScreen.threads, running: true),
+      ),
+      isFalse,
+    );
+  });
 }

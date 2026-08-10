@@ -1,0 +1,72 @@
+name: Flutter Refactor iOS Compile
+
+on:
+  push:
+    branches:
+      - flutter-refactor
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-refactor-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-compile:
+    name: iOS unsigned compile
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+          cache: true
+
+      - name: Check Apple toolchain
+        run: |
+          xcodebuild -version
+          flutter --version
+          flutter doctor --verbose
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze and test
+        run: |
+          flutter analyze --no-pub
+          flutter test --no-pub
+
+      - name: Build unsigned iOS archive
+        run: flutter build ipa --release --no-codesign --no-pub
+
+      - name: Write build metadata
+        run: |
+          mkdir -p build/ios/metadata
+          version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
+          archive="build/ios/archive/Runner.xcarchive"
+          test -n "$version"
+          test -d "$archive"
+          {
+            printf 'sourceBranch=flutter-refactor\n'
+            printf 'gitCommit=%s\n' "${GITHUB_SHA}"
+            printf 'version=%s\n' "$version"
+            printf 'codesign=disabled\n'
+          } > build/ios/metadata/flutter-refactor-ios-build.txt
+
+      - name: Upload unsigned archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-remote-ios-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            flutter_app/build/ios/archive/Runner.xcarchive
+            flutter_app/build/ios/metadata/flutter-refactor-ios-build.txt

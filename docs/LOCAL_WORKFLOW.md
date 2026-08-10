@@ -179,6 +179,13 @@ PNG 尺寸；不要把推荐尺寸误写成“必须精确 1220x2712”。
 当前 Flutter 版只实现 SSH 主机连接；不要把测试主机已安装的 Codex/OpenCode 误当作 App 已接入。
 真实 Agent 回归必须明确授权，避免删除用户会话、工作目录或登录状态。
 
+后台驻留专项回归应验证“回到前台之前”已经恢复，而不是只看打开 App 后的状态：连接服务器后将
+Activity 放到 Home，记录当前 PID 和 `dumpsys activity services` 中的
+`ConnectionForegroundService`，再用 `adb shell am kill top.asdb.agent` 模拟系统回收（不要用
+`am force-stop`，后者按 Android 规则会阻止粘性 Service 重启）。Service 重建后应在日志中先看到
+`service_start`、`sticky_service_restored_flutter_engine`、`background_restore_requested`，随后看到
+`SSH reconnect_success`；整个过程 Launcher 保持前台即可。用户主动断开后应看到 Service 停止且不再重连。
+
 ## 7. APK 发布和验签
 
 产物路径：

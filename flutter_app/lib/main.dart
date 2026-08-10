@@ -4,10 +4,12 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'src/app/app_controller.dart';
 import 'src/app/codex_remote_app.dart';
+import 'src/platform/background_connection_bridge.dart';
 import 'src/platform/diagnostic_logger.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
   final diagnostics = DiagnosticLogger.instance;
   await (runZonedGuarded<Future<void>>(
         () async {
@@ -38,7 +40,18 @@ Future<void> main() async {
             return previousPlatformError?.call(error, stack) ?? false;
           };
 
-          runApp(const ProviderScope(child: CodexRemoteApp()));
+          final backgroundRestoreIntent =
+              BackgroundConnectionIntent.fromEntrypointArguments(arguments);
+          runApp(
+            ProviderScope(
+              overrides: <Override>[
+                backgroundRestoreIntentProvider.overrideWithValue(
+                  backgroundRestoreIntent,
+                ),
+              ],
+              child: const CodexRemoteApp(),
+            ),
+          );
         },
         (error, stack) => diagnostics.recordError(error, stack, tag: 'Zone'),
       ) ??
