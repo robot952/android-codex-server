@@ -48,25 +48,50 @@ jobs:
       - name: Build unsigned iOS archive
         run: flutter build ipa --release --no-codesign --no-pub
 
-      - name: Write build metadata
+      - name: Package certificate-free IPA
         run: |
-          mkdir -p build/ios/metadata
           version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
           archive="build/ios/archive/Runner.xcarchive"
+          archive_app="$archive/Products/Applications/Runner.app"
+          package_root="build/ios/unsigned-package"
+          ipa_dir="build/ios/ipa"
           test -n "$version"
-          test -d "$archive"
+          test -d "$archive_app"
+
+          rm -rf "$package_root"
+          mkdir -p "$package_root/Payload" "$ipa_dir" build/ios/metadata
+          ditto "$archive_app" "$package_root/Payload/Runner.app"
+
+          # Ad-hoc signing adds no Apple certificate. AppSync/TrollStore or an
+          # equivalent bypass is still required on the target device.
+          codesign --force --deep --sign - --timestamp=none \
+            "$package_root/Payload/Runner.app"
+          codesign --verify --deep --strict "$package_root/Payload/Runner.app"
+
+          ipa_name="Agent-flutter-refactor-${version%%+*}-unsigned.ipa"
+          ipa_path="$(pwd)/$ipa_dir/$ipa_name"
+          (
+            cd "$package_root"
+            /usr/bin/zip -qry "$ipa_path" Payload
+          )
+          test -s "$ipa_path"
+          ipa_sha256="$(shasum -a 256 "$ipa_path" | awk '{print $1}')"
           {
             printf 'sourceBranch=flutter-refactor\n'
             printf 'gitCommit=%s\n' "${GITHUB_SHA}"
             printf 'version=%s\n' "$version"
-            printf 'codesign=disabled\n'
+            printf 'codesign=adhoc-no-apple-certificate\n'
+            printf 'ipa=%s\n' "$ipa_name"
+            printf 'ipaSha256=%s\n' "$ipa_sha256"
+            printf 'requiresJailbreakBypass=true\n'
           } > build/ios/metadata/flutter-refactor-ios-build.txt
+          ls -lh "$ipa_path" build/ios/metadata/flutter-refactor-ios-build.txt
 
-      - name: Upload unsigned archive
+      - name: Upload certificate-free IPA
         uses: actions/upload-artifact@v4
         with:
-          name: codex-remote-ios-${{ github.sha }}
+          name: codex-remote-ios-unsigned-${{ github.sha }}
           if-no-files-found: error
           path: |
-            flutter_app/build/ios/archive/Runner.xcarchive
+            flutter_app/build/ios/ipa/*.ipa
             flutter_app/build/ios/metadata/flutter-refactor-ios-build.txt
