@@ -1,4 +1,4 @@
-name: Flutter Refactor iOS Compile
+name: Flutter Refactor Mobile Release
 
 on:
   push:
@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: flutter-refactor-ios-${{ github.ref }}
+  group: flutter-refactor-mobile-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -96,27 +96,111 @@ jobs:
             flutter_app/build/ios/ipa/*.ipa
             flutter_app/build/ios/metadata/flutter-refactor-ios-build.txt
 
+  android-compile:
+    name: Android release compile
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Android release APK
+        run: flutter build apk --release --no-pub
+
+      - name: Package Android release APK
+        run: |
+          version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
+          source_apk="build/app/outputs/flutter-apk/app-release.apk"
+          output_dir="dist/android"
+          apk_name="Agent-flutter-refactor-${version%%+*}.apk"
+          test -n "$version"
+          test -s "$source_apk"
+
+          mkdir -p "$output_dir"
+          install -m 0644 "$source_apk" "$output_dir/$apk_name"
+          apk_sha256="$(sha256sum "$output_dir/$apk_name" | awk '{print $1}')"
+          {
+            printf 'sourceBranch=flutter-refactor\n'
+            printf 'gitCommit=%s\n' "${GITHUB_SHA}"
+            printf 'version=%s\n' "$version"
+            printf 'apk=%s\n' "$apk_name"
+            printf 'apkSha256=%s\n' "$apk_sha256"
+          } > "$output_dir/flutter-refactor-android-build.txt"
+          ls -lh "$output_dir"
+
+      - name: Upload Android release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-remote-android-${{ github.sha }}
+          if-no-files-found: error
+          path: flutter_app/dist/android
+
+  publish-release:
+    name: Publish mobile prerelease
+    needs:
+      - ios-compile
+      - android-compile
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download iOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codex-remote-ios-unsigned-${{ github.sha }}
+          path: release-assets/ios
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codex-remote-android-${{ github.sha }}
+          path: release-assets/android
+
       - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
+          version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' flutter_app/pubspec.yaml | head -n 1)"
           release_version="${version%%+*}"
           short_sha="${GITHUB_SHA:0:7}"
-          tag="flutter-refactor-ios-v${release_version}-${short_sha}"
-          title="iOS unsigned v${release_version} (${short_sha})"
-          notes_file="build/ios/metadata/flutter-refactor-ios-release.md"
-          assets=(
-            build/ios/ipa/*.ipa
-            build/ios/metadata/flutter-refactor-ios-build.txt
+          tag="flutter-refactor-v${release_version}-${short_sha}"
+          title="Flutter refactor v${release_version} (${short_sha})"
+          notes_file="release-assets/flutter-refactor-release.md"
+          mapfile -t assets < <(
+            find release-assets -type f \
+              \( -name '*.ipa' -o -name '*.apk' -o -name '*-build.txt' \) \
+              -print | sort
           )
+          test "${#assets[@]}" -eq 4
 
           {
-            printf 'Certificate-free iOS build from `flutter-refactor`.\n\n'
+            printf 'Mobile builds from `flutter-refactor`.\n\n'
             printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
-            printf -- '- Signing: ad-hoc, no Apple Developer certificate\n'
-            printf -- '- Installation: requires AppSync, TrollStore, or an equivalent bypass\n'
-            printf -- '- Standard non-jailbroken iPhones are not supported\n'
+            printf -- '- Android: signed Release APK for standard Android devices\n'
+            printf -- '- iOS: ad-hoc signed IPA without an Apple Developer certificate\n'
+            printf -- '- iOS installation requires AppSync, TrollStore, or an equivalent bypass\n'
           } > "$notes_file"
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
