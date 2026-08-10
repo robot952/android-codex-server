@@ -48,22 +48,59 @@ jobs:
       - name: Build unsigned iOS archive
         run: flutter build ipa --release --no-codesign --no-pub
 
-      - name: Package certificate-free IPA
+      - name: Package certificate-free IPA variants
         run: |
           version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
           archive="build/ios/archive/Runner.xcarchive"
           archive_app="$archive/Products/Applications/Runner.app"
           package_root="build/ios/unsigned-package"
+          sideload_root="build/ios/sideload-package"
           ipa_dir="build/ios/ipa"
           test -n "$version"
           test -d "$archive_app"
 
-          rm -rf "$package_root"
-          mkdir -p "$package_root/Payload" "$ipa_dir" build/ios/metadata
-          ditto "$archive_app" "$package_root/Payload/Runner.app"
+          rm -rf "$package_root" "$sideload_root"
+          mkdir -p \
+            "$package_root/Payload" \
+            "$sideload_root/Payload" \
+            "$ipa_dir" \
+            build/ios/metadata
 
-          # Ad-hoc signing adds no Apple certificate. AppSync/TrollStore or an
-          # equivalent bypass is still required on the target device.
+          # Sideloadly must apply its own Apple ID certificate and provisioning
+          # profile. Supply a clean app bundle without ad-hoc signature data.
+          sideload_app="$sideload_root/Payload/Runner.app"
+          ditto "$archive_app" "$sideload_app"
+          find "$sideload_app" -type d -name _CodeSignature -prune \
+            -exec rm -rf {} +
+          find "$sideload_app" -type f -name embedded.mobileprovision -delete
+          while IFS= read -r -d '' candidate; do
+            if /usr/bin/file "$candidate" | grep -q 'Mach-O'; then
+              chmod 755 "$candidate"
+            fi
+          done < <(find "$sideload_app" -type f -print0)
+
+          sideload_name="Agent-flutter-refactor-${version%%+*}-sideload-ready.ipa"
+          sideload_path="$(pwd)/$ipa_dir/$sideload_name"
+          (
+            cd "$sideload_root"
+            /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
+              Payload "$sideload_path"
+          )
+          test -s "$sideload_path"
+          /usr/bin/unzip -tq "$sideload_path"
+          sideload_entries="$(/usr/bin/unzip -Z1 "$sideload_path")"
+          printf '%s\n' "$sideload_entries" | \
+            grep -qx 'Payload/Runner.app/Runner'
+          if printf '%s\n' "$sideload_entries" | \
+            grep -Eq '/_CodeSignature/|/embedded\.mobileprovision$'; then
+            echo "Sideload IPA still contains signing data" >&2
+            exit 1
+          fi
+          sideload_sha256="$(shasum -a 256 "$sideload_path" | awk '{print $1}')"
+
+          # The ad-hoc variant is separate and remains intended only for
+          # AppSync, TrollStore, or an equivalent signature bypass.
+          ditto "$archive_app" "$package_root/Payload/Runner.app"
           codesign --force --deep --sign - --timestamp=none \
             "$package_root/Payload/Runner.app"
           codesign --verify --deep --strict "$package_root/Payload/Runner.app"
@@ -84,8 +121,14 @@ jobs:
             printf 'ipa=%s\n' "$ipa_name"
             printf 'ipaSha256=%s\n' "$ipa_sha256"
             printf 'requiresJailbreakBypass=true\n'
+            printf 'sideloadIpa=%s\n' "$sideload_name"
+            printf 'sideloadIpaSha256=%s\n' "$sideload_sha256"
+            printf 'sideloadRequiresAppleIdSigning=true\n'
           } > build/ios/metadata/flutter-refactor-ios-build.txt
-          ls -lh "$ipa_path" build/ios/metadata/flutter-refactor-ios-build.txt
+          ls -lh \
+            "$ipa_path" \
+            "$sideload_path" \
+            build/ios/metadata/flutter-refactor-ios-build.txt
 
       - name: Upload certificate-free IPA
         uses: actions/upload-artifact@v4
@@ -274,14 +317,14 @@ jobs:
               \( -name '*.ipa' -o -name '*.apk' -o -name '*.zip' -o -name '*-build.txt' \) \
               -print | sort
           )
-          test "${#assets[@]}" -eq 6
+          test "${#assets[@]}" -eq 7
 
           {
             printf 'Cross-platform builds from `flutter-refactor`.\n\n'
             printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- Android: signed Release APK for standard Android devices\n'
-            printf -- '- iOS: ad-hoc signed IPA without an Apple Developer certificate\n'
-            printf -- '- iOS installation requires AppSync, TrollStore, or an equivalent bypass\n'
+            printf -- '- iOS AppSync/TrollStore: ad-hoc signed unsigned IPA\n'
+            printf -- '- iOS Sideloadly: clean IPA requiring local Apple ID re-signing\n'
             printf -- '- Windows: unsigned x64 portable ZIP\n'
           } > "$notes_file"
 
