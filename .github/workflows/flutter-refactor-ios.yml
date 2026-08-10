@@ -180,7 +180,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Windows x64 release
-        run: flutter build windows --release --target-platform windows-x64 --no-pub
+        run: flutter build windows --release --no-pub
 
       - name: Package Windows x64 release
         shell: pwsh
