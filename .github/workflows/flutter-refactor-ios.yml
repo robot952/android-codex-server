@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: flutter-refactor-ios-${{ github.ref }}
@@ -95,3 +95,38 @@ jobs:
           path: |
             flutter_app/build/ios/ipa/*.ipa
             flutter_app/build/ios/metadata/flutter-refactor-ios-build.txt
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
+          release_version="${version%%+*}"
+          short_sha="${GITHUB_SHA:0:7}"
+          tag="flutter-refactor-ios-v${release_version}-${short_sha}"
+          title="iOS unsigned v${release_version} (${short_sha})"
+          notes_file="build/ios/metadata/flutter-refactor-ios-release.md"
+          assets=(
+            build/ios/ipa/*.ipa
+            build/ios/metadata/flutter-refactor-ios-build.txt
+          )
+
+          {
+            printf 'Certificate-free iOS build from `flutter-refactor`.\n\n'
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Signing: ad-hoc, no Apple Developer certificate\n'
+            printf -- '- Installation: requires AppSync, TrollStore, or an equivalent bypass\n'
+            printf -- '- Standard non-jailbroken iPhones are not supported\n'
+          } > "$notes_file"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" \
+              --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes-file "$notes_file" \
+              --prerelease
+          fi
