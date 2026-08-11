@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -197,7 +198,7 @@ class DartSshServerClient
   Future<String> probeFingerprint(ServerProfile profile) async {
     _validateAddress(profile);
     final operation = ++_operationGeneration;
-    final socket = await SSHSocket.connect(
+    final socket = await _connectConfiguredSshSocket(
       profile.host.trim(),
       profile.port,
       timeout: connectTimeout,
@@ -248,7 +249,7 @@ class DartSshServerClient
 
     await disconnect();
     final operation = ++_operationGeneration;
-    final socket = await SSHSocket.connect(
+    final socket = await _connectConfiguredSshSocket(
       profile.host.trim(),
       profile.port,
       timeout: connectTimeout,
@@ -1413,3 +1414,96 @@ String normalizeSshFingerprint(String value) {
       .replaceAll('=', '');
   return body.isEmpty ? '' : 'SHA256:$body';
 }
+
+/// Configures the native TCP socket before dartssh2 starts its SSH transport.
+/// Dart timers and MethodChannel callbacks may be delayed while Android keeps
+/// the foreground service alive in the background; kernel TCP keepalive is the
+/// only liveness mechanism that continues to run without the Dart isolate.
+Future<SSHSocket> _connectConfiguredSshSocket(
+  String host,
+  int port, {
+  Duration? timeout,
+}) async {
+  final socket = await Socket.connect(host, port, timeout: timeout);
+  try {
+    socket.setOption(SocketOption.tcpNoDelay, true);
+  } catch (_) {
+    // TCP_NODELAY is an optimization; a platform that rejects it can still
+    // use the SSH connection.
+  }
+  if (Platform.isAndroid || Platform.isLinux) {
+    _trySetRawSocketOption(
+      socket,
+      RawSocketOption.fromBool(RawSocketOption.levelSocket, _soKeepAlive, true),
+    );
+    _trySetRawSocketOption(
+      socket,
+      RawSocketOption.fromInt(
+        RawSocketOption.levelTcp,
+        _tcpKeepIdle,
+        _tcpKeepIdleSeconds,
+      ),
+    );
+    _trySetRawSocketOption(
+      socket,
+      RawSocketOption.fromInt(
+        RawSocketOption.levelTcp,
+        _tcpKeepInterval,
+        _tcpKeepIntervalSeconds,
+      ),
+    );
+    _trySetRawSocketOption(
+      socket,
+      RawSocketOption.fromInt(
+        RawSocketOption.levelTcp,
+        _tcpKeepCount,
+        _tcpKeepCountValue,
+      ),
+    );
+  }
+  return _ConfiguredSshSocket(socket);
+}
+
+void _trySetRawSocketOption(Socket socket, RawSocketOption option) {
+  try {
+    socket.setRawOption(option);
+  } catch (_) {
+    // Some Android vendor kernels expose SO_KEEPALIVE but reject one of the
+    // TCP tuning options. Keep the socket usable and fall back to SSH pings.
+  }
+}
+
+/// Public dartssh2 does not expose the underlying Socket, so keep the socket
+/// option setup local while passing a normal SSHSocket to SSHClient.
+final class _ConfiguredSshSocket implements SSHSocket {
+  _ConfiguredSshSocket(this._socket);
+
+  final Socket _socket;
+
+  @override
+  Stream<Uint8List> get stream => _socket;
+
+  @override
+  StreamSink<List<int>> get sink => _socket;
+
+  @override
+  Future<void> get done => _socket.done;
+
+  @override
+  Future<void> close() => _socket.close();
+
+  @override
+  void destroy() => _socket.destroy();
+
+  @override
+  Future<void> flush() => _socket.flush();
+}
+
+// Linux/Android socket option numbers from <sys/socket.h> and <netinet/tcp.h>.
+const _soKeepAlive = 9;
+const _tcpKeepIdle = 4;
+const _tcpKeepInterval = 5;
+const _tcpKeepCount = 6;
+const _tcpKeepIdleSeconds = 30;
+const _tcpKeepIntervalSeconds = 10;
+const _tcpKeepCountValue = 3;

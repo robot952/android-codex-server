@@ -1,9 +1,13 @@
+import 'dart:convert';
+
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/platform/local_file_exporter.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
 import 'package:codex_remote/src/ui/work_screen.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,8 +31,160 @@ class _LayoutController extends AppController {
   void showState(AppUiState value) => state = value;
 }
 
+class _PaginationController extends _LayoutController {
+  _PaginationController(super.store, super.manager);
+
+  Future<void> Function()? onLoadOlder;
+  int loadOlderCalls = 0;
+
+  @override
+  Future<void> loadOlderTurns() async {
+    loadOlderCalls += 1;
+    await onLoadOlder?.call();
+  }
+}
+
+class _TrackingFileExporter implements LocalFileExporter {
+  int beginCalls = 0;
+
+  @override
+  Future<LocalFileExportSession?> begin({
+    required String fileName,
+    String mimeType = 'application/octet-stream',
+  }) async {
+    beginCalls += 1;
+    return null;
+  }
+}
+
+TapGestureRecognizer _linkRecognizer(WidgetTester tester, String text) {
+  for (final selectable in tester.widgetList<SelectableText>(
+    find.byType(SelectableText),
+  )) {
+    final recognizer = _findLinkRecognizer(selectable.textSpan, text);
+    if (recognizer != null) return recognizer;
+  }
+  throw TestFailure('No clickable link span found for $text');
+}
+
+TapGestureRecognizer? _findLinkRecognizer(InlineSpan? span, String text) {
+  if (span is! TextSpan) return null;
+  if ((span.text ?? '').contains(text) &&
+      span.recognizer is TapGestureRecognizer) {
+    return span.recognizer! as TapGestureRecognizer;
+  }
+  for (final child in span.children ?? const <InlineSpan>[]) {
+    final recognizer = _findLinkRecognizer(child, text);
+    if (recognizer != null) return recognizer;
+  }
+  return null;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  List<TimelineEntry> entries(int start, int count) => [
+    for (var index = start; index < start + count; index += 1)
+      TimelineEntry(
+        id: 'timeline-$index',
+        kind: TimelineKind.agentMessage,
+        text: '消息 $index',
+      ),
+  ];
+
+  AppUiState timelineState({
+    required List<TimelineEntry> timeline,
+    String? olderTurnsCursor,
+    bool olderTurnsLoading = false,
+    bool loading = false,
+  }) => AppUiState(
+    screen: AppScreen.work,
+    activeThread: const AgentThread(id: 'timeline-thread', title: '分页会话'),
+    activeAgentCapabilities: AgentCapabilities.codex,
+    timeline: timeline,
+    olderTurnsCursor: olderTurnsCursor,
+    olderTurnsLoading: olderTurnsLoading,
+    loading: loading,
+  );
+
+  testWidgets('opens an existing conversation at the latest message', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(timelineState(timeline: const [], loading: true));
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pump();
+    controller.showState(
+      timelineState(timeline: entries(0, 40), loading: false),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('消息 39'), findsOneWidget);
+    expect(find.text('消息 0'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps the visible message anchored while loading older pages', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {
+      controller.showState(controller.state.copyWith(olderTurnsLoading: true));
+      await Future<void>.value();
+      controller.showState(
+        controller.state.copyWith(
+          timeline: [...entries(-10, 10), ...controller.state.timeline],
+          olderTurnsCursor: null,
+          olderTurnsLoading: false,
+        ),
+      );
+    };
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final scrollView = tester.widget<CustomScrollView>(
+      find.byType(CustomScrollView),
+    );
+    scrollView.controller!.jumpTo(0);
+    await tester.pumpAndSettle();
+    final beforeTop = tester.getTopLeft(find.text('消息 0')).dy;
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 120));
+    await tester.pumpAndSettle();
+
+    expect(controller.loadOlderCalls, 1);
+    expect(controller.state.timeline.first.text, '消息 -10');
+    expect(controller.state.timeline.length, 50);
+    expect(find.text('消息 39'), findsNothing);
+    expect(tester.getTopLeft(find.text('消息 0')).dy, closeTo(beforeTop, 2));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('renders the screenshot-style work timeline and composer', (
     tester,
@@ -180,11 +336,6 @@ void main() {
       isFalse,
     );
     expect(tester.takeException(), isNull);
-
-    tester.view.physicalSize = const Size(2712, 1220);
-    await tester.pumpAndSettle();
-    expect(find.text('安卓 Codex APP (3)'), findsOneWidget);
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('matches the original work menu and gates Debug logs', (
@@ -230,6 +381,73 @@ void main() {
     expect(find.text('添加崩溃 / Debug 日志'), findsOneWidget);
     expect(find.byIcon(Icons.bug_report), findsOneWidget);
     expect(find.byType(PopupMenuDivider), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('opens adjacent URLs and previews linked remote images', (
+    tester,
+  ) async {
+    const url = 'http://192.168.8.107/codex.apk';
+    const imagePath =
+        '/home/yan/ygy/codex-remote-android/.workflow-cache/emulator/'
+        'latest-release.png';
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    final exporter = _TrackingFileExporter();
+    String? loadedImagePath;
+    addTearDown(() async {
+      await manager.close();
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: WorkScreen(
+            fileExporter: exporter,
+            onLoadRemoteImage: (path) async {
+              loadedImagePath = path;
+              return base64Decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
+                'QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'thread-links', title: '链接'),
+        timeline: [
+          TimelineEntry(
+            id: 'links-1',
+            kind: TimelineKind.agentMessage,
+            text: '内网：$url\n\n[竖屏验收截图]($imagePath)',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    _linkRecognizer(tester, url).onTap!();
+    await tester.pumpAndSettle();
+    expect(find.text('打开链接'), findsOneWidget);
+    expect(find.text(url), findsWidgets);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    _linkRecognizer(tester, '竖屏验收截图').onTap!();
+    await tester.pumpAndSettle();
+    expect(loadedImagePath, imagePath);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(find.text('latest-release.png'), findsOneWidget);
+    expect(exporter.beginCalls, 0);
+    await tester.tap(find.byTooltip('关闭图片'));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 

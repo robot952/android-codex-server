@@ -12,14 +12,16 @@ source "$ROOT_DIR/scripts/workflow-lib.sh"
 mode="debug"
 reuse="${CODEX_BUILD_REUSE:-0}"
 cache_status_only=0
+plan_only=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         fast|debug|release|all) mode="$1" ;;
         --reuse) reuse=1 ;;
         --force) reuse=0 ;;
         --cache-status) cache_status_only=1 ;;
+        --plan) plan_only=1 ;;
         *)
-            echo "usage: $0 {fast|debug|release|all} [--reuse|--force] [--cache-status]" >&2
+            echo "usage: $0 {fast|debug|release|all} [--reuse|--force] [--cache-status|--plan]" >&2
             exit 2
             ;;
     esac
@@ -29,33 +31,8 @@ if [[ "${CODEX_WORKFLOW_NO_CACHE:-0}" == 1 ]]; then
     reuse=0
 fi
 
-resolve_flutter() {
-    local candidate
-    if [[ -n "${CODEX_FLUTTER_BIN:-}" ]]; then
-        candidate="$CODEX_FLUTTER_BIN"
-    elif command -v flutter >/dev/null 2>&1; then
-        candidate="$(command -v flutter)"
-    elif [[ -x "$ROOT_DIR/../.toolchains/flutter-root/bin/flutter" ]]; then
-        candidate="$ROOT_DIR/../.toolchains/flutter-root/bin/flutter"
-    elif [[ -x "$ROOT_DIR/.toolchains/flutter-root/bin/flutter" ]]; then
-        candidate="$ROOT_DIR/.toolchains/flutter-root/bin/flutter"
-    elif [[ -x "$ROOT_DIR/../.toolchains/flutter/bin/flutter" ]]; then
-        candidate="$ROOT_DIR/../.toolchains/flutter/bin/flutter"
-    elif [[ -x "$HOME/flutter/bin/flutter" ]]; then
-        candidate="$HOME/flutter/bin/flutter"
-    else
-        echo "Flutter CLI was not found; set CODEX_FLUTTER_BIN" >&2
-        return 1
-    fi
-    [[ -x "$candidate" ]] || {
-        echo "Flutter CLI is not executable: $candidate" >&2
-        return 1
-    }
-    printf '%s' "$candidate"
-}
-
 resolve_android_sdk "$ROOT_DIR"
-FLUTTER_BIN="$(resolve_flutter)"
+FLUTTER_BIN="$(workflow_resolve_flutter "$ROOT_DIR")"
 export ANDROID_HOME
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
@@ -101,7 +78,7 @@ build_tools_identity="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1
 
 android_fingerprint() {
     local fingerprint_mode="$1"
-    printf 'schema=4\nmode=%s\ninputs=%s\njava=%s\nflutter=%s\nsdk=%s\nbuildTools=%s\n' \
+    printf 'schema=5\nmode=%s\ninputs=%s\njava=%s\nflutter=%s\nsdk=%s\nbuildTools=%s\n' \
         "$fingerprint_mode" "$android_input_hash" "$java_identity" "$flutter_identity" "$ANDROID_HOME" "$build_tools_identity" |
         workflow_sha256
 }
@@ -145,15 +122,48 @@ write_build_stamp() {
     mv -f "$temporary_stamp" "$stamp_path"
 }
 
+fast_gate_valid=0
+debug_gate_valid=0
+release_gate_valid=0
+plan_reuse="$reuse"
 if [[ "$cache_status_only" == 1 ]]; then
-    if [[ "${CODEX_WORKFLOW_NO_CACHE:-0}" != 1 ]] && build_stamp_valid "$mode"; then
+    plan_reuse=1
+fi
+if [[ "$plan_reuse" == 1 && "${CODEX_WORKFLOW_NO_CACHE:-0}" != 1 ]]; then
+    build_stamp_valid fast && fast_gate_valid=1
+    build_stamp_valid debug && debug_gate_valid=1
+    build_stamp_valid release && release_gate_valid=1
+fi
+workflow_android_gate_plan \
+    "$mode" "$plan_reuse" "$fast_gate_valid" "$debug_gate_valid" "$release_gate_valid"
+
+print_build_plan() {
+    local validation="run"
+    local debug_build="skip"
+    local release_build="skip"
+    [[ "$WORKFLOW_ANDROID_PLAN_VALIDATE" == 1 ]] || validation="reuse:$WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE"
+    [[ "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == 1 ]] && debug_build="build"
+    [[ "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == 1 ]] && release_build="build"
+    if [[ "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == 1 ]]; then
+        validation="cached"
+    fi
+    printf 'Android %s plan: validation=%s debug=%s release=%s cacheHit=%s\n' \
+        "$mode" "$validation" "$debug_build" "$release_build" "$WORKFLOW_ANDROID_PLAN_CACHE_HIT"
+}
+
+if [[ "$plan_only" == 1 ]]; then
+    print_build_plan
+    exit 0
+fi
+if [[ "$cache_status_only" == 1 ]]; then
+    if [[ "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == 1 ]]; then
         echo "Android $mode gate: cache hit"
         exit 0
     fi
     echo "Android $mode gate: cache miss"
     exit 1
 fi
-if [[ "$reuse" == 1 ]] && build_stamp_valid "$mode"; then
+if [[ "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == 1 ]]; then
     echo "Android $mode gate: cache hit"
     echo "Flutter: $flutter_identity"
     echo "Gradle cache: $GRADLE_USER_HOME"
@@ -172,50 +182,74 @@ configure_proxy() {
     echo "Using download proxy 127.0.0.1:7890"
 }
 
-cd "$FLUTTER_DIR"
-if [[ "${CODEX_BUILD_ONLINE:-0}" == 1 ]]; then
-    if (echo >/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
-        configure_proxy
-    fi
-    "$FLUTTER_BIN" pub get
-elif ! "$FLUTTER_BIN" pub get --offline; then
-    if (echo >/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
-        configure_proxy
-        "$FLUTTER_BIN" pub get
+run_timed_build_step() {
+    local name="$1"
+    shift
+    local started_ns
+    local ended_ns
+    local elapsed_ms
+    local status
+    started_ns="$(date +%s%N)"
+    if "$@"; then
+        status=0
     else
-        echo "Dependencies are missing and proxy 127.0.0.1:7890 is unavailable" >&2
-        exit 1
+        status=$?
     fi
-fi
+    ended_ns="$(date +%s%N)"
+    elapsed_ms=$(( (ended_ns - started_ns) / 1000000 ))
+    printf 'Timing: %s = %s (status %d)\n' \
+        "$name" "$(workflow_format_duration_ms "$elapsed_ms")" "$status"
+    return "$status"
+}
 
+resolve_flutter_dependencies() {
+    if [[ "${CODEX_BUILD_ONLINE:-0}" == 1 ]]; then
+        if (echo >/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
+            configure_proxy
+        fi
+        "$FLUTTER_BIN" pub get
+    elif ! "$FLUTTER_BIN" pub get --offline; then
+        if (echo >/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
+            configure_proxy
+            "$FLUTTER_BIN" pub get
+        else
+            echo "Dependencies are missing and proxy 127.0.0.1:7890 is unavailable" >&2
+            return 1
+        fi
+    fi
+}
+
+cd "$FLUTTER_DIR"
 printf 'Flutter: %s\n' "$flutter_identity"
 printf 'Gradle cache: %s\n' "$GRADLE_USER_HOME"
 printf 'Pub cache: %s\n' "$PUB_CACHE"
 start_ns="$(date +%s%N)"
+run_timed_build_step "Flutter dependencies" resolve_flutter_dependencies
 
-"$FLUTTER_BIN" analyze --no-pub
-if [[ "$mode" != fast ]]; then
-    "$FLUTTER_BIN" test --no-pub
+if [[ "$WORKFLOW_ANDROID_PLAN_VALIDATE" == 1 ]]; then
+    run_timed_build_step "Flutter analyze" "$FLUTTER_BIN" analyze --no-pub
+    if [[ "$mode" != fast ]]; then
+        run_timed_build_step "Flutter tests" "$FLUTTER_BIN" test --no-pub
+    fi
+else
+    echo "Reusing analyze/test result from Android $WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE gate"
 fi
-case "$mode" in
-    fast) ;;
-    debug) "$FLUTTER_BIN" build apk --debug --no-pub ;;
-    release) "$FLUTTER_BIN" build apk --release --no-pub ;;
-    all)
-        "$FLUTTER_BIN" build apk --debug --no-pub
-        "$FLUTTER_BIN" build apk --release --no-pub
-        ;;
-esac
+if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == 1 ]]; then
+    run_timed_build_step "Debug APK build" "$FLUTTER_BIN" build apk --debug --no-pub
+fi
+if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == 1 ]]; then
+    run_timed_build_step "Release APK build" "$FLUTTER_BIN" build apk --release --no-pub
+fi
 
 end_ns="$(date +%s%N)"
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
 printf 'Elapsed: %d ms (%d.%03d s)\n' "$elapsed_ms" "$((elapsed_ms / 1000))" "$((elapsed_ms % 1000))"
-write_build_stamp fast
-case "$mode" in
-    debug) write_build_stamp debug ;;
-    release) write_build_stamp release ;;
-    all)
-        write_build_stamp debug
-        write_build_stamp release
-        ;;
-esac
+if [[ "$WORKFLOW_ANDROID_PLAN_VALIDATE" == 1 ]]; then
+    write_build_stamp fast
+fi
+if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == 1 ]]; then
+    write_build_stamp debug
+fi
+if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == 1 ]]; then
+    write_build_stamp release
+fi

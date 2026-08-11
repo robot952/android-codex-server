@@ -54,6 +54,9 @@ void main() {
     expect(imageMimeType('/tmp/screenshot.JPG'), 'image/jpeg');
     expect(imageMimeType('/tmp/screenshot.webp'), 'image/webp');
     expect(imageMimeType('/tmp/screenshot.png'), 'image/png');
+    expect(isPreviewableImagePath('/tmp/SCREENSHOT.PNG'), isTrue);
+    expect(isPreviewableImagePath('/tmp/archive.zip'), isFalse);
+    expect(isPreviewableImagePath('relative.png'), isFalse);
   });
 
   test('sanitizes remote names before opening the platform save dialog', () {

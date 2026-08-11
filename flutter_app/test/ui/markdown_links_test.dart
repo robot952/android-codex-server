@@ -1,5 +1,6 @@
 import 'package:codex_remote/src/ui/markdown_links.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:markdown/markdown.dart' as md;
 
 void main() {
   test('exposes HTTP destinations without duplicating identical labels', () {
@@ -13,6 +14,21 @@ void main() {
       ),
       '[https://example.com](https://example.com)',
     );
+  });
+
+  test('autolinks HTTP destinations adjacent to localized punctuation', () {
+    const url = 'http://192.168.8.107/codex.apk';
+    final nodes = md.Document(
+      inlineSyntaxes: workMarkdownInlineSyntaxes,
+      extensionSet: md.ExtensionSet.gitHubFlavored,
+      encodeHtml: false,
+    ).parseInline('内网：$url');
+    final link = nodes.whereType<md.Element>().singleWhere(
+      (element) => element.tag == 'a',
+    );
+
+    expect(link.textContent, url);
+    expect(link.attributes['href'], url);
   });
 
   test('round trips safe absolute remote file links', () {

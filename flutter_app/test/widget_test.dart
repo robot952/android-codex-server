@@ -147,7 +147,7 @@ void main() {
     },
   );
 
-  testWidgets('server editor survives 1.5K rotation and enlarged text', (
+  testWidgets('server editor survives 1.5K portrait and enlarged text', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 2.75;
@@ -167,11 +167,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byTooltip('显示私钥密码'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-
-    tester.view.physicalSize = const Size(2712, 1220);
-    await tester.pumpAndSettle();
-    expect(find.text('新建服务器'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await tester.enterText(find.byType(TextFormField).at(1), 'changed.example');

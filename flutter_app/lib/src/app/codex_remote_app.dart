@@ -82,12 +82,40 @@ class _AppRootState extends ConsumerState<_AppRoot>
     _navigationSubscription = turnCompletionNotifier.navigationEvents.listen(
       _handleCompletedThreadNavigation,
     );
-    backgroundConnectionBridge.registerHeartbeat(() async {
+    backgroundConnectionBridge.registerHeartbeat((heartbeat) async {
       // The native service is the single scheduler for transport heartbeats.
       // Run it while visible as well: having one scheduler avoids a built-in
       // dartssh2 ping racing this callback on the same SSH socket, and keeps
       // lifecycle transitions on the same transport path.
-      await controller.keepAliveRetainedConnections();
+      final receivedAt = DateTime.now();
+      final deliveryDelayMs = heartbeat.deliveryDelayMillis(receivedAt);
+      final detail =
+          'sequence=${heartbeat.sequence} '
+          'lifecycle=${_lifecycleState.name} deliveryDelayMs=$deliveryDelayMs '
+          'skippedBefore=${heartbeat.skippedBefore}';
+      if (deliveryDelayMs > 15 * 1000) {
+        controller.diagnosticLogger.warn('Heartbeat', 'received_late $detail');
+      } else {
+        controller.diagnosticLogger.info('Heartbeat', 'received $detail');
+      }
+      final startedAt = Stopwatch()..start();
+      try {
+        await controller.keepAliveRetainedConnections(
+          heartbeatSequence: heartbeat.sequence,
+        );
+        controller.diagnosticLogger.info(
+          'Heartbeat',
+          'completed $detail elapsedMs=${startedAt.elapsedMilliseconds}',
+        );
+      } catch (error, stack) {
+        controller.diagnosticLogger.warn(
+          'Heartbeat',
+          'failed $detail elapsedMs=${startedAt.elapsedMilliseconds}',
+          error,
+          stack,
+        );
+        rethrow;
+      }
     });
     unawaited(turnCompletionNotifier.initialize());
   }

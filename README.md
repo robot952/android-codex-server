@@ -22,7 +22,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 - Work 页面中的上下文用量、压缩、草稿、附件、图片预览/保存、Markdown 链接和子 Agent。
 - SSH 终端、SFTP 文件管理、工作目录选择、全局 Codex 配置和真实模型连通性测试。
 - Android 前台连接保护、回合完成通知、Debug 日志导出分享和按会话缓存。
-- 服务器页在竖屏、横屏和放大字体下的 Widget 回归。
+- 服务器页在目标竖屏和放大字体下的 Widget 回归。
 - Android Debug 和 Release APK 使用同一把长期稳定签名，可覆盖安装历史同签名版本。
 
 ## 当前验收缺口
@@ -34,9 +34,8 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 - 目标真实服务器上的长时 turn、steer、interrupt、Provider/API 和厂商后台策略。
 - Android 真机上的通知权限、未知来源安装和极端省电策略。
 
-本轮门禁已完成 Flutter analyze、358 项测试、Debug/Release APK 编译和约 `1220x2712` 竖屏/
-`2712x1220` 横屏模拟器冒烟；后续源码改动按
-`./scripts/dev-workflow.sh quick/check/full/publish` 的顺序复用缓存验证。
+模拟器 UI 冒烟按约 `1220x2712` 的目标竖屏执行，横屏不再作为后续验收项。源码修改先跑最近的
+定向测试，再按风险只选择一个 `quick/check/full/publish` 主门禁；不要机械串行执行全部模式。
 
 完整的当前实现边界、迁移顺序和长期产品约束见
 [架构与协作手册](docs/ARCHITECTURE.md)。
@@ -69,7 +68,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.13+133`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.21+145`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |
@@ -80,7 +79,14 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 ## 构建
 
-日常开发使用统一入口；它会按输入内容复用服务器脚本、OpenCode、Flutter、APK 和模拟器门禁：
+日常开发先用统一工具入口格式化并运行最近的测试：
+
+```bash
+./scripts/flutter-tool.sh dart format lib/src/ui/example.dart
+./scripts/flutter-tool.sh test --no-pub test/ui/example_test.dart
+```
+
+随后按风险只选择一个主门禁；它会按输入内容复用服务器脚本、OpenCode、Flutter、APK 和模拟器结果：
 
 ```bash
 ./scripts/dev-workflow.sh quick
@@ -90,6 +96,10 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 ./scripts/dev-workflow.sh status
 ```
 
+`check` 后运行 `full/publish` 只补缺失的 Release APK，不重复 analyze、全量测试或 Debug 构建。每次
+工作流都会输出阶段耗时，并写入 `.workflow-cache/latest-workflow-timing.tsv`。完整风险矩阵、失败恢复和
+计时规则见 [本地高复用开发流程](docs/LOCAL_WORKFLOW.md)。
+
 只运行 Android/Flutter 阶段时：
 
 ```bash
@@ -97,6 +107,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 ./scripts/build-android.sh debug    # analyze + test + Debug APK
 ./scripts/build-android.sh release  # analyze + test + Release APK
 ./scripts/build-android.sh all      # analyze + test + Debug/Release APK
+./scripts/build-android.sh all --reuse --plan  # 只查看复用/构建计划
 ```
 
 脚本不会执行 `flutter clean`。依赖默认先通过持久 `PUB_CACHE` 离线解析；缺失依赖且本机
@@ -193,7 +204,7 @@ profileId + AgentKind + threadId 隔离的状态/缓存
       |
 Agent adapter (Codex / OpenCode)
       |
-SSH exec channel (JSONL, no PTY)
+SSH Unix-socket forward / exec fallback (WebSocket or JSONL, no PTY)
       |
 remote Agent runtime + workspace
 ```
@@ -221,7 +232,7 @@ CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./smoke-test.mjs
 - 已保存指纹必须严格匹配；主机或端口变化后重新确认。
 - 密码和私钥只存入系统安全存储，不写日志、通知、普通首选项或截图。
 - Codex/OpenCode 凭据留在远程服务器；App 不把它们打包进 APK。
-- Agent 协议最终只通过 SSH 通道传输，不公开监听 app-server TCP/WebSocket。
+- Agent 协议只通过 SSH 通道传输；Codex 常驻 app-server 仅监听远端用户私有 Unix socket，不公开 TCP 端口。
 - 生产环境推荐非 root 专用账户和每台设备独立 SSH key；界面默认用户为 `root` 只是产品默认值。
 
 ## 协作规则

@@ -67,15 +67,22 @@ class _BlockingFirstSaveProfileStore extends _MemoryProfileStore {
   }
 }
 
-class _FingerprintClient implements RemoteServerClient {
-  _FingerprintClient({this.metrics = const ServerMetrics(), this.metricsError});
+class _FingerprintClient
+    implements RemoteServerClient, RemoteServerKeepAliveClient {
+  _FingerprintClient({
+    this.metrics = const ServerMetrics(),
+    this.metricsError,
+    this.keepAliveError,
+  });
 
   final Completer<String> fingerprint = Completer<String>();
   final Completer<void> closed = Completer<void>();
   final ServerMetrics metrics;
   final Object? metricsError;
+  final Object? keepAliveError;
   bool connected = false;
   int metricsReadCount = 0;
+  int keepAliveCount = 0;
 
   @override
   Future<void> connect(ServerProfile profile) async {
@@ -93,6 +100,13 @@ class _FingerprintClient implements RemoteServerClient {
 
   @override
   bool get isConnected => connected;
+
+  @override
+  Future<void> keepAlive() async {
+    if (!connected) return;
+    keepAliveCount++;
+    if (keepAliveError case final error?) throw error;
+  }
 
   @override
   Future<String> probeFingerprint(ServerProfile profile) => fingerprint.future;
@@ -285,7 +299,11 @@ class _FileManagerHost extends _FingerprintClient
   }
 }
 
-class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
+class _FailingTurnAgent
+    implements
+        RemoteAgentClient,
+        RemoteAgentTurnClient,
+        RemoteAgentKeepAliveClient {
   static const thread = AgentThread(
     id: 'attachment-thread',
     title: 'Attachment test',
@@ -302,6 +320,9 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   bool connected = false;
   int connectCount = 0;
   int disconnectCount = 0;
+  int listModelsCount = 0;
+  int listThreadsCount = 0;
+  int keepAliveCount = 0;
   int resumeCalls = 0;
   String? startedThreadId;
   String? startedText;
@@ -329,6 +350,11 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   bool get isConnected => connected;
 
   @override
+  Future<void> keepAlive() async {
+    if (connected) keepAliveCount++;
+  }
+
+  @override
   AgentKind get kind => AgentKind.codex;
 
   @override
@@ -349,11 +375,16 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   }
 
   @override
-  Future<List<AgentModel>> listModels() async => const <AgentModel>[];
+  Future<List<AgentModel>> listModels() async {
+    listModelsCount++;
+    return const <AgentModel>[];
+  }
 
   @override
-  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
-      const AgentThreadPage(threads: <AgentThread>[thread]);
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async {
+    listThreadsCount++;
+    return const AgentThreadPage(threads: <AgentThread>[thread]);
+  }
 
   @override
   Future<AgentSession> resumeThread(
@@ -400,6 +431,22 @@ class _FailingTurnAgent implements RemoteAgentClient, RemoteAgentTurnClient {
   }) async {
     interruptedThreadId = threadId;
     interruptedTurnId = turnId;
+  }
+}
+
+class _EventAgent extends _FailingTurnAgent {
+  final StreamController<RemoteAgentEvent> eventController =
+      StreamController<RemoteAgentEvent>.broadcast(sync: true);
+
+  @override
+  Stream<RemoteAgentEvent> get events => eventController.stream;
+
+  void emit(RemoteAgentEvent event) => eventController.add(event);
+
+  @override
+  void close() {
+    super.close();
+    unawaited(eventController.close());
   }
 }
 
@@ -990,6 +1037,163 @@ Future<void> _openSubAgent(
 
 void main() {
   test(
+    'reuses the connected Agent snapshot when re-entering a server',
+    () async {
+      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+
+      expect(agent.connectCount, 1);
+      expect(agent.listThreadsCount, 1);
+      expect(agent.listModelsCount, 1);
+
+      controller.backToServers();
+      controller.selectProfile(profile.id);
+      await _waitUntil(() => controller.state.screen == AppScreen.threads);
+      await _drainAsyncWork();
+
+      expect(agent.connectCount, 1);
+      expect(agent.listThreadsCount, 1);
+      expect(agent.listModelsCount, 1);
+      expect(controller.state.threads, contains(_FailingTurnAgent.thread));
+    },
+  );
+
+  test(
+    'background heartbeat keeps retained host and Agent lanes alive',
+    () async {
+      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+      await controller.keepAliveRetainedConnections();
+
+      expect(host.keepAliveCount, 1);
+      expect(agent.keepAliveCount, 1);
+    },
+  );
+
+  test(
+    'background heartbeat propagates a lane failure for native logs',
+    () async {
+      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient(
+        keepAliveError: StateError('socket aborted'),
+      );
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+
+      await expectLater(
+        controller.keepAliveRetainedConnections(heartbeatSequence: 42),
+        throwsA(isA<StateError>()),
+      );
+      expect(host.keepAliveCount, 1);
+      expect(agent.keepAliveCount, 1);
+    },
+  );
+
+  test(
+    'Agent stderr is logged without replacing the thread-page status',
+    () async {
+      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _EventAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+
+      agent.emit(
+        const RemoteAgentDiagnostic(
+          '2026-08-10 ERROR codex_app_server',
+          isStderr: true,
+        ),
+      );
+      await _drainAsyncWork();
+      expect(controller.state.diagnostic, isNull);
+
+      agent.emit(
+        const RemoteAgentDiagnostic(
+          'Codex SSH transport_error detail=socket aborted',
+          isTransport: true,
+        ),
+      );
+      await _drainAsyncWork();
+      expect(controller.state.diagnostic, isNull);
+
+      agent.emit(const RemoteAgentDiagnostic('Agent status changed'));
+      await _drainAsyncWork();
+      expect(controller.state.diagnostic, 'Agent status changed');
+    },
+  );
+
+  test(
     'loads and merges the next thread-list page for the active lane',
     () async {
       final harness = await _createSubAgentHarness(
@@ -1256,9 +1460,10 @@ void main() {
     );
     final host = _ReconnectableHost(metrics: metrics);
     final connections = ServerConnectionManager(clientFactory: () => host);
+    final agent = _FailingTurnAgent();
     final agents = AgentConnectionManager(
       connections,
-      clientFactory: (kind) => _FailingTurnAgent(),
+      clientFactory: (kind) => agent,
     );
     final controller = AppController(
       store,
@@ -1274,6 +1479,15 @@ void main() {
     });
     await _waitUntilInitialized(controller);
     await controller.requestConnect(_firstProfile);
+    await _waitUntil(
+      () =>
+          agent.listThreadsCount == 1 &&
+          controller.state.agentLoadingStates[const AgentConnectionKey(
+                profileId: 'first',
+                agent: AgentKind.codex,
+              )] ==
+              false,
+    );
     await controller.refreshServerMetrics(_firstProfile.id);
     expect(controller.state.serverMetrics[_firstProfile.id], metrics);
 
@@ -1285,6 +1499,11 @@ void main() {
               ConnectionPhase.connected,
     );
     expect(controller.state.serverMetrics[_firstProfile.id], metrics);
+    expect(
+      agent.listThreadsCount,
+      1,
+      reason: 'a cached thread list must not reload after background recovery',
+    );
 
     await controller.disconnectProfile(_firstProfile.id);
     expect(controller.state.serverMetrics, isNot(contains(_firstProfile.id)));

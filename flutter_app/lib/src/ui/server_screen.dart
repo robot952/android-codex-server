@@ -55,6 +55,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
           Scaffold(
             resizeToAvoidBottomInset: true,
             appBar: AppBar(
+              toolbarHeight: 64,
               leading: _editorVisible
                   ? IconButton(
                       tooltip: '返回服务器列表',
@@ -510,10 +511,10 @@ class _AppTitle extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Agent',
+              'Codex',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
+              style: Theme.of(context).textTheme.titleLarge,
             ),
             Text(
               subtitle,
@@ -543,10 +544,57 @@ class _PromotionAction extends StatelessWidget {
         icon: const Icon(Icons.open_in_new, size: 19),
       );
     }
-    return TextButton.icon(
-      onPressed: onOpen,
-      icon: const Icon(Icons.open_in_new, size: 16),
-      label: const Text('低价中转站优选'),
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Tooltip(
+        message: '打开低价中转站优选：lowapi.asdb.top',
+        child: InkWell(
+          onTap: onOpen,
+          borderRadius: BorderRadius.circular(7),
+          child: Container(
+            width: 148,
+            height: 42,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: codexAmber.withValues(alpha: 0.12),
+              border: Border.all(color: codexAmber.withValues(alpha: 0.5)),
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.open_in_new, size: 16, color: codexAmber),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '低价中转站优选',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: codexAmber,
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      Text(
+                        'lowapi.asdb.top',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(
+                          context,
+                        ).textTheme.labelSmall?.copyWith(color: codexMuted),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -666,95 +714,137 @@ class _ServerList extends StatelessWidget {
     return SafeArea(
       top: false,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
+        padding: const EdgeInsets.only(bottom: 24),
         children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: codexSurface,
-              border: Border.all(color: codexBorder),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.star, size: 22, color: codexAmber),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '服务器会话',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            Text(
-                              state.profiles.isEmpty
-                                  ? '添加第一台 SSH 服务器'
-                                  : '${state.profiles.length} 台服务器 · $connectedCount 台已连接',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ],
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: codexSurface,
+                border: Border.all(color: codexBorder),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.star, size: 22, color: codexAmber),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '服务器会话',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              Text(
+                                state.profiles.isEmpty
+                                    ? '添加第一台 SSH 服务器'
+                                    : '${state.profiles.length} 台服务器 · $connectedCount 台已连接',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: '添加服务器',
-                        onPressed: onAdd,
-                        icon: const Icon(Icons.add),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                if (state.profiles.isEmpty)
-                  _EmptyServerState(onAdd: onAdd)
-                else
-                  for (
-                    var index = 0;
-                    index < state.profiles.length;
-                    index++
-                  ) ...[
-                    _ServerRow(
-                      profile: state.profiles[index],
-                      connection:
-                          state.connectionStates[state.profiles[index].id] ??
-                          const ConnectionState(),
-                      metrics: state.serverMetrics[state.profiles[index].id],
-                      onOpen: onOpen,
-                      onSettings: onSettings,
-                      onDisconnect: onDisconnect,
+                        SizedBox.square(
+                          dimension: 40,
+                          child: IconButton(
+                            tooltip: '添加服务器',
+                            onPressed: onAdd,
+                            icon: const Icon(Icons.add, size: 21),
+                          ),
+                        ),
+                      ],
                     ),
-                    if (index != state.profiles.length - 1)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 52),
-                        child: Divider(height: 1),
+                  ),
+                  const Divider(height: 1, color: codexBorder),
+                  if (state.profiles.isEmpty)
+                    _EmptyServerState(onAdd: onAdd)
+                  else
+                    for (
+                      var index = 0;
+                      index < state.profiles.length;
+                      index++
+                    ) ...[
+                      _ServerRow(
+                        profile: state.profiles[index],
+                        connection:
+                            state.connectionStates[state.profiles[index].id] ??
+                            const ConnectionState(),
+                        metrics: state.serverMetrics[state.profiles[index].id],
+                        onOpen: onOpen,
+                        onSettings: onSettings,
+                        onDisconnect: onDisconnect,
                       ),
-                  ],
-              ],
+                      if (index != state.profiles.length - 1)
+                        Padding(
+                          padding: EdgeInsets.only(left: 52),
+                          child: Divider(
+                            height: 1,
+                            color: codexBorder.withValues(alpha: 0.72),
+                          ),
+                        ),
+                    ],
+                ],
+              ),
             ),
           ),
-          if (state.debugModeEnabled) ...[
-            const SizedBox(height: 10),
-            ListTile(
-              dense: true,
-              onTap: onOpenDebugLogs,
-              leading: const Icon(Icons.bug_report_outlined, color: codexAmber),
-              title: const Text('Debug 日志'),
-              subtitle: const Text('运行日志与分享入口'),
-              trailing: IconButton(
-                tooltip: '分享诊断日志',
-                onPressed: onShareDebugLogs,
-                icon: const Icon(Icons.share_outlined),
+          if (state.debugModeEnabled)
+            _DebugLogBar(onOpen: onOpenDebugLogs, onShare: onShareDebugLogs),
+          if (state.debugModeEnabled)
+            const Divider(height: 1, color: codexBorder),
+        ],
+      ),
+    );
+  }
+}
+
+class _DebugLogBar extends StatelessWidget {
+  const _DebugLogBar({required this.onOpen, required this.onShare});
+
+  final VoidCallback onOpen;
+  final VoidCallback onShare;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        child: Row(
+          children: [
+            const Icon(Icons.bug_report, size: 21, color: codexGreen),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Debug 模式',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    '运行日志正在记录',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ),
-              shape: RoundedRectangleBorder(
-                side: const BorderSide(color: codexBorder),
-                borderRadius: BorderRadius.circular(6),
+            ),
+            SizedBox.square(
+              dimension: 40,
+              child: IconButton(
+                tooltip: '分享诊断日志',
+                onPressed: onShare,
+                icon: const Icon(Icons.share, size: 20),
               ),
             ),
           ],
-        ],
+        ),
       ),
     );
   }
@@ -849,10 +939,10 @@ class _ServerRow extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 6),
               SizedBox(
-                width: 48,
-                height: 48,
+                width: 40,
+                height: 40,
                 child: connection.phase == ConnectionPhase.connected
                     ? IconButton(
                         tooltip: '断开服务器',
@@ -888,15 +978,15 @@ class _ServerRow extends StatelessWidget {
                       )
                     : null,
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 6),
               Tooltip(
                 message: '服务器设置',
                 child: InkWell(
                   onTap: () => onSettings(profile),
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
-                    width: 48,
-                    height: 48,
+                    width: 42,
+                    height: 40,
                     decoration: BoxDecoration(
                       border: Border.all(color: codexBorder),
                       borderRadius: BorderRadius.circular(6),

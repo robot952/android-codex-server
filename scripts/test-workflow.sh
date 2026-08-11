@@ -53,6 +53,37 @@ if workflow_stamp_matches "$stamp_path" "$first_hash"; then
     exit 1
 fi
 
+assert_android_plan() {
+    local mode="$1"
+    local reuse="$2"
+    local fast_valid="$3"
+    local debug_valid="$4"
+    local release_valid="$5"
+    local expected_validate="$6"
+    local expected_debug="$7"
+    local expected_release="$8"
+    local expected_hit="$9"
+    workflow_android_gate_plan "$mode" "$reuse" "$fast_valid" "$debug_valid" "$release_valid"
+    [[ "$WORKFLOW_ANDROID_PLAN_VALIDATE" == "$expected_validate" ]]
+    [[ "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == "$expected_debug" ]]
+    [[ "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == "$expected_release" ]]
+    [[ "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == "$expected_hit" ]]
+}
+
+# check -> full/publish must reuse validation and Debug APK, then only build Release.
+assert_android_plan all 1 1 1 0 0 0 1 0
+[[ "$WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE" == debug ]]
+# A valid Release gate provides the same validation proof when Debug is missing.
+assert_android_plan debug 1 1 0 1 0 1 0 0
+[[ "$WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE" == release ]]
+# A fast/analyze stamp alone cannot replace the full Flutter test suite.
+assert_android_plan debug 1 1 0 0 1 1 0 0
+# Both APK stamps make the all gate a complete cache hit.
+assert_android_plan all 1 1 1 1 0 0 0 1
+# --force ignores otherwise valid stamps.
+assert_android_plan all 0 1 1 1 1 1 1 0
+[[ "$(workflow_format_duration_ms 292379)" == 4m52.379s ]]
+
 [[ "$(apk_version_name "$ROOT_DIR")" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
 rg -q 'http://192\.168\.8\.107/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
@@ -73,6 +104,8 @@ multi_line_status=$'asdb_api34 is running as emulator-5554\nAndroid 14'
 rg -q ' is running as ' <<< "$multi_line_status"
 
 bash -n "$ROOT_DIR"/scripts/*.sh
+[[ -x "$ROOT_DIR/scripts/flutter-tool.sh" ]]
+"$ROOT_DIR/scripts/flutter-tool.sh" dart --version >/dev/null
 "$ROOT_DIR/scripts/test-server.sh" --force
 server_cache_output="$("$ROOT_DIR/scripts/test-server.sh" --reuse)"
 rg -q 'cache hit' <<< "$server_cache_output"

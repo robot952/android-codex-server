@@ -29,6 +29,7 @@ class OpenCodeAgentClient extends CodexAgentClient
     super.threadRequestTimeout,
     super.maxLineChars,
     super.sessionOpener,
+    super.dedicatedHostFactory,
     OpenCodeBridgeLoader? bridgeLoader,
   }) : _bridgeLoader = bridgeLoader ?? OpenCodeBridgeAsset.load;
 

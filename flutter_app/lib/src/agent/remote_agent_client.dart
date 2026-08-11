@@ -58,6 +58,25 @@ abstract interface class RemoteAgentGenerationClient {
   int? get currentGeneration;
 }
 
+/// Optional transport heartbeat for Agent clients that own a dedicated SSH
+/// connection. Shared-host test clients and adapters can omit this capability.
+abstract interface class RemoteAgentKeepAliveClient {
+  Future<void> keepAlive();
+}
+
+/// Marks an Agent whose app-server exec channel is backed by its own SSH
+/// transport. A transient Host/UI socket loss must not terminate this lane.
+abstract interface class RemoteAgentIndependentConnectionClient {
+  bool get usesIndependentConnection;
+}
+
+/// Optional cleanup hook for Agent transports backed by a remote daemon.
+/// Connection recovery must not call this hook because the daemon owns any
+/// turn that is still running after a mobile SSH socket is reclaimed.
+abstract interface class RemoteAgentDurableSessionClient {
+  Future<void> stopDurableRemoteSession();
+}
+
 /// Events that are safe for the controller to consume without knowing the
 /// wire format of a particular agent adapter.
 sealed class RemoteAgentEvent {
@@ -77,10 +96,15 @@ class RemoteAgentServerRequest extends RemoteAgentEvent {
 }
 
 class RemoteAgentDiagnostic extends RemoteAgentEvent {
-  const RemoteAgentDiagnostic(this.message, {this.isStderr = false});
+  const RemoteAgentDiagnostic(
+    this.message, {
+    this.isStderr = false,
+    this.isTransport = false,
+  });
 
   final String message;
   final bool isStderr;
+  final bool isTransport;
 }
 
 class RemoteAgentConnectionLost extends RemoteAgentEvent {

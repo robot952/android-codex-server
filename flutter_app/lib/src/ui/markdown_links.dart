@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:markdown/markdown.dart' as md;
+
 final RegExp _markdownHttpLink = RegExp(
   r'\[([^\]\r\n]+)]\((https?://[^\s)]+)\)',
 );
@@ -9,6 +11,24 @@ final RegExp _remoteFileToken = RegExp(r'^[A-Za-z0-9_-]+$');
 const String _remoteFileLinkPrefix = 'https://codex-remote.local/remote-file/';
 const int _maxRemoteFilePathLength = 4096;
 const int _maxRemoteFileTokenLength = 6000;
+
+final List<md.InlineSyntax> workMarkdownInlineSyntaxes = <md.InlineSyntax>[
+  AdjacentHttpAutolinkSyntax(),
+];
+
+/// Extends GFM autolinks to URLs immediately following localized punctuation.
+/// The upstream syntax intentionally accepts only a small ASCII prefix set,
+/// which leaves text such as `内网：https://example.com` unlinked.
+class AdjacentHttpAutolinkSyntax extends md.AutolinkExtensionSyntax {
+  @override
+  bool tryMatch(md.InlineParser parser, [int? startMatchPos]) {
+    startMatchPos ??= parser.pos;
+    final match = pattern.matchAsPrefix(parser.source, startMatchPos);
+    if (match == null || match[1] == null) return false;
+    parser.writeText();
+    return onMatch(parser, match);
+  }
+}
 
 /// Keeps link labels while also exposing ordinary HTTP destinations as
 /// selectable text. Absolute server paths are replaced with an internal link

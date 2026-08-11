@@ -251,12 +251,10 @@ class ServerConnectionManager {
     if (entry == null || !_isConnected(profileId, entry)) return;
     final client = entry.client;
     if (client is! RemoteServerKeepAliveClient) return;
-    try {
-      await (client as RemoteServerKeepAliveClient).keepAlive();
-    } catch (_) {
-      // The normal transport watcher publishes the disconnect and recovery
-      // scheduler reconnects it. A heartbeat must never surface as a UI error.
-    }
+    // The normal transport watcher still publishes disconnect state. Let the
+    // heartbeat caller record this lane's exact failure before recovery starts;
+    // the Android bridge consumes it as diagnostics and never as a UI error.
+    await (client as RemoteServerKeepAliveClient).keepAlive();
   }
 
   Future<Uint8List> readRemoteImage(

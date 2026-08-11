@@ -85,6 +85,26 @@ class _FakeAgent implements RemoteAgentClient {
   }
 }
 
+class _IndependentFakeAgent extends _FakeAgent
+    implements RemoteAgentIndependentConnectionClient {
+  _IndependentFakeAgent(super.kind);
+
+  @override
+  bool get usesIndependentConnection => true;
+}
+
+class _DurableFakeAgent extends _FakeAgent
+    implements RemoteAgentDurableSessionClient {
+  _DurableFakeAgent(super.kind);
+
+  int stopCount = 0;
+
+  @override
+  Future<void> stopDurableRemoteSession() async {
+    stopCount++;
+  }
+}
+
 class _FakeMutationAgent extends _FakeAgent
     implements RemoteAgentThreadMutationClient {
   _FakeMutationAgent(super.kind);
@@ -541,6 +561,36 @@ void main() {
     },
   );
 
+  test('host loss preserves an Agent with an independent SSH lane', () async {
+    final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);
+    final agent = _IndependentFakeAgent(AgentKind.codex);
+    final manager = AgentConnectionManager(
+      hostManager,
+      clientFactory: (kind) => agent,
+    );
+    addTearDown(() async {
+      await manager.close();
+      await hostManager.close();
+    });
+
+    await hostManager.connect(_first);
+    await manager.connect(_first, AgentKind.codex);
+    await hostManager.disconnect(_first.id);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.isConnected, isTrue);
+    expect(agent.disconnectCount, 0);
+    expect(
+      manager
+          .states[const AgentConnectionKey(
+            profileId: 'first',
+            agent: AgentKind.codex,
+          )]
+          ?.phase,
+      ConnectionPhase.connected,
+    );
+  });
+
   test('remote command changes replace only the Codex lane', () async {
     final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);
     final created = <_FakeAgent>[];
@@ -594,7 +644,10 @@ void main() {
     await hostManager.connect(profile);
     await manager.connect(profile, AgentKind.openCode);
     final original = created.single;
-    final updated = profile.copyWith(name: 'renamed', workspace: '/srv/project');
+    final updated = profile.copyWith(
+      name: 'renamed',
+      workspace: '/srv/project',
+    );
     manager.registerProfile(updated);
     await manager.connect(updated, AgentKind.openCode);
 
@@ -781,6 +834,26 @@ void main() {
       );
     },
   );
+
+  test('explicit disconnect stops a durable remote Agent session', () async {
+    final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);
+    late _DurableFakeAgent client;
+    final manager = AgentConnectionManager(
+      hostManager,
+      clientFactory: (kind) => client = _DurableFakeAgent(kind),
+    );
+    addTearDown(() async {
+      await manager.close();
+      await hostManager.close();
+    });
+
+    await hostManager.connect(_first);
+    await manager.connect(_first, AgentKind.codex);
+    await manager.disconnect(_first.id, agent: AgentKind.codex);
+
+    expect(client.stopCount, 1);
+    expect(client.disconnectCount, 1);
+  });
 
   test('disconnect does not wait for an active runtime installation', () async {
     final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);

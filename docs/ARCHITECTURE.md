@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.13+133，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.21+145，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -41,10 +41,13 @@ git branch --show-current
    ~~~
 
    若 PATH 中没有命令，使用 /root/.local/bin/codegraph。先看本文的当前实现、迁移缺口和回归矩阵。
-3. 手工编辑使用 apply_patch；不要顺手重构无关模块，不要运行 flutter clean 或 Gradle clean。
-4. Flutter 小改动先运行 ./scripts/dev-workflow.sh quick；功能完成运行 check；提交/发布前运行
-   full 或 publish。具体缓存和模拟器规则见 LOCAL_WORKFLOW.md。
-5. 源码修改完成后运行 codegraph sync；纯文档修改不需要同步索引。
+3. 第一次写文件前记录开始时间；手工编辑使用 apply_patch，不顺手重构无关模块，不运行 flutter clean
+   或 Gradle clean。
+4. 先通过 ./scripts/flutter-tool.sh 运行格式化和最接近改动的定向测试，再按风险只选择 quick、check、
+   full 或 publish 中一个主门禁；不要机械串行重复全部门禁。具体风险表、缓存和模拟器规则见
+   LOCAL_WORKFLOW.md。
+5. 源码修改完成后运行 codegraph sync；纯文档修改不需要同步索引。最后运行 git diff --check，记录从
+   第一次写文件到最终检查的总耗时和 .workflow-cache/latest-workflow-timing.tsv 中的阶段耗时。
 6. Git 提交信息使用中文；本任务没有得到提交授权时不要提交或推送。
 
 ## 2. 项目边界
@@ -123,7 +126,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/ui/model_selection_presentation.dart | wire 模型名、当前模型匹配、思考强度和模型容量展示映射 | 当前运行；由 WorkScreen 接线 |
 | flutter_app/lib/src/app/profile_scoped_back_stack.dart | 按 profile + Agent 隔离的父子会话返回栈、pending pop 幂等和清理 | 当前运行 |
 | flutter_app/lib/src/ui/work_content.dart | Codex 图片结果识别、文件名和 MIME 辅助 | 当前运行 |
-| flutter_app/lib/src/ui/markdown_links.dart | HTTP/HTTPS 可见链接和远程绝对文件路径的内部安全链接 | 当前运行 |
+| flutter_app/lib/src/ui/markdown_links.dart | HTTP/HTTPS Markdown/裸链接和远程绝对文件路径的内部安全链接 | 当前运行 |
 | flutter_app/lib/src/platform/local_file_exporter.dart | Android 文件导出 MethodChannel 抽象和分块会话 | 当前运行 |
 | flutter_app/lib/src/platform/background_connection_bridge.dart | Flutter 到 Android 前台连接保护 Service 的启停桥接 | 当前运行；平台失败隔离 |
 | flutter_app/lib/src/platform/turn_completion_notifications.dart | 回合完成通知、bounded 去重、子 Agent 过滤和点击深链 | 当前运行；通知权限/插件失败降级 |
@@ -180,11 +183,13 @@ main.dart
                                                                            +-- dartssh2 / SSH socket
                                                                            +-- bounded exec/metrics/SFTP/PTY
                                                                            +-- TerminalManager (profile PTY lanes)
-                                                                           +-- AgentConnectionManager
-                                                                                 |
-                                                                                 +-- CodexAgentClient (独立 JSONL exec)
-                                                                                 +-- OpenCodeAgentClient
-                                                                                       +-- bundled bridge -> loopback OpenCode serve
+                                                               +-- AgentConnectionManager
+                                                                     |
+                                                                     +-- CodexAgentClient
+                                                                     |     +-- dedicated DartSshServerClient / SSH socket / JSONL exec
+                                                                     +-- OpenCodeAgentClient
+                                                                           +-- dedicated DartSshServerClient / SSH socket
+                                                                           +-- bundled bridge -> loopback OpenCode serve
               +-- platform bridges: foreground service, local notifications,
                   diagnostic logger, Android SAF file export and app update
               +-- AppUpdateController -> Gitee Release API
@@ -301,7 +306,7 @@ installing 外的阶段，Agent 运行时安装和卸载使用 installing。
 DartSshServerClient 使用 dartssh2：
 
 - 密码认证或 SSHKeyPair.fromPem 私钥认证；私钥密码只在连接调用内存中使用。
-- 15 秒 keepalive、握手/认证超时和可取消的 pending socket。
+- Android 前台 Service 每 10 秒触发一次 SSH keepalive；握手/认证有超时，pending socket 可取消。
 - host key 回调执行规范化的 SHA256 严格比较。
 - run() 为独立 exec channel 收集 stdout/stderr，有最大输出字节数和超时，避免无界拼接导致 OOM。
 - RemoteServerImageClient 用 SFTP 读取绝对路径图片，默认最大 20 MiB；读取前校验长度和完整性。
@@ -316,7 +321,9 @@ DartSshServerClient 使用 dartssh2：
 - disconnect/close 会同时清理已认证客户端、pending client 和 pending socket。
 
 AppController 当前把 SSH 主机通道用于指纹、登录、资源采样、远程图片读取、附件上传、终端 PTY 和远程
-文件管理；CodexAgentClient 复用已认证的 `SSHClient` 另开无 PTY exec channel。Composer 通过系统 picker
+文件管理；每个 Codex/OpenCode Agent lane 另建专用 `DartSshServerClient`。OpenCode 在该 transport 上打开
+无 PTY bridge exec；Codex 优先转发远端私有 Unix socket，无法使用时回退到无 PTY stdio exec。这个边界与
+旧版 JSch 实现一致，Host 指标、SFTP、PTY 和心跳异常不能直接关闭正在工作的 Agent turn。Composer 通过系统 picker
 读取本地图片/文件，上传到当前 profile 的 SFTP 目录后形成待发项；控制器在每次结果写回前校验活动
 `profileId + AgentKind + threadId`。远程文件下载不把完整文件载入 Dart 内存，而是通过
 `top.asdb.agent/file_export` MethodChannel 逐块写入 Android `ACTION_CREATE_DOCUMENT` 返回的 URI；
@@ -400,9 +407,13 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 
 会话列表消费 `agentThreadLists[profileId + AgentKind]`，并通过 Agent 中立的可选分页契约消费远端
 `nextCursor`。接近列表底部时自动加载下一页，控制器按 lane 保存游标、合并去重并丢弃刷新/搜索/断线后
-的过期结果；Agent lane 断开后页面隐藏该 lane 的旧缓存条目，避免把历史快照误认成仍可打开的在线
-会话。`active/running/working/inProgress` 等运行态统一显示转圈；不支持分页的轻量适配器仍可只实现基础列表契约。不要在此页面临时实现一套只支持 Codex
+的过期结果；Agent lane 意外断开时页面保留该 lane 的上次成功快照，但连接依赖的打开、刷新、新建等操作
+保持禁用，避免回到前台时误显示“0 个任务”。`active/running/working/inProgress` 等运行态统一显示转圈；不支持分页的轻量适配器仍可只实现基础列表契约。不要在此页面临时实现一套只支持 Codex
 的会话状态；新增状态必须复用 Agent 中立契约，并按 profileId + AgentKind + threadId 隔离。
+
+从服务器列表返回已连接服务器时，如果当前 Agent lane 仍然连接且已有线程、模型快照，会直接复用缓存，
+不会重复运行时探测、Agent 握手或 `thread/list`；断线恢复同样保留已有列表，只有没有任何快照的首次加载、
+显式刷新和搜索变更才请求 `thread/list`。
 
 齿轮菜单包含“选择工作目录”、“配置 Codex/OpenCode”和“文件管理”三项。配置项只在当前 Agent 已连接且声明
 `globalSettings` capability 时可用；打开后先读取远程实际配置。保存会二次确认、更新该服务器该 Agent
@@ -447,9 +458,11 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 - 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，中心显示已用百分比，点击显示已用/剩余 tokens；
   圆环和模型名称组成靠右的弹性区域，模型变长时向权限按钮方向扩展并单行缩放，不能因固定空白提前省略；有效
   TokenUsage 在 lane cache 中保留，返回同一会话可立即恢复；未知窗口显示 `?`，不猜比例；
-- Markdown 可选择文本，解析出的 HTTP/HTTPS Markdown link 显示蓝色、点击先确认后交给系统浏览器；
-  `[名称](/absolute/server/path)` 会转换成仅 App 内部识别的安全链接，点击后通过系统保存位置选择器
-  流式下载，内部链接不会交给浏览器；同一 Work 页面一次只允许一个远程文件下载；
+- Markdown 可选择文本，解析出的 HTTP/HTTPS Markdown link 和紧邻中文标点的裸 URL 显示蓝色，点击先确认
+  后交给系统浏览器；
+- `[名称](/absolute/server/path)` 会转换成仅 App 内部识别的安全链接；PNG/JPG/WebP/GIF/BMP 路径点击后
+  直接使用 Work 页图片查看器预览，其他文件才通过系统保存位置选择器流式下载。内部链接不会交给浏览器；
+  同一 Work 页面一次只允许一个远程文件下载；
   图片工具统一显示“查看了图片”，点击通过 SFTP 预览，长按确认后用系统保存入口写入手机；
 - 对声明 `subAgents` 的 Agent，时间线把相邻同 turn 的子 Agent 活动合并为紧凑标签，逐个显示稳定身份
   图标、名称和状态；运行状态转圈，
@@ -499,19 +512,29 @@ adapter/bridge，不能复制共享 UI 和状态机；当前默认 factory 对 C
 OpenCode 返回 `OpenCodeAgentClient`。
 
 每个 Agent lane 由 `AgentConnectionManager` 以 `profileId + AgentKind` 独立持有 client、锁、事件
-subscription 和 generation。它只在 SSH 主机会话已连接后启动，并在 host 断开、Profile 身份改变或
-lane 被替换时使旧请求失效。两种 Agent 都使用独立无 PTY exec channel，不与 metrics/SFTP 共用 stdout。
+subscription 和 generation。它只在 SSH 主机会话已连接后启动；生产 adapter 随后持有自己的 SSH
+transport。Host 意外断开时独立 Agent 保持运行，Host 单独恢复；用户明确断开、Profile 身份改变或 lane
+被替换时才使 Agent 请求失效并关闭专用 transport。OpenCode 使用独立无 PTY exec，Codex 使用独立 SSH
+Unix-socket forward（不支持时回退 exec），均不与 metrics/SFTP 共用 transport 或 stdout。
 
 ### 9.2 Codex JSON-RPC/JSONL（当前实现）
 
-Codex adapter 通过 `buildCodexAppServerCommand` 读取 `$HOME/.codex/codex-remote.env`，可选切换到
-Profile workspace，然后执行 `remoteCommand`。stdin/stdout 每行一个 JSON，stderr 只作为有界诊断。
-连接顺序是 initialize -> initialized；普通请求默认 120 秒，会话请求默认 180 秒，单条 stdout
-最大 8 MiB，stderr 单行最大 8 KiB。
+Codex adapter 从 Profile 的 stdio `remoteCommand` 派生稳定 key，读取
+`$HOME/.codex/codex-remote.env`、可选切换 workspace，并通过 `nohup`/`setsid` 启动仅监听远端用户私有
+Unix socket 的 app-server。SSH 使用 `direct-streamlocal@openssh.com` 转发该 socket，客户端执行 RFC 6455
+握手，把 JSONL 行映射为带 mask 的 WebSocket text frame，并处理分片、ping/pong 和 close。若 CLI 或 SSH
+服务端不支持该路径，会清理已启动进程并回退 `buildCodexAppServerCommand` 的 stdio exec。连接顺序是
+initialize -> initialized；普通请求默认 120 秒，会话请求默认 180 秒，单条消息最大 8 MiB，stderr
+单行最大 8 KiB。
+
+意外 SSH 断线只销毁 forward 和手机侧 transport，不执行远端 stop command；远端 app-server 与 turn 保留，
+重连后复用同一 socket 并 `thread/resume`。用户显式断开时，`AgentConnectionManager` 先调用 durable cleanup，
+再关闭 Agent 和 Host SSH。Unix socket、PID、启动锁和有界日志位于远端 `XDG_RUNTIME_DIR` 或用户专属 `/tmp`
+目录，PID 清理会核对 `/proc/<pid>/cmdline` 中的 socket 路径，避免误杀复用 PID。
 
 JSONL 写入只把完整行加入当前 SSH session 的 stdin，并由 `_writeTail` 串行化；不能在 channel 上传
 循环并发运行时调用 `SSHSession.flush()`，因为 dartssh2 会暂时绑定底层 Socket sink，迟到的 channel
-数据会触发 `StreamSink is bound to a stream`。Agent 断开先销毁自己的 exec channel，再关闭主 SSH；
+数据会触发 `StreamSink is bound to a stream`。Agent 断开先销毁自己的 exec channel，再关闭专用 SSH；
 异常断线时销毁操作必须幂等并吞掉已关闭 transport 的 EOF/close 错误。
 
 当前 RPC 覆盖：model/list、thread/list、thread/start、thread/resume、thread/turns/list、turn/start、
@@ -713,7 +736,11 @@ provider 与 URL、key、代理是否已配置，绝不记录其实际值。
 Android Manifest 声明网络、通知、wake lock 和 `foreground-service:dataSync` 权限。Flutter 的
 `BackgroundConnectionBridge` 在任一 SSH/Agent lane 连接或回合运行时启停
 `ConnectionForegroundService`；Service 创建低重要度 ongoing notification，并以有界 partial wake lock
-提高进程在后台的存活机会。前台服务和回合完成通知都使用专用白色连接图标并声明 private 锁屏可见性，
+和 Wi-Fi lock 提高进程及网络在后台的存活机会，并每 10 秒分别保活 retained Host 与 Agent transport。
+Host 与 Agent 使用独立 socket，心跳请求通过各自 transport 发送，不能借 Host 指标连接写入 Agent exec。
+Service 的 MethodChannel 心跳同一时刻最多允许一个请求在途；Flutter isolate 被系统暂停时只累计跳过次数，
+不会排队堆积调用。Agent transport 同样合并尚未完成的 keepalive，避免回到前台时集中回放 SSH global request。
+前台服务和回合完成通知都使用专用白色连接图标并声明 private 锁屏可见性，
 不使用彩色启动图标作为 Android small icon。有活动连接时，服务器根页面的系统返回调用
 `moveTaskToBack(true)`，不能 finish Activity；若最近任务移除等场景仍销毁 Activity，`MainActivity` 通过
 `FlutterEngineCache` 保留并在下次打开时复用同一 Dart 引擎，SSH/Agent socket 因此前台服务进程存活期间
@@ -731,8 +758,9 @@ Activity 尚未回到前台时直接执行 SSH 和 Agent 恢复，日志顺序�
 
 进程仍存活时，`AppController` 会区分“用户明确断开”和 SSH/Agent 意外关闭。成功连接后保留每台服务器及
 已连接 Agent lane 的连接意图；意外关闭按 `0/1/2/5/10/30/60` 秒退避（之后每 60 秒）持续恢复，等待期
-仍向 UI 投影 `connecting`，使前台 Service 和 wake lock 保持。SSH 恢复后自动连接原 Agent；当前位于
-Work/AgentWork 时重新 resume 可见会话，位于会话列表时刷新列表。用户明确断开、删除服务器、修改 SSH
+仍向 UI 投影 `connecting`，使前台 Service 和 wake lock 保持。Host 恢复时，仍存活的独立 Agent 不重启；
+Agent 自己断线时才重建其专用 SSH 并恢复 lane。Codex Unix listener 使 turn 不再依赖手机 SSH channel；
+恢复 Work/AgentWork 时重新 resume 可见会话以补齐断线期间状态，会话列表已有缓存时不重新加载。用户明确断开、删除服务器、修改 SSH
 连接身份或 Controller dispose 会使恢复代次失效，旧异步任务不能重新建立连接。SSH transport 的异常文本
 会写入状态日志；仅进程标记未清理但 `ApplicationExitInfo` 没有 crash/native crash/ANR 证据时记录为 WARN，
 不能再标成 FATAL 崩溃。
@@ -771,8 +799,8 @@ MethodChannel 结果统一回主线程。安装前检查下载文件位于应用
 和当前 APK 的签名证书一致；随后由系统未知来源设置页授权，再使用下载任务返回的 content URI 打开系统
 安装器。Manifest 的 `REQUEST_INSTALL_PACKAGES` 只允许发起该流程，不会绕过 Android 安装确认。
 
-远端 stderr 的非致命 HTTP 403/MCP 错误会以有界诊断消息显示，不能用原始 JSON/Rust 日志遮挡仍可用的会话；
-真正断线、认证失败和不可恢复错误仍明确显示。上述后台、通知、终端、文件和日志实现仍需在目标
+远端 stderr 会去除 ANSI/控制字符并写入有界 Debug 诊断日志，不能用原始 JSON/Rust 日志或环境警告遮挡
+仍可用的会话；真正断线、认证失败和不可恢复错误仍明确显示。上述后台、通知、终端、文件和日志实现仍需在目标
 Android 设备上验证通知权限、文件选择器、键盘、厂商后台限制和长时运行行为。
 
 ## 11. 隔离规则
@@ -837,7 +865,7 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 Android SDK：由 scripts/android-sdk.sh 解析（当前容器为 /var/lib/docker/volumes/android-sdk/_data）
 adb：$ANDROID_HOME/platform-tools/adb
 AVD：asdb_api34（通常 emulator-5554，以 adb devices -l 为准）
-推荐竖屏：1220x2712；推荐横屏：2712x1220
+推荐竖屏：1220x2712；后续 UI 验收不再覆盖横屏
 自动门禁最低：短边 1080、长边 2400
 ~~~
 
@@ -849,22 +877,31 @@ AVD：asdb_api34（通常 emulator-5554，以 adb devices -l 为准）
 ~~~
 
 emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅 --reset-data 才清除当前
-应用数据。脚本会验证竖屏/横屏截图、最小尺寸、前台包名、Crash/ANR 和系统错误弹窗。推荐尺寸不是
+应用数据。脚本会验证竖屏截图、最小尺寸、前台包名、Crash/ANR 和系统错误弹窗。推荐尺寸不是
 精确硬限制；截图验收应记录实际 PNG 宽高。
 
 ### 13.1 当前 Flutter 自动测试
 
 ~~~bash
-cd flutter_app
-flutter analyze --no-pub
-flutter test --no-pub
+./scripts/flutter-tool.sh analyze --no-pub
+./scripts/flutter-tool.sh test --no-pub
 ~~~
+
+每次修改先运行最近的定向测试，再按风险只选择一个主门禁：纯函数和局部 UI 用 `quick`，普通功能用
+`check`，SSH/Agent/持久化/Android 宿主等高风险修改用 `full`，交付 APK 直接用 `publish`。工作流或构建
+脚本自身的修改需要先通过 `bash -n` 与 `scripts/test-workflow.sh`，并真实跑一次 `check -> full` 验证缓存
+衔接。风险矩阵和完整命令以 `docs/LOCAL_WORKFLOW.md` 为准。
+
+同一源码指纹下，成功的 Debug 或 Release stamp 都证明 analyze 和完整 Flutter 测试已经通过；后续门禁
+只补构建缺失的另一种 APK，不重复验证或重建已有 APK。执行前可用
+`./scripts/build-android.sh all --reuse --plan` 查看只读计划。`dev-workflow.sh` 每次退出都会输出阶段与总耗时，
+并写入 `.workflow-cache/latest-workflow-timing.tsv` 及最多 100 份历史记录。
 
 当前测试文件：
 
 | 文件 | 覆盖 |
 | --- | --- |
-| test/widget_test.dart | 空服务器首屏、1220x2712 连接阻塞遮罩、Back 阻断、旋转到 2712x1220、2x 字体、私钥密码入口、未保存编辑确认 |
+| test/widget_test.dart | 空服务器首屏、1220x2712 连接阻塞遮罩、Back 阻断、2x 字体、私钥密码入口、未保存编辑确认 |
 | test/app/app_controller_test.dart | 初始化/持久化、Profile/指纹/资源/目录、附件与全局配置/API 模型获取/自定义模型目录和同步 generation、运行时安装，以及子 Agent 多层导航、加载中/重复返回、失败重试、错误 thread 防污染、会话设置隔离、审批按 thread 隔离/精确回答和迟到回调保护 |
 | test/app/profile_scoped_back_stack_test.dart | profile + Agent 栈隔离、pending pop 幂等、取消/迟到回调保护和清理 |
 | test/domain/models_test.dart | Profile 默认值、Agent 模型字段、复合偏好键、上下文/差异辅助模型 |
@@ -891,14 +928,15 @@ flutter test --no-pub
 | test/ui/diagnostic_log_sheet_test.dart | 崩溃日志默认选择、多选确认和附件数量上限 |
 | test/platform/app_update_manager_test.dart | Gitee Release/资源筛选、SemVer 与 prerelease 排序、忽略提示、进度/容量辅助函数，以及下载到安装的状态机 |
 | test/ssh/terminal_manager_test.dart | 每 profile PTY session、generation/身份失效、输入/输出上限、历史恢复、断开和重试 |
-| test/ui/markdown_links_test.dart | HTTP 链接可见化、远程路径安全编码/解码、非法路径和保存文件名清理 |
+| test/ui/markdown_links_test.dart | HTTP Markdown/裸链接识别、远程路径安全编码/解码、非法路径和保存文件名清理 |
 | test/ui/work_content_test.dart | 图片工具路径提取、非图片工具拒绝、图片 MIME 映射、保存文件名清理和附件 MIME/文本分类 |
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
 | test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待和后台继续的 Widget 状态切换 |
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
-| test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和 1.5K 竖横屏无溢出 |
+| test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
+| test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和目标竖屏无溢出 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 `scripts/test-opencode-bridge-scheduling.cjs`、`scripts/test-opencode-bridge-question.cjs` 和
@@ -959,14 +997,14 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 会话 | 新建、搜索、刷新、重进缓存、180 秒恢复、历史下拉分页和运行转圈不串服务器/Agent |
 | Work | 发送/流式输出/停止、审批和 user-input、权限切换、模型/草稿恢复、上下文缓存、压缩/回退/归档/重命名/审查/目标 |
 | 附件 | 图片/文件多选、大小/数量限制、上传中状态、部分失败、移除、纯附件发送、发送失败恢复和切换会话隔离 |
-| 图片/Markdown/文件 | “查看了图片”可预览和长按保存；HTTP/HTTPS Markdown 链接蓝色、可复制且点击先确认；远程绝对文件链接使用 SAF 流式保存，取消/失败不留半成品 |
+| 图片/Markdown/文件 | “查看了图片”和远程图片链接可直接预览；HTTP/HTTPS Markdown/裸链接蓝色、可复制且点击先确认；其他远程文件链接使用 SAF 流式保存，取消/失败不留半成品 |
 | 文件管理 | 目录浏览、上级目录、刷新、多选、上传、下载、重命名、删除确认、复制/剪切/粘贴；切服务器/断开不串结果 |
 | 终端 | 会话列表进入 PTY；键盘输入、resize、输出历史、隐藏/重试/显式关闭；Codex JSONL 不被污染 |
 | 后台与通知 | 切后台保持服务和 SSH；回合完成只发一次通知；点击通知恢复正确服务器/会话；拒绝通知权限不崩溃 |
 | Debug | 连点十次开启；日志持续写入并轮转；预览、复制、清空、系统分享；敏感值不出现在导出文本 |
 | 应用内更新 | 自动/手动检查、无更新和失败提示、绿点与更新日志、忽略版本、下载进度、弹窗后台继续、失败重试、未知来源授权、系统安装页；升级后确认 Profile 仍在且签名未变 |
 | 并发与返回 | resume 同时收到 delta、列表与 Work 来回、系统 Back、SSH 断开、切后台再回来不会覆盖错误 thread |
-| 旋转/字体 | 推荐 1220x2712 与 2712x1220、放大字体无截断；同时核对实际截图尺寸 |
+| 竖屏/字体 | 推荐 1220x2712 竖屏、放大字体无截断；同时核对实际截图尺寸 |
 | 进程重建 | 加密 Profile 可恢复，断线不会伪装成已连接 |
 
 ### 13.3 能力状态矩阵
@@ -980,7 +1018,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 输入 | 草稿按复合键恢复；Composer 有 IME inset 和 viewport 同步；切后台主动 unfocus/隐藏输入法；本地附件 picker/上传/移除/发送及失败恢复 | 真机同帧验证、picker/Widget 自动化测试 |
 | 对话动作 | 发送/停止、权限、审批、上下文、压缩、回退、归档、重命名、审查、目标 | 真实固定 Codex 版本全场景回归 |
 | 历史滚动 | Cupertino sliver 分页、三态提示、正文下移留白、位置补偿和回底部箭头 | 真实超长历史与连续分页回归 |
-| Markdown/图片/文件 | Markdown HTTP 链接确认；图片识别、SFTP 预览/保存；远程绝对文件链接经 SAF 流式保存 | 裸 URL、大文件、断线和厂商文件选择器异常路径回归 |
+| Markdown/图片/文件 | Markdown/裸 HTTP 链接确认；图片识别、SFTP 预览/保存；非图片远程文件链接经 SAF 流式保存 | 大文件、断线和厂商文件选择器异常路径回归 |
 | 子 Agent | 紧凑图标/名称/逐个状态、同 turn 终态保护、真实 child `thread/resume`、父快照栈、最多 8 层返回、失败重试和迟到回调过滤 | 真机长时导航、真实服务器连续协作事件和大历史回归 |
 | 后台 | Flutter bridge + Android foreground Service、partial wake lock；根 Back 移到后台；Activity 销毁/重建复用连接期 FlutterEngine，进程存活时 Dart stream 和 SSH 继续 | 真机权限/厂商后台限制、进程被杀后的恢复不保证 |
 | 完成通知 | 后台回合通知、稳定 id、bounded 去重、子 Agent 过滤、点击直达 | 真机通知权限、锁屏/厂商通知策略和完整端到端回归 |
@@ -1009,19 +1047,23 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
 12. Agent 图标连续点击 10 次开启 Debug；最多 100 个日志文件/约 10 MiB，单文件约 100 KiB；日志可多选系统分享且脱敏，
     工作页可多选并作为输入框文本附件（不会自动发送）；Java/Native/ANR 线索尽量在下次启动恢复。
-13. 所有输入页面适配键盘、横竖屏和大字体，不允许控件重叠。
+13. 所有输入页面适配键盘、目标竖屏和大字体，不允许控件重叠；横屏不作为 UI 验收范围。
 14. Codex/OpenCode 自动安装有可见总体/下载进度，按服务器保存 HTTP/HTTPS 下载代理；安装中可最小化，失败可重试，卸载不得触碰系统 Codex、VS Code、~/.codex 或工作区（两种 Agent 当前均已接入，仍需真实服务器/真机长时验收）。
-15. 视觉接近 VS Code Codex：安静、紧凑、工作导向，不使用营销式大卡片、渐变或装饰背景。
+15. 视觉接近 VS Code Codex：安静、紧凑、工作导向，不使用营销式大卡片、渐变或装饰背景。服务器列表
+    和任务列表以旧 Compose 页面为明确视觉基线，保留其 64 dp 顶栏、品牌/推广块、单个服务器整卡、
+    无外框 Debug 行、资源行、Agent 分段控件、无描边搜索框和紧凑任务行；可配置模型等新增内容除外。
 16. APK 签名永不变化，发布 build number 必增，交付同时给内网和外网地址；应用内更新只能安装同包名、
     同稳定证书且版本递增的正式 APK，不能用换签名绕过覆盖升级问题。
 17. 本机构建下载优先使用 127.0.0.1:7890；已有依赖保持离线增量构建。
-18. 每次修改按风险自行测试，不能只以“编译通过”代替模拟器和真实流程验证。
+18. 每次修改按风险执行最近的定向测试并只选择一个主门禁；不能只以“编译通过”代替模拟器和真实流程
+    验证，也不要重复执行已经由同指纹成功 stamp 证明的 analyze、全量测试或 APK 构建。第一次写文件前
+    开始计时，收尾必须报告总耗时、各阶段耗时、缓存命中和失败返工。
 19. Git 提交信息使用中文；得到授权后才同步配置好的 Gitee origin。
 20. “低价中转站优选”必须由系统浏览器打开 https://lowapi.asdb.top，不可内嵌 WebView。
-21. 非致命远端 stderr 转成有界的简短诊断提示；真正断线、认证失败和不可恢复错误仍明确显示（当前已接入基础路径，403/MCP 分类和持久化诊断仍需补齐）。
+21. 非致命远端 stderr 去除 ANSI/控制字符后写入有界 Debug 日志，不覆盖会话页状态；真正断线、认证失败和不可恢复错误仍明确显示。
 22. Codex 配置修改当前远程 Unix 用户的全局模型 URL、密钥和 HTTP/HTTPS 代理，不改项目工作区（当前 Codex 已接入）。
 23. 配置页先读取服务器实际 Provider、默认模型、URL、代理、登录状态和 Key；自定义 Provider 不得误报未配置（当前 Codex 已接入）。
-24. HTTP/HTTPS Markdown 链接必须完整、可点击、可长按复制（已接入 Markdown link，裸 URL 仍需回归）。
+24. HTTP/HTTPS Markdown 链接和裸 URL 必须完整、可点击、可长按复制（当前均已接入并有回归测试）。
 25. Agent 接入必须通过 RemoteAgentClient/AgentCapabilities，所有异步结果、缓存和审批队列按 profile + Agent + thread 隔离。
 26. SSH 登录是前置条件；无 Agent 时终端/文件仍可用，Agent 设置和工作目录灰显不可操作（终端/文件当前已接入；无 Agent 的真机行为仍需回归）。
 27. 图片消息使用“查看了图片”中文状态；点击打开图片预览，长按可调用系统保存到手机（当前已接入）。
@@ -1170,7 +1212,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.1 本轮验收记录（2026-08-09）
 
-- 应用版本：`1.8.13+133`。
+- 应用版本：`1.8.13+134`。
 - Flutter 测试：358 项通过；`flutter analyze` 无问题；Android Kotlin 编译和 release APK 构建通过。
 - 模拟器：Android 14，竖屏 `1220x2712`、横屏 `2712x1220` smoke 通过，未发现 FATAL 或 ANR。
 - 后台 SSH 实测：Debug 版 Home 后台 65 秒、正式版根页面系统 Back 后台 35 秒，以及 Android 14
@@ -1194,6 +1236,137 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   服务器返回的真实已用百分比，未知用量显示 `?`。
 - APK：本轮发布后以 `dist/Agent-1.8.13.apk` 为准；SHA-256 记录在
   `dist/local-release-metadata.txt`，交付时必须同时核对内网和外网下载结果。
+
+### 17.2 页面对齐验收（2026-08-10）
+
+- 应用版本：`1.8.14+137`。
+- 服务器列表和任务列表逐项对照旧 Compose 源码与用户提供的 `1172x2748` 截图；服务器品牌栏、推广块、
+  服务器整卡、Debug 行，以及任务页顶栏、资源行、Agent 分段控件、搜索框和任务行均恢复旧版布局。
+- Android 14 模拟器使用 `1172x2748`、480 dpi（约 390 dp 宽）连接本机 `codexemu`，逐页截图确认无重叠、
+  截断、双层输入框或过亮分隔线；标准竖屏与横屏 smoke 同时通过。
+- Flutter 362 项测试通过，`flutter analyze` 无问题；新增“返回服务器后复用 Agent 快照”回归测试，
+  Release APK 构建、稳定签名和下载哈希由本机发布流程验证。
+- APK 以 `dist/Agent-1.8.14.apk` 为准；SHA-256 记录在 `dist/local-release-metadata.txt`。
+
+### 17.3 后台对话链路验收（2026-08-10）
+
+- 应用版本：`1.8.15+138`。
+- Flutter 生产 Agent lane 改为持有独立 SSH transport，与旧版 JSch 的 Host/Agent 双连接边界一致；Host
+  指标、SFTP 或终端连接意外断开时不再关闭正在工作的 Agent turn，显式断开仍会同时清理两条连接。
+- Android 前台 Service 分别保活 retained Host 与 Agent transport；Agent 心跳与 JSONL 写入串行化，避免
+  心跳写入和 app-server 请求竞争同一个 SSH channel。
+- Android 14 模拟器连接本机 `codexemu`，真实 Codex turn 运行期间先后置于后台约 4 分钟和 2 分钟；恢复
+  前台后 turn 仍保持运行，诊断日志无 Agent/SSH 断开、重连、进程重启、FATAL 或 ANR。
+- Flutter 365 项测试、`flutter analyze`、Android Debug APK、竖屏/横屏 smoke 和本地发布门禁均通过；APK
+  以 `dist/Agent-1.8.15.apk` 为准，SHA-256 记录在 `dist/local-release-metadata.txt`。
+
+### 17.4 后台心跳背压验收（2026-08-10）
+
+- 应用版本：`1.8.16+139`。
+- Android Service 的 MethodChannel 心跳改为单请求在途，Flutter isolate 暂停期间不再积压调用；Agent
+  keepalive 也会合并尚未完成的请求，防止 App 回到前台时批量 SSH 心跳导致 Agent transport 断开。
+- Codex app-server 的 stderr 会去除 ANSI/控制字符并写入 `AgentStderr` Debug 日志，不再用红色诊断覆盖
+  仍可工作的对话页；真正的连接中断仍进入恢复状态机。
+- Android 14 模拟器连接本机 `codexemu`，后台约 8 分钟后热恢复；App PID 与前台 Service 未变化，Host
+  和 Agent 全程保持连接，日志无断开、重连、心跳失败、FATAL 或 ANR。
+- Flutter 368 项测试、`flutter analyze`、Android Debug/Release APK 和竖屏/横屏 smoke 均通过；发布产物
+  为 `dist/Agent-1.8.16.apk`，SHA-256 是
+  `7262f882ffb0ebb45634787bfe84549e19e9796550232341237c859680336828`，稳定签名及内外网下载回验通过。
+
+### 17.5 后台连接关联诊断（2026-08-10）
+
+- 应用版本：`1.8.17+140`。
+- Android Service 为每次心跳分配递增 sequence，记录原生 dispatch、在途跳过次数、MethodChannel 完成结果
+  和耗时；Flutter 同一 sequence 记录接收延迟、生命周期以及 retained Host/Agent 每条 lane 的开始、成功、
+  失败和耗时，可以区分原生调度暂停、Dart isolate 延迟与具体 SSH transport 失败。
+- Host/Agent keepalive 异常不再在 manager 内吞掉，而是向心跳调用者传播并写入诊断日志；既有 transport watcher
+  仍负责状态转换和自动恢复，不把心跳异常投影为页面错误。
+- Agent 专用 SSH socket 的 `done` 结果单独写入 `AgentTransport transport_closed/transport_error`，保留底层
+  关闭原因并与 `Agent connection_lost`、SSH 状态和心跳 sequence 对齐。
+- Flutter 371 项测试、`flutter analyze`、Android Debug/Release 构建、Android 14 模拟器竖屏/横屏 smoke 和
+  内外网 HTTP 200 回验均通过。APK 为 `dist/Agent-1.8.17.apk`，SHA-256 为
+  `d2e423401fce929faa353d4c49511739e6ecb03c8723f6d39831a2c59e15e8f1`；稳定证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.6 Android TCP 内核保活（2026-08-10）
+
+- 应用版本：`1.8.18+141`。
+- `DartSshServerClient` 不再直接使用 dartssh2 的裸 `Socket.connect`，而是在 SSH 握手前为底层
+  Linux/Android socket 设置 `SO_KEEPALIVE`、`TCP_KEEPIDLE=30s`、`TCP_KEEPINTVL=10s`、
+  `TCP_KEEPCNT=3` 和 `TCP_NODELAY`。这条保活链路不依赖 Dart Timer 或 Flutter Activity 是否处于 paused。
+- 若厂商内核拒绝某个 TCP 调优选项，会保留 SSH 连接并回退到 SSH global-request 心跳，不影响前台连接。
+- 本轮 UI 不变；定向 SSH/Agent/Controller 测试 106 项以及 Flutter 全量 371 项测试均通过，
+  `flutter analyze`、Android Debug/Release 构建、Android 14 模拟器竖屏/横屏 smoke 和内外网 HTTP 200
+  回验均通过。APK 为 `dist/Agent-1.8.18.apk`，SHA-256 为
+  `5b8b1700d8f1ff1a12f9ebb03bcc0a0cb253186d632a8e2e4b97376ca9f9f4d4`；稳定证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.7 Codex turn 持久化与列表恢复（2026-08-10）
+
+- 应用版本：`1.8.19+142`。
+- 真机日志确认厂商锁屏会同时中止 Host/Agent 两条 SSH socket（`errno=103`），Android 心跳正常送达也无法
+  阻止；因此 Codex app-server 改为远端私有 Unix listener，SSH 仅承载可重建的 WebSocket forward。
+- 意外断线保留远端 app-server/turn，重连后复用 socket 并 resume；显式断开清理远端进程，不支持 Unix
+  forwarding 时有界回退 stdio。
+- 会话列表恢复不再清空或自动刷新已有 lane 缓存；截图所示断线状态下保留最近任务，连接操作仍禁用。
+- WebSocket 握手/掩码/JSONL 桥接、durable 命令与清理、自动恢复缓存策略已有定向测试；Flutter 全量
+  374 项测试、`flutter analyze`、Debug/Release 构建、Android 14 模拟器竖横屏 smoke 和内外网发布回验
+  通过。APK 为 `dist/Agent-1.8.19.apk`，SHA-256 为
+  `e362d416cd0f36946cee5d844b189850407eb2df1def4628d663f1755fc7cc56`，证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。目标服务器上的真实 Unix listener、
+  60 秒 turn 锁屏与断线重连仍须通过 `durable_transport=unix_socket` 日志真机验收。
+
+### 17.8 服务器资源行紧凑布局（2026-08-10）
+
+- 应用版本：`1.8.20+143`。
+- 服务器卡片的 CPU、内存、磁盘和网络指标改为按内容宽度紧凑排列并整体左对齐，不再由四个等宽区域
+  拉伸到整行；新增竖屏 Widget 回归，约束相邻指标间距和网络指标的左侧位置。
+- 后续模拟器 UI 验收只覆盖目标竖屏，脚本、Widget 测试和工作流文档均移除横屏门禁；历史版本中已完成的
+  横屏记录保留为当时事实。
+- 定向 8 项测试和 Flutter 全量 375 项测试通过，`flutter analyze`、Android Debug/Release 构建及 Release
+  竖屏模拟器 smoke 通过。APK 为 `dist/Agent-1.8.20.apk`，SHA-256 为
+  `d6c620d74dae601a4f9b63a65d68c5284d64d8f089358db010cc7fd3663c2b74`；稳定签名及内外网下载回验通过。
+
+### 17.9 对话链接与远程图片预览（2026-08-10）
+
+- 应用版本：`1.8.21+144`。
+- GFM 裸链接扩展允许 HTTP/HTTPS URL 紧邻中文标点，`内网：http://...` 等文本可点击并继续使用既有外部
+  浏览器确认框；显式 Markdown 链接行为不变。
+- 远程绝对路径链接按保守图片扩展名分流：PNG/JPG/WebP/GIF/BMP 直接加载到 Work 页缩放预览，其他文件
+  继续使用系统文件导出。交互测试确认图片链接不会启动文件保存器。
+- 定向 15 项测试和 Flutter 全量 377 项测试通过，`flutter analyze`、Android Debug/Release 构建及 Debug/
+  Release 竖屏模拟器 smoke 通过。APK 为 `dist/Agent-1.8.21.apk`，SHA-256 为
+  `1da16324fb4950dd770ce2dc2b8b06044e7b9d04e05f5c12db56013e4a7eda0f`；稳定签名及内外网下载回验通过。
+- 本轮修改后计时：格式化与依赖解析 `15.328s`，定向测试 `19.751s`，Debug 全门禁成功轮 `112.004s`，
+  Release 发布 `292.379s`。返工包括错误工具路径 `0.003s`、首轮 lint 失败 `26.656s` 和 lint 复核
+  `4.068s`；`check` 与 `publish` 仍重复运行 analyze、全量测试和 Debug 构建，是后续主要优化点。
+
+### 17.10 本地修改流程优化验收（2026-08-10）
+
+- 应用版本保持 `1.8.21+144`；本轮只修改工作流脚本和文档，没有发布 APK，也没有更新本机 HTTP 下载包。
+- `check` 首次完整验证耗时 `107.346s`：OpenCode full `14.418s`、Android Debug 门禁 `65.021s`
+  （依赖 `1.267s`、analyze `3.844s`、377 项测试 `32.052s`、Debug 构建 `26.855s`）、Debug 竖屏
+  smoke `22.110s`，其余暂停模拟器、释放 Gradle、CodeGraph 和调度合计 `5.797s`。
+- `check` 后的只读计划为 `validation=reuse:debug debug=skip release=build`。随后 `full` 只解析依赖
+  `1.274s` 并构建 Release `26.737s`，没有重复 analyze、377 项测试或 Debug 构建；含 Release 竖屏
+  smoke 的总耗时为 `52.220s`。
+- `full` 后计划为 `validation=cached debug=skip release=skip cacheHit=1`。工作流语法和自测通过，阶段记录
+  写入 `.workflow-cache/latest-workflow-timing.tsv` 与 `.workflow-cache/workflow-timings/`。
+
+### 17.11 Work 对话首屏与历史分页定位（2026-08-11）
+
+- 应用版本保持 `1.8.21+144`，本轮不发布 APK、不修改连接恢复逻辑。
+- 会话切换或恢复时，时间线先保持不可见并等待内容尺寸建立，再直接跳到 `maxScrollExtent`；首屏锚定完成后才显示列表，
+  不再出现先停在顶部、随后内容整体向下掉落的首帧闪动。用户滚动状态由 `UserScrollNotification` 单独记录，布局变化和
+  程序化补偿不会误判为用户离开底部。
+- 顶部历史分页记录请求前的 `pixels` 与 `maxScrollExtent`，加载后只按新增 extent 补偿原位置；Sliver 子项和尾部 spacer
+  提供稳定 key/index 映射，分页后原可见消息保持原屏幕位置，不会自动回到底部。刷新控件在收起动画完成前保持挂载，避免
+  cursor 用尽时重建 sliver 造成几何跳变。
+- 新增 loading -> 已加载首屏回归和受控竖屏下拉分页回归；WorkScreen 定向 7 项、Flutter 全量 379 项测试、`flutter analyze`、
+  Android Debug 构建及 Android 14 模拟器竖屏 smoke 全部通过。横屏本轮按产品约束不验收。
+- 本轮从 `2026-08-11T01:00:27.847Z` 首次修改计时至 `2026-08-11T01:18:xxZ` 完成，约 `18m`：问题定位与方案约 `4m`，首轮实现
+  与测试约 `8m`，分页测试手势返工约 `2m`，定向验证约 `1m`，`check`（含全量测试、Debug 构建、竖屏 smoke、CodeGraph）约 `1m43s`。
+  后续同类 UI 修改应先跑相邻 Widget 测试，再按 `docs/LOCAL_WORKFLOW.md` 只执行一个主门禁。
 
 ## 18. 文档维护规则
 

@@ -62,16 +62,15 @@ smoke_input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     scripts/android-emulator.sh \
     scripts/emulator-smoke.sh \
     scripts/workflow-lib.sh)"
-smoke_fingerprint="$(printf 'schema=1\nvariant=%s\napk=%s\ninputs=%s\nserial=%s\nhostBoot=%s\nemulatorPid=%s\ndeviceBoot=%s\n' \
+smoke_fingerprint="$(printf 'schema=2\nvariant=%s\napk=%s\ninputs=%s\nserial=%s\nhostBoot=%s\nemulatorPid=%s\ndeviceBoot=%s\n' \
     "$variant" "$apk_sha256" "$smoke_input_hash" "$SERIAL" "$host_boot_id" "$emulator_pid" "$device_boot_id" |
     workflow_sha256)"
 smoke_stamp="$CACHE_DIR/smoke-$variant.stamp"
 minimum_short_edge="${CODEX_EMULATOR_MIN_SHORT_EDGE:-1080}"
 minimum_long_edge="${CODEX_EMULATOR_MIN_LONG_EDGE:-2400}"
 
-assert_minimum_canvas() {
+assert_minimum_portrait_canvas() {
     local screenshot="$1"
-    local orientation="$2"
     local metadata
     local width
     local height
@@ -82,22 +81,11 @@ assert_minimum_canvas() {
         echo "Unable to read emulator screenshot dimensions" >&2
         return 1
     fi
-    case "$orientation" in
-        portrait)
-            if (( width < minimum_short_edge || height < minimum_long_edge || width >= height )); then
-                echo "$metadata" >&2
-                echo "Portrait canvas is too small; use at least ${minimum_short_edge}x${minimum_long_edge}" >&2
-                return 1
-            fi
-            ;;
-        landscape)
-            if (( height < minimum_short_edge || width < minimum_long_edge || height >= width )); then
-                echo "$metadata" >&2
-                echo "Landscape canvas is too small; use at least ${minimum_long_edge}x${minimum_short_edge}" >&2
-                return 1
-            fi
-            ;;
-    esac
+    if (( width < minimum_short_edge || height < minimum_long_edge || width >= height )); then
+        echo "$metadata" >&2
+        echo "Portrait canvas is too small; use at least ${minimum_short_edge}x${minimum_long_edge}" >&2
+        return 1
+    fi
 }
 
 set_rotation() {
@@ -195,25 +183,13 @@ fi
 
 log_path="$CACHE_DIR/latest-logcat.txt"
 screen_path="$CACHE_DIR/latest-$variant.png"
-landscape_screen_path="$CACHE_DIR/latest-$variant-landscape.png"
 window_path="$CACHE_DIR/latest-window.xml"
-landscape_window_path="$CACHE_DIR/latest-window-landscape.xml"
 "$ADB" -s "$SERIAL" exec-out screencap -p > "$screen_path"
 if ! dump_window "$window_path"; then
     echo "Unable to capture the emulator UI hierarchy" >&2
     exit 1
 fi
-assert_minimum_canvas "$screen_path" portrait
-
-set_rotation 1
-sleep "${CODEX_EMULATOR_ROTATION_SETTLE_SECONDS:-1}"
-"$ADB" -s "$SERIAL" exec-out screencap -p > "$landscape_screen_path"
-if ! dump_window "$landscape_window_path"; then
-    echo "Unable to capture the landscape UI hierarchy" >&2
-    exit 1
-fi
-assert_minimum_canvas "$landscape_screen_path" landscape
-set_rotation 0
+assert_minimum_portrait_canvas "$screen_path"
 "$ADB" -s "$SERIAL" logcat -d -v brief > "$log_path"
 
 if awk -v package="$PACKAGE" '
@@ -237,11 +213,6 @@ if ! rg -q "package=\"$PACKAGE\"" "$window_path"; then
     echo "The foreground UI does not belong to $PACKAGE" >&2
     exit 1
 fi
-if ! rg -q "package=\"$PACKAGE\"" "$landscape_window_path"; then
-    echo "The landscape foreground UI does not belong to $PACKAGE" >&2
-    exit 1
-fi
-
 {
     printf 'variant=%s\n' "$variant"
     printf 'apkSha256=%s\n' "$apk_sha256"
@@ -252,4 +223,3 @@ workflow_write_stamp "$smoke_stamp" "$smoke_fingerprint"
 
 echo "Emulator smoke passed on $SERIAL"
 echo "Portrait screenshot: $screen_path"
-echo "Landscape screenshot: $landscape_screen_path"

@@ -76,6 +76,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: 64,
         title: InkWell(
           onTap: controller.backToServers,
           borderRadius: BorderRadius.circular(5),
@@ -180,21 +181,15 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-              child: TextField(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: _ThreadSearchBox(
                 controller: _searchController,
                 focusNode: _searchFocus,
                 enabled: agentConnected,
-                textInputAction: TextInputAction.search,
                 onChanged: controller.setThreadSearch,
                 onSubmitted: (_) => controller.refreshThreads(),
-                decoration: const InputDecoration(
-                  hintText: '搜索最近任务',
-                  prefixIcon: Icon(Icons.search),
-                ),
               ),
             ),
-            const Divider(height: 1),
             Expanded(
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 220),
@@ -264,6 +259,66 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
     } else {
       controller.selectAgent(targetAgent);
     }
+  }
+}
+
+class _ThreadSearchBox extends StatelessWidget {
+  const _ThreadSearchBox({
+    required this.controller,
+    required this.focusNode,
+    required this.enabled,
+    required this.onChanged,
+    required this.onSubmitted,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+  final ValueChanged<String> onSubmitted;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: codexRaised,
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.search, size: 19, color: codexMuted),
+          const SizedBox(width: 9),
+          Expanded(
+            child: TextField(
+              controller: controller,
+              focusNode: focusNode,
+              enabled: enabled,
+              maxLines: 1,
+              textInputAction: TextInputAction.search,
+              textAlignVertical: TextAlignVertical.center,
+              cursorColor: codexText,
+              style: Theme.of(context).textTheme.bodyMedium,
+              onChanged: onChanged,
+              onSubmitted: onSubmitted,
+              decoration: InputDecoration(
+                filled: false,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                isCollapsed: true,
+                hintText: '搜索最近任务',
+                hintStyle: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(color: codexMuted),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -888,13 +943,11 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
               ),
             header,
             Expanded(
-              child: ListView.separated(
+              child: ListView.builder(
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 18),
+                padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
                 itemCount: threads.length + (_loadingMore ? 1 : 0),
-                separatorBuilder: (_, _) =>
-                    const Divider(height: 1, indent: 52),
                 itemBuilder: (context, index) {
                   if (index == threads.length) {
                     return const Padding(
@@ -1097,13 +1150,11 @@ class _ThreadRow extends StatelessWidget {
                                 color: codexMuted,
                               ),
                               const SizedBox(width: 4),
-                              Flexible(
-                                child: Text(
-                                  thread.source.trim(),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
+                              Text(
+                                thread.source.trim(),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ],
                           ],
@@ -1116,7 +1167,7 @@ class _ThreadRow extends StatelessWidget {
             ),
           ),
         ),
-        const Divider(height: 1, indent: 46),
+        const Divider(height: 1, indent: 46, color: codexBorder),
       ],
     );
   }
@@ -1127,7 +1178,11 @@ List<AgentThread> visibleAgentThreads(
   String query, {
   required bool agentConnected,
 }) {
-  if (!agentConnected) return const <AgentThread>[];
+  // Preserve the last successful snapshot while a retained connection is
+  // recovering. Actions remain disabled by [agentConnected], but returning
+  // from the lock screen no longer turns a populated list into a misleading
+  // "0 tasks" view.
+  final _ = agentConnected;
   final normalized = query.trim().toLowerCase();
   if (normalized.isEmpty) return threads;
   return threads

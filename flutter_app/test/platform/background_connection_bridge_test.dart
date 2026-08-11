@@ -77,6 +77,28 @@ void main() {
     expect(first.signature, '{"hosts":["a,b"],"agents":["lane|codex"]}');
   });
 
+  test('decodes native heartbeat correlation fields with bounded delay', () {
+    final heartbeat = BackgroundHeartbeat.fromChannelArguments(<String, Object>{
+      'sequence': 42,
+      'sentAtEpochMs': 1_000,
+      'skippedBefore': 3,
+    });
+
+    expect(heartbeat.sequence, 42);
+    expect(heartbeat.skippedBefore, 3);
+    expect(
+      heartbeat.deliveryDelayMillis(DateTime.fromMillisecondsSinceEpoch(1_250)),
+      250,
+    );
+
+    final malformed = BackgroundHeartbeat.fromChannelArguments(<String, Object>{
+      'sequence': -1,
+      'sentAtEpochMs': 'invalid',
+    });
+    expect(malformed.sequence, 0);
+    expect(malformed.deliveryDelayMillis(DateTime.now()), 0);
+  });
+
   test('platform failures never close or crash an active connection', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (_) async {

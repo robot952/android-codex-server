@@ -8,6 +8,32 @@ workflow_cache_dir() {
     printf '%s' "${CODEX_WORKFLOW_CACHE_DIR:-$root_dir/.workflow-cache}"
 }
 
+workflow_resolve_flutter() {
+    local root_dir="$1"
+    local candidate
+    if [[ -n "${CODEX_FLUTTER_BIN:-}" ]]; then
+        candidate="$CODEX_FLUTTER_BIN"
+    elif command -v flutter >/dev/null 2>&1; then
+        candidate="$(command -v flutter)"
+    elif [[ -x "$root_dir/../.toolchains/flutter-root/bin/flutter" ]]; then
+        candidate="$root_dir/../.toolchains/flutter-root/bin/flutter"
+    elif [[ -x "$root_dir/.toolchains/flutter-root/bin/flutter" ]]; then
+        candidate="$root_dir/.toolchains/flutter-root/bin/flutter"
+    elif [[ -x "$root_dir/../.toolchains/flutter/bin/flutter" ]]; then
+        candidate="$root_dir/../.toolchains/flutter/bin/flutter"
+    elif [[ -x "$HOME/flutter/bin/flutter" ]]; then
+        candidate="$HOME/flutter/bin/flutter"
+    else
+        echo "Flutter CLI was not found; set CODEX_FLUTTER_BIN" >&2
+        return 1
+    fi
+    [[ -x "$candidate" ]] || {
+        echo "Flutter CLI is not executable: $candidate" >&2
+        return 1
+    }
+    printf '%s' "$candidate"
+}
+
 workflow_sha256() {
     sha256sum | awk '{print $1}'
 }
@@ -64,6 +90,89 @@ workflow_elapsed() {
     local started_seconds="$1"
     local elapsed_seconds=$(( $(date +%s) - started_seconds ))
     printf '%dm%02ds' "$((elapsed_seconds / 60))" "$((elapsed_seconds % 60))"
+}
+
+workflow_format_duration_ms() {
+    local elapsed_ms="$1"
+    local elapsed_seconds=$((elapsed_ms / 1000))
+    printf '%dm%02d.%03ds' \
+        "$((elapsed_seconds / 60))" \
+        "$((elapsed_seconds % 60))" \
+        "$((elapsed_ms % 1000))"
+}
+
+# Produces a side-effect-free Android gate plan. A valid Debug or Release gate
+# proves that analyze and the full Flutter test suite passed for the same input
+# fingerprint, so the sibling APK can be built without repeating validation.
+workflow_android_gate_plan() {
+    local mode="$1"
+    local reuse="$2"
+    local fast_valid="$3"
+    local debug_valid="$4"
+    local release_valid="$5"
+
+    WORKFLOW_ANDROID_PLAN_VALIDATE=0
+    WORKFLOW_ANDROID_PLAN_BUILD_DEBUG=0
+    WORKFLOW_ANDROID_PLAN_BUILD_RELEASE=0
+    WORKFLOW_ANDROID_PLAN_CACHE_HIT=0
+    WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE="none"
+
+    if [[ "$reuse" != 1 ]]; then
+        fast_valid=0
+        debug_valid=0
+        release_valid=0
+    fi
+
+    case "$mode" in
+        fast)
+            if [[ "$fast_valid" == 1 || "$debug_valid" == 1 || "$release_valid" == 1 ]]; then
+                WORKFLOW_ANDROID_PLAN_CACHE_HIT=1
+            else
+                WORKFLOW_ANDROID_PLAN_VALIDATE=1
+            fi
+            ;;
+        debug)
+            if [[ "$debug_valid" == 1 ]]; then
+                WORKFLOW_ANDROID_PLAN_CACHE_HIT=1
+            else
+                WORKFLOW_ANDROID_PLAN_BUILD_DEBUG=1
+                if [[ "$release_valid" == 1 ]]; then
+                    WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE="release"
+                else
+                    WORKFLOW_ANDROID_PLAN_VALIDATE=1
+                fi
+            fi
+            ;;
+        release)
+            if [[ "$release_valid" == 1 ]]; then
+                WORKFLOW_ANDROID_PLAN_CACHE_HIT=1
+            else
+                WORKFLOW_ANDROID_PLAN_BUILD_RELEASE=1
+                if [[ "$debug_valid" == 1 ]]; then
+                    WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE="debug"
+                else
+                    WORKFLOW_ANDROID_PLAN_VALIDATE=1
+                fi
+            fi
+            ;;
+        all)
+            [[ "$debug_valid" == 1 ]] || WORKFLOW_ANDROID_PLAN_BUILD_DEBUG=1
+            [[ "$release_valid" == 1 ]] || WORKFLOW_ANDROID_PLAN_BUILD_RELEASE=1
+            if [[ "$debug_valid" == 1 && "$release_valid" == 1 ]]; then
+                WORKFLOW_ANDROID_PLAN_CACHE_HIT=1
+            elif [[ "$debug_valid" == 1 ]]; then
+                WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE="debug"
+            elif [[ "$release_valid" == 1 ]]; then
+                WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE="release"
+            else
+                WORKFLOW_ANDROID_PLAN_VALIDATE=1
+            fi
+            ;;
+        *)
+            echo "Unknown Android gate mode: $mode" >&2
+            return 2
+            ;;
+    esac
 }
 
 workflow_file_sha256_cached() {

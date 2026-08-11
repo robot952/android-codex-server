@@ -4,6 +4,7 @@ import 'package:synchronized/synchronized.dart';
 
 import '../domain/models.dart';
 import '../ssh/server_connection_manager.dart';
+import '../ssh/ssh_server_client.dart';
 import 'codex_agent_client.dart';
 import 'opencode_agent_client.dart';
 import 'remote_agent_client.dart';
@@ -204,6 +205,7 @@ class AgentConnectionManager {
         invalidMessage: 'Agent 卸载任务已失效',
         failureMessage: '${agent.label} 卸载失败',
         prepare: () async {
+          await _stopDurableSession(entry);
           if (entry.client.isConnected) await _disconnectClient(entry);
         },
         operation: (_) => runtimeClient.uninstallRuntime(profile, host.client),
@@ -278,6 +280,20 @@ class AgentConnectionManager {
         rethrow;
       }
     });
+  }
+
+  Future<void> keepAlive(AgentConnectionKey key) async {
+    if (_closed) return;
+    final entry = _entries[key];
+    if (entry == null ||
+        _states[key]?.phase != ConnectionPhase.connected ||
+        !entry.client.isConnected ||
+        entry.client is! RemoteAgentKeepAliveClient) {
+      return;
+    }
+    // The Agent watcher still drives recovery. Propagate the ping error so the
+    // shared heartbeat sequence can identify which transport failed first.
+    await (entry.client as RemoteAgentKeepAliveClient).keepAlive();
   }
 
   Future<List<AgentModel>> listModels(AgentConnectionKey key) async {
@@ -723,6 +739,7 @@ class AgentConnectionManager {
         if (!_isCurrent(key, entry)) return;
         entry.generation++;
         _setState(key, const ConnectionState());
+        await _stopDurableSession(entry);
         await _disconnectClient(entry);
       });
     }
@@ -959,12 +976,30 @@ class AgentConnectionManager {
     return request;
   }
 
+  Future<void> _stopDurableSession(_AgentEntry entry) {
+    final client = entry.client;
+    if (client is! RemoteAgentDurableSessionClient) {
+      return Future<void>.value();
+    }
+    return (client as RemoteAgentDurableSessionClient)
+        .stopDurableRemoteSession();
+  }
+
   void _applyHostStates(Map<String, ConnectionState> hostStates) {
     for (final entry in _entries.entries.toList()) {
       if (hostStates[entry.key.profileId]?.phase == ConnectionPhase.connected) {
         continue;
       }
-      if (entry.value.client.isConnected ||
+      final client = entry.value.client;
+      final independentClient = client is RemoteAgentIndependentConnectionClient
+          ? client as RemoteAgentIndependentConnectionClient
+          : null;
+      if (independentClient?.usesIndependentConnection == true) {
+        // The Agent app-server has its own SSH transport. A Host-only socket
+        // can be recreated without terminating an in-flight turn.
+        continue;
+      }
+      if (client.isConnected ||
           _states[entry.key]?.phase != ConnectionPhase.disconnected) {
         final generation = ++entry.value.generation;
         unawaited(
@@ -1025,8 +1060,12 @@ class _AgentEntry {
 }
 
 RemoteAgentClient _defaultClientFactory(AgentKind kind) => switch (kind) {
-  AgentKind.codex => CodexAgentClient(),
-  AgentKind.openCode => OpenCodeAgentClient(),
+  AgentKind.codex => CodexAgentClient(
+    dedicatedHostFactory: DartSshServerClient.new,
+  ),
+  AgentKind.openCode => OpenCodeAgentClient(
+    dedicatedHostFactory: DartSshServerClient.new,
+  ),
 };
 
 bool _sameLaneIdentity(

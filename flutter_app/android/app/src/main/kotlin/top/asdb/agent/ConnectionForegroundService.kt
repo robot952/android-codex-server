@@ -32,18 +32,94 @@ class ConnectionForegroundService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var flutterEngine: FlutterEngine? = null
     private var heartbeatChannel: MethodChannel? = null
+    private var heartbeatInFlight = false
+    private var heartbeatSequence = 0L
+    private var skippedHeartbeats = 0L
+    private var heartbeatStartedAt = 0L
     @Volatile
     private var serviceActive = false
     private val renewWakeLock = Runnable { acquireWakeLock() }
     private val sendHeartbeat = object : Runnable {
         override fun run() {
-            heartbeatChannel?.invokeMethod("heartbeat", null)
+            sendHeartbeatIfIdle()
             // A transient wake-lock loss must not permanently stop the
             // heartbeat loop. The service lifetime is independent from the
             // lock, which is reacquired by [renewWakeLock].
             if (serviceActive) {
                 handler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
             }
+        }
+    }
+
+    /**
+     * MethodChannel calls can remain queued while an OEM freezes the Flutter
+     * isolate in the background. Never enqueue another transport heartbeat
+     * until Dart has acknowledged the previous one; otherwise all queued SSH
+     * pings arrive together when the Activity resumes.
+     */
+    private fun sendHeartbeatIfIdle() {
+        val channel = heartbeatChannel ?: return
+        if (heartbeatInFlight) {
+            skippedHeartbeats++
+            if (skippedHeartbeats == 1L || skippedHeartbeats % 6L == 0L) {
+                DiagnosticLogBridge.append(
+                    "INFO",
+                    "Background",
+                    "heartbeat_skipped pendingSequence=$heartbeatSequence " +
+                        "pendingMs=${android.os.SystemClock.elapsedRealtime() - heartbeatStartedAt} " +
+                        "skipped=$skippedHeartbeats",
+                )
+            }
+            return
+        }
+        heartbeatInFlight = true
+        val sequence = ++heartbeatSequence
+        val skippedBeforeRequest = skippedHeartbeats
+        skippedHeartbeats = 0
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        heartbeatStartedAt = startedAt
+        val sentAtEpochMs = System.currentTimeMillis()
+        DiagnosticLogBridge.append(
+            "INFO",
+            "Background",
+            "heartbeat_dispatch sequence=$sequence skippedBefore=$skippedBeforeRequest",
+        )
+        val result = object : MethodChannel.Result {
+            private fun complete(level: String, outcome: String, error: Throwable? = null) {
+                heartbeatInFlight = false
+                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                DiagnosticLogBridge.append(
+                    level,
+                    "Background",
+                    "heartbeat_$outcome sequence=$sequence elapsedMs=$elapsed " +
+                        "skippedBefore=$skippedBeforeRequest skippedDuring=$skippedHeartbeats",
+                    error,
+                )
+            }
+
+            override fun success(result: Any?) = complete("INFO", "success")
+
+            override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                complete(
+                    "WARN",
+                    "failed code=$errorCode detail=${errorMessage.orEmpty().take(160)}",
+                )
+            }
+
+            override fun notImplemented() = complete("WARN", "not_implemented")
+        }
+        try {
+            channel.invokeMethod(
+                "heartbeat",
+                mapOf(
+                    "sequence" to sequence,
+                    "sentAtEpochMs" to sentAtEpochMs,
+                    "skippedBefore" to skippedBeforeRequest,
+                ),
+                result,
+            )
+        } catch (error: Throwable) {
+            result.error("invoke_failed", error.message, null)
         }
     }
 
@@ -92,6 +168,9 @@ class ConnectionForegroundService : Service() {
 
     override fun onDestroy() {
         serviceActive = false
+        heartbeatInFlight = false
+        skippedHeartbeats = 0
+        heartbeatStartedAt = 0L
         DiagnosticLogBridge.append("INFO", "Background", "service_destroy")
         handler.removeCallbacks(renewWakeLock)
         handler.removeCallbacks(sendHeartbeat)

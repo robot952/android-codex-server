@@ -1,25 +1,51 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/codex_agent_client.dart';
+import 'package:codex_remote/src/agent/remote_agent_client.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _FakeCodexHost implements RemoteServerClient {
-  @override
-  Future<void> connect(ServerProfile profile) async {}
+class _FakeCodexHost
+    implements RemoteServerClient, RemoteServerKeepAliveClient {
+  _FakeCodexHost({this.connected = true, this.keepAliveGate});
+
+  bool connected;
+  final Completer<void>? keepAliveGate;
+  final Completer<void> closed = Completer<void>();
+  int connectCount = 0;
+  int disconnectCount = 0;
+  int closeCount = 0;
+  int keepAliveCount = 0;
 
   @override
-  Future<void> disconnect() async {}
+  Future<void> connect(ServerProfile profile) async {
+    connectCount++;
+    connected = true;
+  }
 
   @override
-  Future<void> get done => Future<void>.value();
+  Future<void> disconnect() async {
+    disconnectCount++;
+    connected = false;
+    if (!closed.isCompleted) closed.complete();
+  }
 
   @override
-  bool get isConnected => true;
+  Future<void> get done => closed.future;
+
+  @override
+  bool get isConnected => connected;
+
+  @override
+  Future<void> keepAlive() async {
+    keepAliveCount++;
+    await keepAliveGate?.future;
+  }
 
   @override
   Future<ServerMetrics> readServerMetrics(ServerProfile profile) {
@@ -44,7 +70,16 @@ class _FakeCodexHost implements RemoteServerClient {
   }
 
   @override
-  void close() {}
+  void close() {
+    closeCount++;
+    connected = false;
+    if (!closed.isCompleted) closed.complete();
+  }
+
+  void fail(Object error) {
+    connected = false;
+    if (!closed.isCompleted) closed.completeError(error);
+  }
 }
 
 class _FakeCodexSession implements CodexSession {
@@ -97,6 +132,45 @@ class _FakeCodexSession implements CodexSession {
   }
 }
 
+class _FakeSshSocket implements SSHSocket {
+  final StreamController<Uint8List> _incoming = StreamController<Uint8List>(
+    sync: true,
+  );
+  final StreamController<List<int>> _outgoing = StreamController<List<int>>(
+    sync: true,
+  );
+  final Completer<void> _done = Completer<void>();
+  final List<Uint8List> writes = <Uint8List>[];
+
+  _FakeSshSocket() {
+    _outgoing.stream.listen((bytes) => writes.add(Uint8List.fromList(bytes)));
+  }
+
+  @override
+  Stream<Uint8List> get stream => _incoming.stream;
+
+  @override
+  StreamSink<List<int>> get sink => _outgoing.sink;
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  Future<void> close() async => destroy();
+
+  @override
+  void destroy() {
+    if (!_done.isCompleted) _done.complete();
+    unawaited(_incoming.close());
+    unawaited(_outgoing.close());
+  }
+
+  @override
+  Future<void> flush() async {}
+
+  void add(List<int> bytes) => _incoming.add(Uint8List.fromList(bytes));
+}
+
 void main() {
   test('builds the app-server command with env and a quoted workspace', () {
     const profile = ServerProfile(
@@ -124,6 +198,73 @@ void main() {
     );
   });
 
+  test('builds a stable detached Unix-socket app-server command', () async {
+    const profile = ServerProfile(
+      id: 'server',
+      workspace: "/srv/team's app",
+      remoteCommand: 'codex app-server --listen stdio://',
+    );
+
+    final first = buildDurableCodexAppServerCommands(profile);
+    final second = buildDurableCodexAppServerCommands(profile);
+
+    expect(first.key, hasLength(24));
+    expect(first.key, second.key);
+    expect(first.startCommand, startsWith("sh -c '"));
+    expect(first.startCommand, contains('nohup'));
+    expect(first.startCommand, contains('setsid'));
+    expect(first.startCommand, contains(r'CODEX_REMOTE_SOCKET'));
+    expect(first.startCommand, isNot(contains('stdio://')));
+    expect(first.stopCommand, contains('kill -9'));
+    final syntax = await Process.run('sh', <String>[
+      '-n',
+      '-c',
+      first.startCommand,
+    ]);
+    expect(syntax.exitCode, 0, reason: syntax.stderr.toString());
+    expect(supportsDurableCodexAppServer(profile.remoteCommand), isTrue);
+    expect(supportsDurableCodexAppServer('bridge --listen stdio://'), isFalse);
+  });
+
+  test('bridges JSONL over a masked WebSocket text frame', () async {
+    const key = 'dGhlIHNhbXBsZSBub25jZQ==';
+    final socket = _FakeSshSocket();
+    final opening = openCodexWebSocketSession(socket, webSocketKey: key);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(ascii.decode(socket.writes.single), contains('GET / HTTP/1.1'));
+    socket.add(
+      ascii.encode(
+        'HTTP/1.1 101 Switching Protocols\r\n'
+        'Upgrade: websocket\r\n'
+        'Connection: Upgrade\r\n'
+        'Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n'
+        '\r\n',
+      ),
+    );
+    final session = await opening;
+
+    session.write(Uint8List.fromList(utf8.encode('{"id":1}\n')));
+    final frame = socket.writes.last;
+    expect(frame[0], 0x81);
+    expect(frame[1] & 0x80, 0x80, reason: 'client frames must be masked');
+    final payloadLength = frame[1] & 0x7f;
+    final mask = frame.sublist(2, 6);
+    final decoded = List<int>.generate(
+      payloadLength,
+      (index) => frame[6 + index] ^ mask[index % 4],
+    );
+    expect(utf8.decode(decoded), '{"id":1}');
+
+    final response = utf8.encode('{"id":1,"result":{}}');
+    final stdout = session.stdout.first;
+    socket.add(<int>[0x81, response.length, ...response]);
+    expect(utf8.decode(await stdout), '{"id":1,"result":{}}\n');
+
+    session.terminate();
+    await session.done;
+  });
+
   test('writes JSONL without flushing the shared SSH socket', () async {
     final session = _FakeCodexSession();
     final client = CodexAgentClient(sessionOpener: (_, _) async => session);
@@ -141,5 +282,115 @@ void main() {
     expect(session.writes.length, 2);
     expect(session.flushCount, 0);
     expect(session.terminated, isTrue);
+  });
+
+  test('keeps the Agent on a dedicated SSH transport', () async {
+    final session = _FakeCodexSession();
+    final host = _FakeCodexHost();
+    final dedicatedHost = _FakeCodexHost(connected: false);
+    RemoteServerClient? openedHost;
+    final client = CodexAgentClient(
+      dedicatedHostFactory: () => dedicatedHost,
+      sessionOpener: (sessionHost, _) async {
+        openedHost = sessionHost;
+        return session;
+      },
+    );
+    const profile = ServerProfile(
+      id: 'server',
+      host: 'example.com',
+      username: 'root',
+      hostFingerprint: 'SHA256:verified',
+      remoteCommand: 'codex app-server --listen stdio://',
+    );
+
+    await client.connect(profile, host);
+    await client.keepAlive();
+
+    expect(openedHost, same(dedicatedHost));
+    expect(dedicatedHost.connectCount, 1);
+    expect(dedicatedHost.keepAliveCount, 1);
+    expect(host.connectCount, 0);
+    expect(host.keepAliveCount, 0);
+
+    await client.disconnect();
+
+    expect(session.terminated, isTrue);
+    expect(dedicatedHost.disconnectCount, 1);
+    expect(host.disconnectCount, 0);
+  });
+
+  test(
+    'coalesces Agent heartbeats while the previous ping is pending',
+    () async {
+      final session = _FakeCodexSession();
+      final gate = Completer<void>();
+      final dedicatedHost = _FakeCodexHost(
+        connected: false,
+        keepAliveGate: gate,
+      );
+      final client = CodexAgentClient(
+        dedicatedHostFactory: () => dedicatedHost,
+        sessionOpener: (_, _) async => session,
+      );
+      const profile = ServerProfile(
+        id: 'server',
+        host: 'example.com',
+        username: 'root',
+        hostFingerprint: 'SHA256:verified',
+        remoteCommand: 'codex app-server --listen stdio://',
+      );
+
+      await client.connect(profile, _FakeCodexHost());
+      final first = client.keepAlive();
+      final second = client.keepAlive();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(dedicatedHost.keepAliveCount, 1);
+      gate.complete();
+      await Future.wait<void>([first, second]);
+      expect(dedicatedHost.keepAliveCount, 1);
+
+      await client.disconnect();
+    },
+  );
+
+  test('sanitizes ANSI control sequences from Agent diagnostics', () {
+    expect(
+      sanitizeAgentDiagnostic(
+        '\u001b[2m2026-08-10T10:45:20Z\u001b[0m '
+        '\u001b[31mERROR\u001b[0m codex_app_server',
+      ),
+      '2026-08-10T10:45:20Z ERROR codex_app_server',
+    );
+  });
+
+  test('reports the dedicated SSH transport close reason', () async {
+    final session = _FakeCodexSession();
+    final dedicatedHost = _FakeCodexHost(connected: false);
+    final client = CodexAgentClient(
+      dedicatedHostFactory: () => dedicatedHost,
+      sessionOpener: (_, _) async => session,
+    );
+    const profile = ServerProfile(
+      id: 'server',
+      host: 'example.com',
+      username: 'root',
+      hostFingerprint: 'SHA256:verified',
+      remoteCommand: 'codex app-server --listen stdio://',
+    );
+
+    await client.connect(profile, _FakeCodexHost());
+    final diagnostic = client.events
+        .where((event) => event is RemoteAgentDiagnostic)
+        .cast<RemoteAgentDiagnostic>()
+        .firstWhere((event) => event.isTransport);
+    dedicatedHost.fail(StateError('socket aborted'));
+
+    final event = await diagnostic;
+    expect(event.message, contains('transport_error'));
+    expect(event.message, contains('socket aborted'));
+
+    await client.disconnect();
   });
 }

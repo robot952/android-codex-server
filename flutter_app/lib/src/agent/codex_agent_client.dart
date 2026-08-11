@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 
 import '../domain/models.dart';
@@ -28,6 +30,8 @@ abstract interface class CodexSession {
 
 typedef CodexSessionOpener =
     Future<CodexSession> Function(RemoteServerClient host, String command);
+
+typedef CodexDedicatedHostFactory = RemoteServerClient Function();
 
 final class _SshCodexSession implements CodexSession {
   _SshCodexSession(this._session);
@@ -61,6 +65,284 @@ final class _SshCodexSession implements CodexSession {
   }
 }
 
+final class _WebSocketCodexSession implements CodexSession {
+  _WebSocketCodexSession(this._channel, this._webSocketKey) {
+    _subscription = _channel.stream.listen(
+      _consume,
+      onError: _fail,
+      onDone: _finish,
+      cancelOnError: true,
+    );
+    unawaited(_channel.done.then<void>((_) => _finish(), onError: _fail));
+  }
+
+  static const _acceptSalt = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+  static const _maxFrameBytes = 16 * 1024 * 1024;
+
+  final SSHSocket _channel;
+  final String _webSocketKey;
+  final StreamController<Uint8List> _stdout = StreamController<Uint8List>();
+  final StreamController<Uint8List> _stderr = StreamController<Uint8List>();
+  final Completer<void> _ready = Completer<void>();
+  final Completer<void> _done = Completer<void>();
+  final Random _random = Random.secure();
+  final List<int> _buffer = <int>[];
+  final BytesBuilder _fragment = BytesBuilder(copy: false);
+  StreamSubscription<Uint8List>? _subscription;
+  int? _fragmentOpcode;
+  int _fragmentLength = 0;
+  bool _handshakeComplete = false;
+  bool _terminated = false;
+
+  Future<void> get ready => _ready.future;
+
+  @override
+  Stream<Uint8List> get stdout => _stdout.stream;
+
+  @override
+  Stream<Uint8List> get stderr => _stderr.stream;
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  void write(Uint8List data) {
+    if (_terminated || !_handshakeComplete) {
+      throw StateError('Codex WebSocket 尚未连接');
+    }
+    final text = utf8.decode(data).trim();
+    if (text.isEmpty) return;
+    _sendFrame(0x1, utf8.encode(text));
+  }
+
+  @override
+  void terminate() {
+    if (_terminated) return;
+    _terminated = true;
+    try {
+      _channel.destroy();
+    } catch (_) {}
+    unawaited(_subscription?.cancel());
+    _closeControllers();
+    if (!_ready.isCompleted) {
+      _ready.completeError(StateError('Codex WebSocket 已关闭'));
+    }
+    if (!_done.isCompleted) _done.complete();
+  }
+
+  void _consume(Uint8List chunk) {
+    if (_terminated || chunk.isEmpty) return;
+    _buffer.addAll(chunk);
+    try {
+      if (!_handshakeComplete && !_consumeHandshake()) return;
+      _consumeFrames();
+    } catch (error, stack) {
+      _fail(error, stack);
+    }
+  }
+
+  bool _consumeHandshake() {
+    final headerEnd = _indexOfHeaderEnd(_buffer);
+    if (headerEnd < 0) {
+      if (_buffer.length > 32 * 1024) {
+        throw StateError('Codex WebSocket 握手响应过大');
+      }
+      return false;
+    }
+    final header = latin1.decode(_buffer.sublist(0, headerEnd));
+    _buffer.removeRange(0, headerEnd + 4);
+    final lines = header.split('\r\n');
+    if (lines.isEmpty ||
+        !RegExp(r'^HTTP/1\.[01] 101(?:\s|$)').hasMatch(lines[0])) {
+      throw StateError('Codex WebSocket 握手失败：${lines.firstOrNull ?? '空响应'}');
+    }
+    final headers = <String, String>{};
+    for (final line in lines.skip(1)) {
+      final separator = line.indexOf(':');
+      if (separator <= 0) continue;
+      headers[line.substring(0, separator).trim().toLowerCase()] = line
+          .substring(separator + 1)
+          .trim();
+    }
+    final expected = base64.encode(
+      sha1.convert(utf8.encode('$_webSocketKey$_acceptSalt')).bytes,
+    );
+    if (headers['sec-websocket-accept'] != expected) {
+      throw StateError('Codex WebSocket 握手校验失败');
+    }
+    _handshakeComplete = true;
+    if (!_ready.isCompleted) _ready.complete();
+    return true;
+  }
+
+  void _consumeFrames() {
+    while (_buffer.length >= 2) {
+      final first = _buffer[0];
+      final second = _buffer[1];
+      if ((first & 0x70) != 0) throw StateError('不支持的 WebSocket 扩展帧');
+      final finished = (first & 0x80) != 0;
+      final opcode = first & 0x0f;
+      final masked = (second & 0x80) != 0;
+      var payloadLength = second & 0x7f;
+      var offset = 2;
+      if (payloadLength == 126) {
+        if (_buffer.length < 4) return;
+        payloadLength = (_buffer[2] << 8) | _buffer[3];
+        offset = 4;
+      } else if (payloadLength == 127) {
+        if (_buffer.length < 10) return;
+        var length = 0;
+        for (var index = 2; index < 10; index++) {
+          length = (length << 8) | _buffer[index];
+        }
+        payloadLength = length;
+        offset = 10;
+      }
+      if (payloadLength > _maxFrameBytes) {
+        throw StateError('Codex WebSocket 消息过大');
+      }
+      final maskBytes = masked ? 4 : 0;
+      if (_buffer.length < offset + maskBytes + payloadLength) return;
+      List<int>? mask;
+      if (masked) {
+        mask = _buffer.sublist(offset, offset + 4);
+        offset += 4;
+      }
+      final payload = Uint8List.fromList(
+        _buffer.sublist(offset, offset + payloadLength),
+      );
+      _buffer.removeRange(0, offset + payloadLength);
+      if (mask != null) {
+        for (var index = 0; index < payload.length; index++) {
+          payload[index] ^= mask[index % 4];
+        }
+      }
+      _handleFrame(opcode, finished, payload);
+      if (_terminated) return;
+    }
+  }
+
+  void _handleFrame(int opcode, bool finished, Uint8List payload) {
+    if (opcode >= 0x8 && (!finished || payload.length > 125)) {
+      throw StateError('无效的 WebSocket 控制帧');
+    }
+    switch (opcode) {
+      case 0x0:
+        if (_fragmentOpcode == null) throw StateError('意外的 WebSocket 延续帧');
+        _fragmentLength += payload.length;
+        if (_fragmentLength > _maxFrameBytes) {
+          throw StateError('Codex WebSocket 分片消息过大');
+        }
+        _fragment.add(payload);
+        if (finished) {
+          final fragmentOpcode = _fragmentOpcode!;
+          _fragmentOpcode = null;
+          _fragmentLength = 0;
+          final message = _fragment.takeBytes();
+          if (fragmentOpcode != 0x1) {
+            throw StateError('Codex WebSocket 返回了二进制消息');
+          }
+          _emitText(message);
+        }
+      case 0x1:
+        if (_fragmentOpcode != null) throw StateError('WebSocket 分片尚未结束');
+        if (finished) {
+          _emitText(payload);
+        } else {
+          _fragmentOpcode = opcode;
+          _fragmentLength = payload.length;
+          _fragment.add(payload);
+        }
+      case 0x2:
+        throw StateError('Codex WebSocket 返回了二进制消息');
+      case 0x8:
+        if (!_terminated) _sendFrame(0x8, payload);
+        _finish();
+      case 0x9:
+        _sendFrame(0xA, payload);
+      case 0xA:
+        break;
+      default:
+        throw StateError('未知的 WebSocket 帧类型：$opcode');
+    }
+  }
+
+  void _emitText(List<int> payload) {
+    final text = utf8.decode(payload);
+    if (!_stdout.isClosed) {
+      _stdout.add(Uint8List.fromList(utf8.encode('$text\n')));
+    }
+  }
+
+  void _sendFrame(int opcode, List<int> payload) {
+    if (_terminated) return;
+    final bytes = BytesBuilder(copy: false);
+    bytes.addByte(0x80 | opcode);
+    final length = payload.length;
+    if (length <= 125) {
+      bytes.addByte(0x80 | length);
+    } else if (length <= 0xffff) {
+      bytes.add(<int>[0x80 | 126, length >> 8, length & 0xff]);
+    } else {
+      bytes.addByte(0x80 | 127);
+      for (var shift = 56; shift >= 0; shift -= 8) {
+        bytes.addByte((length >> shift) & 0xff);
+      }
+    }
+    final mask = List<int>.generate(4, (_) => _random.nextInt(256));
+    bytes.add(mask);
+    bytes.add(
+      List<int>.generate(
+        length,
+        (index) => payload[index] ^ mask[index % mask.length],
+        growable: false,
+      ),
+    );
+    _channel.sink.add(bytes.takeBytes());
+  }
+
+  void _fail(Object error, [StackTrace? stack]) {
+    if (_terminated) return;
+    if (!_ready.isCompleted) {
+      _ready.completeError(error, stack ?? StackTrace.current);
+    } else if (!_stdout.isClosed) {
+      _stdout.addError(error, stack ?? StackTrace.current);
+    }
+    terminate();
+  }
+
+  void _finish() {
+    if (_terminated) return;
+    _terminated = true;
+    try {
+      _channel.destroy();
+    } catch (_) {}
+    unawaited(_subscription?.cancel());
+    _closeControllers();
+    if (!_ready.isCompleted) {
+      _ready.completeError(StateError('Codex WebSocket 握手前已关闭'));
+    }
+    if (!_done.isCompleted) _done.complete();
+  }
+
+  void _closeControllers() {
+    if (!_stdout.isClosed) unawaited(_stdout.close());
+    if (!_stderr.isClosed) unawaited(_stderr.close());
+  }
+}
+
+int _indexOfHeaderEnd(List<int> bytes) {
+  for (var index = 0; index + 3 < bytes.length; index++) {
+    if (bytes[index] == 13 &&
+        bytes[index + 1] == 10 &&
+        bytes[index + 2] == 13 &&
+        bytes[index + 3] == 10) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 final class CodexResponseTooLargeException implements Exception {
   const CodexResponseTooLargeException(this.message, {this.id});
 
@@ -85,14 +367,19 @@ class CodexAgentClient
         RemoteAgentGlobalSettingsClient,
         RemoteAgentApiModelClient,
         RemoteAgentRuntimeClient,
-        RemoteAgentGenerationClient {
+        RemoteAgentGenerationClient,
+        RemoteAgentKeepAliveClient,
+        RemoteAgentIndependentConnectionClient,
+        RemoteAgentDurableSessionClient {
   CodexAgentClient({
     this.clientVersion = '1.8.0',
     this.requestTimeout = const Duration(seconds: 120),
     this.threadRequestTimeout = const Duration(seconds: 180),
     this.maxLineChars = 8 * 1024 * 1024,
     CodexSessionOpener? sessionOpener,
-  }) : _sessionOpener = sessionOpener ?? _openSession;
+    this.dedicatedHostFactory,
+  }) : _sessionOpener = sessionOpener ?? _openSession,
+       _usesDefaultSessionOpener = sessionOpener == null;
 
   static const _stderrLineLimit = 8 * 1024;
   static const _oversizedPrefixLimit = 64 * 1024;
@@ -103,6 +390,8 @@ class CodexAgentClient
   final Duration threadRequestTimeout;
   final int maxLineChars;
   final CodexSessionOpener _sessionOpener;
+  final bool _usesDefaultSessionOpener;
+  final CodexDedicatedHostFactory? dedicatedHostFactory;
 
   final CodexProtocolSession _protocol = CodexProtocolSession();
   final Map<CodexRequestId, Completer<CodexRpcResponse>> _pending = {};
@@ -115,9 +404,11 @@ class CodexAgentClient
   StreamSubscription<String>? _stderrSubscription;
   CodexProtocolGeneration? _scope;
   Future<void> _writeTail = Future<void>.value();
+  Future<void>? _keepAliveRequest;
   bool _closed = false;
   bool _connected = false;
   bool _lossEmitted = false;
+  RemoteServerClient? _dedicatedHost;
   RemoteServerClient? _settingsHost;
   ServerProfile? _connectedProfile;
   String _stdoutBuffer = '';
@@ -125,6 +416,7 @@ class CodexAgentClient
   bool _discardStdoutLine = false;
   String _stderrBuffer = '';
   bool _discardStderrLine = false;
+  String? _durableStopCommand;
 
   @override
   AgentKind get kind => AgentKind.codex;
@@ -140,6 +432,9 @@ class CodexAgentClient
     final scope = _scope;
     return scope?.isCurrent == true ? scope!.value : null;
   }
+
+  @override
+  bool get usesIndependentConnection => dedicatedHostFactory != null;
 
   @override
   Stream<RemoteAgentEvent> get events => _eventController.stream;
@@ -202,13 +497,58 @@ class CodexAgentClient
     if (_closed) throw StateError('${kind.label} 通道已经关闭');
     await disconnect();
 
+    var sessionHost = host;
+    RemoteServerClient? dedicatedHost;
+    final dedicatedHostFactory = this.dedicatedHostFactory;
+    if (dedicatedHostFactory != null) {
+      dedicatedHost = dedicatedHostFactory();
+      try {
+        await dedicatedHost.connect(profile);
+      } catch (_) {
+        dedicatedHost.close();
+        rethrow;
+      }
+      _dedicatedHost = dedicatedHost;
+      sessionHost = dedicatedHost;
+    }
+
     final scope = _protocol.beginGeneration();
     final command = buildCodexAppServerCommand(profile);
-    final CodexSession session;
+    late CodexSession session;
     try {
-      session = await _sessionOpener(host, command);
+      if (_usesDefaultSessionOpener &&
+          supportsDurableCodexAppServer(profile.remoteCommand)) {
+        try {
+          final durable = buildDurableCodexAppServerCommands(profile);
+          session = await _openDurableSession(sessionHost, durable);
+          _durableStopCommand = durable.stopCommand;
+          _emitDiagnostic(
+            '${kind.label} durable_transport=unix_socket state=reused_or_started',
+            isTransport: true,
+          );
+        } catch (error) {
+          final durable = buildDurableCodexAppServerCommands(profile);
+          try {
+            await sessionHost.run(
+              durable.stopCommand,
+              timeout: const Duration(seconds: 5),
+              maxOutputBytes: 16 * 1024,
+            );
+          } catch (_) {}
+          _durableStopCommand = null;
+          _emitDiagnostic(
+            '${kind.label} durable_transport=fallback_stdio detail=${_short(error)}',
+            isTransport: true,
+          );
+          session = await _sessionOpener(sessionHost, command);
+        }
+      } else {
+        _durableStopCommand = null;
+        session = await _sessionOpener(sessionHost, command);
+      }
     } catch (_) {
       _protocol.invalidateGeneration();
+      await _disconnectDedicatedHost();
       rethrow;
     }
     _scope = scope;
@@ -221,6 +561,9 @@ class CodexAgentClient
     _stderrBuffer = '';
     _discardStdoutLine = false;
     _discardStderrLine = false;
+    if (dedicatedHost != null) {
+      _watchDedicatedHost(dedicatedHost, scope);
+    }
     _listen(session, scope);
 
     try {
@@ -231,11 +574,34 @@ class CodexAgentClient
       initialize.resultOrThrow();
       await _write(scope.initialized().encodeLine());
       _connected = true;
+      // Settings and runtime operations remain on the host transport. The
+      // dedicated connection is reserved for the long-lived Agent channel.
       _settingsHost = host;
       _connectedProfile = profile;
     } catch (_) {
       await disconnect();
       rethrow;
+    }
+  }
+
+  /// Stops a durable remote app-server only for an explicit user disconnect.
+  /// Transport-loss recovery calls [disconnect] directly and deliberately
+  /// leaves the Unix-socket server running so an in-flight turn can continue.
+  @override
+  Future<void> stopDurableRemoteSession() async {
+    final command = _durableStopCommand;
+    final host = _settingsHost;
+    _durableStopCommand = null;
+    if (command == null || host == null || !host.isConnected) return;
+    try {
+      await host.run(
+        command,
+        timeout: const Duration(seconds: 8),
+        maxOutputBytes: 16 * 1024,
+      );
+    } catch (_) {
+      // Explicit local disconnect must still complete if the remote cleanup
+      // races a network loss or the daemon has already exited.
     }
   }
 
@@ -664,7 +1030,73 @@ class CodexAgentClient
     } catch (_) {
       // A transport may already have closed while the host state propagated.
     }
+    await _disconnectDedicatedHost();
     await session?.done.catchError((_) {});
+  }
+
+  @override
+  Future<void> keepAlive() {
+    final host = _dedicatedHost;
+    if (host == null ||
+        host is! RemoteServerKeepAliveClient ||
+        !host.isConnected) {
+      return Future<void>.value();
+    }
+    final pending = _keepAliveRequest;
+    if (pending != null) return pending;
+    final keepAliveHost = host as RemoteServerKeepAliveClient;
+    // Coordinate client-initiated JSONL writes with the SSH global request.
+    // The host transport is separate, so metrics and file channels cannot
+    // enter this queue.
+    late final Future<void> request;
+    final previous = _writeTail;
+    request = previous
+        .catchError((_) {})
+        .then((_) => keepAliveHost.keepAlive())
+        .whenComplete(() {
+          if (identical(_keepAliveRequest, request)) {
+            _keepAliveRequest = null;
+          }
+        });
+    _writeTail = request;
+    _keepAliveRequest = request;
+    return request;
+  }
+
+  Future<void> _disconnectDedicatedHost() async {
+    final host = _dedicatedHost;
+    _dedicatedHost = null;
+    if (host == null) return;
+    try {
+      await host.disconnect();
+    } catch (_) {
+      host.close();
+    }
+  }
+
+  void _watchDedicatedHost(
+    RemoteServerClient host,
+    CodexProtocolGeneration scope,
+  ) {
+    unawaited(() async {
+      try {
+        await host.done;
+        if (identical(_dedicatedHost, host) && scope.isCurrent) {
+          _emitDiagnostic(
+            '${kind.label} SSH transport_closed generation=${scope.value}',
+            isTransport: true,
+          );
+        }
+      } catch (error) {
+        if (identical(_dedicatedHost, host) && scope.isCurrent) {
+          _emitDiagnostic(
+            '${kind.label} SSH transport_error generation=${scope.value} '
+            'detail=${_short(error)}',
+            isTransport: true,
+          );
+        }
+      }
+    }());
   }
 
   @override
@@ -1045,8 +1477,20 @@ class CodexAgentClient
     if (!_eventController.isClosed) _eventController.add(event);
   }
 
-  void _emitDiagnostic(String message, {bool isStderr = false}) {
-    _emit(RemoteAgentDiagnostic(_short(message), isStderr: isStderr));
+  void _emitDiagnostic(
+    String message, {
+    bool isStderr = false,
+    bool isTransport = false,
+  }) {
+    final sanitized = sanitizeAgentDiagnostic(message);
+    if (sanitized.isEmpty) return;
+    _emit(
+      RemoteAgentDiagnostic(
+        _short(sanitized),
+        isStderr: isStderr,
+        isTransport: isTransport,
+      ),
+    );
   }
 
   void _emitConnectionLost(String message) {
@@ -1062,12 +1506,270 @@ class CodexAgentClient
   }
 }
 
+String sanitizeAgentDiagnostic(String value) => value
+    .replaceAll(
+      RegExp(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))'),
+      '',
+    )
+    .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '')
+    .trim();
+
 Future<CodexSession> _openSession(
   RemoteServerClient host,
   String command,
 ) async {
   final session = await host.requireSshClient().execute(command);
   return _SshCodexSession(session);
+}
+
+Future<CodexSession> _openDurableSession(
+  RemoteServerClient host,
+  DurableCodexAppServerCommands commands,
+) async {
+  final output = await host.run(
+    commands.startCommand,
+    timeout: const Duration(seconds: 15),
+    maxOutputBytes: 32 * 1024,
+  );
+  final socketLine = output
+      .split(RegExp(r'\r?\n'))
+      .lastWhere(
+        (line) => line.startsWith(_durableSocketMarker),
+        orElse: () => '',
+      );
+  final socketPath = socketLine.isEmpty
+      ? ''
+      : socketLine.substring(_durableSocketMarker.length).trim();
+  if (!socketPath.startsWith('/') || socketPath.length > 4096) {
+    throw StateError('远端 Codex app-server 没有返回有效的 Unix socket');
+  }
+
+  final channel = await host
+      .requireSshClient()
+      .forwardLocalUnix(socketPath)
+      .timeout(const Duration(seconds: 8));
+  return openCodexWebSocketSession(channel);
+}
+
+/// Performs an RFC 6455 client handshake over an already-forwarded SSH
+/// stream. Exposed at the package boundary so the framing contract can be
+/// tested without opening a real SSH connection.
+Future<CodexSession> openCodexWebSocketSession(
+  SSHSocket channel, {
+  String? webSocketKey,
+}) async {
+  final random = Random.secure();
+  final key =
+      webSocketKey ??
+      base64.encode(
+        Uint8List.fromList(List<int>.generate(16, (_) => random.nextInt(256))),
+      );
+  final session = _WebSocketCodexSession(channel, key);
+  channel.sink.add(
+    ascii.encode(
+      'GET / HTTP/1.1\r\n'
+      'Host: localhost\r\n'
+      'Upgrade: websocket\r\n'
+      'Connection: Upgrade\r\n'
+      'Sec-WebSocket-Key: $key\r\n'
+      'Sec-WebSocket-Version: 13\r\n'
+      '\r\n',
+    ),
+  );
+  await channel.flush();
+  try {
+    await session.ready.timeout(const Duration(seconds: 8));
+    return session;
+  } catch (_) {
+    session.terminate();
+    rethrow;
+  }
+}
+
+const _durableSocketMarker = '__CODEX_REMOTE_SOCKET=';
+
+class DurableCodexAppServerCommands {
+  const DurableCodexAppServerCommands({
+    required this.startCommand,
+    required this.stopCommand,
+    required this.key,
+  });
+
+  final String startCommand;
+  final String stopCommand;
+  final String key;
+}
+
+bool supportsDurableCodexAppServer(String remoteCommand) {
+  try {
+    _durableRemoteCommand(remoteCommand);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+DurableCodexAppServerCommands buildDurableCodexAppServerCommands(
+  ServerProfile profile,
+) {
+  final durableRemoteCommand = _durableRemoteCommand(profile.remoteCommand);
+  final keyMaterial = <String>[
+    profile.id,
+    profile.workspace.trim(),
+    profile.remoteCommand.trim(),
+  ].join('\u0000');
+  final key = sha256
+      .convert(utf8.encode(keyMaterial))
+      .toString()
+      .substring(0, 24);
+  final workspace = profile.workspace.trim();
+  final changeDirectory = workspace.isEmpty
+      ? ''
+      : 'cd -- ${_shellQuote(workspace)} && ';
+  final daemonCommand =
+      'if [ -r "\$HOME/.codex/codex-remote.env" ]; then '
+      '. "\$HOME/.codex/codex-remote.env"; fi; '
+      '$changeDirectory'
+      'exec $durableRemoteCommand';
+  final paths = _durablePathsScript(key);
+  final startScript =
+      '''
+set -eu
+umask 077
+$paths
+mkdir -p "\$dir"
+pid_matches() {
+  candidate=\$1
+  [ -n "\$candidate" ] && kill -0 "\$candidate" 2>/dev/null || return 1
+  if [ -r "/proc/\$candidate/cmdline" ]; then
+    tr '\\000' ' ' <"/proc/\$candidate/cmdline" | grep -F -- "\$socket" >/dev/null 2>&1
+  fi
+}
+attempt=0
+while ! mkdir "\$lockdir" 2>/dev/null; do
+  if [ -f "\$pidfile" ]; then
+    pid=\$(cat "\$pidfile" 2>/dev/null || true)
+    case "\$pid" in ''|*[!0-9]*) pid='' ;; esac
+    if pid_matches "\$pid" && [ -S "\$socket" ]; then
+      printf '%s%s\n' '$_durableSocketMarker' "\$socket"
+      exit 0
+    fi
+  fi
+  attempt=\$((attempt + 1))
+  if [ "\$attempt" -ge 80 ]; then
+    echo '等待 Codex app-server 启动锁超时' >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+trap 'rmdir "\$lockdir" 2>/dev/null || true' EXIT HUP INT TERM
+if [ -f "\$pidfile" ]; then
+  pid=\$(cat "\$pidfile" 2>/dev/null || true)
+  case "\$pid" in ''|*[!0-9]*) pid='' ;; esac
+  if pid_matches "\$pid" && [ -S "\$socket" ]; then
+    printf '%s%s\n' '$_durableSocketMarker' "\$socket"
+    exit 0
+  fi
+fi
+rm -f "\$socket" "\$pidfile"
+export CODEX_REMOTE_SOCKET="\$socket"
+if command -v setsid >/dev/null 2>&1; then
+  nohup setsid sh -c ${_shellQuote(daemonCommand)} </dev/null >"\$logfile" 2>&1 &
+else
+  nohup sh -c ${_shellQuote(daemonCommand)} </dev/null >"\$logfile" 2>&1 &
+fi
+pid=\$!
+printf '%s\n' "\$pid" >"\$pidfile"
+attempt=0
+while [ ! -S "\$socket" ]; do
+  if ! pid_matches "\$pid"; then
+    tail -c 4096 "\$logfile" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  attempt=\$((attempt + 1))
+  if [ "\$attempt" -ge 100 ]; then
+    echo 'Codex app-server Unix socket 启动超时' >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+printf '%s%s\n' '$_durableSocketMarker' "\$socket"
+''';
+  final stopScript =
+      '''
+set -u
+$paths
+pid_matches() {
+  candidate=\$1
+  [ -n "\$candidate" ] && kill -0 "\$candidate" 2>/dev/null || return 1
+  if [ -r "/proc/\$candidate/cmdline" ]; then
+    tr '\\000' ' ' <"/proc/\$candidate/cmdline" | grep -F -- "\$socket" >/dev/null 2>&1
+  fi
+}
+if [ -f "\$pidfile" ]; then
+  pid=\$(cat "\$pidfile" 2>/dev/null || true)
+  case "\$pid" in ''|*[!0-9]*) pid='' ;; esac
+  if pid_matches "\$pid"; then
+    kill "\$pid" 2>/dev/null || true
+    attempt=0
+    while pid_matches "\$pid" && [ "\$attempt" -lt 20 ]; do
+      attempt=\$((attempt + 1))
+      sleep 0.1
+    done
+    if pid_matches "\$pid"; then kill -9 "\$pid" 2>/dev/null || true; fi
+  fi
+fi
+rm -f "\$socket" "\$pidfile"
+rmdir "\$lockdir" 2>/dev/null || true
+''';
+  return DurableCodexAppServerCommands(
+    startCommand: 'sh -c ${_shellQuote(startScript)}',
+    stopCommand: 'sh -c ${_shellQuote(stopScript)}',
+    key: key,
+  );
+}
+
+String _durablePathsScript(String key) =>
+    '''
+base=\${XDG_RUNTIME_DIR:-/tmp/codex-remote-\$(id -u)}
+dir="\$base/codex-remote"
+socket="\$dir/$key.sock"
+pidfile="\$dir/$key.pid"
+lockdir="\$dir/$key.lock"
+logfile="\$dir/$key.log"
+''';
+
+String _durableRemoteCommand(String value) {
+  final command = value.trim();
+  if (command.isEmpty ||
+      !RegExp(r'(^|\s)app-server(?=\s|$)').hasMatch(command)) {
+    throw StateError('远程命令不是 Codex app-server');
+  }
+  if (RegExp(
+    r'''--listen(?:\s+|=)(?:"unix://[^\"]*"|'unix://[^']*'|unix://\S*)''',
+  ).hasMatch(command)) {
+    throw StateError('远程命令已经指定 Unix socket');
+  }
+  final stdioListen = RegExp(
+    r'''--listen(?:\s+|=)(?:"stdio://"|'stdio://'|stdio://)''',
+  );
+  if (stdioListen.hasMatch(command)) {
+    return command.replaceFirst(
+      stdioListen,
+      r'--listen "unix://$CODEX_REMOTE_SOCKET"',
+    );
+  }
+  final stdioFlag = RegExp(r'(^|\s)--stdio(?=\s|$)');
+  if (stdioFlag.hasMatch(command)) {
+    return command.replaceFirstMapped(
+      stdioFlag,
+      (match) => '${match.group(1)}--listen "unix://\$CODEX_REMOTE_SOCKET"',
+    );
+  }
+  if (RegExp(r'(^|\s)--listen(?=\s|=)').hasMatch(command)) {
+    throw StateError('远程命令使用了非 stdio listener');
+  }
+  return '$command --listen "unix://\$CODEX_REMOTE_SOCKET"';
 }
 
 String buildCodexAppServerCommand(ServerProfile profile) {

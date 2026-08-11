@@ -1,18 +1,40 @@
 import 'package:codex_remote/src/app/codex_remote_app.dart';
+import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart' hide ConnectionState;
 import 'package:codex_remote/src/domain/models.dart'
     as domain
     show ConnectionState;
+import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/ssh/server_connection_manager.dart';
+import 'package:codex_remote/src/ui/theme.dart';
 import 'package:codex_remote/src/ui/thread_list_screen.dart';
 import 'package:codex_remote/src/ui/work_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+class _MemoryStore implements ProfileStore {
+  @override
+  Future<StoredProfiles> load() async => const StoredProfiles();
+
+  @override
+  Future<void> save(StoredProfiles value) async {}
+}
+
+class _ThreadListController extends AppController {
+  // AppController keeps its injected fields private to the production library.
+  // ignore: use_super_parameters
+  _ThreadListController(ProfileStore store, ServerConnectionManager manager)
+    : super(store, manager);
+
+  void showState(AppUiState value) => state = value;
+}
+
 void main() {
-  test('hides cached threads while the agent lane is disconnected', () {
+  test('keeps cached threads visible while the agent lane reconnects', () {
     const threads = <AgentThread>[AgentThread(id: 'one', title: 'One')];
 
-    expect(visibleAgentThreads(threads, '', agentConnected: false), isEmpty);
+    expect(visibleAgentThreads(threads, '', agentConnected: false), threads);
     expect(visibleAgentThreads(threads, '', agentConnected: true), threads);
   });
 
@@ -121,5 +143,63 @@ void main() {
       ),
       isFalse,
     );
+  });
+
+  testWidgets('right-aligns the thread source after a long workspace path', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(360, 800);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    const profile = ServerProfile(
+      id: 'server',
+      name: '测试服务器',
+      host: 'example.test',
+      username: 'root',
+      authMode: AuthMode.password,
+    );
+    const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: const ThreadListScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    controller.showState(
+      AppUiState(
+        profiles: [profile],
+        selectedProfileId: 'server',
+        connectionStates: {
+          'server': domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentConnectionStates: {
+          key: domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentThreadLists: {
+          key: const [
+            AgentThread(
+              id: 'thread',
+              title: '检查任务来源标签布局',
+              cwd: '/home/yan/projects/a-very-long-workspace-directory',
+              source: 'vscode',
+            ),
+          ],
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    final sourceRight = tester.getTopRight(find.text('vscode')).dx;
+    expect(sourceRight, greaterThanOrEqualTo(338));
   });
 }

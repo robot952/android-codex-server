@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart'
     show CupertinoSliverRefreshControl, RefreshIndicatorMode;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -65,6 +66,10 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   int? _syncedComposerClearNonce;
   int? _timelineSignature;
   double _lastBottomInset = 0;
+  String? _viewportThreadId;
+  bool _userScrolledAway = false;
+  bool _initialBottomPending = true;
+  bool _bottomAnchorScheduled = false;
 
   @override
   void initState() {
@@ -237,9 +242,11 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
               onOpenRemoteFile: _downloadRemoteFile,
               onOpenDiff: _openDiff,
               onOpenSubAgent: controller.openSubAgentThread,
-              onRefresh: state.olderTurnsCursor == null
+              onRefresh: state.olderTurnsCursor == null && !_refreshing
                   ? null
                   : () => _loadOlder(controller),
+              onUserScroll: _onUserScroll,
+              initialBottomPending: _initialBottomPending,
               showJumpToBottom: _showJumpToBottom,
               onJumpToBottom: _jumpToBottom,
               onReview: controller.reviewChanges,
@@ -755,7 +762,26 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     }
   }
 
+  void _onUserScroll(UserScrollNotification notification) {
+    if (notification.direction == ScrollDirection.idle) return;
+    final distance =
+        notification.metrics.maxScrollExtent - notification.metrics.pixels;
+    final away = distance > 180;
+    _initialBottomPending = false;
+    if (away == _userScrolledAway || !mounted) return;
+    setState(() => _userScrolledAway = away);
+  }
+
   void _syncViewport(AppUiState state, double bottomInset) {
+    final threadId = state.activeThread?.id;
+    final threadChanged = threadId != _viewportThreadId;
+    if (threadChanged) {
+      _viewportThreadId = threadId;
+      _timelineSignature = null;
+      _userScrolledAway = false;
+      _initialBottomPending = threadId != null;
+      _showJumpToBottom = false;
+    }
     final last = state.timeline.isEmpty ? null : state.timeline.last;
     final signature = Object.hash(
       state.activeThread?.id,
@@ -765,6 +791,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       last?.output.length,
       state.aggregateDiff.length,
       state.running,
+      state.loading,
       state.turnTiming?.startedAtMillis,
       state.turnTiming?.completedAtMillis,
       state.turnTiming?.stopped,
@@ -773,33 +800,64 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     final viewportShrank = bottomInset > _lastBottomInset;
     _timelineSignature = signature;
     _lastBottomInset = bottomInset;
-    if ((!transcriptChanged && !viewportShrank) || _showJumpToBottom) return;
+    if ((!transcriptChanged && !viewportShrank && !threadChanged) ||
+        _refreshing ||
+        state.olderTurnsLoading ||
+        (_userScrolledAway && !_initialBottomPending)) {
+      return;
+    }
+    _scheduleBottomAnchor(threadId);
+  }
+
+  void _scheduleBottomAnchor(String? threadId) {
+    if (_bottomAnchorScheduled || threadId == null) return;
+    _bottomAnchorScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients || _showJumpToBottom) {
+      _bottomAnchorScheduled = false;
+      if (!mounted || threadId != _viewportThreadId) return;
+      if (_userScrolledAway && !_initialBottomPending) return;
+      if (!_scrollController.hasClients ||
+          !_scrollController.position.hasContentDimensions) {
+        _scheduleBottomAnchor(threadId);
         return;
       }
+      final current = ref.read(appControllerProvider);
+      if (current.activeThread?.id != threadId) return;
+      if (current.loading && current.timeline.isEmpty) return;
       // Streaming deltas and IME frames can arrive faster than an animation.
       // A direct jump keeps the transcript edge attached to the composer.
       _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      if (_initialBottomPending) {
+        setState(() => _initialBottomPending = false);
+      }
     });
   }
 
   Future<void> _loadOlder(AppController controller) async {
     if (_refreshing) return;
-    setState(() => _refreshing = true);
-    final beforeExtent = _scrollController.hasClients
-        ? _scrollController.position.maxScrollExtent
+    setState(() {
+      _refreshing = true;
+      _userScrolledAway = true;
+      _initialBottomPending = false;
+    });
+    final beforePosition = _scrollController.hasClients
+        ? _scrollController.position
         : null;
+    final beforeExtent = beforePosition?.maxScrollExtent;
+    final beforePixels = beforePosition?.pixels.clamp(
+      beforePosition.minScrollExtent,
+      beforePosition.maxScrollExtent,
+    );
     try {
       await controller.loadOlderTurns();
-      if (beforeExtent != null && mounted) {
+      if (beforeExtent != null && beforePixels != null && mounted) {
         await WidgetsBinding.instance.endOfFrame;
         if (_scrollController.hasClients) {
           final position = _scrollController.position;
           final addedExtent = position.maxScrollExtent - beforeExtent;
           if (addedExtent > 0) {
             position.jumpTo(
-              (position.pixels + addedExtent).clamp(
+              (beforePixels + addedExtent).clamp(
                 position.minScrollExtent,
                 position.maxScrollExtent,
               ),
@@ -1896,6 +1954,8 @@ class _Transcript extends StatelessWidget {
     required this.onOpenDiff,
     required this.onOpenSubAgent,
     required this.onRefresh,
+    required this.onUserScroll,
+    required this.initialBottomPending,
     required this.showJumpToBottom,
     required this.onJumpToBottom,
     required this.onReview,
@@ -1910,6 +1970,8 @@ class _Transcript extends StatelessWidget {
   final ValueChanged<FileChange> onOpenDiff;
   final void Function(String threadId, String agentName) onOpenSubAgent;
   final Future<void> Function()? onRefresh;
+  final ValueChanged<UserScrollNotification> onUserScroll;
+  final bool initialBottomPending;
   final bool showJumpToBottom;
   final VoidCallback onJumpToBottom;
   final Future<void> Function() onReview;
@@ -1999,7 +2061,16 @@ class _Transcript extends StatelessWidget {
         ),
       );
     }
-    contentItems.add(const SizedBox(height: 6));
+    contentItems.add(
+      const KeyedSubtree(
+        key: ValueKey('transcript-tail-spacer'),
+        child: SizedBox(height: 6),
+      ),
+    );
+    final contentKeyToIndex = <Key, int>{
+      for (var index = 0; index < contentItems.length; index += 1)
+        if (contentItems[index].key != null) contentItems[index].key!: index,
+    };
     final list = CustomScrollView(
       controller: controller,
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -2007,24 +2078,32 @@ class _Transcript extends StatelessWidget {
         parent: AlwaysScrollableScrollPhysics(),
       ),
       slivers: [
-        if (onRefresh != null)
-          CupertinoSliverRefreshControl(
-            refreshTriggerPullDistance: 82,
-            refreshIndicatorExtent: 54,
-            onRefresh: onRefresh,
-            builder: _buildOlderHistoryIndicator,
-          ),
+        // Keep the refresh sliver mounted after a page exhausts its cursor.
+        // CupertinoSliverRefreshControl completes its own retract animation
+        // after onRefresh resolves; removing it in that window can leave a
+        // disposed render sliver with stale paint geometry.
+        CupertinoSliverRefreshControl(
+          refreshTriggerPullDistance: 82,
+          refreshIndicatorExtent: 54,
+          onRefresh: onRefresh,
+          builder: _buildOlderHistoryIndicator,
+        ),
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(9, 10, 9, 10),
           sliver: SliverList(
-            delegate: SliverChildBuilderDelegate((context, index) {
-              return Padding(
-                padding: EdgeInsets.only(
-                  bottom: index == contentItems.length - 1 ? 0 : 10,
-                ),
-                child: contentItems[index],
-              );
-            }, childCount: contentItems.length),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                return Padding(
+                  key: contentItems[index].key,
+                  padding: EdgeInsets.only(
+                    bottom: index == contentItems.length - 1 ? 0 : 10,
+                  ),
+                  child: contentItems[index],
+                );
+              },
+              childCount: contentItems.length,
+              findChildIndexCallback: (key) => contentKeyToIndex[key],
+            ),
           ),
         ),
       ],
@@ -2033,7 +2112,21 @@ class _Transcript extends StatelessWidget {
       children: [
         if (entries.isEmpty && !state.loading && !showTiming)
           const Center(child: Text('暂无消息')),
-        Positioned.fill(child: list),
+        Positioned.fill(
+          child: IgnorePointer(
+            ignoring: initialBottomPending,
+            child: Opacity(
+              opacity: initialBottomPending ? 0 : 1,
+              child: NotificationListener<UserScrollNotification>(
+                onNotification: (notification) {
+                  onUserScroll(notification);
+                  return false;
+                },
+                child: list,
+              ),
+            ),
+          ),
+        ),
         if (showJumpToBottom)
           Positioned(
             left: 0,
@@ -2280,7 +2373,11 @@ class _TimelineCard extends StatelessWidget {
       );
     }
     if (entry.kind == TimelineKind.agentMessage) {
-      return _MarkdownMessage(entry.text, onOpenRemoteFile: onOpenRemoteFile);
+      return _MarkdownMessage(
+        entry.text,
+        onOpenRemoteFile: onOpenRemoteFile,
+        onOpenRemoteImage: onOpenImage,
+      );
     }
     if (entry.kind == TimelineKind.reasoning ||
         entry.kind == TimelineKind.plan) {
@@ -2310,6 +2407,7 @@ class _TimelineCard extends StatelessWidget {
       TimelineKind.tool => _ToolTimelineCard(entry: entry),
       TimelineKind.review => _ReviewTimelineCard(
         entry: entry,
+        onOpenRemoteImage: onOpenImage,
         onOpenRemoteFile: onOpenRemoteFile,
       ),
       TimelineKind.notice || TimelineKind.subAgent => Text(
@@ -2685,10 +2783,12 @@ class _ToolTimelineCard extends StatelessWidget {
 class _ReviewTimelineCard extends StatelessWidget {
   const _ReviewTimelineCard({
     required this.entry,
+    required this.onOpenRemoteImage,
     required this.onOpenRemoteFile,
   });
 
   final TimelineEntry entry;
+  final _OpenRemoteImage onOpenRemoteImage;
   final Future<void> Function(String path) onOpenRemoteFile;
 
   @override
@@ -2714,7 +2814,11 @@ class _ReviewTimelineCard extends StatelessWidget {
           ),
           if (entry.text.trim().isNotEmpty) ...[
             const SizedBox(height: 8),
-            _MarkdownMessage(entry.text, onOpenRemoteFile: onOpenRemoteFile),
+            _MarkdownMessage(
+              entry.text,
+              onOpenRemoteFile: onOpenRemoteFile,
+              onOpenRemoteImage: onOpenRemoteImage,
+            ),
           ],
         ],
       ),
@@ -3202,10 +3306,15 @@ _CommandStatus? _commandStatus(String raw) {
 }
 
 class _MarkdownMessage extends StatelessWidget {
-  const _MarkdownMessage(this.text, {required this.onOpenRemoteFile});
+  const _MarkdownMessage(
+    this.text, {
+    required this.onOpenRemoteFile,
+    required this.onOpenRemoteImage,
+  });
 
   final String text;
   final Future<void> Function(String path) onOpenRemoteFile;
+  final _OpenRemoteImage onOpenRemoteImage;
 
   @override
   Widget build(BuildContext context) {
@@ -3213,6 +3322,7 @@ class _MarkdownMessage extends StatelessWidget {
     final base = MarkdownStyleSheet.fromTheme(theme);
     return MarkdownBody(
       data: markdownWithVisibleLinkDestinations(text),
+      inlineSyntaxes: workMarkdownInlineSyntaxes,
       selectable: true,
       softLineBreak: true,
       styleSheet: base.copyWith(
@@ -3255,7 +3365,11 @@ class _MarkdownMessage extends StatelessWidget {
         if (href == null) return;
         final remotePath = remoteFilePathFromLink(href);
         if (remotePath != null) {
-          unawaited(onOpenRemoteFile(remotePath));
+          if (isPreviewableImagePath(remotePath)) {
+            unawaited(onOpenRemoteImage(remotePath));
+          } else {
+            unawaited(onOpenRemoteFile(remotePath));
+          }
         } else {
           unawaited(_confirmAndOpenLink(context, href));
         }

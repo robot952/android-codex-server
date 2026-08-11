@@ -19,10 +19,21 @@ The app's remote command for direct mode is:
 ~/.local/bin/codex-remote app-server --listen stdio://
 ```
 
-Direct mode is the simplest end-to-end test. The app-server exits when SSH disconnects, while its
-persisted threads remain available on the next connection.
+The command remains the reproducible profile value and smoke-test entrypoint. On an unrestricted
+shell account, App `1.8.19` and later transparently replace its stdio listener with a private Unix
+socket and detach the app-server before opening the SSH forwarding channel. A mobile SSH socket can
+then be recreated without terminating the remote app-server or its active turn. If Unix forwarding
+or the listener is unavailable, the App cleans up and falls back to the direct stdio behavior below.
 
 ## Connection modes
+
+### Durable private Unix listener (default App path)
+
+The App derives a stable per-profile key, starts the configured Codex app-server with
+`--listen unix:///...sock` under `nohup`/`setsid`, and connects through OpenSSH
+`direct-streamlocal@openssh.com`. WebSocket messages never leave the SSH tunnel and no TCP listener
+is created. Unexpected transport loss keeps the process and active turn alive; explicit App
+disconnect stops the process. The server must allow a normal shell and Unix-socket forwarding.
 
 ### Direct stdio (the pinned npm install)
 
@@ -34,7 +45,8 @@ versioned npm prefix. Use this mode for the reproducible setup in this repositor
 ```
 
 The app-server exits when SSH disconnects, while persisted threads remain available on the next
-connection.
+connection. This remains the fallback for restricted/forced-command SSH accounts and servers that
+disable `direct-streamlocal@openssh.com`.
 
 ### Durable daemon (optional, standalone installer only)
 

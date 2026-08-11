@@ -151,6 +151,7 @@ class AppController extends StateNotifier<AppUiState> {
   final Set<AgentConnectionKey> _subAgentOpenStarting = {};
   final Set<AgentConnectionKey> _threadMutationLanes = {};
   final Map<String, ThreadGoal> _threadGoals = {};
+  int _localHeartbeatSequence = 0;
 
   /// Pending server requests are retained per `(lane, threadId)`.  A Codex
   /// app-server channel is shared by all threads in a lane, so filtering only
@@ -295,9 +296,17 @@ class AppController extends StateNotifier<AppUiState> {
     );
     final connectionIdentityChanged =
         existing != null && !existing.hasSameConnectionIdentity(normalized);
+    final agentLaunchIdentityChanged =
+        existing != null &&
+        (existing.remoteCommand.trim() != normalized.remoteCommand.trim() ||
+            existing.workspace.trim() != normalized.workspace.trim());
     if (connectionIdentityChanged) {
       _forgetRetainedConnection(normalized.id);
       _clearSetupStates(normalized.id);
+    } else if (agentLaunchIdentityChanged) {
+      _retainedAgentConnections.removeWhere(
+        (key) => key.profileId == normalized.id,
+      );
     }
     if (existing != null &&
         !connectionIdentityChanged &&
@@ -319,6 +328,30 @@ class AppController extends StateNotifier<AppUiState> {
       profiles.add(normalized);
     } else {
       profiles[index] = normalized;
+    }
+    if (connectionIdentityChanged || agentLaunchIdentityChanged) {
+      try {
+        await _agents.disconnect(normalized.id);
+      } catch (error, stack) {
+        _diagnostics.warn(
+          'Agent',
+          'profile_cleanup_failed profile=${normalized.id}',
+          error,
+          stack,
+        );
+      }
+    }
+    if (connectionIdentityChanged) {
+      try {
+        await _connections.disconnect(normalized.id);
+      } catch (error, stack) {
+        _diagnostics.warn(
+          'SSH',
+          'profile_cleanup_failed profile=${normalized.id}',
+          error,
+          stack,
+        );
+      }
     }
     _connections.registerProfile(normalized);
     _agents.registerProfile(normalized);
@@ -414,6 +447,26 @@ class AppController extends StateNotifier<AppUiState> {
     }
     if (state.fileManagerProfileId == profileId) {
       _invalidateFileManagerRequests();
+    }
+    try {
+      await _agents.disconnect(profileId);
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'Agent',
+        'profile_delete_cleanup_failed profile=$profileId',
+        error,
+        stack,
+      );
+    }
+    try {
+      await _connections.disconnect(profileId);
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'SSH',
+        'profile_delete_cleanup_failed profile=$profileId',
+        error,
+        stack,
+      );
     }
     _agents.remove(profileId);
     _connections.remove(profileId);
@@ -717,14 +770,76 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   /// Called by the Android foreground service while the Activity is paused.
-  /// Keepalive is host-only and does not touch the Agent exec channel, so an
-  /// active turn remains the sole long-lived channel on the connection.
-  Future<void> keepAliveRetainedConnections() async {
+  /// Host features and Agent lanes own separate SSH transports, matching the
+  /// original Android architecture, so their heartbeats cannot disrupt an
+  /// active app-server exec channel through metrics or file operations.
+  Future<void> keepAliveRetainedConnections({int? heartbeatSequence}) async {
     await _initialization;
     if (!mounted) return;
-    final profileIds = _retainedHostConnections.toList(growable: false);
-    for (final profileId in profileIds) {
-      await _connections.keepAlive(profileId);
+    final sequence = heartbeatSequence != null && heartbeatSequence > 0
+        ? heartbeatSequence
+        : ++_localHeartbeatSequence;
+    final profileIds = _retainedHostConnections.toList()..sort();
+    final agentKeys = _retainedAgentConnections.toList()
+      ..sort((left, right) {
+        final profile = left.profileId.compareTo(right.profileId);
+        return profile != 0
+            ? profile
+            : left.agent.name.compareTo(right.agent.name);
+      });
+    await Future.wait<void>([
+      for (final profileId in profileIds)
+        _traceHeartbeatLane(
+          sequence: sequence,
+          lane: 'host',
+          profileId: profileId,
+          agent: null,
+          phase: _connections.states[profileId]?.phase,
+          operation: () => _connections.keepAlive(profileId),
+        ),
+      for (final key in agentKeys)
+        _traceHeartbeatLane(
+          sequence: sequence,
+          lane: 'agent',
+          profileId: key.profileId,
+          agent: key.agent.name,
+          phase: _agents.states[key]?.phase,
+          operation: () => _agents.keepAlive(key),
+        ),
+    ]);
+  }
+
+  Future<void> _traceHeartbeatLane({
+    required int sequence,
+    required String lane,
+    required String profileId,
+    required String? agent,
+    required ConnectionPhase? phase,
+    required Future<void> Function() operation,
+  }) async {
+    final agentDetail = agent == null ? '' : ' agent=$agent';
+    final startedAt = Stopwatch()..start();
+    _diagnostics.info(
+      'Heartbeat',
+      'lane_start sequence=$sequence lane=$lane profile=$profileId$agentDetail '
+          'phase=${phase?.name ?? 'none'}',
+    );
+    try {
+      await operation();
+      _diagnostics.info(
+        'Heartbeat',
+        'lane_success sequence=$sequence lane=$lane profile=$profileId$agentDetail '
+            'elapsedMs=${startedAt.elapsedMilliseconds}',
+      );
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'Heartbeat',
+        'lane_failed sequence=$sequence lane=$lane profile=$profileId$agentDetail '
+            'elapsedMs=${startedAt.elapsedMilliseconds}',
+        error,
+        stack,
+      );
+      rethrow;
     }
   }
 
@@ -836,6 +951,14 @@ class AppController extends StateNotifier<AppUiState> {
       profileId: profileId,
       agent: state.activeAgent,
     );
+    // Returning from the server list should reuse the live lane and its last
+    // snapshot. Explicit refresh/search paths still call _loadAgentData.
+    final agentState = _agents.states[key];
+    if (agentState?.phase == ConnectionPhase.connected &&
+        state.agentThreadLists.containsKey(key) &&
+        state.agentModelLists.containsKey(key)) {
+      return;
+    }
     await _loadAgentData(key, profile, includeModels: true);
   }
 
@@ -4794,7 +4917,13 @@ class AppController extends StateNotifier<AppUiState> {
       if (accepted) await _threadOpenRequests[requestKey]?.future;
       return;
     }
-    if (targetScreen == AppScreen.threads) {
+    // The thread list already owns a lane-scoped cache. Connection recovery
+    // must not replace it with a full-screen loading state or issue an
+    // automatic thread/list request merely because Android resumed the app.
+    // A process restart or an interrupted first load has no cache and still
+    // needs the normal initial request.
+    if (targetScreen == AppScreen.threads &&
+        !state.agentThreadLists.containsKey(key)) {
       await _loadAgentData(
         key,
         profile,
@@ -4989,8 +5118,26 @@ class AppController extends StateNotifier<AppUiState> {
     if (!mounted) return;
     final active = _isActiveKey(envelope.key);
     switch (envelope.event) {
-      case RemoteAgentDiagnostic(:final message):
-        if (active) state = state.copyWith(diagnostic: message);
+      case RemoteAgentDiagnostic(
+        :final message,
+        :final isStderr,
+        :final isTransport,
+      ):
+        if (isTransport) {
+          _diagnostics.info(
+            'AgentTransport',
+            'profile=${envelope.key.profileId} '
+                'agent=${envelope.key.agent.name} detail=$message',
+          );
+        } else if (isStderr) {
+          _diagnostics.info(
+            'AgentStderr',
+            'profile=${envelope.key.profileId} '
+                'agent=${envelope.key.agent.name} detail=$message',
+          );
+        } else if (active) {
+          state = state.copyWith(diagnostic: message);
+        }
       case RemoteAgentConnectionLost(:final message):
         _diagnostics.info(
           'Agent',

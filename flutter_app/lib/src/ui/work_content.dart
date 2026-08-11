@@ -9,6 +9,11 @@ const Set<String> _imageExtensions = <String>{
   '.bmp',
 };
 
+bool isPreviewableImagePath(String path) {
+  final lower = path.trim().toLowerCase();
+  return lower.startsWith('/') && _imageExtensions.any(lower.endsWith);
+}
+
 const Set<String> _textAttachmentExtensions = <String>{
   'cfg',
   'conf',
@@ -86,8 +91,7 @@ String? imagePreviewPath(TimelineEntry entry) {
           path.length >= 2 && path.startsWith('"') && path.endsWith('"')
           ? path.substring(1, path.length - 1)
           : path;
-      final lower = unquoted.toLowerCase();
-      if (unquoted.startsWith('/') && _imageExtensions.any(lower.endsWith)) {
+      if (isPreviewableImagePath(unquoted)) {
         return unquoted;
       }
     }

@@ -24,8 +24,7 @@ class ServerMetricsStrip extends StatelessWidget {
         : (download ?? 0) + (upload ?? 0);
     final detail = _resourceDetails(metrics);
 
-    const itemFlex = 3;
-    final networkFlex = compactForServerList ? 4 : 7;
+    final spacing = compactForServerList ? 4.0 : 11.0;
 
     return Semantics(
       container: true,
@@ -35,14 +34,13 @@ class ServerMetricsStrip extends StatelessWidget {
           '磁盘 ${_formatMetric(metrics?.diskPercent)}，'
           '网络下载 ${_formatNetworkRate(download, compact: false)}，'
           '上传 ${_formatNetworkRate(upload, compact: false)}',
-      child: Row(
-        mainAxisSize: MainAxisSize.max,
-        mainAxisAlignment: MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            flex: itemFlex,
-            child: _metric(
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            _metric(
               context,
               icon: Icons.speed,
               label: 'CPU',
@@ -50,11 +48,8 @@ class ServerMetricsStrip extends StatelessWidget {
               displayValue: _formatMetric(metrics?.cpuPercent),
               detail: detail,
             ),
-          ),
-          SizedBox(width: compactForServerList ? 4 : 11),
-          Expanded(
-            flex: itemFlex,
-            child: _metric(
+            SizedBox(width: spacing),
+            _metric(
               context,
               icon: Icons.memory,
               label: '内存',
@@ -62,11 +57,8 @@ class ServerMetricsStrip extends StatelessWidget {
               displayValue: _formatMetric(metrics?.memoryPercent),
               detail: detail,
             ),
-          ),
-          SizedBox(width: compactForServerList ? 4 : 11),
-          Expanded(
-            flex: itemFlex,
-            child: _metric(
+            SizedBox(width: spacing),
+            _metric(
               context,
               icon: Icons.storage,
               label: '磁盘',
@@ -74,11 +66,8 @@ class ServerMetricsStrip extends StatelessWidget {
               displayValue: _formatMetric(metrics?.diskPercent),
               detail: detail,
             ),
-          ),
-          SizedBox(width: compactForServerList ? 4 : 11),
-          Expanded(
-            flex: networkFlex,
-            child: _metric(
+            SizedBox(width: spacing),
+            _metric(
               context,
               icon: Icons.network_check,
               label: compactForServerList ? '网络总速率' : '网络',
@@ -88,8 +77,8 @@ class ServerMetricsStrip extends StatelessWidget {
                         '↑${_formatNetworkRate(upload, compact: true)}',
               detail: detail,
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

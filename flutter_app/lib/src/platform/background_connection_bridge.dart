@@ -95,6 +95,39 @@ String? _decodeEntrypointValue(String encoded) {
   }
 }
 
+class BackgroundHeartbeat {
+  const BackgroundHeartbeat({
+    required this.sequence,
+    required this.sentAtEpochMillis,
+    required this.skippedBefore,
+  });
+
+  factory BackgroundHeartbeat.fromChannelArguments(Object? arguments) {
+    final values = arguments is Map ? arguments : const <Object?, Object?>{};
+    int readInt(String key) {
+      final value = values[key];
+      return value is int && value >= 0 ? value : 0;
+    }
+
+    return BackgroundHeartbeat(
+      sequence: readInt('sequence'),
+      sentAtEpochMillis: readInt('sentAtEpochMs'),
+      skippedBefore: readInt('skippedBefore'),
+    );
+  }
+
+  final int sequence;
+  final int sentAtEpochMillis;
+  final int skippedBefore;
+
+  int deliveryDelayMillis(DateTime receivedAt) {
+    if (sentAtEpochMillis <= 0) return 0;
+    return (receivedAt.millisecondsSinceEpoch - sentAtEpochMillis)
+        .clamp(0, 24 * 60 * 60 * 1000)
+        .toInt();
+  }
+}
+
 /// Small bridge to the Android foreground service that keeps the Flutter
 /// process and its SSH/Codex sockets eligible to run while the activity is in
 /// the background. The native service persists only the connection intent and
@@ -111,10 +144,12 @@ class BackgroundConnectionBridge {
   /// Registers the native foreground-service heartbeat callback. The service
   /// invokes this continuously while a retained connection exists, so SSH
   /// keepalive traffic does not depend on a Dart timer or the UI lifecycle.
-  void registerHeartbeat(Future<void> Function() callback) {
+  void registerHeartbeat(
+    Future<void> Function(BackgroundHeartbeat heartbeat) callback,
+  ) {
     _channel.setMethodCallHandler((call) async {
       if (call.method != 'heartbeat') return null;
-      await callback();
+      await callback(BackgroundHeartbeat.fromChannelArguments(call.arguments));
       return true;
     });
   }
