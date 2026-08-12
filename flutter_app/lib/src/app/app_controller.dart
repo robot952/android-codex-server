@@ -1498,6 +1498,14 @@ class AppController extends StateNotifier<AppUiState> {
     final generation = _agents.generation(key);
     _agentSettingsProfileId = profile.id;
     _agentSettingsAgent = agent;
+    _diagnostics.info(
+      'AgentSettings',
+      'test_requested profile=${profile.id} agent=${agent.name} '
+          'baseUrl=${baseUrl.trim().isNotEmpty ? 'configured' : 'default'} '
+          'apiKey=${apiKey.trim().isNotEmpty ? 'configured' : 'missing'} '
+          'proxy=${proxyUrl.trim().isNotEmpty ? 'configured' : 'none'} '
+          'model=${testModel.trim().isNotEmpty ? 'configured' : 'missing'}',
+    );
     state = state.copyWith(
       agentSettingsTesting: true,
       agentSettingsTestResult: null,
@@ -1525,6 +1533,12 @@ class AppController extends StateNotifier<AppUiState> {
         agentSettingsTestResult: result,
         agentSettingsError: null,
       );
+      _diagnostics.info(
+        'AgentSettings',
+        'test_completed profile=${profile.id} agent=${agent.name} '
+            'successful=${result.successful} '
+            'reason=${_agentSettingsTestReason(result)}',
+      );
     } catch (error) {
       if (!_isAgentSettingsRequestCurrent(
         requestId,
@@ -1534,10 +1548,16 @@ class AppController extends StateNotifier<AppUiState> {
       )) {
         return;
       }
+      final message = _message(error, '无法测试 ${agent.label} API 连接');
       state = state.copyWith(
         agentSettingsTesting: false,
         agentSettingsTestResult: null,
-        agentSettingsError: _message(error, '无法测试 ${agent.label} API 连接'),
+        agentSettingsError: message,
+      );
+      _diagnostics.warn(
+        'AgentSettings',
+        'test_failed profile=${profile.id} agent=${agent.name} '
+            'error=${error.runtimeType}',
       );
     }
   }
@@ -6445,6 +6465,21 @@ String _message(Object error, String fallback) {
       .replaceFirst(RegExp(r'^[^:]+:\s*'), '')
       .trim();
   return message.isEmpty ? fallback : message;
+}
+
+String _agentSettingsTestReason(AgentConnectionTestResult result) {
+  if (result.successful) return 'success';
+  final message = result.message;
+  if (message.contains('API 密钥后再测试')) return 'missing_api_key';
+  if (message.contains('测试模型后再测试')) return 'missing_test_model';
+  if (message.contains('无法解析 API 域名')) return 'dns';
+  if (message.contains('无法连接 API 服务端口')) return 'connect';
+  if (message.contains('连接 API 服务超时')) return 'timeout';
+  if (message.contains('TLS')) return 'tls';
+  if (message.contains('API 密钥无效')) return 'unauthorized';
+  if (message.contains('API 服务返回异常')) return 'http_error';
+  if (message.contains('未安装 curl')) return 'curl_unavailable';
+  return 'rejected';
 }
 
 extension _StringFallback on String {

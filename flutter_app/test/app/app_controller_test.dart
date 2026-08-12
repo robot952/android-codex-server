@@ -1225,12 +1225,7 @@ void main() {
         connections,
         clientFactory: (kind) => agent,
       );
-      final controller = AppController(
-        store,
-        connections,
-        agents,
-        diagnostics,
-      );
+      final controller = AppController(store, connections, agents, diagnostics);
       addTearDown(() async {
         controller.dispose();
         await agents.close();
@@ -1269,12 +1264,7 @@ void main() {
         connections,
         clientFactory: (kind) => agent,
       );
-      final controller = AppController(
-        store,
-        connections,
-        agents,
-        diagnostics,
-      );
+      final controller = AppController(store, connections, agents, diagnostics);
       addTearDown(() async {
         controller.dispose();
         await agents.close();
@@ -2922,7 +2912,8 @@ void main() {
       connections,
       clientFactory: (kind) => agent,
     );
-    final controller = AppController(store, connections, agents);
+    final diagnostics = _RecordingDiagnosticLogger();
+    final controller = AppController(store, connections, agents, diagnostics);
     addTearDown(() async {
       controller.dispose();
       await agents.close();
@@ -2946,6 +2937,26 @@ void main() {
     expect(agent.testedProxyUrl, 'http://proxy.example:7890');
     expect(agent.testedModel, 'gpt-candidate');
     expect(controller.state.agentSettingsTestResult?.successful, isTrue);
+    expect(
+      diagnostics.records,
+      contains(
+        contains(
+          'INFO AgentSettings test_requested profile=${profile.id} '
+          'agent=codex baseUrl=configured apiKey=configured '
+          'proxy=configured model=configured',
+        ),
+      ),
+    );
+    expect(
+      diagnostics.records,
+      contains(
+        contains(
+          'INFO AgentSettings test_completed profile=${profile.id} '
+          'agent=codex successful=true reason=success',
+        ),
+      ),
+    );
+    expect(diagnostics.records.join('\n'), isNot(contains('sk-candidate')));
     expect(controller.state.agentSettingsVisible, isTrue);
     expect(host.connected, isTrue);
     expect(agent.connected, isTrue);

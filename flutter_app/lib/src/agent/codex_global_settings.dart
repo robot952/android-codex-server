@@ -588,6 +588,7 @@ else
   HTTP_STATUS="$(run_request "$RESPONSES_ENDPOINT" "$RESPONSES_FILE")"
 fi
 CURL_EXIT=$?
+CURL_EXIT_CODE=$CURL_EXIT
 if [ "$CURL_EXIT" -ne 0 ]; then
   TEST_STATUS=NETWORK_ERROR
 else
@@ -597,6 +598,7 @@ else
     *) if [ "$TEST_API_MODE" = 'auto' ]; then
       HTTP_STATUS="$(run_request "$CHAT_ENDPOINT" "$CHAT_FILE")"
       CURL_EXIT=$?
+      CURL_EXIT_CODE=$CURL_EXIT
       TEST_API=chat/completions
       if [ "$CURL_EXIT" -ne 0 ]; then
         TEST_STATUS=NETWORK_ERROR
@@ -617,6 +619,7 @@ printf '__CODEX_CONNECTION_TEST_STATUS=%s\n' "$TEST_STATUS"
 printf '__CODEX_CONNECTION_TEST_MODEL=%s\n' "$TEST_MODEL"
 printf '__CODEX_CONNECTION_TEST_API=%s\n' "$TEST_API"
 printf '__CODEX_CONNECTION_TEST_HTTP_STATUS=%s\n' "$HTTP_STATUS"
+printf '__CODEX_CONNECTION_TEST_CURL_EXIT=%s\n' "$CURL_EXIT_CODE"
 ''',
     {
       'API_KEY': _shellQuote(normalizedApiKey),
@@ -644,6 +647,13 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
     'chat/completions' => 'Chat Completions',
     _ => '',
   };
+  final networkError = switch (values['CURL_EXIT']) {
+    '6' => '无法解析 API 域名，请检查本机 Linux 的 DNS',
+    '7' => '无法连接 API 服务端口，请检查地址、代理或网络',
+    '28' => '连接 API 服务超时，请检查网络或代理',
+    '35' || '60' => 'API 服务 TLS 证书或握手失败',
+    _ => '无法连接 API 服务，请检查模型 URL、代理或服务器网络',
+  };
   return switch (values['STATUS']) {
     'SUCCESS' => AgentConnectionTestResult(
       successful: true,
@@ -666,9 +676,9 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
       successful: false,
       message: '无法安全准备 API 测试请求',
     ),
-    'NETWORK_ERROR' => const AgentConnectionTestResult(
+    'NETWORK_ERROR' => AgentConnectionTestResult(
       successful: false,
-      message: '无法连接 API 服务，请检查模型 URL、代理或服务器网络',
+      message: networkError,
     ),
     'UNAUTHORIZED' => AgentConnectionTestResult(
       successful: false,

@@ -378,7 +378,7 @@ web_search = true
         (
           mode: 'network',
           status: 'NETWORK_ERROR',
-          message: '无法连接 API 服务，请检查模型 URL、代理或服务器网络',
+          message: '无法连接 API 服务端口，请检查地址、代理或网络',
         ),
         (
           mode: 'unauthorized',
@@ -421,6 +421,24 @@ web_search = true
         expect(parsed.message, testCase.message);
         expect(result.stdout, isNot(contains(apiKey)));
         expect(result.stderr, isNot(contains(apiKey)));
+      }
+    });
+
+    test('maps common curl failures to actionable network messages', () {
+      const cases = <String, String>{
+        '6': '无法解析 API 域名，请检查本机 Linux 的 DNS',
+        '7': '无法连接 API 服务端口，请检查地址、代理或网络',
+        '28': '连接 API 服务超时，请检查网络或代理',
+        '60': 'API 服务 TLS 证书或握手失败',
+      };
+
+      for (final entry in cases.entries) {
+        final parsed = parseCodexConnectionTest(
+          '__CODEX_CONNECTION_TEST_STATUS=NETWORK_ERROR\n'
+          '__CODEX_CONNECTION_TEST_CURL_EXIT=${entry.key}\n',
+        );
+        expect(parsed.successful, isFalse);
+        expect(parsed.message, entry.value);
       }
     });
 

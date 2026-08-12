@@ -746,27 +746,26 @@ class _TestFeedback extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = successful ? codexGreen : Theme.of(context).colorScheme.error;
+    final accent = successful ? codexGreen : codexRed;
     return Container(
       key: const ValueKey('agent-settings-test-feedback'),
       padding: const EdgeInsets.all(11),
       decoration: BoxDecoration(
-        color: successful
-            ? codexGreen.withValues(alpha: 0.14)
-            : Theme.of(context).colorScheme.errorContainer,
+        color: accent.withValues(alpha: 0.14),
+        border: Border.all(color: accent.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(successful ? Icons.check : Icons.close, size: 18, color: color),
+          Icon(successful ? Icons.check : Icons.close, size: 18, color: accent),
           const SizedBox(width: 9),
           Expanded(
             child: Text(
               message,
               style: Theme.of(
                 context,
-              ).textTheme.bodySmall?.copyWith(color: color),
+              ).textTheme.bodySmall?.copyWith(color: codexText),
             ),
           ),
         ],

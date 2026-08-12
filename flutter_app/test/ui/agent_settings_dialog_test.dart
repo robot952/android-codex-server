@@ -179,6 +179,42 @@ void main() {
     );
   });
 
+  testWidgets('failed tests keep their icon and message readable', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const _DialogHarness(
+        state: AppUiState(
+          selectedProfileId: 'server-one',
+          profiles: [ServerProfile(id: 'server-one')],
+          activeAgent: AgentKind.codex,
+          activeAgentCapabilities: AgentCapabilities.codex,
+          agentSettingsVisible: true,
+          agentSettings: AgentGlobalSettings(),
+          agentSettingsTestResult: AgentConnectionTestResult(
+            successful: false,
+            message: '请输入 API 密钥后再测试',
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final feedback = find.byKey(const ValueKey('agent-settings-test-feedback'));
+    expect(feedback, findsOneWidget);
+    expect(
+      find.descendant(of: feedback, matching: find.byIcon(Icons.close)),
+      findsOneWidget,
+    );
+    final message = tester.widget<Text>(
+      find.descendant(of: feedback, matching: find.text('请输入 API 密钥后再测试')),
+    );
+    expect(message.style?.color, codexText);
+    final decoration =
+        tester.widget<Container>(feedback).decoration! as BoxDecoration;
+    expect(decoration.color, codexRed.withValues(alpha: 0.14));
+  });
+
   testWidgets('save confirms and omits an unchanged key', (tester) async {
     final saves = <AgentSettingsSaveValues>[];
     const state = AppUiState(
