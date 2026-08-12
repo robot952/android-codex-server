@@ -68,7 +68,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.21+145`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.33+160`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |

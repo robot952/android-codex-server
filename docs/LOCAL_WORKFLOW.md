@@ -280,7 +280,8 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
 - Debug/Release 共用 `keystore/codex-remote-stable.keystore`；
 - 不删除、重生成、替换 keystore 或 alias；
-- 发布必须增加 `flutter_app/pubspec.yaml` 的 build number；
+- 每次交付包含代码修改的新 APK，都必须将 `flutter_app/pubspec.yaml` 的可见语义版本至少递增一个
+  patch 版本，并同时增加 build number；不得只增加 build number，导致安装后页面版本文字不变；
 - 覆盖安装失败先检查 applicationId、build number 和证书，不得通过换签名或卸载数据解决。
 
 ## 8. 手工回归最小集

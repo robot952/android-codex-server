@@ -3,10 +3,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/cupertino.dart'
-    show CupertinoSliverRefreshControl, RefreshIndicatorMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -56,7 +55,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _composerController = TextEditingController();
   final FocusNode _composerFocus = FocusNode();
-  bool _showJumpToBottom = false;
+  bool _followOutput = true;
+  bool _userDraggingTimeline = false;
+  bool _canScrollForward = false;
   bool _refreshing = false;
   bool _preparingAttachments = false;
   String? _imageLoadingPath;
@@ -67,15 +68,22 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   int? _timelineSignature;
   double _lastBottomInset = 0;
   String? _viewportThreadId;
-  bool _userScrolledAway = false;
   bool _initialBottomPending = true;
   bool _bottomAnchorScheduled = false;
+  final GlobalKey _paginationViewportKey = GlobalKey();
+  final GlobalKey _transcriptItemsSliverKey = GlobalKey();
+  double _transcriptBottomGap = 0;
+  double? _lastTranscriptMetricsPixels;
+  double? _lastTranscriptMetricsMaxExtent;
+  double? _lastTranscriptMetricsViewport;
+  bool _lastTranscriptMetricsLargeExtent = false;
+  bool _lastTranscriptMetricsOutOfRange = false;
+  DateTime? _lastTranscriptExtentSampleAt;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _scrollController.addListener(_onScroll);
   }
 
   @override
@@ -88,9 +96,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _scrollController
-      ..removeListener(_onScroll)
-      ..dispose();
+    _scrollController.dispose();
     _composerController.dispose();
     _composerFocus.dispose();
     super.dispose();
@@ -107,7 +113,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         ? '返回上级会话'
         : '返回会话列表';
     _syncDraft(state);
-    _syncViewport(state, MediaQuery.viewInsetsOf(context).bottom);
+    _syncViewport(state, MediaQuery.viewInsetsOf(context).bottom, controller);
     final thread = state.activeThread;
     if (thread == null) {
       return Scaffold(
@@ -231,7 +237,6 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       ),
       body: Column(
         children: [
-          if (state.loading) const LinearProgressIndicator(minHeight: 2),
           Expanded(
             child: _Transcript(
               state: state,
@@ -242,13 +247,29 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
               onOpenRemoteFile: _downloadRemoteFile,
               onOpenDiff: _openDiff,
               onOpenSubAgent: controller.openSubAgentThread,
-              onRefresh: state.olderTurnsCursor == null && !_refreshing
+              onRefresh:
+                  state.olderTurnsCursor == null ||
+                      state.loading ||
+                      state.olderTurnsLoading ||
+                      _refreshing
                   ? null
                   : () => _loadOlder(controller),
-              onUserScroll: _onUserScroll,
+              onScrollNotification: (notification) =>
+                  _onTranscriptScroll(notification, controller),
+              onScrollMetricsNotification: (notification) =>
+                  _onTranscriptScrollMetrics(notification, controller),
+              onScrollDiagnostic: (event) =>
+                  _logTranscriptScroll(controller, event),
               initialBottomPending: _initialBottomPending,
-              showJumpToBottom: _showJumpToBottom,
-              onJumpToBottom: _jumpToBottom,
+              paginationViewportKey: _paginationViewportKey,
+              transcriptItemsSliverKey: _transcriptItemsSliverKey,
+              bottomGap: _transcriptBottomGap,
+              onRefreshStart: () => _preparePagination(controller),
+              showJumpToBottom:
+                  state.timeline.isNotEmpty &&
+                  !_followOutput &&
+                  _canScrollForward,
+              onJumpToBottom: () => _jumpToBottom(controller),
               onReview: controller.reviewChanges,
               onRollback: () => _confirmRollback(controller),
             ),
@@ -751,40 +772,38 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     );
   }
 
-  void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final distance =
-        _scrollController.position.maxScrollExtent -
-        _scrollController.position.pixels;
-    final next = distance > 180;
-    if (next != _showJumpToBottom && mounted) {
-      setState(() => _showJumpToBottom = next);
-    }
-  }
-
-  void _onUserScroll(UserScrollNotification notification) {
-    if (notification.direction == ScrollDirection.idle) return;
-    final distance =
-        notification.metrics.maxScrollExtent - notification.metrics.pixels;
-    final away = distance > 180;
-    _initialBottomPending = false;
-    if (away == _userScrolledAway || !mounted) return;
-    setState(() => _userScrolledAway = away);
-  }
-
-  void _syncViewport(AppUiState state, double bottomInset) {
+  void _syncViewport(
+    AppUiState state,
+    double bottomInset,
+    AppController controller,
+  ) {
     final threadId = state.activeThread?.id;
     final threadChanged = threadId != _viewportThreadId;
     if (threadChanged) {
       _viewportThreadId = threadId;
       _timelineSignature = null;
-      _userScrolledAway = false;
+      _followOutput = true;
+      _userDraggingTimeline = false;
+      _canScrollForward = false;
       _initialBottomPending = threadId != null;
-      _showJumpToBottom = false;
+      _transcriptBottomGap = 0;
+      _lastTranscriptMetricsPixels = null;
+      _lastTranscriptMetricsMaxExtent = null;
+      _lastTranscriptMetricsViewport = null;
+      _lastTranscriptMetricsLargeExtent = false;
+      _lastTranscriptMetricsOutOfRange = false;
+      _lastTranscriptExtentSampleAt = null;
+      _logTranscriptScroll(
+        controller,
+        'viewport_reset',
+        detail:
+            'entries=${state.timeline.length} '
+            'cursor=${state.olderTurnsCursor != null} loading=${state.loading}',
+      );
     }
     final last = state.timeline.isEmpty ? null : state.timeline.last;
     final signature = Object.hash(
-      state.activeThread?.id,
+      threadId,
       state.timeline.length,
       last?.id,
       last?.text.length,
@@ -797,84 +816,470 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       state.turnTiming?.stopped,
     );
     final transcriptChanged = signature != _timelineSignature;
-    final viewportShrank = bottomInset > _lastBottomInset;
+    final viewportChanged = bottomInset != _lastBottomInset;
+    if (!threadChanged && viewportChanged) {
+      final projectedGap =
+          _transcriptBottomGap - (bottomInset - _lastBottomInset);
+      _transcriptBottomGap = projectedGap > 0 ? projectedGap : 0;
+    }
     _timelineSignature = signature;
     _lastBottomInset = bottomInset;
-    if ((!transcriptChanged && !viewportShrank && !threadChanged) ||
+    if ((!transcriptChanged && !viewportChanged && !threadChanged) ||
         _refreshing ||
-        state.olderTurnsLoading ||
-        (_userScrolledAway && !_initialBottomPending)) {
+        state.olderTurnsLoading) {
       return;
     }
-    _scheduleBottomAnchor(threadId);
+    _scheduleBottomAnchor(threadId, controller);
   }
 
-  void _scheduleBottomAnchor(String? threadId) {
+  void _scheduleBottomAnchor(String? threadId, AppController controller) {
     if (_bottomAnchorScheduled || threadId == null) return;
     _bottomAnchorScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _bottomAnchorScheduled = false;
       if (!mounted || threadId != _viewportThreadId) return;
-      if (_userScrolledAway && !_initialBottomPending) return;
       if (!_scrollController.hasClients ||
           !_scrollController.position.hasContentDimensions) {
-        _scheduleBottomAnchor(threadId);
+        _scheduleBottomAnchor(threadId, controller);
         return;
       }
       final current = ref.read(appControllerProvider);
       if (current.activeThread?.id != threadId) return;
       if (current.loading && current.timeline.isEmpty) return;
-      // Streaming deltas and IME frames can arrive faster than an animation.
-      // A direct jump keeps the transcript edge attached to the composer.
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      final position = _scrollController.position;
+      final itemsRenderObject = _transcriptItemsSliverKey.currentContext
+          ?.findRenderObject();
+      final itemsExtent = itemsRenderObject is RenderSliver
+          ? itemsRenderObject.geometry?.scrollExtent
+          : null;
+      if (itemsExtent != null) {
+        final targetGap = position.viewportDimension > itemsExtent
+            ? position.viewportDimension - itemsExtent
+            : 0.0;
+        if ((targetGap - _transcriptBottomGap).abs() > 0.5) {
+          setState(() => _transcriptBottomGap = targetGap);
+          _scheduleBottomAnchor(threadId, controller);
+          return;
+        }
+      }
+      if (!_followOutput && !_initialBottomPending) return;
       if (_initialBottomPending) {
-        setState(() => _initialBottomPending = false);
+        _logTranscriptScroll(
+          controller,
+          'initial_bottom_apply',
+          metrics: _scrollController.position,
+          detail:
+              'entries=${current.timeline.length} '
+              'hasContentDimensions=${_scrollController.position.hasContentDimensions} '
+              'outOfRange=${_scrollController.position.outOfRange} '
+              'viewportState=${_paginationViewportDiagnostic()}',
+        );
+      }
+      if ((position.pixels - _transcriptBottomOffset).abs() > 0.5) {
+        position.jumpTo(_transcriptBottomOffset);
+      }
+      if (_initialBottomPending) {
+        setState(() {
+          _initialBottomPending = false;
+          _followOutput = true;
+          _canScrollForward = false;
+        });
       }
     });
   }
 
+  void _onTranscriptScroll(
+    ScrollNotification notification,
+    AppController controller,
+  ) {
+    _recordTranscriptMetrics(
+      notification.metrics,
+      controller,
+      depth: notification.depth,
+      kind: notification.runtimeType.toString(),
+    );
+    var userDragging = _userDraggingTimeline;
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      userDragging = true;
+      _logTranscriptScroll(
+        controller,
+        'gesture_start',
+        metrics: notification.metrics,
+        detail: 'depth=${notification.depth}',
+      );
+    } else if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      userDragging = true;
+    }
+
+    final canScrollForward = notification.metrics.extentAfter > 0.5;
+    final preserveFollowState = notification.metrics.outOfRange || _refreshing;
+    var followOutput = preserveFollowState
+        ? _followOutput
+        : updatedFollowOutput(
+            current: _followOutput,
+            userDragging: userDragging,
+            canScrollForward: canScrollForward,
+          );
+    if (notification is ScrollEndNotification ||
+        notification is UserScrollNotification &&
+            notification.direction == ScrollDirection.idle) {
+      final endedUserDrag = userDragging;
+      userDragging = false;
+      if (!preserveFollowState) {
+        followOutput = updatedFollowOutput(
+          current: followOutput,
+          userDragging: false,
+          canScrollForward: canScrollForward,
+        );
+      }
+      if (notification is ScrollEndNotification) {
+        _logTranscriptScroll(
+          controller,
+          'gesture_end',
+          metrics: notification.metrics,
+          detail:
+              'depth=${notification.depth} '
+              'source=${endedUserDrag ? 'user' : 'program'} '
+              'follow=$followOutput '
+              'canScrollForward=$canScrollForward',
+        );
+      }
+    }
+    if (followOutput == _followOutput &&
+        userDragging == _userDraggingTimeline &&
+        canScrollForward == _canScrollForward) {
+      return;
+    }
+    if (followOutput != _followOutput) {
+      _logTranscriptScroll(
+        controller,
+        'follow_change',
+        metrics: notification.metrics,
+        detail:
+            'from=$_followOutput to=$followOutput '
+            'dragging=$userDragging canScrollForward=$canScrollForward',
+      );
+    }
+    void applyScrollState() {
+      if (!mounted) return;
+      setState(() {
+        _followOutput = followOutput;
+        _userDraggingTimeline = userDragging;
+        _canScrollForward = canScrollForward;
+      });
+    }
+
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => applyScrollState());
+    } else {
+      applyScrollState();
+    }
+  }
+
+  void _onTranscriptScrollMetrics(
+    ScrollMetricsNotification notification,
+    AppController controller,
+  ) {
+    _recordTranscriptMetrics(
+      notification.metrics,
+      controller,
+      depth: notification.depth,
+      kind: notification.runtimeType.toString(),
+    );
+  }
+
+  void _recordTranscriptMetrics(
+    ScrollMetrics metrics,
+    AppController controller, {
+    required int depth,
+    required String kind,
+  }) {
+    if (depth != 0) return;
+    final previousPixels = _lastTranscriptMetricsPixels;
+    final previousMaxExtent = _lastTranscriptMetricsMaxExtent;
+    final previousViewport = _lastTranscriptMetricsViewport;
+    final pixelsDelta = previousPixels == null
+        ? null
+        : metrics.pixels - previousPixels;
+    final maxDelta = previousMaxExtent == null
+        ? null
+        : metrics.maxScrollExtent - previousMaxExtent;
+    final viewportDelta = previousViewport == null
+        ? null
+        : metrics.viewportDimension - previousViewport;
+    _lastTranscriptMetricsPixels = metrics.pixels;
+    _lastTranscriptMetricsMaxExtent = metrics.maxScrollExtent;
+    _lastTranscriptMetricsViewport = metrics.viewportDimension;
+
+    final overscroll = transcriptScrollOverscroll(metrics);
+    final outOfRange = overscroll >= _transcriptOutOfRangeDiagnosticThreshold;
+    final largeExtent =
+        metrics.maxScrollExtent >= _transcriptLargeExtentDiagnosticLimit;
+    final previousLargeExtent = _lastTranscriptMetricsLargeExtent;
+    final previousOutOfRange = _lastTranscriptMetricsOutOfRange;
+    _lastTranscriptMetricsLargeExtent = largeExtent;
+    _lastTranscriptMetricsOutOfRange = outOfRange;
+
+    final extentDelta = maxDelta?.abs() ?? 0;
+    final relativeDeltaThreshold = previousMaxExtent == null
+        ? double.infinity
+        : (previousMaxExtent.abs() * 0.5).clamp(
+            _transcriptExtentDiagnosticDelta,
+            double.infinity,
+          );
+    final significantExtentDelta =
+        extentDelta >= _transcriptExtentDiagnosticDelta &&
+        extentDelta >= relativeDeltaThreshold;
+    final stateChanged =
+        largeExtent != previousLargeExtent || outOfRange != previousOutOfRange;
+    final firstSample = previousPixels == null;
+    final now = DateTime.now();
+    final intervalElapsed =
+        _lastTranscriptExtentSampleAt == null ||
+        now.difference(_lastTranscriptExtentSampleAt!) >=
+            _transcriptExtentDiagnosticInterval;
+    if (!firstSample &&
+        !stateChanged &&
+        !(significantExtentDelta && intervalElapsed)) {
+      return;
+    }
+    _lastTranscriptExtentSampleAt = now;
+    final state = ref.read(appControllerProvider);
+    _logTranscriptScroll(
+      controller,
+      'extent_sample',
+      metrics: metrics,
+      detail:
+          'source=notification kind=$kind '
+          'previousPixels=${formatTranscriptScrollValue(previousPixels)} '
+          'deltaPixels=${formatTranscriptScrollValue(pixelsDelta)} '
+          'previousMax=${formatTranscriptScrollValue(previousMaxExtent)} '
+          'deltaMax=${formatTranscriptScrollValue(maxDelta)} '
+          'previousViewport=${formatTranscriptScrollValue(previousViewport)} '
+          'deltaViewport=${formatTranscriptScrollValue(viewportDelta)} '
+          'overscroll=${formatTranscriptScrollValue(overscroll)} '
+          'outOfRange=$outOfRange largeExtent=$largeExtent '
+          'refreshing=$_refreshing '
+          'olderLoading=${state.olderTurnsLoading} '
+          'initialBottomPending=$_initialBottomPending '
+          'follow=$_followOutput '
+          'center=tail '
+          'viewportState=${_paginationViewportDiagnostic()}',
+    );
+  }
+
   Future<void> _loadOlder(AppController controller) async {
     if (_refreshing) return;
+    final stateBefore = ref.read(appControllerProvider);
+    final entriesBefore = stateBefore.timeline.length;
+    final cursorBefore = stateBefore.olderTurnsCursor != null;
+    var entriesAfter = entriesBefore;
+    var cursorAfter = cursorBefore;
+    _logTranscriptScroll(
+      controller,
+      'page_begin',
+      detail:
+          'entriesBefore=$entriesBefore cursorBefore=$cursorBefore '
+          'strategy=center center=tail '
+          'viewportState=${_paginationViewportDiagnostic()}',
+    );
     setState(() {
       _refreshing = true;
-      _userScrolledAway = true;
-      _initialBottomPending = false;
+      _followOutput = false;
     });
+    await WidgetsBinding.instance.endOfFrame;
     final beforePosition = _scrollController.hasClients
         ? _scrollController.position
         : null;
+    final beforeMinExtent = beforePosition?.minScrollExtent;
     final beforeExtent = beforePosition?.maxScrollExtent;
     final beforePixels = beforePosition?.pixels.clamp(
       beforePosition.minScrollExtent,
       beforePosition.maxScrollExtent,
     );
+    _logTranscriptScroll(
+      controller,
+      'page_request',
+      metrics: beforePosition,
+      detail:
+          'beforePixels=${formatTranscriptScrollValue(beforePixels)} '
+          'beforeMin=${formatTranscriptScrollValue(beforeMinExtent)} '
+          'beforeMax=${formatTranscriptScrollValue(beforeExtent)} '
+          'center=tail '
+          'viewportState=${_paginationViewportDiagnostic()}',
+    );
     try {
       await controller.loadOlderTurns();
-      if (beforeExtent != null && beforePixels != null && mounted) {
-        await WidgetsBinding.instance.endOfFrame;
-        if (_scrollController.hasClients) {
-          final position = _scrollController.position;
-          final addedExtent = position.maxScrollExtent - beforeExtent;
-          if (addedExtent > 0) {
-            position.jumpTo(
-              (beforePixels + addedExtent).clamp(
-                position.minScrollExtent,
-                position.maxScrollExtent,
-              ),
-            );
-          }
-        }
+      if (!mounted) return;
+      await WidgetsBinding.instance.endOfFrame;
+      if (!_scrollController.hasClients) return;
+      final stateAfter = ref.read(appControllerProvider);
+      entriesAfter = stateAfter.timeline.length;
+      cursorAfter = stateAfter.olderTurnsCursor != null;
+      final position = _scrollController.position;
+      final afterMinExtent = position.minScrollExtent;
+      final afterExtent = position.maxScrollExtent;
+      final minDelta = beforeMinExtent == null
+          ? null
+          : afterMinExtent - beforeMinExtent;
+      final maxDelta = beforeExtent == null ? null : afterExtent - beforeExtent;
+      final pixelsBeforeCorrection = position.pixels;
+      _logTranscriptScroll(
+        controller,
+        'page_layout',
+        metrics: position,
+        detail:
+            'entriesBefore=$entriesBefore '
+            'entriesAfter=$entriesAfter '
+            'cursorAfter=$cursorAfter '
+            'pixelsBeforeCorrection=${formatTranscriptScrollValue(pixelsBeforeCorrection)} '
+            'pixelsAfterCorrection=${formatTranscriptScrollValue(position.pixels)} '
+            'beforeMin=${formatTranscriptScrollValue(beforeMinExtent)} '
+            'afterMin=${formatTranscriptScrollValue(afterMinExtent)} '
+            'deltaMin=${formatTranscriptScrollValue(minDelta)} '
+            'beforeMax=${formatTranscriptScrollValue(beforeExtent)} '
+            'afterMax=${formatTranscriptScrollValue(afterExtent)} '
+            'deltaMax=${formatTranscriptScrollValue(maxDelta)} '
+            'outOfRange=${position.outOfRange} '
+            'center=tail '
+            'viewportState=${_paginationViewportDiagnostic()} '
+            'strategy=center appliedDelta=0.0',
+      );
+      if ((maxDelta?.abs() ?? 0) >= _transcriptExtentDiagnosticDelta ||
+          afterExtent >= _transcriptLargeExtentDiagnosticLimit ||
+          (beforeExtent ?? 0) >= _transcriptLargeExtentDiagnosticLimit) {
+        _logTranscriptScroll(
+          controller,
+          'extent_anomaly',
+          metrics: position,
+          detail:
+              'phase=page_layout beforeMax=${formatTranscriptScrollValue(beforeExtent)} '
+              'afterMax=${formatTranscriptScrollValue(afterExtent)} '
+              'beforeMin=${formatTranscriptScrollValue(beforeMinExtent)} '
+              'afterMin=${formatTranscriptScrollValue(afterMinExtent)} '
+              'deltaMin=${formatTranscriptScrollValue(minDelta)} '
+              'deltaMax=${formatTranscriptScrollValue(maxDelta)} '
+              'pixelsBeforeCorrection=${formatTranscriptScrollValue(pixelsBeforeCorrection)} '
+              'pixelsAfterCorrection=${formatTranscriptScrollValue(position.pixels)} '
+              'strategy=center appliedDelta=0.0 '
+              'center=tail '
+              'viewportState=${_paginationViewportDiagnostic()}',
+        );
       }
+    } catch (error, stack) {
+      if (controller.diagnosticLogger.isEnabled) {
+        controller.diagnosticLogger.warn(
+          'TranscriptScroll',
+          'page_failed thread=${_viewportThreadId ?? 'none'} '
+              'entriesBefore=$entriesBefore',
+          error,
+          stack,
+        );
+      }
+      rethrow;
     } finally {
-      if (mounted) setState(() => _refreshing = false);
+      _logTranscriptScroll(
+        controller,
+        'page_end',
+        detail: 'entries=$entriesAfter cursor=$cursorAfter',
+      );
+      if (mounted) {
+        setState(() {
+          _refreshing = false;
+        });
+      }
     }
   }
 
-  void _jumpToBottom() {
+  void _preparePagination(AppController controller) {
+    if (_refreshing) return;
+    if (!_scrollController.hasClients) {
+      _logTranscriptScroll(
+        controller,
+        'position_prepare',
+        detail: 'clients=false strategy=center',
+      );
+      return;
+    }
+    final position = _scrollController.position;
+    final overscroll = (position.minScrollExtent - position.pixels)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    _logTranscriptScroll(
+      controller,
+      'position_prepare',
+      metrics: position,
+      detail:
+          'overscroll=${formatTranscriptScrollValue(overscroll)} '
+          'strategy=center center=tail '
+          'viewportState=${_paginationViewportDiagnostic()}',
+    );
+    if (overscroll > 0.5) {
+      position.jumpTo(position.minScrollExtent);
+      _logTranscriptScroll(controller, 'overscroll_reset', metrics: position);
+    }
+  }
+
+  void _logTranscriptScroll(
+    AppController controller,
+    String event, {
+    ScrollMetrics? metrics,
+    String detail = '',
+  }) {
+    final logger = controller.diagnosticLogger;
+    if (!logger.isEnabled) return;
+    final resolvedMetrics =
+        metrics ??
+        (_scrollController.hasClients ? _scrollController.position : null);
+    logger.info(
+      'TranscriptScroll',
+      '$event thread=${_viewportThreadId ?? 'none'} '
+          '${formatTranscriptScrollMetrics(resolvedMetrics)}'
+          ' ${formatTranscriptScrollLocation(resolvedMetrics)}'
+          '${detail.isEmpty ? '' : ' $detail'}',
+    );
+  }
+
+  String _paginationViewportDiagnostic() =>
+      _paginationRenderBoxDiagnostic(_paginationViewportKey);
+
+  String _paginationRenderBoxDiagnostic(GlobalKey key) {
+    final renderContext = key.currentContext;
+    if (renderContext == null || !renderContext.mounted) {
+      return 'mounted=false';
+    }
+    try {
+      final renderObject = renderContext.findRenderObject();
+      if (renderObject == null) return 'mounted=false';
+      if (renderObject is! RenderBox) return 'mounted=true render=nonbox';
+      if (!renderObject.attached || !renderObject.hasSize) {
+        return 'mounted=true attached=${renderObject.attached} '
+            'hasSize=${renderObject.hasSize}';
+      }
+      final dy = renderObject.localToGlobal(Offset.zero).dy;
+      return 'mounted=true attached=true hasSize=true '
+          'width=${formatTranscriptScrollValue(renderObject.size.width)} '
+          'height=${formatTranscriptScrollValue(renderObject.size.height)} '
+          'dy=${formatTranscriptScrollValue(dy)}';
+    } on Object catch (error) {
+      return 'mounted=true unavailable=${error.runtimeType}';
+    }
+  }
+
+  void _jumpToBottom(AppController controller) {
     if (!_scrollController.hasClients) return;
+    _logTranscriptScroll(
+      controller,
+      'manual_bottom',
+      metrics: _scrollController.position,
+    );
+    setState(() => _followOutput = true);
     unawaited(
       _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
+        _transcriptBottomOffset,
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
       ),
@@ -913,6 +1318,58 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
 
 bool shouldDismissWorkKeyboard(AppLifecycleState state) =>
     state != AppLifecycleState.resumed;
+
+bool updatedFollowOutput({
+  required bool current,
+  required bool userDragging,
+  required bool canScrollForward,
+}) {
+  if (!canScrollForward) return true;
+  if (userDragging) return false;
+  return current;
+}
+
+String formatTranscriptScrollValue(num? value) =>
+    value == null ? 'none' : value.toDouble().toStringAsFixed(1);
+
+String formatTranscriptScrollMetrics(ScrollMetrics? metrics) {
+  if (metrics == null) {
+    return 'pixels=none min=none max=none before=none after=none viewport=none';
+  }
+  return 'pixels=${formatTranscriptScrollValue(metrics.pixels)} '
+      'min=${formatTranscriptScrollValue(metrics.minScrollExtent)} '
+      'max=${formatTranscriptScrollValue(metrics.maxScrollExtent)} '
+      'before=${formatTranscriptScrollValue(metrics.extentBefore)} '
+      'after=${formatTranscriptScrollValue(metrics.extentAfter)} '
+      'viewport=${formatTranscriptScrollValue(metrics.viewportDimension)}';
+}
+
+double transcriptScrollOverscroll(ScrollMetrics metrics) {
+  if (metrics.pixels < metrics.minScrollExtent) {
+    return metrics.minScrollExtent - metrics.pixels;
+  }
+  if (metrics.pixels > metrics.maxScrollExtent) {
+    return metrics.pixels - metrics.maxScrollExtent;
+  }
+  return 0;
+}
+
+String formatTranscriptScrollLocation(ScrollMetrics? metrics) {
+  if (metrics == null) {
+    return 'location=unavailable progress=none overscroll=none';
+  }
+  final range = metrics.maxScrollExtent - metrics.minScrollExtent;
+  final progress = range <= 0
+      ? 1.0
+      : ((metrics.pixels - metrics.minScrollExtent) / range).clamp(0.0, 1.0);
+  final location = metrics.extentBefore <= 1
+      ? 'top'
+      : metrics.extentAfter <= 1
+      ? 'bottom'
+      : 'middle';
+  return 'location=$location progress=${(progress * 100).toStringAsFixed(1)}% '
+      'overscroll=${formatTranscriptScrollValue(transcriptScrollOverscroll(metrics))}';
+}
 
 class _ModelSelectionSheet extends ConsumerWidget {
   const _ModelSelectionSheet();
@@ -1954,8 +2411,14 @@ class _Transcript extends StatelessWidget {
     required this.onOpenDiff,
     required this.onOpenSubAgent,
     required this.onRefresh,
-    required this.onUserScroll,
+    required this.onRefreshStart,
+    required this.onScrollNotification,
+    required this.onScrollMetricsNotification,
+    required this.onScrollDiagnostic,
     required this.initialBottomPending,
+    required this.paginationViewportKey,
+    required this.transcriptItemsSliverKey,
+    required this.bottomGap,
     required this.showJumpToBottom,
     required this.onJumpToBottom,
     required this.onReview,
@@ -1970,8 +2433,14 @@ class _Transcript extends StatelessWidget {
   final ValueChanged<FileChange> onOpenDiff;
   final void Function(String threadId, String agentName) onOpenSubAgent;
   final Future<void> Function()? onRefresh;
-  final ValueChanged<UserScrollNotification> onUserScroll;
+  final VoidCallback onRefreshStart;
+  final ValueChanged<ScrollNotification> onScrollNotification;
+  final ValueChanged<ScrollMetricsNotification> onScrollMetricsNotification;
+  final ValueChanged<String> onScrollDiagnostic;
   final bool initialBottomPending;
+  final GlobalKey paginationViewportKey;
+  final GlobalKey transcriptItemsSliverKey;
+  final double bottomGap;
   final bool showJumpToBottom;
   final VoidCallback onJumpToBottom;
   final Future<void> Function() onReview;
@@ -2067,46 +2536,59 @@ class _Transcript extends StatelessWidget {
         child: SizedBox(height: 6),
       ),
     );
-    final contentKeyToIndex = <Key, int>{
-      for (var index = 0; index < contentItems.length; index += 1)
-        if (contentItems[index].key != null) contentItems[index].key!: index,
-    };
-    final list = CustomScrollView(
-      controller: controller,
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      physics: const BouncingScrollPhysics(
-        parent: AlwaysScrollableScrollPhysics(),
-      ),
-      slivers: [
-        // Keep the refresh sliver mounted after a page exhausts its cursor.
-        // CupertinoSliverRefreshControl completes its own retract animation
-        // after onRefresh resolves; removing it in that window can leave a
-        // disposed render sliver with stale paint geometry.
-        CupertinoSliverRefreshControl(
-          refreshTriggerPullDistance: 82,
-          refreshIndicatorExtent: 54,
-          onRefresh: onRefresh,
-          builder: _buildOlderHistoryIndicator,
-        ),
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(9, 10, 9, 10),
-          sliver: SliverList(
-            delegate: SliverChildBuilderDelegate(
-              (context, index) {
-                return Padding(
-                  key: contentItems[index].key,
-                  padding: EdgeInsets.only(
-                    bottom: index == contentItems.length - 1 ? 0 : 10,
-                  ),
-                  child: contentItems[index],
-                );
-              },
-              childCount: contentItems.length,
-              findChildIndexCallback: (key) => contentKeyToIndex[key],
+    final reversedItems = contentItems.reversed.toList(growable: false);
+
+    Widget buildItemsSliver(List<Widget> items) {
+      final keyToIndex = <Key, int>{
+        for (var index = 0; index < items.length; index += 1)
+          if (items[index].key != null) items[index].key!: index,
+      };
+      return SliverPadding(
+        key: transcriptItemsSliverKey,
+        padding: const EdgeInsets.symmetric(horizontal: 9),
+        sliver: SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) => Padding(
+              key: items[index].key,
+              padding: EdgeInsets.only(
+                top: index == items.length - 1 ? _transcriptVerticalPadding : 0,
+                bottom: index == 0 ? 0 : 10,
+              ),
+              child: items[index],
             ),
+            childCount: items.length,
+            findChildIndexCallback: (childKey) => keyToIndex[childKey],
           ),
         ),
-      ],
+      );
+    }
+
+    Widget buildList(bool refreshVisible) => Scrollbar(
+      key: const Key('transcript-scrollbar'),
+      controller: controller,
+      thumbVisibility: false,
+      trackVisibility: false,
+      interactive: true,
+      thickness: 4,
+      radius: const Radius.circular(2),
+      child: CustomScrollView(
+        key: paginationViewportKey,
+        center: _transcriptCenterSliverKey,
+        anchor: 1,
+        controller: controller,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        physics: const BouncingScrollPhysics(
+          parent: AlwaysScrollableScrollPhysics(),
+        ),
+        slivers: [
+          buildItemsSliver(reversedItems),
+          SliverToBoxAdapter(child: SizedBox(height: bottomGap)),
+          const SliverToBoxAdapter(
+            key: _transcriptCenterSliverKey,
+            child: SizedBox.shrink(),
+          ),
+        ],
+      ),
     );
     return Stack(
       children: [
@@ -2117,16 +2599,36 @@ class _Transcript extends StatelessWidget {
             ignoring: initialBottomPending,
             child: Opacity(
               opacity: initialBottomPending ? 0 : 1,
-              child: NotificationListener<UserScrollNotification>(
+              child: NotificationListener<ScrollMetricsNotification>(
                 onNotification: (notification) {
-                  onUserScroll(notification);
+                  onScrollMetricsNotification(notification);
                   return false;
                 },
-                child: list,
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: (notification) {
+                    onScrollNotification(notification);
+                    return false;
+                  },
+                  child: _LegacyOlderHistoryRefresh(
+                    onRefresh: onRefresh,
+                    onRefreshStart: onRefreshStart,
+                    onDiagnostic: onScrollDiagnostic,
+                    refreshing: state.olderTurnsLoading,
+                    builder: (context, refreshVisible) =>
+                        buildList(refreshVisible),
+                  ),
+                ),
               ),
             ),
           ),
         ),
+        if (state.loading)
+          const Center(
+            child: SizedBox.square(
+              dimension: 28,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
         if (showJumpToBottom)
           Positioned(
             left: 0,
@@ -2144,6 +2646,301 @@ class _Transcript extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+const _olderHistoryTriggerExtent = 82.0;
+const _transcriptCenterSliverKey = ValueKey<String>('transcript-center-sliver');
+const _transcriptBottomOffset = 0.0;
+const _olderHistoryIndicatorExtent = 54.0;
+const _olderHistoryLoadingExtent = 108.0;
+const _transcriptVerticalPadding = 10.0;
+const _olderHistoryRetractDuration = Duration(milliseconds: 220);
+const _transcriptExtentDiagnosticDelta = 256.0;
+const _transcriptLargeExtentDiagnosticLimit = 1000000.0;
+const _transcriptOutOfRangeDiagnosticThreshold = 24.0;
+const _transcriptExtentDiagnosticInterval = Duration(milliseconds: 500);
+
+typedef _OlderHistoryBuilder =
+    Widget Function(BuildContext context, bool refreshVisible);
+
+class _LegacyOlderHistoryRefresh extends StatefulWidget {
+  const _LegacyOlderHistoryRefresh({
+    required this.onRefresh,
+    required this.onRefreshStart,
+    required this.onDiagnostic,
+    required this.refreshing,
+    required this.builder,
+  });
+
+  final Future<void> Function()? onRefresh;
+  final VoidCallback onRefreshStart;
+  final ValueChanged<String> onDiagnostic;
+  final bool refreshing;
+  final _OlderHistoryBuilder builder;
+
+  @override
+  State<_LegacyOlderHistoryRefresh> createState() =>
+      _LegacyOlderHistoryRefreshState();
+}
+
+class _LegacyOlderHistoryRefreshState
+    extends State<_LegacyOlderHistoryRefresh> {
+  int? _pointer;
+  double _pulledExtent = 0;
+  bool _armed = false;
+  bool _refreshing = false;
+  bool _retracting = false;
+
+  bool get _refreshVisible => _refreshing || widget.refreshing;
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (_pointer == null && !_refreshVisible && !_retracting) {
+      _pointer = event.pointer;
+    } else if (_refreshVisible || _retracting) {
+      widget.onDiagnostic(
+        'pull_pointer_ignored refreshing=$_refreshVisible '
+        'retracting=$_retracting',
+      );
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    if (_pointer != event.pointer) return;
+    _pointer = null;
+    final refresh = widget.onRefresh;
+    if (_armed || _pulledExtent > 0.5) {
+      widget.onDiagnostic(
+        'pull_release armed=$_armed '
+        'pulled=${formatTranscriptScrollValue(_pulledExtent)} '
+        'canRefresh=${refresh != null}',
+      );
+    }
+    if (_armed && refresh != null) {
+      widget.onRefreshStart();
+      setState(() {
+        _refreshing = true;
+        _pulledExtent = 0;
+        _armed = false;
+      });
+      unawaited(_runRefresh(refresh));
+    } else {
+      _resetPull();
+    }
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    if (_pointer != event.pointer) return;
+    _pointer = null;
+    if (_armed || _pulledExtent > 0.5) {
+      widget.onDiagnostic(
+        'pull_cancel armed=$_armed '
+        'pulled=${formatTranscriptScrollValue(_pulledExtent)}',
+      );
+    }
+    _resetPull();
+  }
+
+  bool _handleScroll(ScrollNotification notification) {
+    if (notification.depth != 0 ||
+        _pointer == null ||
+        _refreshVisible ||
+        _retracting) {
+      return false;
+    }
+    final extent =
+        (notification.metrics.minScrollExtent - notification.metrics.pixels)
+            .clamp(0.0, double.infinity)
+            .toDouble();
+    final armed = extent >= _olderHistoryTriggerExtent;
+    if ((extent - _pulledExtent).abs() < 0.5 && armed == _armed) return false;
+    if (armed != _armed) {
+      widget.onDiagnostic(
+        'pull_threshold state=${armed ? 'armed' : 'disarmed'} '
+        'pulled=${formatTranscriptScrollValue(extent)} '
+        'trigger=${formatTranscriptScrollValue(_olderHistoryTriggerExtent)}',
+      );
+    }
+    setState(() {
+      _pulledExtent = extent;
+      _armed = armed;
+    });
+    return false;
+  }
+
+  void _resetPull() {
+    if (!mounted || (_pulledExtent == 0 && !_armed)) return;
+    setState(() {
+      _pulledExtent = 0;
+      _armed = false;
+    });
+  }
+
+  Future<void> _runRefresh(Future<void> Function() refresh) async {
+    try {
+      // Let the loading sliver reserve the same header space as the legacy
+      // Compose screen before pagination captures the current scroll extent.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      widget.onDiagnostic('page_callback_begin');
+      await refresh();
+    } finally {
+      if (mounted) {
+        widget.onDiagnostic('retract_start');
+        setState(() {
+          _refreshing = false;
+          _retracting = true;
+        });
+        await Future<void>.delayed(_olderHistoryRetractDuration);
+        if (mounted) {
+          setState(() => _retracting = false);
+          widget.onDiagnostic('retract_end');
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final refreshVisible = _refreshVisible;
+    final indicatorHeight = _pulledExtent
+        .clamp(0.0, _olderHistoryIndicatorExtent)
+        .toDouble();
+    return Listener(
+      onPointerDown: _handlePointerDown,
+      onPointerUp: _handlePointerUp,
+      onPointerCancel: _handlePointerCancel,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: AbsorbPointer(
+              absorbing: refreshVisible,
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _handleScroll,
+                child: widget.builder(context, refreshVisible),
+              ),
+            ),
+          ),
+          if (!refreshVisible && indicatorHeight > 0)
+            Positioned(
+              left: 0,
+              right: 0,
+              top: _pulledExtent - indicatorHeight,
+              height: indicatorHeight,
+              child: IgnorePointer(
+                child: ClipRect(
+                  child: _OlderHistoryIndicator(loading: false, armed: _armed),
+                ),
+              ),
+            ),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            child: IgnorePointer(
+              child: _OlderHistoryLoadingHeader(
+                visible: refreshVisible,
+                onDiagnostic: widget.onDiagnostic,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OlderHistoryLoadingHeader extends StatefulWidget {
+  const _OlderHistoryLoadingHeader({
+    required this.visible,
+    required this.onDiagnostic,
+  });
+
+  final bool visible;
+  final ValueChanged<String> onDiagnostic;
+
+  @override
+  State<_OlderHistoryLoadingHeader> createState() =>
+      _OlderHistoryLoadingHeaderState();
+}
+
+class _OlderHistoryLoadingHeaderState extends State<_OlderHistoryLoadingHeader>
+    with SingleTickerProviderStateMixin {
+  int? _lastDiagnosticHeightBucket;
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: _olderHistoryRetractDuration,
+    value: widget.visible ? 1 : 0,
+  );
+  late final Animation<double> _heightFactor = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOutCubic,
+  );
+
+  @override
+  void didUpdateWidget(_OlderHistoryLoadingHeader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.visible == oldWidget.visible) return;
+    widget.onDiagnostic(
+      'header_visibility from=${oldWidget.visible} to=${widget.visible} '
+      'controller=${formatTranscriptScrollValue(_controller.value)} '
+      'status=${_controller.status.name}',
+    );
+    if (widget.visible) {
+      _controller.value = 1;
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final heightFactor = _heightFactor.value;
+        final height = _olderHistoryLoadingExtent * heightFactor;
+        final diagnosticBucket = (heightFactor * 4).round().clamp(0, 4);
+        if (diagnosticBucket != _lastDiagnosticHeightBucket) {
+          _lastDiagnosticHeightBucket = diagnosticBucket;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || diagnosticBucket != _lastDiagnosticHeightBucket) {
+              return;
+            }
+            widget.onDiagnostic(
+              'header_layout visible=${widget.visible} '
+              'controller=${formatTranscriptScrollValue(_controller.value)} '
+              'factor=${formatTranscriptScrollValue(_heightFactor.value)} '
+              'height=${formatTranscriptScrollValue(height)} '
+              'status=${_controller.status.name}',
+            );
+          });
+        }
+        if (!widget.visible && _controller.isDismissed) {
+          return const SizedBox.shrink();
+        }
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.topCenter,
+            heightFactor: heightFactor,
+            child: child,
+          ),
+        );
+      },
+      child: const ColoredBox(
+        color: _workSurface,
+        child: SizedBox(
+          height: _olderHistoryLoadingExtent,
+          child: _OlderHistoryIndicator(loading: true, armed: true),
+        ),
+      ),
     );
   }
 }
@@ -2300,24 +3097,20 @@ Color _subAgentStatusColor(SubAgentDisplayStatus status) => switch (status) {
   SubAgentDisplayStatus.stopped => codexMuted,
 };
 
-Widget _buildOlderHistoryIndicator(
-  BuildContext context,
-  RefreshIndicatorMode mode,
-  double pulledExtent,
-  double refreshTriggerPullDistance,
-  double refreshIndicatorExtent,
-) {
-  final loading =
-      mode == RefreshIndicatorMode.refresh || mode == RefreshIndicatorMode.done;
-  final armed = mode == RefreshIndicatorMode.armed;
-  final label = loading
-      ? '正在加载更多...'
-      : armed
-      ? '松开加载更多'
-      : '下拉加载更多';
-  return SizedBox(
-    height: pulledExtent,
-    child: Center(
+class _OlderHistoryIndicator extends StatelessWidget {
+  const _OlderHistoryIndicator({required this.loading, required this.armed});
+
+  final bool loading;
+  final bool armed;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = loading
+        ? '正在加载更多...'
+        : armed
+        ? '松开加载更多'
+        : '下拉加载更多';
+    return Center(
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -2336,8 +3129,8 @@ Widget _buildOlderHistoryIndicator(
           Text(label, style: Theme.of(context).textTheme.bodySmall),
         ],
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _TimelineCard extends StatelessWidget {

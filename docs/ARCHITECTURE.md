@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.21+145，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.33+160，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -452,14 +452,17 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   `/models`；结果按 profile + Agent + request id + connection generation 校验后写入 `apiModelOptions*`。
   编辑器可按 ID/显示名筛选有限选项，选择后只回填模型 ID、空显示名和正值 token 上限，不会改写用户
   已填字段或持久化 API key；
-- 顶部下拉使用 `CupertinoSliverRefreshControl` 请求更早 turns，释放后调用 cursor 分页；提示只随拖动
-  出现，依次显示“下拉加载更多”“松开加载更多”“正在加载更多...”，sliver 会把正文向下推开并保留
-  指示区。加载完成后按新增 extent 修正滚动位置；阅读旧消息时显示回到底部箭头；
+- 顶部历史分页复用旧 Compose 的释放触发状态机：只读取列表顶部的真实 overscroll，不累计重复通知；
+  手势可以从列表中间开始并在到达顶部后继续下拉，回拉到阈值以内会取消 armed，只有抬手时仍越过阈值
+  才调用 cursor 分页。时间线使用带固定尾部 center sliver 的 `CustomScrollView`，所有消息向上增长，
+  底部原点固定为 `pixels=0`，不依赖懒列表的估算 extent 做首屏或分页位置补偿；“正在加载更多...”作为
+  覆盖层显示，不参与滚动几何。不满一屏时按消息 sliver 的真实高度补足尾部空白，使内容从顶部开始；
+  内容超过一屏后空白归零并继续保持最新消息位于底部。阅读旧消息时显示回到底部箭头；
 - 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，中心显示已用百分比，点击显示已用/剩余 tokens；
   圆环和模型名称组成靠右的弹性区域，模型变长时向权限按钮方向扩展并单行缩放，不能因固定空白提前省略；有效
   TokenUsage 在 lane cache 中保留，返回同一会话可立即恢复；未知窗口显示 `?`，不猜比例；
 - Markdown 可选择文本，解析出的 HTTP/HTTPS Markdown link 和紧邻中文标点的裸 URL 显示蓝色，点击先确认
-  后交给系统浏览器；
+  后交给系统浏览器；标准 Markdown link 只显示 label，不把目标 URL 复制到正文；
 - `[名称](/absolute/server/path)` 会转换成仅 App 内部识别的安全链接；PNG/JPG/WebP/GIF/BMP 路径点击后
   直接使用 Work 页图片查看器预览，其他文件才通过系统保存位置选择器流式下载。内部链接不会交给浏览器；
   同一 Work 页面一次只允许一个远程文件下载；
@@ -540,7 +543,9 @@ JSONL 写入只把完整行加入当前 SSH session 的 stdin，并由 `_writeTa
 当前 RPC 覆盖：model/list、thread/list、thread/start、thread/resume、thread/turns/list、turn/start、
 turn/interrupt、审批/用户输入响应、thread/compact/start、thread/rollback、thread/archive、
 thread/name/set、review/start 和 thread/goal/get|set|clear。协议层保持 thread、turn、item 三层概念；
-`codex_event_reducer.dart` 幂等合并 started/delta/completed、乐观用户消息、token usage、目标和状态更新。
+`codex_event_reducer.dart` 幂等合并 started/delta/completed、乐观用户消息、token usage、目标和状态更新；
+用户消息的空 `item/started` 会先接管最近的本地乐观行，再由同 item id 的 completed 内容补全，不能短暂
+显示两条相同输入。
 未知通知保留但可忽略；未知 server request 回复 JSON-RPC -32601，避免远端永久等待。
 
 固定 Codex 版本变化前必须核对官方 schema、本地 `codex-manual-markdown (8)` 资料和协议测试，不能靠
@@ -845,7 +850,8 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
 - keystore/codex-remote-stable.keystore；Debug/Release 共用 stable signing config；
 - 证书 SHA-256 为 72:72:22:18:70:9A:6D:7F:D0:E8:0B:94:49:03:AE:29:61:B4:CF:A8:AB:E0:35:86:F6:02:AC:DC:1E:A0:F5:2A；
-- 不删除、重生成、替换 keystore 或 alias；每个可覆盖安装发布都增加 Pubspec build number。
+- 不删除、重生成、替换 keystore 或 alias；每次交付包含代码修改的新 APK，都将 Pubspec 可见语义版本
+  至少递增一个 patch 版本，并同时增加 build number，不能只增加 build number。
 
 本机发布脚本会验签、原子替换 `/var/www/html/codex.apk`，同时更新兼容别名
 `/var/www/html/agent.apk`，并绕过代理校验：
@@ -916,7 +922,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/agent/open_code_bootstrap_test.dart | 打包 bridge hash、固定版本探测、安装/卸载脚本语法、HTTP/HTTPS 代理防注入和托管卸载边界 |
 | test/ssh/ssh_server_client_test.dart | `sh -s`/长任务脚本只走 stdin、EOF、非零退出、输出上限、超时，以及跨 chunk UTF-8/CRLF/末行进度回调 |
 | test/agent/remote_bootstrap_test.dart | runtime 探测、兼容命令、依赖错误、固定版本、HTTP/HTTPS 代理防注入、进度解析和安装/卸载边界 |
-| test/agent/codex_event_reducer_test.dart | turn/delta 生命周期、后台 thread 隔离、TokenUsage 窗口保护、旧 turn 完成防护，以及乐观用户消息/图片附件合并 |
+| test/agent/codex_event_reducer_test.dart | turn/delta 生命周期、后台 thread 隔离、TokenUsage 窗口保护、旧 turn 完成防护，以及空 started/完整 completed 的乐观用户消息与图片附件合并 |
 | test/agent/agent_connection_manager_test.dart | profile + Agent lane、host 断开、generation/旧请求防护、连接前不提前暴露 capability、steer 转发和自定义模型同步迟到结果隔离 |
 | test/agent/thread_session_cache_test.dart | 会话缓存 TTL、LRU、权重上限和上下文用量隔离 |
 | test/app/resume_lifecycle_test.dart | resume 通知缓冲/顺序、迟到响应保护，以及返回列表后后台 timeline/TokenUsage 写回缓存并在重进时恢复 |
@@ -928,7 +934,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/diagnostic_log_sheet_test.dart | 崩溃日志默认选择、多选确认和附件数量上限 |
 | test/platform/app_update_manager_test.dart | Gitee Release/资源筛选、SemVer 与 prerelease 排序、忽略提示、进度/容量辅助函数，以及下载到安装的状态机 |
 | test/ssh/terminal_manager_test.dart | 每 profile PTY session、generation/身份失效、输入/输出上限、历史恢复、断开和重试 |
-| test/ui/markdown_links_test.dart | HTTP Markdown/裸链接识别、远程路径安全编码/解码、非法路径和保存文件名清理 |
+| test/ui/markdown_links_test.dart | HTTP Markdown/裸链接识别、label 后中文说明边界、目标 URL 不重复显示、远程路径安全编码/解码、非法路径和保存文件名清理 |
 | test/ui/work_content_test.dart | 图片工具路径提取、非图片工具拒绝、图片 MIME 映射、保存文件名清理和附件 MIME/文本分类 |
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
@@ -1052,7 +1058,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 15. 视觉接近 VS Code Codex：安静、紧凑、工作导向，不使用营销式大卡片、渐变或装饰背景。服务器列表
     和任务列表以旧 Compose 页面为明确视觉基线，保留其 64 dp 顶栏、品牌/推广块、单个服务器整卡、
     无外框 Debug 行、资源行、Agent 分段控件、无描边搜索框和紧凑任务行；可配置模型等新增内容除外。
-16. APK 签名永不变化，发布 build number 必增，交付同时给内网和外网地址；应用内更新只能安装同包名、
+16. APK 签名永不变化，每次修改版 APK 的可见语义版本至少递增一个 patch 且 build number 必增，交付同时给内网和外网地址；应用内更新只能安装同包名、
     同稳定证书且版本递增的正式 APK，不能用换签名绕过覆盖升级问题。
 17. 本机构建下载优先使用 127.0.0.1:7890；已有依赖保持离线增量构建。
 18. 每次修改按风险执行最近的定向测试并只选择一个主门禁；不能只以“编译通过”代替模拟器和真实流程
@@ -1367,6 +1373,221 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 本轮从 `2026-08-11T01:00:27.847Z` 首次修改计时至 `2026-08-11T01:18:xxZ` 完成，约 `18m`：问题定位与方案约 `4m`，首轮实现
   与测试约 `8m`，分页测试手势返工约 `2m`，定向验证约 `1m`，`check`（含全量测试、Debug 构建、竖屏 smoke、CodeGraph）约 `1m43s`。
   后续同类 UI 修改应先跑相邻 Widget 测试，再按 `docs/LOCAL_WORKFLOW.md` 只执行一个主门禁。
+
+### 17.12 Work 历史下拉状态机对齐（2026-08-11）
+
+- 应用版本：`1.8.21+148`。Flutter 历史下拉不再依赖越过阈值便立即回调的
+  `CupertinoSliverRefreshControl`，改为复用旧 Compose 的释放触发语义：真实顶部 overscroll 达到阈值后
+  显示“松开加载更多”，抬手前不请求；回拉到阈值以内会取消；手势从列表中间开始也能在到达顶部后继续下拉。
+- 会话首屏恢复不可见锚定后一次性跳到最新消息，移除布局尺寸每次变化都强制纠正到底部的自定义
+  `ScrollPosition`。分页加载期间首部 sliver 保留指示区，完成后按新增 extent 补偿，原可见消息保持位置。
+- WorkScreen 定向 12 项和 Flutter 全量 384 项测试通过，`flutter analyze` 无问题；Debug/Release APK、
+  Android 14 Release 竖屏 smoke、稳定发布与 `agent.apk` 内外网 HTTP 200 回验通过。横屏按产品约束未测试。
+  APK SHA-256 为 `175eb13a07207b0aca0ade6e0e2366e03837c13c6f6023fef0bc80f92e6a4821`。
+- 从第一次写文件到下载回验约 `39m34s`：实现、返工与定向验证约 `31m19s`，唯一一次 publish 主门禁
+  `6m26.013s`，最终 `agent.apk` HTTP/哈希回验约 `1m49s`。publish 内部阶段为 OpenCode `14.758s`、
+  暂停模拟器 `21.284s`、Android 全门禁 `147.316s`、Release 竖屏 smoke `43.366s`、本地发布及下载回验
+  `158.221s`；本轮主要返工是先采用内置刷新控件，随后从 Flutter 源码确认其越阈值立即触发而改写状态机。
+
+### 17.13 Markdown URL 边界修复（2026-08-11）
+
+- 应用版本：`1.8.23+150`。修复自定义中文标点自动链接语法取消上游前置字符边界的问题；此前
+  `[URL](URL)` 会被拆成普通文本和链接节点，导致对话里显示方括号、括号和重复 URL。
+- 自动链接现在恢复 GFM 的空白/分隔符边界，仅额外允许常用中文标点；标准 Markdown 链接和
+  `内网：http://...` 裸链接均保持单一可点击节点。
+- 新增 URL 标签回归测试；Flutter 全量 `385` 项、`flutter analyze`、Release 构建、竖屏模拟器安装验收及
+  Agent 内外网 HTTP `200` 回验通过。APK SHA-256 为
+  `e821e678ba40a5122892fc183f72f1e5cf121b3f2d7cb9184c07d47baefd71d1`。
+- 从 `2026-08-11T08:58:02.113Z` 开始计时至 `2026-08-11T09:07:09.059Z` 完成，共 `9m06.946s`；
+  定向复现与修复约 `1m`，主门禁 `302.10s`，安装、元数据和地址回验约 `7s`。
+
+### 17.14 Work 连续历史分页锚点（2026-08-11）
+
+- 应用版本：`1.8.24+151`。历史分页在手势抬起、加载 sliver 出现前记录当前第一页的稳定 row key；
+  锚点基准取滚动视口顶部和固定内容边距，不再读取正处于 overscroll 拉伸中的消息坐标。触发分页时先
+  结束顶部回弹，分页插入和加载指示区移除后各校正一次锚点，避免快速返回的第二页把回弹位移误算成
+  新增历史高度并把列表夹到最底部。
+- 滚动范围因变高历史项而在布局阶段重算时，滚动状态延后到当前 frame 结束后提交，避免布局期间
+  `setState` 打断锚点校正。连续分页回归使用两页不同高度消息和真实下拉手势，并同时覆盖加载中重复
+  下拉不并发、第二页游标耗尽后不发第三次请求、原可见首行坐标保持以及最新消息不进入视口。
+- WorkScreen 定向 `13` 项、Flutter 全量 `386` 项测试和 `flutter analyze` 通过；Android 14 竖屏模拟器
+  完成 Debug 安装、启动、连接本地 Codex、进入会话和最新消息落点检查，按产品约束未测试横屏。模拟器
+  测试会话只有 4 条消息且没有历史游标，因此真实两页数据由受控 Widget 测试覆盖，不把启动 smoke
+  记作分页实机验证。
+- Debug `check` 用时 `1m30.698s`；强制 Release 门禁用时 `3m23.446s`，其中依赖解析 `1.397s`、
+  analyze `4.067s`、全量测试 `34.330s`、Release 构建 `2m43.637s`。内网完整下载一次通过；外网 FRP
+  约 `240KB/s`，两次受脚本 `180s` 超时/连接中断后以 `900s` 可续传校验完成，最终完整下载约
+  `4m30s`。APK 为 `dist/Agent-1.8.24.apk`，内网、外网和构建产物 SHA-256 均为
+  `5e3470a07ee05bc5c6655bb18a847d0d0cb4951b198ba6b7b0ccce5dc85196d0`。
+- 本轮从 `2026-08-11T09:21:24.046Z` 第一次写文件开始计时，到
+  `2026-08-11T10:42:10.924Z` 最终地址与差异检查完成，共 `1h20m46.878s`。实现、变高分页压力测试
+  与定向返工到主门禁开始约 `52m50s`；其余时间用于 Debug/Release 门禁、竖屏模拟器真实连接与进入会话、
+  两次外网超时诊断、最终完整下载哈希回验和文档收尾。
+
+### 17.15 Work 对话滚动位置指示（2026-08-11）
+
+- 应用版本：`1.8.25+152`。Work 对话时间线使用 Flutter `Scrollbar`，与消息列表共用同一个
+  `ScrollController`；滑动时在右侧显示 4px 滑块，停止后淡出，不常驻显示轨道，并支持直接拖动滑块定位。
+  本轮不修改历史分页锚点或连接恢复逻辑。
+- Widget 回归验证滚动条和列表共用控制器、参数配置和真实滑动后的可见性。WorkScreen 定向 `13`
+  项、Flutter 全量 `386` 项测试和 `flutter analyze` 通过；Android 14 竖屏模拟器完成 Debug 安装、启动和
+  `v1.8.25` 版本显示验收，按产品约束未测试横屏。
+- 从 `2026-08-11T10:59:57.312Z` 开始修改到 `2026-08-11T11:16:52.864Z` 发布与完整下载回验完成，
+  共 `16m55.552s`：实现、定向验证、竖屏验收与收尾约 `8m02s`，Debug 主门禁 `1m42.356s`，
+  Release 依赖解析与构建 `2m43.358s`，外网完整回下载 `4m28s`。
+- APK 为 `dist/Agent-1.8.25.apk`，包内应用名为 `Agent`，`versionName=1.8.25`、`versionCode=152`；
+  构建产物、内网发布文件和外网完整下载的 SHA-256 均为
+  `cf91751b5678cf4740d942283e2965b84cae8babc31db6bad10a584cefb283f7`。
+
+### 17.16 Work 历史加载区无跳帧收起（2026-08-11）
+
+- 应用版本：`1.8.26+153`。历史页插入后的最终锚点坐标虽然正确，但旧 Flutter 实现会在加载完成时
+  用一帧移除 108px 顶部加载区，肉眼会看到整段内容突然上跳。现在保持现有稳定 key 和分页锚点补偿，
+  仅将加载区改为 `220ms` `easeOutCubic` 连续收起，并在这个收尾窗口内禁止第二个分页手势。
+- 新增逐帧回归：数据返回的首帧仍保留加载区，接下来 16ms 帧的位移不得等于整段高度，动画结束后
+  原消息回到原锚点。同时保留两页连续下拉、不同高度消息、加载中不重复请求和游标耗尽回归。
+- WorkScreen 定向 `14` 项、Flutter 全量 `387` 项测试、`flutter analyze`、Debug/Release 构建和
+  Android 14 竖屏模拟器安装启动通过；按产品约束未测试横屏。
+- 从 `2026-08-11T11:29:40.531Z` 开始修改到 `2026-08-11T11:41:14.076Z` 发布与完整下载回验完成，
+  共 `11m33.545s`：实现、定向测试、竖屏截图和元数据收尾约 `4m49s`，Debug 主门禁 `1m48.461s`，
+  Release 依赖解析与构建 `2m48.711s`，外网完整回下载 `2m07s`。
+- APK 为 `dist/Agent-1.8.26.apk`，包内应用名为 `Agent`，`versionName=1.8.26`、`versionCode=153`；
+  构建产物、内网发布文件和外网完整下载的 SHA-256 均为
+  `8634a0b16ae9e32cecdcb8d4362e79a061922c733979c92358010e6be9188bbc`。
+
+### 17.17 Work 滚动诊断日志（2026-08-11）
+
+- 应用版本：`1.8.27+154`。此前导出的诊断日志只包含生命周期、连接、心跳和页面导航，无法判断历史
+  分页后的跳动发生在请求、布局、锚点选择还是位置补偿阶段。Debug 模式现在增加 `TranscriptScroll`
+  日志；日志只记录状态和数字，不记录任何对话正文，关闭 Debug 后不写入。
+- 诊断事件覆盖会话视口重置、首次定位到底部、用户/程序滚动起止、跟随输出状态变化、下拉阈值达到、
+  释放、取消、分页锚点准备、顶部回弹归零、分页请求开始/结束/失败、分页前后布局、加载区收起和手动
+  回到底部。关键事件同时记录 thread、`pixels/min/max`、`extentBefore/extentAfter`、viewport、分页前后
+  条数和 cursor、锚点屏幕坐标、补偿策略与补偿量；不逐像素写日志，避免日志本身影响滚动性能。
+- WorkScreen 定向 `16` 项、Flutter 全量 `389` 项测试和 `flutter analyze` 通过；Debug 构建及 Android 14
+  竖屏模拟器安装、启动和 `v1.8.27` 版本显示通过，按产品约束未测试横屏。Release APK 通过内外网完整
+  回下载和元数据核验，应用名为 `Agent`，`versionName=1.8.27`、`versionCode=154`。
+- 本轮从 `2026-08-11T11:53:21.530Z` 第一次修改开始，到
+  `2026-08-11T12:24:50.740Z` 最终回验和文档收尾完成，共 `31m29.210s`。实现、定向测试和首次门禁
+  返工 `18m17.470s`；成功的 Debug 主门禁 `1m33.145s`，其中 Android Debug 门禁 `62.284s`、竖屏
+  模拟器 smoke `28.271s`、CodeGraph 同步 `0.961s`；Release 构建 `2m43.371s`；外网完整回下载
+  `2m15s`；本地发布、元数据核验、文档和最终差异检查约 `6m40s`。
+- APK 为 `dist/Agent-1.8.27.apk`；构建产物、内网发布文件和外网完整下载的 SHA-256 均为
+  `c7e36ccf8acc4bcb03fa9e5ddf7543cc00e2225364c60d681cb2bc3596251818`。
+
+### 17.18 Work 滚动范围异常追踪（2026-08-11）
+
+- 应用版本：`1.8.28+155`。`1.8.27` 实机日志已经确认历史分页时稳定锚点经常未挂载，代码退回
+  extent 补偿；其中一次 `maxScrollExtent` 从约 `51,903` 瞬时变为约 `19,317,910`，补偿量也被算成
+  `19,266,007`，布局恢复后当前位置被夹到底部并重新启用 follow。本轮只增强证据采集，不修改现有
+  滚动或分页行为。
+- `TranscriptScroll` 新增 `extent_sample` 和 `extent_anomaly`：记录每次 `ScrollMetricsNotification` 以及
+  max extent 变化至少 `256px`、达到 `1,000,000px` 或 pixels 越界的滚动通知；字段包括前后 pixels、
+  max、viewport 及其 delta、通知类型、outOfRange、分页/加载/首屏/follow 状态。刷新控件同时记录
+  idle、refreshing、retracting、pointer、pulled 和 armed，区分异常发生在列表层还是加载控件层。
+- 分页事件补充补偿前后 pixels、分页前后 max、deltaMax、越界状态以及锚点和 viewport RenderBox 的
+  mounted、attached、hasSize、宽高和屏幕 dy；RenderBox 在布局阶段不可安全读取时只记录
+  `unavailable`，诊断代码不会抛错或干扰布局。顶部加载区另外记录 visibility 切换和收起动画的
+  controller、factor、高度及状态。日志仍不记录对话正文。
+- WorkScreen 定向 `16` 项、Flutter 全量 `389` 项和 `flutter analyze` 通过；发布门禁完成 Debug/Release
+  构建、稳定签名、Android 14 Release 竖屏安装启动和 `v1.8.28` 显示验收，按产品约束未测试横屏。
+  内外网 `agent.apk`、构建产物、发布文件和 `dist/Agent-1.8.28.apk` 完整 SHA-256 一致，均为
+  `c01df2781723a95bdb85318bbf7ee0bec46e1ababdca139d025d6cc671a56f1a`。
+- 本轮从 `2026-08-11T12:36:21.843Z` 第一次修改开始，到
+  `2026-08-11T13:09:54.647Z` 完成完整回验和文档收尾，共 `33m32.804s`。实现、诊断安全性返工、
+  定向测试、analyze 和首次全量测试到发布门禁开始约 `19m04s`；唯一一次 publish 主门禁
+  `6m17.232s`，其中暂停模拟器
+  `16.221s`、Android full `3m00.258s`、Release 竖屏 smoke `22.040s`、CodeGraph `1.164s`、本地发布
+  及其下载回验 `2m35.621s`；其余 `8m11s` 用于内外网 `agent.apk` 额外完整回下载、哈希和元数据
+  复核、新事件定向断言、文档及最终差异检查，其中外网完整回下载约 `2m05s`。
+
+### 17.19 Work 滚动日志降噪与位置标记（2026-08-11）
+
+- 应用版本：`1.8.29+156`。`1.8.28` 实机日志确认 `pixels=82201.4`、`max=82197.7` 的约 `3.7px`
+  底部回弹属于正常边界收敛，但父列表、刷新控件和 metrics 通知会在同一帧重复记录，使诊断日志快速
+  轮转并挤掉分页事件。
+- 刷新控件不再重复采样父列表已经接收的滚动 metrics。父列表只记录首个样本、显著的相对 extent 变化、
+  `1,000,000px` 大范围状态切换和至少 `24px` 的越界状态切换；连续异常样本至少间隔 `500ms`，普通
+  底部弹性回弹不再逐帧写日志。分页、锚点、加载区和 follow 状态事件保持完整。
+- 每条 `TranscriptScroll` 关键事件新增 `location=top|middle|bottom`、归一化 `progress` 和 `overscroll`，
+  可以直接判断当前滚动到列表顶部、中部还是底部；仍只记录状态与几何数字，不记录会话正文。
+- WorkScreen 定向 `17` 项、Flutter 全量 `390` 项和 `flutter analyze` 通过；Debug/Release APK 构建、
+  Android 14 Release 竖屏安装启动和 `v1.8.29` 显示验收通过，按产品约束未测试横屏。唯一一次
+  `publish` 主门禁用时 `6m40.963s`：服务器/OpenCode 门禁均命中缓存，Android full `3m37.452s`、
+  Release 竖屏 smoke `18.426s`、CodeGraph `0.889s`、本地发布和内外网回验 `2m39.437s`。
+- APK 为 `dist/Agent-1.8.29.apk`，应用名 `Agent`，`versionName=1.8.29`、`versionCode=156`；构建产物、
+  本地发布文件及内外网 `agent.apk` 完整回下载 SHA-256 均为
+  `98397ec1a401c2533a22e6ce83e6d65e0a35e6ff41003ac375a1c2a1443a560b`。从第一次写文件到发布、
+  别名完整回下载和最终检查约 `17m`，没有失败返工。
+
+### 17.20 Work 历史分页固定中心（2026-08-11）
+
+- 应用版本：`1.8.30+157`。`1.8.29` 实机日志确认分页跳底不是普通回弹：分页时旧锚点已经离开
+  lazy sliver 的挂载范围，代码退回 `maxScrollExtent` 差值补偿；最后一页插入 36 条记录时估算范围从
+  `13,451.1px` 瞬时增至 `36,770.8px`，错误补偿 `23,319.7px`，加载区收起后范围又降至
+  `22,142.7px`，当前位置越界并把 follow 重新切到底部。
+- 时间线改为两个 sliver，并以首批数据的第一条稳定 row 作为 `CustomScrollView.center`：现有消息从
+  center 向下布局，后续加载的更早消息按反序增长在 center 上方。Flutter 直接保持中心坐标，不再读取
+  lazy `SliverList` 的估算 extent，也不要求分页前的 GlobalKey 锚点仍挂载；诊断明确记录
+  `strategy=center appliedDelta=0.0`。
+- 顶部加载提示改为不参与滚动范围的覆盖层，避免提示收起改变 center 周围的内容间距；加载期间只拦截
+  正文滚动，提示收起阶段即可继续下一次分页。回归覆盖连续两页、五页不同批量和不同高度消息、加载中
+  重复手势、游标耗尽、加载提示收起及完整诊断链，并断言旧可见行保持坐标且列表不会落到底部。
+- WorkScreen 定向 `18` 项、Flutter 全量 `391` 项和 `flutter analyze` 通过；Debug/Release APK 构建、
+  Android 14 Release 竖屏安装启动和 `v1.8.30` 显示验收通过，按产品约束未测试横屏。唯一一次
+  `publish` 主门禁用时 `6m47.768s`，其中 Android full `3m38.861s`、Release 竖屏 smoke
+  `20.173s`、CodeGraph `0.880s`、本地发布和默认下载回验 `2m41.057s`。内外网 `agent.apk` 又分别
+  完整回下载并核对哈希；应用名 `Agent`、包名 `top.asdb.agent`、`versionName=1.8.30`、
+  `versionCode=157`，稳定签名证书未变化。
+- APK 为 `dist/Agent-1.8.30.apk`；构建产物、本地发布文件及内外网 `agent.apk` 完整回下载 SHA-256
+  均为 `e3203d611e19932ed260440eafb02454d3421504c828ef6788fbf27dd1c0e948`。
+
+### 17.21 Work 首屏底部原点（2026-08-11）
+
+- 应用版本：`1.8.31+158`。`1.8.30` 修复分页跳底后，实机日志又发现从会话列表打开拥有大量缓存消息的
+  会话时，首帧先按懒列表估算的 `maxScrollExtent` 跳到底部；`max` 随后从 `27,570.1px` 膨胀到
+  `3,114,064.0px`，再回落到 `113,845.5px`，同时视口因输入框 inset 缩小，造成内容从上方连续冒出。
+- 时间线改为尾部空 center sliver，设置 `anchor=1.0`，所有消息反向布局在 center 上方。进入会话时
+  `pixels=0/max=0` 已经是底部，首屏不再依赖 `jumpTo(maxScrollExtent)`；跟随输出和回到底部按钮统一
+  使用固定的 `0.0` 原点，只有用户确实离开底部时才发生滚动。
+- 新增 253 条异高缓存消息的逐帧回归，覆盖缓存加载、数据完成和 `300px` 输入框 inset 动画；每一帧
+  均保持 `pixels=0/max=0`，同时保留连续历史分页、异高分页锚点和滚动条测试。
+- WorkScreen 定向 `19` 项、Flutter 全量 `392` 项和 `flutter analyze` 通过；Debug/Release APK 构建、
+  Android 14 Release 竖屏安装启动和 `v1.8.31` 显示验收通过，按产品约束未测试横屏。唯一一次
+  `publish` 主门禁用时 `6m48.154s`，其中 Android full `3m41.211s`、Release 竖屏 smoke
+  `20.273s`、CodeGraph `0.911s`、本地发布和默认下载回验 `2m39.005s`。
+- 内外网 `agent.apk` 均完成整包回下载，且与 `dist/Agent-1.8.31.apk` 一致：文件大小
+  `67,190,311` 字节，SHA-256 为 `c78b676e149d871bf552467019dfbd57de69df58caca729e39f5d7c2fb42f84d`。
+  应用名为 `Agent`、包名 `top.asdb.agent`、`versionName=1.8.31`、`versionCode=158`；稳定签名证书
+  SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`，未发生变化。
+- 本轮从第一次写文件到发布、双地址整包下载和最终检查约 `44m27s`；没有失败门禁或重复发布。
+
+### 17.22 Work 链接、短会话与发送回显（2026-08-11）
+
+- 应用版本：`1.8.32+159`。普通 HTTP/HTTPS Markdown link 不再把目标 URL 复制到下一行；label 后面的
+  中文说明保持普通文本和标准链接边界，远程绝对文件路径的 App 内安全链接转换不变。
+- 固定尾部 center sliver 继续为长会话提供 `pixels=0/max=0` 的稳定底部原点；短会话在隐藏首帧读取消息
+  sliver 的真实高度，用精确尾部 gap 补满剩余视口，因此首条消息从顶部开始。gap 会随消息和键盘 inset
+  增减，不满一屏时保持顶部，超过一屏后归零并显示最新消息。
+- Codex 用户消息的 `item/started` 允许空 content。Reducer 现在把这个带服务器 item id 的 started 事件
+  合并进最近的 `local-user-*` 乐观行，随后同 id 的 completed 补全正文，避免发送后临时出现两条相同输入；
+  重新进入会话时的服务器快照行为不变。
+- Markdown、Reducer 和 WorkScreen 定向 `38` 项、Flutter 全量 `395` 项、`flutter analyze`、Debug/Release
+  构建和 Android 14 Release 竖屏 smoke 全部通过。唯一一次 `publish` 主门禁用时 `6m45.368s`，其中
+  Android full `3m43.983s`、Release smoke `20.164s`、CodeGraph `0.994s`、本地发布和默认下载回验
+  `2m34.500s`。
+- `dist/Agent-1.8.32.apk`、内网和公网 `agent.apk` 整包回下载一致，大小 `67,190,307` 字节，SHA-256
+  为 `2d93965316ff872b485a2670f84ebfb8430f5ee9187c52f830b68ef90d4a5816`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.32`、`versionCode=159`，稳定签名证书未变化。
+- 本轮从第一次写文件到发布、双地址整包回下载、元数据和最终差异检查约 `29m34s`；主门禁一次通过。
+
+### 17.23 诊断日志分享选择器（2026-08-12）
+
+- 应用版本：`1.8.33+160`。Flutter 诊断日志分享选择器对齐原生参考布局：宽版圆角弹窗、时间与人类可读大小两行展示、活动日志显示“当前记录中”，不再展示内部 `session-...` 文件名。
+- 分享入口默认不预选日志，底部仅提供“取消 / 分享”，未选择时分享按钮禁用；工作页附件入口继续预选最近崩溃日志并保留附件数量上限。
+- 列表使用固定行高和受限可滚动区域，覆盖窄屏与长列表；Widget 回归验证 B/KB 大小、当前记录颜色、选择状态、附件限制和无溢出滚动。
+- 定向 `4` 项、Flutter 全量 `397` 项、`flutter analyze`、Debug/Release 构建和 Android 14 Release 竖屏 smoke 全部通过。唯一一次 `publish` 主门禁用时 `6m46.205s`，其中 Android full `3m41.154s`、Release smoke `22.447s`、CodeGraph `0.265s`、本地发布和默认下载回验 `2m33.558s`。
+- `dist/Agent-1.8.33.apk`、内网和公网 `agent.apk` 整包回下载一致，大小 `67,223,079` 字节，SHA-256 为 `440ce2ee7f273641ddd8169a54f9596a2b732df34ae35f9b6876cd918f001df8`。应用名 `Agent`、包名 `top.asdb.agent`、`versionName=1.8.33`、`versionCode=160`，稳定签名证书未变化。
 
 ## 18. 文档维护规则
 

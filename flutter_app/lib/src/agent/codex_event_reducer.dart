@@ -207,7 +207,13 @@ AppUiState reduceCodexNotification(
           status: method == 'item/started' ? 'inProgress' : 'completed',
         );
       }
-      return state.copyWith(timeline: _upsertTimeline(state.timeline, entry));
+      return state.copyWith(
+        timeline: _upsertTimeline(
+          state.timeline,
+          entry,
+          allowEmptyOptimisticUserMatch: method == 'item/started',
+        ),
+      );
 
     case 'item/agentMessage/delta':
       if (!appliesToActive) return state;
@@ -414,8 +420,9 @@ bool _hasTimelineIdentity(
 
 List<TimelineEntry> _upsertTimeline(
   List<TimelineEntry> current,
-  TimelineEntry incoming,
-) {
+  TimelineEntry incoming, {
+  bool allowEmptyOptimisticUserMatch = false,
+}) {
   final index = current.indexWhere(
     (entry) => _hasTimelineIdentity(
       entry,
@@ -430,7 +437,11 @@ List<TimelineEntry> _upsertTimeline(
     // item id. The live `item/started`/`item/completed` echo is authoritative;
     // fold it into that row instead of rendering the same prompt twice.
     final optimisticIndex = incoming.kind == TimelineKind.userMessage
-        ? _findMatchingOptimisticUser(result, incoming)
+        ? _findMatchingOptimisticUser(
+            result,
+            incoming,
+            allowEmptyContent: allowEmptyOptimisticUserMatch,
+          )
         : -1;
     if (optimisticIndex >= 0) {
       result[optimisticIndex] = _mergeTimelineEntry(
@@ -448,24 +459,28 @@ List<TimelineEntry> _upsertTimeline(
 
 int _findMatchingOptimisticUser(
   List<TimelineEntry> entries,
-  TimelineEntry incoming,
-) {
+  TimelineEntry incoming, {
+  required bool allowEmptyContent,
+}) {
+  final incomingText = incoming.text.trim();
   for (var index = entries.length - 1; index >= 0; index -= 1) {
     final candidate = entries[index];
     if (!candidate.id.startsWith('local-user-') ||
         candidate.kind != TimelineKind.userMessage) {
       continue;
     }
-    if (candidate.text.trim() != incoming.text.trim()) continue;
+    if (incomingText.isEmpty) {
+      if (!allowEmptyContent || incoming.attachments.isNotEmpty) continue;
+      if (candidate.turnId.isNotEmpty &&
+          incoming.turnId.isNotEmpty &&
+          candidate.turnId != incoming.turnId) {
+        continue;
+      }
+      return index;
+    }
+    if (candidate.text.trim() != incomingText) continue;
     if (incoming.attachments.isNotEmpty &&
         !_sameAttachmentSet(candidate.attachments, incoming.attachments)) {
-      continue;
-    }
-    // An empty/empty event is not enough evidence to consume an optimistic
-    // row: malformed server payloads should still be visible as notices.
-    if (candidate.text.trim().isEmpty &&
-        candidate.attachments.isEmpty &&
-        incoming.attachments.isEmpty) {
       continue;
     }
     return index;

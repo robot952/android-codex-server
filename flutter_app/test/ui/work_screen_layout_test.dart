@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/platform/diagnostic_logger.dart';
 import 'package:codex_remote/src/platform/local_file_exporter.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
@@ -25,14 +26,17 @@ class _LayoutController extends AppController {
   // The production constructor uses private positional fields, so a public
   // super-parameter cannot be used from this test library.
   // ignore: use_super_parameters
-  _LayoutController(ProfileStore store, ServerConnectionManager manager)
-    : super(store, manager);
+  _LayoutController(
+    ProfileStore store,
+    ServerConnectionManager manager, [
+    DiagnosticLogger? diagnosticLogger,
+  ]) : super(store, manager, null, diagnosticLogger);
 
   void showState(AppUiState value) => state = value;
 }
 
 class _PaginationController extends _LayoutController {
-  _PaginationController(super.store, super.manager);
+  _PaginationController(super.store, super.manager, [super.diagnosticLogger]);
 
   Future<void> Function()? onLoadOlder;
   int loadOlderCalls = 0;
@@ -41,6 +45,26 @@ class _PaginationController extends _LayoutController {
   Future<void> loadOlderTurns() async {
     loadOlderCalls += 1;
     await onLoadOlder?.call();
+  }
+}
+
+class _RecordingDiagnosticLogger extends DiagnosticLogger {
+  final records = <String>[];
+
+  @override
+  bool get isEnabled => true;
+
+  @override
+  Future<bool> initialize() async => true;
+
+  @override
+  void info(String tag, String message) {
+    records.add('INFO $tag $message');
+  }
+
+  @override
+  void warn(String tag, String message, [Object? error, StackTrace? stack]) {
+    records.add('WARN $tag $message');
   }
 }
 
@@ -80,8 +104,101 @@ TapGestureRecognizer? _findLinkRecognizer(InlineSpan? span, String text) {
   return null;
 }
 
+Future<void> _jumpToTranscriptStart(
+  WidgetTester tester,
+  ScrollController controller,
+) async {
+  for (var attempt = 0; attempt < 8; attempt += 1) {
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pumpAndSettle();
+    if ((controller.position.pixels - controller.position.minScrollExtent)
+            .abs() <
+        0.5) {
+      return;
+    }
+  }
+  throw TestFailure('Transcript did not settle at its minimum scroll extent');
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('formats transcript scroll metrics with stable numeric fields', () {
+    expect(
+      formatTranscriptScrollMetrics(null),
+      'pixels=none min=none max=none before=none after=none viewport=none',
+    );
+    expect(
+      formatTranscriptScrollMetrics(
+        FixedScrollMetrics(
+          minScrollExtent: 0,
+          maxScrollExtent: 900,
+          pixels: 125.25,
+          viewportDimension: 600,
+          axisDirection: AxisDirection.down,
+          devicePixelRatio: 2,
+        ),
+      ),
+      'pixels=125.3 min=0.0 max=900.0 before=125.3 after=774.8 '
+      'viewport=600.0',
+    );
+  });
+
+  test('formats transcript scroll location and normal edge rebound', () {
+    final middle = FixedScrollMetrics(
+      minScrollExtent: 0,
+      maxScrollExtent: 900,
+      pixels: 225,
+      viewportDimension: 600,
+      axisDirection: AxisDirection.down,
+      devicePixelRatio: 2,
+    );
+    final bottomRebound = FixedScrollMetrics(
+      minScrollExtent: 0,
+      maxScrollExtent: 900,
+      pixels: 903.7,
+      viewportDimension: 600,
+      axisDirection: AxisDirection.down,
+      devicePixelRatio: 2,
+    );
+
+    expect(
+      formatTranscriptScrollLocation(middle),
+      'location=middle progress=25.0% overscroll=0.0',
+    );
+    expect(
+      formatTranscriptScrollLocation(bottomRebound),
+      'location=bottom progress=100.0% overscroll=3.7',
+    );
+    expect(transcriptScrollOverscroll(bottomRebound), closeTo(3.7, 0.01));
+  });
+
+  test('matches the legacy follow-output state machine', () {
+    expect(
+      updatedFollowOutput(
+        current: false,
+        userDragging: false,
+        canScrollForward: false,
+      ),
+      isTrue,
+    );
+    expect(
+      updatedFollowOutput(
+        current: true,
+        userDragging: true,
+        canScrollForward: true,
+      ),
+      isFalse,
+    );
+    expect(
+      updatedFollowOutput(
+        current: false,
+        userDragging: false,
+        canScrollForward: true,
+      ),
+      isFalse,
+    );
+  });
 
   List<TimelineEntry> entries(int start, int count) => [
     for (var index = start; index < start + count; index += 1)
@@ -131,8 +248,348 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    final scrollbar = tester.widget<Scrollbar>(
+      find.byKey(const Key('transcript-scrollbar')),
+    );
+    final scrollView = tester.widget<CustomScrollView>(
+      find.byType(CustomScrollView),
+    );
+    expect(scrollbar.controller, same(scrollView.controller));
+    expect(scrollbar.thumbVisibility, isFalse);
+    expect(scrollbar.trackVisibility, isFalse);
+    expect(scrollbar.interactive, isTrue);
+    expect(scrollbar.thickness, 4);
     expect(find.text('消息 39'), findsOneWidget);
     expect(find.text('消息 0'), findsNothing);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 160));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    final scrollbarPainter = tester
+        .widgetList<CustomPaint>(
+          find.descendant(
+            of: find.byKey(const Key('transcript-scrollbar')),
+            matching: find.byType(CustomPaint),
+          ),
+        )
+        .map((paint) => paint.foregroundPainter)
+        .whereType<ScrollbarPainter>()
+        .single;
+    expect(scrollbarPainter.fadeoutOpacityAnimation.value, greaterThan(0));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('opens a short conversation at the top of the transcript', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(
+          timeline: const <TimelineEntry>[
+            TimelineEntry(
+              id: 'short-user',
+              kind: TimelineKind.userMessage,
+              text: '短对话第一条',
+            ),
+            TimelineEntry(
+              id: 'short-agent',
+              kind: TimelineKind.agentMessage,
+              text: '短对话回复',
+            ),
+          ],
+        ),
+      );
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    final viewport = tester.getRect(scrollViewFinder);
+    final firstMessage = tester.getRect(find.text('短对话第一条'));
+
+    expect(firstMessage.top, lessThan(viewport.top + 80));
+    expect(scrollView.controller!.position.pixels, closeTo(0, 0.01));
+    expect(scrollView.controller!.position.maxScrollExtent, closeTo(0, 0.01));
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pumpAndSettle();
+    expect(find.text('短对话回复'), findsOneWidget);
+
+    tester.view.viewInsets = const FakeViewPadding();
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(find.text('短对话第一条')).top,
+      closeTo(firstMessage.top, 1),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('opens a long cached conversation without chasing its extent', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final timeline = <TimelineEntry>[
+      for (var index = 0; index < 253; index += 1)
+        TimelineEntry(
+          id: 'cached-$index',
+          kind: TimelineKind.agentMessage,
+          text:
+              '缓存消息 $index\n'
+              '${List.filled(index % 9 + 1, '不同高度的缓存内容').join('\n')}',
+        ),
+    ];
+    final logger = _RecordingDiagnosticLogger();
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager, logger)
+      ..showState(
+        timelineState(
+          timeline: timeline,
+          olderTurnsCursor: 'older',
+          loading: true,
+        ),
+      );
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pump();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    final latestFinder = find.text(timeline.last.text);
+    expect(scrollView.anchor, 1);
+    expect(latestFinder, findsOneWidget);
+
+    void expectStableBottom() {
+      final position = scrollView.controller!.position;
+      expect(position.pixels, closeTo(0, 0.01));
+      expect(position.maxScrollExtent, closeTo(0, 0.01));
+      expect(position.outOfRange, isFalse);
+      expect(latestFinder, findsOneWidget);
+    }
+
+    expectStableBottom();
+    for (var frame = 0; frame < 12; frame += 1) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expectStableBottom();
+    }
+
+    controller.showState(controller.state.copyWith(loading: false));
+    for (var frame = 0; frame < 12; frame += 1) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expectStableBottom();
+    }
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    for (var frame = 0; frame < 14; frame += 1) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expectStableBottom();
+    }
+    await tester.pumpAndSettle();
+
+    final log = logger.records.join('\n');
+    expect(log, contains('initial_bottom_apply'));
+    expect(log, contains('center=tail'));
+    expect(log, isNot(contains('largeExtent=true')));
+    expect(log, isNot(matches(RegExp('gesture_end .*source=program'))));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps cached history visible with a centered loading state', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      timelineState(timeline: entries(0, 12), loading: true),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('消息 11'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsWidgets);
+
+    controller.showState(
+      timelineState(timeline: entries(0, 40), loading: false),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('消息 39'), findsOneWidget);
+    expect(find.text('消息 0'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'cancels older-page loading when the pull returns below threshold',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(420, 840);
+      addTearDown(tester.view.reset);
+
+      final manager = ServerConnectionManager();
+      final controller = _PaginationController(_MemoryStore(), manager)
+        ..showState(
+          timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+        );
+      addTearDown(() async => manager.close());
+      controller.onLoadOlder = () async {};
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final scrollViewFinder = find.byType(CustomScrollView);
+      final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+      await _jumpToTranscriptStart(tester, scrollView.controller!);
+
+      final rect = tester.getRect(scrollViewFinder);
+      final gesture = await tester.startGesture(
+        Offset(rect.center.dx, rect.top + 80),
+      );
+      await gesture.moveBy(const Offset(0, 220));
+      await tester.pump();
+      expect(find.text('松开加载更多'), findsOneWidget);
+
+      await gesture.moveBy(const Offset(0, -400));
+      await tester.pump();
+      expect(find.text('松开加载更多'), findsNothing);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(controller.loadOlderCalls, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('shows the release label while an older-page pull is held', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {};
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+
+    final rect = tester.getRect(scrollViewFinder);
+    final gesture = await tester.startGesture(
+      Offset(rect.center.dx, rect.top + 80),
+    );
+    await gesture.moveBy(const Offset(0, 220));
+    await tester.pump();
+
+    expect(find.text('松开加载更多'), findsOneWidget);
+    expect(controller.loadOlderCalls, 0);
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(controller.loadOlderCalls, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('can start a history pull before the list reaches the top', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {};
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    final position = scrollView.controller!.position;
+    scrollView.controller!.jumpTo(
+      (position.minScrollExtent + 120).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      ),
+    );
+    await tester.pump();
+
+    final rect = tester.getRect(scrollViewFinder);
+    final gesture = await tester.startGesture(
+      Offset(rect.center.dx, rect.top + 160),
+    );
+    await gesture.moveBy(const Offset(0, 420));
+    await tester.pump();
+
+    expect(find.text('松开加载更多'), findsOneWidget);
+    expect(controller.loadOlderCalls, 0);
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(controller.loadOlderCalls, 1);
     expect(tester.takeException(), isNull);
   });
 
@@ -171,8 +628,7 @@ void main() {
     final scrollView = tester.widget<CustomScrollView>(
       find.byType(CustomScrollView),
     );
-    scrollView.controller!.jumpTo(0);
-    await tester.pumpAndSettle();
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
     final beforeTop = tester.getTopLeft(find.text('消息 0')).dy;
 
     await tester.drag(find.byType(CustomScrollView), const Offset(0, 120));
@@ -183,6 +639,312 @@ void main() {
     expect(controller.state.timeline.length, 50);
     expect(find.text('消息 39'), findsNothing);
     expect(tester.getTopLeft(find.text('消息 0')).dy, closeTo(beforeTop, 2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('retracts the older-page header without a one-frame jump', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {
+      controller.showState(controller.state.copyWith(olderTurnsLoading: true));
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      controller.showState(
+        controller.state.copyWith(
+          timeline: [...entries(-10, 10), ...controller.state.timeline],
+          olderTurnsCursor: null,
+          olderTurnsLoading: false,
+        ),
+      );
+    };
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    final restingTop = tester.getTopLeft(find.text('消息 0')).dy;
+
+    await tester.drag(scrollViewFinder, const Offset(0, 120));
+    await tester.pump(const Duration(milliseconds: 120));
+    final retractStartTop = tester.getTopLeft(find.text('消息 0')).dy;
+    expect(retractStartTop, closeTo(restingTop, 2));
+
+    await tester.pump(const Duration(milliseconds: 16));
+    final nextFrameTop = tester.getTopLeft(find.text('消息 0')).dy;
+    expect(nextFrameTop, closeTo(retractStartTop, 2));
+
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(find.text('消息 0')).dy, closeTo(restingTop, 2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('records the complete older-page scroll diagnostic chain', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final logger = _RecordingDiagnosticLogger();
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager, logger)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {
+      controller.showState(controller.state.copyWith(olderTurnsLoading: true));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      controller.showState(
+        controller.state.copyWith(
+          timeline: [...entries(-10, 10), ...controller.state.timeline],
+          olderTurnsCursor: null,
+          olderTurnsLoading: false,
+        ),
+      );
+    };
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle(
+      const Duration(milliseconds: 16),
+      EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 2),
+    );
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    await tester.drag(scrollViewFinder, const Offset(0, 140));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pump(const Duration(milliseconds: 220));
+    await tester.pump(const Duration(milliseconds: 220));
+    await tester.pump();
+
+    final log = logger.records.join('\n');
+    expect(log, contains('INFO TranscriptScroll gesture_start'));
+    expect(log, contains('INFO TranscriptScroll pull_threshold state=armed'));
+    expect(log, contains('INFO TranscriptScroll pull_release armed=true'));
+    expect(log, contains('INFO TranscriptScroll position_prepare'));
+    expect(log, contains('INFO TranscriptScroll page_begin'));
+    expect(log, contains('INFO TranscriptScroll page_request'));
+    expect(log, contains('INFO TranscriptScroll page_layout'));
+    expect(log, contains('INFO TranscriptScroll page_end'));
+    expect(log, contains('INFO TranscriptScroll retract_start'));
+    expect(log, contains('INFO TranscriptScroll retract_end'));
+    expect(log, contains('INFO TranscriptScroll extent_sample'));
+    expect(log, contains('source=notification'));
+    expect(log, isNot(contains('source=refresh')));
+    expect(
+      RegExp('INFO TranscriptScroll extent_sample').allMatches(log).length,
+      lessThanOrEqualTo(6),
+    );
+    expect(log, contains('INFO TranscriptScroll header_visibility'));
+    expect(log, contains('INFO TranscriptScroll header_layout'));
+    expect(log, contains('center=tail'));
+    expect(log, contains('viewportState='));
+    expect(log, contains('pixels='));
+    expect(log, contains('location='));
+    expect(log, contains('progress='));
+    expect(log, contains('strategy=center'));
+    expect(log, isNot(contains('strategy=extent')));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps the anchor across repeated older-page pulls', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    List<TimelineEntry> olderPage(int start) => [
+      for (var index = start; index < start + 10; index += 1)
+        TimelineEntry(
+          id: 'timeline-$index',
+          kind: TimelineKind.agentMessage,
+          text:
+              '消息 $index\n${List.filled(index.abs() % 4 + 1, '高度变化内容').join('\n')}',
+        ),
+    ];
+    controller.onLoadOlder = () async {
+      final page = controller.loadOlderCalls;
+      controller.showState(controller.state.copyWith(olderTurnsLoading: true));
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      final olderStart = page == 1 ? -10 : -20;
+      controller.showState(
+        controller.state.copyWith(
+          timeline: [...olderPage(olderStart), ...controller.state.timeline],
+          olderTurnsCursor: page == 1 ? 'page-3' : null,
+          olderTurnsLoading: false,
+        ),
+      );
+    };
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    final beforeTop = tester.getTopLeft(find.text('消息 0')).dy;
+    await tester.drag(scrollViewFinder, const Offset(0, 10000));
+    await tester.pump();
+    await tester.pump();
+    expect(controller.loadOlderCalls, 1);
+    expect(controller.state.olderTurnsLoading, isTrue);
+
+    await tester.drag(
+      scrollViewFinder,
+      const Offset(0, 120),
+      warnIfMissed: false,
+    );
+    await tester.pump();
+    expect(controller.loadOlderCalls, 1);
+
+    await tester.pumpAndSettle();
+    expect(find.text('消息 0'), findsOneWidget);
+    expect(tester.getTopLeft(find.text('消息 0')).dy, closeTo(beforeTop, 2));
+
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    final secondAnchorText = olderPage(-10).first.text;
+    final beforeSecondTop = tester.getTopLeft(find.text(secondAnchorText)).dy;
+
+    await tester.drag(scrollViewFinder, const Offset(0, 120));
+    await tester.pumpAndSettle();
+
+    expect(controller.loadOlderCalls, 2);
+    expect(find.text(secondAnchorText), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text(secondAnchorText)).dy,
+      closeTo(beforeSecondTop, 2),
+    );
+    expect(find.text('消息 39'), findsNothing);
+
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    await tester.drag(scrollViewFinder, const Offset(0, 120));
+    await tester.pumpAndSettle();
+    expect(controller.loadOlderCalls, 2);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps position when repeated lazy-list extents change', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    List<TimelineEntry> variableEntries(int start, int count) => [
+      for (var index = start; index < start + count; index += 1)
+        TimelineEntry(
+          id: 'variable-$index',
+          kind: TimelineKind.agentMessage,
+          text:
+              '可变消息 $index\n'
+              '${List.filled(index.abs() % 12 + 1, '不同高度的历史内容').join('\n')}',
+        ),
+    ];
+
+    final logger = _RecordingDiagnosticLogger();
+    final manager = ServerConnectionManager();
+    final pageSizes = <int>[24, 10, 29, 22, 36];
+    var nextStart = 0;
+    final controller = _PaginationController(_MemoryStore(), manager, logger)
+      ..showState(
+        timelineState(
+          timeline: variableEntries(0, 27),
+          olderTurnsCursor: 'page-1',
+        ),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {
+      final pageIndex = controller.loadOlderCalls - 1;
+      final pageSize = pageSizes[pageIndex];
+      nextStart -= pageSize;
+      controller.showState(controller.state.copyWith(olderTurnsLoading: true));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      controller.showState(
+        controller.state.copyWith(
+          timeline: [
+            ...variableEntries(nextStart, pageSize),
+            ...controller.state.timeline,
+          ],
+          olderTurnsCursor: pageIndex == pageSizes.length - 1
+              ? null
+              : 'page-${pageIndex + 2}',
+          olderTurnsLoading: false,
+        ),
+      );
+    };
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    expect(scrollView.center, isNotNull);
+
+    for (var pageIndex = 0; pageIndex < pageSizes.length; pageIndex += 1) {
+      await _jumpToTranscriptStart(tester, scrollView.controller!);
+      final anchorText = controller.state.timeline.first.text;
+      final anchorFinder = find.text(anchorText);
+      expect(anchorFinder, findsOneWidget);
+      final anchorTop = tester.getTopLeft(anchorFinder).dy;
+
+      await tester.drag(scrollViewFinder, const Offset(0, 150));
+      await tester.pumpAndSettle();
+
+      expect(controller.loadOlderCalls, pageIndex + 1);
+      expect(anchorFinder, findsOneWidget);
+      expect(tester.getTopLeft(anchorFinder).dy, closeTo(anchorTop, 2));
+      expect(scrollView.controller!.position.extentAfter, greaterThan(100));
+    }
+
+    final log = logger.records.join('\n');
+    expect(
+      RegExp('page_layout .*strategy=center').allMatches(log).length,
+      pageSizes.length,
+    );
+    expect(log, isNot(contains('strategy=extent')));
     expect(tester.takeException(), isNull);
   });
 

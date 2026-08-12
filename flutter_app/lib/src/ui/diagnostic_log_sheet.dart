@@ -24,7 +24,13 @@ Future<void> shareDiagnosticLogs(
   required DiagnosticLogger logger,
 }) async {
   try {
-    final ids = await pickDiagnosticLogIds(context, logger: logger);
+    final ids = await pickDiagnosticLogIds(
+      context,
+      logger: logger,
+      title: '选择要分享的诊断日志',
+      confirmLabel: '分享',
+      preselectLatest: false,
+    );
     if (ids == null || ids.isEmpty) return;
     await logger.share(ids: ids);
     if (context.mounted) {
@@ -51,12 +57,14 @@ Future<List<String>?> pickDiagnosticLogIds(
   required DiagnosticLogger logger,
   bool preferLatestCrash = false,
   String title = '选择 Debug 日志',
+  String confirmLabel = '确定',
+  bool preselectLatest = true,
   int? maxSelection,
 }) async {
   final entries = await logger.listLogs();
   if (!context.mounted) return null;
   final initial = <String>{};
-  if (entries.isNotEmpty) {
+  if (entries.isNotEmpty && (preferLatestCrash || preselectLatest)) {
     final preferred = preferLatestCrash
         ? entries.where((entry) => entry.hasCrash).firstOrNull
         : null;
@@ -66,6 +74,7 @@ Future<List<String>?> pickDiagnosticLogIds(
     context: context,
     builder: (context) => _DiagnosticLogPicker(
       title: title,
+      confirmLabel: confirmLabel,
       entries: entries,
       initialSelection: initial,
       maxSelection: maxSelection,
@@ -76,12 +85,14 @@ Future<List<String>?> pickDiagnosticLogIds(
 class _DiagnosticLogPicker extends StatefulWidget {
   const _DiagnosticLogPicker({
     required this.title,
+    required this.confirmLabel,
     required this.entries,
     required this.initialSelection,
     this.maxSelection,
   });
 
   final String title;
+  final String confirmLabel;
   final List<DiagnosticLogEntry> entries;
   final Set<String> initialSelection;
   final int? maxSelection;
@@ -93,94 +104,199 @@ class _DiagnosticLogPicker extends StatefulWidget {
 class _DiagnosticLogPickerState extends State<_DiagnosticLogPicker> {
   late final Set<String> _selected = {...widget.initialSelection};
 
-  int get _selectAllCount {
-    final maximum = widget.maxSelection;
-    return maximum == null || maximum > widget.entries.length
-        ? widget.entries.length
-        : maximum;
+  void _setSelected(DiagnosticLogEntry entry, bool selected) {
+    setState(() {
+      if (selected) {
+        _selected.add(entry.id);
+      } else {
+        _selected.remove(entry.id);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.title),
-      content: SizedBox(
-        width: 500,
-        child: widget.entries.isEmpty
-            ? const Padding(
-                padding: EdgeInsets.symmetric(vertical: 18),
-                child: Text('暂无可用日志'),
-              )
-            : ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 480),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: widget.entries.length,
-                  itemBuilder: (context, index) {
-                    final entry = widget.entries[index];
-                    final selected = _selected.contains(entry.id);
-                    final selectionFull =
-                        widget.maxSelection != null &&
-                        _selected.length >= widget.maxSelection!;
-                    final date = _formatLogDate(entry.updatedAt);
-                    final marker = entry.hasCrash ? ' · 崩溃' : '';
-                    return CheckboxListTile(
-                      value: selected,
-                      onChanged: !selected && selectionFull
-                          ? null
-                          : (value) => setState(() {
-                              if (value == true) {
-                                _selected.add(entry.id);
-                              } else {
-                                _selected.remove(entry.id);
-                              }
-                            }),
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                      title: Text(
-                        '$date$marker',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+    final availableHeight = MediaQuery.sizeOf(context).height - 48;
+    final listHeight = (widget.entries.length * 73.0).clamp(72.0, 420.0);
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      backgroundColor: codexRaised,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 520,
+          maxHeight: availableHeight.clamp(280.0, 600.0).toDouble(),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final maximumListHeight = constraints.maxHeight - 112;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+                  child: Text(
+                    widget.title,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                if (widget.entries.isEmpty)
+                  const SizedBox(
+                    height: 80,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(24, 20, 24, 28),
+                      child: Text('暂无可用日志'),
+                    ),
+                  )
+                else
+                  SizedBox(
+                    height: listHeight
+                        .clamp(72.0, maximumListHeight)
+                        .toDouble(),
+                    child: Scrollbar(
+                      child: ListView.separated(
+                        key: const Key('diagnostic-log-list'),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        itemCount: widget.entries.length,
+                        separatorBuilder: (context, index) => const Divider(
+                          height: 1,
+                          indent: 8,
+                          endIndent: 8,
+                          color: codexBorder,
+                        ),
+                        itemBuilder: (context, index) {
+                          final entry = widget.entries[index];
+                          final selected = _selected.contains(entry.id);
+                          final selectionFull =
+                              widget.maxSelection != null &&
+                              _selected.length >= widget.maxSelection!;
+                          final enabled = selected || !selectionFull;
+                          return _DiagnosticLogRow(
+                            key: Key('diagnostic-log-row-${entry.id}'),
+                            entry: entry,
+                            selected: selected,
+                            enabled: enabled,
+                            onChanged: (value) => _setSelected(entry, value),
+                          );
+                        },
                       ),
-                      subtitle: Text(
-                        '${entry.fileName} · ${_formatBytes(entry.sizeBytes)}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('取消'),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        key: const Key('diagnostic-log-confirm'),
+                        onPressed: _selected.isEmpty
+                            ? null
+                            : () => Navigator.of(context).pop(
+                                widget.entries
+                                    .where(
+                                      (entry) => _selected.contains(entry.id),
+                                    )
+                                    .map((entry) => entry.id)
+                                    .toList(growable: false),
+                              ),
+                        child: Text(widget.confirmLabel),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _DiagnosticLogRow extends StatelessWidget {
+  const _DiagnosticLogRow({
+    super.key,
+    required this.entry,
+    required this.selected,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final DiagnosticLogEntry entry;
+  final bool selected;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: enabled ? () => onChanged(!selected) : null,
+      child: SizedBox(
+        height: 72,
+        child: Row(
+          children: [
+            Checkbox(
+              value: selected,
+              onChanged: enabled ? (value) => onChanged(value ?? false) : null,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _formatLogDate(entry.createdAt),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Text(
+                        _formatBytes(entry.sizeBytes),
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
-                    );
-                  },
-                ),
+                      if (entry.isActive) ...[
+                        const SizedBox(width: 8),
+                        const Text(
+                          '当前记录中',
+                          style: TextStyle(
+                            color: codexGreen,
+                            fontSize: 12,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                      ],
+                      if (entry.hasCrash) ...[
+                        const SizedBox(width: 8),
+                        const Text(
+                          '崩溃',
+                          style: TextStyle(
+                            color: codexRed,
+                            fontSize: 12,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
               ),
+            ),
+          ],
+        ),
       ),
-      actions: [
-        if (widget.entries.isNotEmpty)
-          TextButton(
-            onPressed: () => setState(() {
-              if (_selected.length >= _selectAllCount) {
-                _selected.clear();
-              } else {
-                final entries = widget.maxSelection == null
-                    ? widget.entries
-                    : widget.entries.take(widget.maxSelection!);
-                _selected
-                  ..clear()
-                  ..addAll(entries.map((entry) => entry.id));
-              }
-            }),
-            child: Text(_selected.length >= _selectAllCount ? '清除选择' : '全选'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: _selected.isEmpty
-              ? null
-              : () => Navigator.of(context).pop(_selected.toList()),
-          child: Text('确定 (${_selected.length})'),
-        ),
-      ],
     );
   }
 }
@@ -229,7 +345,13 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      final ids = await pickDiagnosticLogIds(context, logger: widget.logger);
+      final ids = await pickDiagnosticLogIds(
+        context,
+        logger: widget.logger,
+        title: '选择要分享的诊断日志',
+        confirmLabel: '分享',
+        preselectLatest: false,
+      );
       if (ids == null || ids.isEmpty) return;
       await widget.logger.share(ids: ids);
       if (mounted) {

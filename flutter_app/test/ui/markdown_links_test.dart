@@ -3,10 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown/markdown.dart' as md;
 
 void main() {
-  test('exposes HTTP destinations without duplicating identical labels', () {
+  test('keeps standard HTTP links without exposing duplicate destinations', () {
     expect(
       markdownWithVisibleLinkDestinations('[文档](https://example.com/docs)'),
-      '[文档](https://example.com/docs)\nhttps://example.com/docs',
+      '[文档](https://example.com/docs)',
     );
     expect(
       markdownWithVisibleLinkDestinations(
@@ -14,6 +14,24 @@ void main() {
       ),
       '[https://example.com](https://example.com)',
     );
+  });
+
+  test('keeps localized text after a labeled link outside the link', () {
+    const url = 'http://192.168.8.107/agent.apk';
+    final markdown = markdownWithVisibleLinkDestinations(
+      '[内网下载]($url)：仅同一局域网可用',
+    );
+    final nodes = md.Document(
+      inlineSyntaxes: workMarkdownInlineSyntaxes,
+      extensionSet: md.ExtensionSet.gitHubFlavored,
+      encodeHtml: false,
+    ).parseInline(markdown);
+
+    expect(nodes, hasLength(2));
+    final link = nodes.first as md.Element;
+    expect(link.textContent, '内网下载');
+    expect(link.attributes['href'], url);
+    expect(nodes.last.textContent, '：仅同一局域网可用');
   });
 
   test('autolinks HTTP destinations adjacent to localized punctuation', () {
@@ -27,6 +45,22 @@ void main() {
       (element) => element.tag == 'a',
     );
 
+    expect(link.textContent, url);
+    expect(link.attributes['href'], url);
+  });
+
+  test('keeps URL-labelled Markdown links as one clean link', () {
+    const url = 'http://frp.asdb.top:18080/agent.apk';
+    final markdown = markdownWithVisibleLinkDestinations('[$url]($url)');
+    final nodes = md.Document(
+      inlineSyntaxes: workMarkdownInlineSyntaxes,
+      extensionSet: md.ExtensionSet.gitHubFlavored,
+      encodeHtml: false,
+    ).parseInline(markdown);
+
+    expect(nodes, hasLength(1));
+    final link = nodes.single as md.Element;
+    expect(link.tag, 'a');
     expect(link.textContent, url);
     expect(link.attributes['href'], url);
   });

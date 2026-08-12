@@ -2,9 +2,6 @@ import 'dart:convert';
 
 import 'package:markdown/markdown.dart' as md;
 
-final RegExp _markdownHttpLink = RegExp(
-  r'\[([^\]\r\n]+)]\((https?://[^\s)]+)\)',
-);
 final RegExp _markdownRemoteFileLink = RegExp(r'\[([^\]\r\n]+)]\((/[^\s)]+)\)');
 final RegExp _remoteFileToken = RegExp(r'^[A-Za-z0-9_-]+$');
 
@@ -25,28 +22,44 @@ class AdjacentHttpAutolinkSyntax extends md.AutolinkExtensionSyntax {
     startMatchPos ??= parser.pos;
     final match = pattern.matchAsPrefix(parser.source, startMatchPos);
     if (match == null || match[1] == null) return false;
+    if (parser.pos > 0) {
+      final precededBy = String.fromCharCode(parser.charAt(parser.pos - 1));
+      const validPrecedingChars = <String>{
+        '\n',
+        ' ',
+        '*',
+        '_',
+        '~',
+        '(',
+        '>',
+        '：',
+        '，',
+        '。',
+        '；',
+        '！',
+        '？',
+        '、',
+        '（',
+        '【',
+        '《',
+        '「',
+        '『',
+      };
+      if (!validPrecedingChars.contains(precededBy)) return false;
+    }
     parser.writeText();
     return onMatch(parser, match);
   }
 }
 
-/// Keeps link labels while also exposing ordinary HTTP destinations as
-/// selectable text. Absolute server paths are replaced with an internal link
-/// that is decoded locally and is never sent to a browser.
+/// Rewrites absolute server paths to internal links that are decoded locally
+/// and are never sent to a browser. Ordinary Markdown links stay untouched so
+/// their destination is not duplicated in the visible transcript.
 String markdownWithVisibleLinkDestinations(String markdown) {
-  final withRemoteFiles = markdown.replaceAllMapped(_markdownRemoteFileLink, (
-    match,
-  ) {
+  return markdown.replaceAllMapped(_markdownRemoteFileLink, (match) {
     final link = remoteFileLinkForPath(match.group(2) ?? '');
     if (link == null) return match.group(0) ?? '';
     return '[${match.group(1)}]($link)';
-  });
-  return withRemoteFiles.replaceAllMapped(_markdownHttpLink, (match) {
-    final original = match.group(0) ?? '';
-    final label = (match.group(1) ?? '').trim();
-    final url = match.group(2) ?? '';
-    if (remoteFilePathFromLink(url) != null || label == url) return original;
-    return '$original\n$url';
   });
 }
 

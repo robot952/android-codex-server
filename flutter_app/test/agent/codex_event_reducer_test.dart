@@ -210,6 +210,52 @@ void main() {
     expect(next.timeline.single.attachments.single.mimeType, 'image/*');
   });
 
+  test('reconciles an empty started user item before completed content', () {
+    final state = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'local-user-123',
+          kind: TimelineKind.userMessage,
+          text: '再开个3分钟的',
+        ),
+      ],
+    );
+
+    final started = reduceCodexNotification(
+      state,
+      _notification('item/started', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'server-user-1',
+          'type': 'userMessage',
+          'content': <Object?>[],
+        },
+      }),
+    );
+    expect(started.timeline, hasLength(1));
+    expect(started.timeline.single.id, 'server-user-1');
+    expect(started.timeline.single.text, '再开个3分钟的');
+
+    final completed = reduceCodexNotification(
+      started,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'server-user-1',
+          'type': 'userMessage',
+          'content': <Object?>[
+            <String, Object?>{'type': 'text', 'text': '再开个3分钟的'},
+          ],
+        },
+      }),
+    );
+    expect(completed.timeline, hasLength(1));
+    expect(completed.timeline.single.id, 'server-user-1');
+    expect(completed.timeline.single.text, '再开个3分钟的');
+  });
+
   test('does not reconcile a different optimistic user message', () {
     final state = _state().copyWith(
       timeline: const <TimelineEntry>[
