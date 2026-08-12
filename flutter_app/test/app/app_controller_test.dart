@@ -756,6 +756,7 @@ class _SettingsAgent extends _FailingTurnAgent
   int testCalls = 0;
   int writeCalls = 0;
   int fetchApiModelsCalls = 0;
+  int? failConnectAttempt;
   List<AgentModel> modelList = const <AgentModel>[];
   List<ApiModelOption> apiModelList = const <ApiModelOption>[
     ApiModelOption(modelId: 'gpt-api-model'),
@@ -776,6 +777,16 @@ class _SettingsAgent extends _FailingTurnAgent
 
   @override
   AgentCapabilities get capabilities => AgentCapabilities.codex;
+
+  @override
+  Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
+    if (connectCount + 1 == failConnectAttempt) {
+      connectCount++;
+      connected = false;
+      throw StateError('settings restart rejected');
+    }
+    await super.connect(profile, host);
+  }
 
   @override
   Future<List<AgentModel>> listModels() async => modelList;
@@ -2966,8 +2977,10 @@ void main() {
     );
   });
 
-  test('saves per-agent defaults then disconnects the whole server', () async {
-    final profile = _firstProfile.copyWith(workspacePromptShown: true);
+  test('saves per-agent defaults and restarts only the active Agent', () async {
+    final profile = localLinuxProfile(
+      _localLinuxInstance,
+    ).copyWith(hostFingerprint: 'SHA256:local', workspacePromptShown: true);
     final store = _MemoryProfileStore(
       StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
     );
@@ -2978,7 +2991,17 @@ void main() {
       connections,
       clientFactory: (kind) => agent,
     );
-    final controller = AppController(store, connections, agents);
+    final diagnostics = _RecordingDiagnosticLogger();
+    final runtime = _FakeLocalLinuxRuntime();
+    final controller = AppController(
+      store,
+      connections,
+      agents,
+      diagnostics,
+      null,
+      null,
+      runtime,
+    );
     addTearDown(() async {
       controller.dispose();
       await agents.close();
@@ -3009,9 +3032,101 @@ void main() {
     expect(saved.preferredEffort, 'high');
     expect(saved.testModel, 'gpt-test-saved');
     expect(controller.state.agentSettingsVisible, isFalse);
-    expect(controller.state.screen, AppScreen.servers);
-    expect(host.connected, isFalse);
-    expect(agent.connected, isFalse);
+    expect(controller.state.screen, AppScreen.threads);
+    expect(host.connected, isTrue);
+    expect(agent.connected, isTrue);
+    expect(agent.disconnectCount, 1);
+    expect(agent.connectCount, 2);
+    expect(runtime.stopCalls, 0);
+    expect(
+      diagnostics.records,
+      contains(
+        contains(
+          'INFO AgentSettings save_completed profile=${profile.id} '
+          'agent=codex restart=success',
+        ),
+      ),
+    );
+    final diagnosticText = diagnostics.records.join('\n');
+    expect(diagnosticText, isNot(contains('https://models.example/v1')));
+    expect(diagnosticText, isNot(contains('http://127.0.0.1:7890')));
+    expect(diagnosticText, isNot(contains('gpt-saved')));
+  });
+
+  test('recovers the retained Agent when its settings restart fails', () async {
+    final profile = localLinuxProfile(
+      _localLinuxInstance,
+    ).copyWith(hostFingerprint: 'SHA256:local', workspacePromptShown: true);
+    final store = _MemoryProfileStore(
+      StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+    );
+    final host = _FingerprintClient();
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agent = _SettingsAgent()..failConnectAttempt = 2;
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => agent,
+    );
+    final diagnostics = _RecordingDiagnosticLogger();
+    final runtime = _FakeLocalLinuxRuntime();
+    final controller = AppController(
+      store,
+      connections,
+      agents,
+      diagnostics,
+      const <Duration>[Duration.zero],
+      null,
+      runtime,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    await controller.requestConnect(profile);
+    await controller.ensureActiveAgent();
+    await controller.showAgentSettings();
+
+    await controller.saveAgentSettings(
+      baseUrl: 'https://models.example/v1',
+      apiKey: '',
+      proxyUrl: '',
+      defaultModel: 'gpt-saved',
+      defaultReasoningEffort: 'high',
+      testModel: 'gpt-test-saved',
+      preserveCurrentProvider: true,
+    );
+    await _waitUntil(
+      () =>
+          agent.connectCount == 3 &&
+          controller
+                  .state
+                  .agentConnectionStates[AgentConnectionKey(
+                    profileId: profile.id,
+                    agent: AgentKind.codex,
+                  )]
+                  ?.phase ==
+              ConnectionPhase.connected,
+    );
+
+    expect(host.connected, isTrue);
+    expect(agent.connected, isTrue);
+    expect(runtime.stopCalls, 0);
+    expect(controller.state.error, contains('配置已保存，但重新连接失败'));
+    expect(controller.backgroundConnectionIntent.hostProfileIds, [profile.id]);
+    expect(controller.backgroundConnectionIntent.agentConnectionKeys, [
+      '${profile.id}\u0000codex',
+    ]);
+    expect(
+      diagnostics.records,
+      contains(
+        contains(
+          'WARN AgentSettings save_restart_failed profile=${profile.id} '
+          'agent=codex error=StateError',
+        ),
+      ),
+    );
   });
 
   test('drops a global settings read after the dialog is dismissed', () async {

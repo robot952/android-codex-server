@@ -1616,6 +1616,15 @@ class AppController extends StateNotifier<AppUiState> {
     final generation = _agents.generation(key);
     _agentSettingsProfileId = profile.id;
     _agentSettingsAgent = agent;
+    _diagnostics.info(
+      'AgentSettings',
+      'save_requested profile=${profile.id} agent=${agent.name} '
+          'baseUrl=${baseUrl.trim().isNotEmpty ? 'configured' : 'default'} '
+          'apiKey=${apiKey.trim().isNotEmpty ? 'provided' : 'unchanged'} '
+          'proxy=${proxyUrl.trim().isNotEmpty ? 'configured' : 'none'} '
+          'defaultModel=${normalizedDefaultModel.isNotEmpty ? 'configured' : 'none'} '
+          'testModel=${normalizedTestModel.isNotEmpty ? 'configured' : 'none'}',
+    );
     state = state.copyWith(
       agentSettingsSaving: true,
       agentSettingsTestResult: null,
@@ -1623,6 +1632,7 @@ class AppController extends StateNotifier<AppUiState> {
     );
 
     var saved = false;
+    var stage = 'remote_write';
     try {
       await _agents.writeGlobalSettings(
         key,
@@ -1634,7 +1644,7 @@ class AppController extends StateNotifier<AppUiState> {
         defaultReasoningEffort: normalizedDefaultEffort,
         preserveCurrentProvider: preserveCurrentProvider,
       );
-      saved = true;
+      stage = 'profile_persist';
       await _updateProfileAgentDefaults(
         profileId: profile.id,
         agent: agent,
@@ -1642,6 +1652,7 @@ class AppController extends StateNotifier<AppUiState> {
         defaultEffort: normalizedDefaultEffort,
         testModel: normalizedTestModel,
       );
+      saved = true;
       if (_isAgentSettingsRequestCurrent(
         requestId,
         profile,
@@ -1651,6 +1662,11 @@ class AppController extends StateNotifier<AppUiState> {
         _closeAgentSettings();
       }
     } catch (error) {
+      _diagnostics.warn(
+        'AgentSettings',
+        'save_failed profile=${profile.id} agent=${agent.name} '
+            'stage=$stage error=${error.runtimeType}',
+      );
       if (_isAgentSettingsRequestCurrent(
         requestId,
         profile,
@@ -1663,7 +1679,33 @@ class AppController extends StateNotifier<AppUiState> {
         );
       }
     }
-    if (saved) await disconnectProfile(profile.id);
+    if (!saved || !mounted) return;
+
+    final updatedProfile = state.profiles.firstWhereOrNull(
+      (candidate) => candidate.id == profile.id,
+    );
+    if (updatedProfile == null) return;
+    try {
+      await _restartAgentAfterSettingsSave(key, updatedProfile);
+      _diagnostics.info(
+        'AgentSettings',
+        'save_completed profile=${profile.id} agent=${agent.name} '
+            'restart=success',
+      );
+    } catch (error) {
+      _diagnostics.warn(
+        'AgentSettings',
+        'save_restart_failed profile=${profile.id} agent=${agent.name} '
+            'error=${error.runtimeType}',
+      );
+      if (mounted) {
+        state = state.copyWith(
+          error:
+              '${agent.label} 配置已保存，但重新连接失败：'
+              '${_message(error, '请手动重新连接')}',
+        );
+      }
+    }
   }
 
   Future<Uint8List> loadImagePreview(String path) async {
@@ -4805,6 +4847,44 @@ class AppController extends StateNotifier<AppUiState> {
             .toList(growable: false),
       ),
     );
+  }
+
+  Future<void> _restartAgentAfterSettingsSave(
+    AgentConnectionKey key,
+    ServerProfile profile,
+  ) async {
+    _diagnostics.info(
+      'AgentSettings',
+      'restart_requested profile=${key.profileId} agent=${key.agent.name}',
+    );
+    _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
+    _agentLoadRequests.remove(key);
+    final retained = _retainedAgentConnections.remove(key);
+    try {
+      await _agents.disconnect(key.profileId, agent: key.agent);
+      if (!mounted ||
+          _connections.states[key.profileId]?.phase !=
+              ConnectionPhase.connected) {
+        return;
+      }
+      if (retained && _retainedHostConnections.contains(key.profileId)) {
+        _retainedAgentConnections.add(key);
+      }
+      await _agents.connect(profile, key.agent);
+      await _loadAgentData(key, profile, includeModels: true, silent: true);
+    } finally {
+      if (retained &&
+          mounted &&
+          _retainedHostConnections.contains(key.profileId)) {
+        _retainedAgentConnections.add(key);
+        if (_connectionNeedsRecovery(key.profileId)) {
+          _scheduleConnectionRecovery(
+            key.profileId,
+            source: 'agent_settings_restart',
+          );
+        }
+      }
+    }
   }
 
   void backToServers() {

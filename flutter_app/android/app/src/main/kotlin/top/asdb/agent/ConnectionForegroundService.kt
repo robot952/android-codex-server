@@ -299,6 +299,7 @@ class ConnectionForegroundService : Service() {
     private fun ensureFlutterEngine(connectionIntent: BackgroundConnectionIntent) {
         FlutterEngineCache.getInstance().get(RETAINED_ENGINE_ID)?.let { engine ->
             LocalLinuxManager.register(applicationContext, engine)
+            DiagnosticLogBridge.ensureCrashHandler()
             flutterEngine = engine
             heartbeatChannel = MethodChannel(
                 engine.dartExecutor.binaryMessenger,
@@ -321,6 +322,7 @@ class ConnectionForegroundService : Service() {
                     DartExecutor.DartEntrypoint.createDefault(),
                     connectionIntent.entrypointArguments(),
                 )
+                DiagnosticLogBridge.ensureCrashHandler()
             } catch (error: Throwable) {
                 FlutterEngineCache.getInstance().remove(RETAINED_ENGINE_ID)
                 engine.destroy()

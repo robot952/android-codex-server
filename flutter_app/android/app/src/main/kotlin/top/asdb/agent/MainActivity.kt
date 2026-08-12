@@ -47,6 +47,7 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         DiagnosticLogBridge.initialize(applicationContext)
         super.onCreate(savedInstanceState)
+        DiagnosticLogBridge.ensureCrashHandler()
     }
 
     /**
@@ -61,6 +62,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        DiagnosticLogBridge.ensureCrashHandler()
         FlutterEngineCache.getInstance().put(RETAINED_ENGINE_ID, flutterEngine)
         LocalLinuxManager.register(applicationContext, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LEGACY_CHANNEL)

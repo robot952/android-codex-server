@@ -665,6 +665,7 @@ $HOME/.local/bin/codex-remote-opencode-bridge
 Codex/OpenCode 全局设置的“测试连接”直接在已连接的远端 Linux 内通过 curl 请求模型 API，不读取 Android
 网络栈。失败反馈使用高对比度文字，并区分缺少密钥/模型、DNS、端口连接、超时、TLS、鉴权和 HTTP 错误；
 诊断日志只记录字段是否填写和归一化原因码，不记录 API 密钥、模型 URL、代理 URL 或模型名。
+保存成功后只重启当前 Agent lane 以加载新配置，保留 SSH、本机 Linux 和同服务器的其他 Agent。
 
 探测、安装和卸载的长时 SSH 等待不得持有 Agent lane 的连接锁；该锁只保护开始/收尾状态切换，运行中
 用 generation 丢弃过期进度和结果。请求入队时同时绑定 Agent generation，以及包含 SSH 连接身份、

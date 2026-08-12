@@ -40,7 +40,7 @@ object DiagnosticLogBridge {
     private var directory: File? = null
     private var currentFile: File? = null
     private var processToken = ""
-    private var previousHandler: Thread.UncaughtExceptionHandler? = null
+    private var crashHandler: Thread.UncaughtExceptionHandler? = null
     private var ordinaryLoggingEnabled = false
 
     fun initialize(context: Context) {
@@ -62,16 +62,7 @@ object DiagnosticLogBridge {
                 currentFile = newSessionFileLocked()
                 appendLocked("INFO", "Android", "native_diagnostics_initialized")
             }
-            previousHandler = Thread.getDefaultUncaughtExceptionHandler()
-            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-                append(
-                    "FATAL",
-                    "Crash",
-                    "java_uncaught_exception thread=${thread.name}",
-                    throwable,
-                )
-                previousHandler?.uncaughtException(thread, throwable)
-            }
+            installCrashHandlerLocked()
         }
         startAnrWatchdog()
         Runtime.getRuntime().addShutdownHook(
@@ -83,6 +74,29 @@ object DiagnosticLogBridge {
                 }
             },
         )
+    }
+
+    /** Flutter can replace the process handler while its engine starts. */
+    fun ensureCrashHandler() {
+        if (!initialized.get()) return
+        synchronized(lock) { installCrashHandlerLocked() }
+    }
+
+    private fun installCrashHandlerLocked() {
+        val current = Thread.getDefaultUncaughtExceptionHandler()
+        if (current === crashHandler) return
+        val delegate = current
+        val handler = Thread.UncaughtExceptionHandler { thread, throwable ->
+            append(
+                "FATAL",
+                "Crash",
+                "java_uncaught_exception thread=${thread.name}",
+                throwable,
+            )
+            delegate?.uncaughtException(thread, throwable)
+        }
+        crashHandler = handler
+        Thread.setDefaultUncaughtExceptionHandler(handler)
     }
 
     private fun startAnrWatchdog() {
