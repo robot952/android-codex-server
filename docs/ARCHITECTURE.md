@@ -645,8 +645,11 @@ watchdog 终止安装进程组。
 
 OpenCode 使用独立的 `OpenCodeBootstrap` 探测与安装链路，固定 `opencode-ai 1.18.11` 和
 `jsonc-parser 3.3.1`，复用固定 Node `22.17.0`。安装先准备共享 Node，再通过国内 npm registry 安装
-OpenCode 和 bridge；HTTP/HTTPS 下载代理只注入安装进程。只有 CLI 版本和 App 打包 bridge source 的
-SHA-256 同时匹配才复用已有运行时，防止新版 App 误连旧 bridge。托管路径为：
+OpenCode 和 bridge；HTTP/HTTPS 下载代理只注入安装进程。安装脚本按远端架构明确选择唯一 glibc 平台包：
+ARM64 使用 `opencode-linux-arm64`，x64 根据 AVX2 使用普通版或 baseline，并禁用 `opencode-ai`
+postinstall 的自动 musl 兜底。这样 Debian PRoot 不会在首个下载失败后转而报告误导性的 musl 不兼容错误，
+且所有 npm 元数据和平台二进制仍优先来自 `registry.npmmirror.com`。只有 CLI 版本和 App 打包 bridge source
+的 SHA-256 同时匹配才复用已有运行时，防止新版 App 误连旧 bridge。托管路径为：
 
 ~~~text
 $HOME/.local/share/codex-remote/opencode

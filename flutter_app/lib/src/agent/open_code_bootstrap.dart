@@ -224,21 +224,40 @@ fi
 npm_config_registry=https://registry.npmmirror.com
 export npm_config_registry
 mkdir -p "$OPENCODE_ROOT/releases" "$BIN_DIR" "$WORK"
-cat > "$WORK/package.json" <<'EOF'
-{"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"__OPENCODE_VERSION__"}}
-EOF
-progress 74 '' '分析 OpenCode 下载清单' '锁定 OpenCode __OPENCODE_VERSION__'
+ARCH_RAW="$(uname -m 2>/dev/null || printf unknown)"
+case "$ARCH_RAW" in
+  aarch64|arm64) PLATFORM_PACKAGE=opencode-linux-arm64 ;;
+  x86_64|amd64)
+    if grep -Eq '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo 2>/dev/null; then
+      PLATFORM_PACKAGE=opencode-linux-x64
+    else
+      PLATFORM_PACKAGE=opencode-linux-x64-baseline
+    fi
+    ;;
+  *) printf 'OpenCode 不支持当前架构: %s\n' "$ARCH_RAW" >&2; exit 65 ;;
+esac
+printf '%s\n' \
+  '{"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"__OPENCODE_VERSION__","'"$PLATFORM_PACKAGE"'":"__OPENCODE_VERSION__"}}' \
+  > "$WORK/package.json"
+progress 74 '' '分析 OpenCode 下载清单' "通过国内源锁定 $PLATFORM_PACKAGE"
 (
   cd "$WORK"
   PATH="$NODE_BIN:$PATH" "$NPM" install --package-lock-only \
-    --omit=dev --no-audit --no-fund --loglevel=error
+    --ignore-scripts --omit=dev --no-audit --no-fund --loglevel=error
 )
-progress 78 0 '下载并安装 OpenCode __OPENCODE_VERSION__' '正在下载平台运行文件'
+progress 78 0 '下载并安装 OpenCode __OPENCODE_VERSION__' "正在从国内源下载 $PLATFORM_PACKAGE"
 (
   cd "$WORK"
   PATH="$NODE_BIN:$PATH" "$NPM" ci \
-    --omit=dev --omit=optional --no-audit --no-fund --loglevel=error
+    --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund --loglevel=error
 )
+PLATFORM_BIN="$WORK/node_modules/$PLATFORM_PACKAGE/bin/opencode"
+if [ ! -x "$PLATFORM_BIN" ]; then
+  printf 'OpenCode 平台运行文件缺失: %s\n' "$PLATFORM_PACKAGE" >&2
+  exit 65
+fi
+rm -f -- "$WORK/node_modules/.bin/opencode"
+ln -s "../$PLATFORM_PACKAGE/bin/opencode" "$WORK/node_modules/.bin/opencode"
 OPENCODE_BIN="$WORK/node_modules/.bin/opencode"
 if [ ! -x "$OPENCODE_BIN" ]; then
   printf 'OpenCode 安装后缺少可执行文件\n' >&2

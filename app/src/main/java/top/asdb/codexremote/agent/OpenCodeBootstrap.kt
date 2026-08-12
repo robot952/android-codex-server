@@ -80,21 +80,40 @@ internal object OpenCodeBootstrap {
             npm_config_registry=https://registry.npmmirror.com
             export npm_config_registry
             mkdir -p "__SHELL_DOLLAR__OPENCODE_ROOT/releases" "__SHELL_DOLLAR__BIN_DIR" "__SHELL_DOLLAR__WORK"
-            cat > "__SHELL_DOLLAR__WORK/package.json" <<'EOF'
-            {"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"$openCodeVersion"}}
-            EOF
-            progress 74 '' '分析 OpenCode 下载清单' '锁定 OpenCode $openCodeVersion'
+            ARCH_RAW="__SHELL_DOLLAR__(uname -m 2>/dev/null || printf unknown)"
+            case "__SHELL_DOLLAR__ARCH_RAW" in
+              aarch64|arm64) PLATFORM_PACKAGE=opencode-linux-arm64 ;;
+              x86_64|amd64)
+                if grep -Eq '(^|[[:space:]])avx2([[:space:]]|__SHELL_DOLLAR__)' /proc/cpuinfo 2>/dev/null; then
+                  PLATFORM_PACKAGE=opencode-linux-x64
+                else
+                  PLATFORM_PACKAGE=opencode-linux-x64-baseline
+                fi
+                ;;
+              *) printf 'OpenCode 不支持当前架构: %s\n' "__SHELL_DOLLAR__ARCH_RAW" >&2; exit 65 ;;
+            esac
+            printf '%s\n' \
+              '{"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"$openCodeVersion","'"__SHELL_DOLLAR__PLATFORM_PACKAGE"'":"$openCodeVersion"}}' \
+              > "__SHELL_DOLLAR__WORK/package.json"
+            progress 74 '' '分析 OpenCode 下载清单' "通过国内源锁定 __SHELL_DOLLAR__PLATFORM_PACKAGE"
             (
               cd "__SHELL_DOLLAR__WORK"
               PATH="__SHELL_DOLLAR__NODE_BIN:__SHELL_DOLLAR__PATH" "__SHELL_DOLLAR__NPM" install --package-lock-only \
-                --omit=dev --no-audit --no-fund --loglevel=error
+                --ignore-scripts --omit=dev --no-audit --no-fund --loglevel=error
             )
-            progress 78 0 '下载并安装 OpenCode $openCodeVersion' '正在下载平台运行文件'
+            progress 78 0 '下载并安装 OpenCode $openCodeVersion' "正在从国内源下载 __SHELL_DOLLAR__PLATFORM_PACKAGE"
             (
               cd "__SHELL_DOLLAR__WORK"
               PATH="__SHELL_DOLLAR__NODE_BIN:__SHELL_DOLLAR__PATH" "__SHELL_DOLLAR__NPM" ci \
-                --omit=dev --omit=optional --no-audit --no-fund --loglevel=error
+                --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund --loglevel=error
             )
+            PLATFORM_BIN="__SHELL_DOLLAR__WORK/node_modules/__SHELL_DOLLAR__PLATFORM_PACKAGE/bin/opencode"
+            if [ ! -x "__SHELL_DOLLAR__PLATFORM_BIN" ]; then
+              printf 'OpenCode 平台运行文件缺失: %s\n' "__SHELL_DOLLAR__PLATFORM_PACKAGE" >&2
+              exit 65
+            fi
+            rm -f "__SHELL_DOLLAR__WORK/node_modules/.bin/opencode"
+            ln -s "../__SHELL_DOLLAR__PLATFORM_PACKAGE/bin/opencode" "__SHELL_DOLLAR__WORK/node_modules/.bin/opencode"
             OPENCODE_BIN="__SHELL_DOLLAR__WORK/node_modules/.bin/opencode"
             if [ ! -x "__SHELL_DOLLAR__OPENCODE_BIN" ]; then
               printf 'OpenCode 安装后缺少可执行文件\n' >&2
