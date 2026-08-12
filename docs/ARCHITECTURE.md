@@ -817,6 +817,9 @@ Android 设备上验证通知权限、文件选择器、键盘、厂商后台限
 PRoot、loader、libandroid-shmem 和 talloc；首次启用下载固定版本 Debian Trixie ARM64 rootfs，下载上限、
 预期大小和 SHA-256 均在原生层校验，归档解压拒绝越界路径、硬链接、符号链接父目录写入和超过 256 MiB 的
 展开内容。基础 rootfs 下载约 35 MB、展开约 173 MB，安装 SSH、Git、下载工具和后续 Codex 后占用继续增加。
+首次安装的 APT 阶段优先使用阿里云 Debian 镜像，失败后才回退 Debian 官方源；DNS 优先继承 Android 当前
+活动网络（包括 VPN），并以阿里云和腾讯公共 DNS 兜底。软件源更新、工具安装和缓存清理分别限时并显示阶段
+进度，APT 禁止自动启动服务；已通过 SHA-256 校验的 rootfs 压缩包会在失败重试时复用，避免重复下载。
 
 PRoot 从 APK 的 `nativeLibraryDir` 执行，Manifest 必须保持 `extractNativeLibs=true`；对应 Gradle 配置为
 `packaging.jniLibs.useLegacyPackaging = true`。该模式会压缩 APK 中的原生 `.so`，再由 Android 在安装时

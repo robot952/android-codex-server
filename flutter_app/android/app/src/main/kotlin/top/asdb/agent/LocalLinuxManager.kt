@@ -2,6 +2,7 @@ package top.asdb.agent
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -38,6 +39,35 @@ internal data class ProotProcessSpec(
     val command: List<String>,
     val environment: Map<String, String>,
 )
+
+internal enum class DebianAptMirror {
+    ALIYUN,
+    OFFICIAL,
+}
+
+internal fun debianAptSources(mirror: DebianAptMirror): String = when (mirror) {
+    DebianAptMirror.ALIYUN -> """
+        deb http://mirrors.aliyun.com/debian trixie main contrib
+        deb http://mirrors.aliyun.com/debian trixie-updates main contrib
+        deb http://mirrors.aliyun.com/debian-security trixie-security main contrib
+    """.trimIndent() + "\n"
+    DebianAptMirror.OFFICIAL -> """
+        deb http://deb.debian.org/debian trixie main contrib
+        deb http://deb.debian.org/debian trixie-updates main contrib
+        deb http://security.debian.org/debian-security trixie-security main contrib
+    """.trimIndent() + "\n"
+}
+
+internal fun debianAptCommand(arguments: String): String = buildString {
+    append("export DEBIAN_FRONTEND=noninteractive; apt-get ")
+    append("-o Acquire::Retries=1 ")
+    append("-o Acquire::ForceIPv4=true ")
+    append("-o Acquire::http::Timeout=15 ")
+    append("-o Acquire::https::Timeout=15 ")
+    append("-o Dpkg::Use-Pty=0 ")
+    if (arguments == "update") append("-o APT::Update::Error-Mode=any ")
+    append(arguments)
+}
 
 internal fun buildProotProcessSpec(
     nativeDirectory: File,
@@ -87,7 +117,8 @@ object LocalLinuxManager {
     private const val ROOTFS_MAX_BYTES = 48L * 1024L * 1024L
     private const val ROOTFS_EXPECTED_BYTES = 35_401_288L
     private const val PROCESS_OUTPUT_LIMIT = 256 * 1024
-    private const val INSTALL_TIMEOUT_MINUTES = 20L
+    private const val APT_UPDATE_TIMEOUT_MINUTES = 3L
+    private const val APT_INSTALL_TIMEOUT_MINUTES = 12L
     private const val START_TIMEOUT_SECONDS = 20L
     private const val PREFS_NAME = "local_linux_runtime_secure"
     private const val KEY_PASSWORD = "password"
@@ -217,15 +248,20 @@ object LocalLinuxManager {
         val staging = File(runtime, "rootfs.staging")
         deleteTreeNoFollow(staging.toPath())
         try {
-            downloadRootfs(archive)
+            val reusableArchive = isValidRootfsArchive(archive)
+            if (reusableArchive) {
+                publishProgress("installing", 44, "正在复用已下载的 Debian")
+            } else {
+                archive.delete()
+                downloadRootfs(archive)
+            }
             publishProgress("installing", 46, "正在校验 Debian 文件")
             check(sha256(archive).equals(ROOTFS_SHA256, ignoreCase = true)) {
                 "Debian 文件校验失败，请重试"
             }
             staging.mkdirs()
             extractRootfs(archive, staging)
-            prepareRootfsFiles(staging)
-            publishProgress("installing", 72, "正在安装 SSH、Git 和下载工具")
+            prepareRootfsFiles(context, staging)
             installRequiredPackages(context, staging)
             File(staging, ".agent-rootfs-version").writeText(ROOTFS_VERSION)
             val target = File(runtime, "rootfs")
@@ -235,10 +271,16 @@ object LocalLinuxManager {
             return target
         } catch (error: Throwable) {
             deleteTreeNoFollow(staging.toPath())
-            archive.delete()
+            if (!isValidRootfsArchive(archive)) archive.delete()
             throw error
         }
     }
+
+    private fun isValidRootfsArchive(archive: File): Boolean =
+        archive.isFile &&
+            archive.length() in 1..ROOTFS_MAX_BYTES &&
+            runCatching { sha256(archive).equals(ROOTFS_SHA256, ignoreCase = true) }
+                .getOrDefault(false)
 
     private fun downloadRootfs(target: File) {
         val connection = URL(ROOTFS_URL).openConnection() as HttpURLConnection
@@ -335,27 +377,117 @@ object LocalLinuxManager {
         }
     }
 
-    private fun prepareRootfsFiles(rootfs: File) {
+    private fun prepareRootfsFiles(context: Context, rootfs: File) {
         File(rootfs, "root/workspace").mkdirs()
         File(rootfs, "tmp").mkdirs()
         File(rootfs, "run/sshd").mkdirs()
-        File(rootfs, "etc/resolv.conf").writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        File(rootfs, "etc/resolv.conf").writeText(resolvConf(context))
         File(rootfs, "etc/hosts").writeText("127.0.0.1 localhost\n::1 localhost\n")
         File(rootfs, "etc/environment").appendText(
             "\nLANG=C.UTF-8\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
         )
+        File(rootfs, "usr/sbin/policy-rc.d").apply {
+            parentFile?.mkdirs()
+            writeText("#!/bin/sh\nexit 101\n")
+            runCatching { Os.chmod(absolutePath, 0x1ed) }
+        }
     }
 
     private fun installRequiredPackages(context: Context, rootfs: File) {
+        val sources = File(rootfs, "etc/apt/sources.list")
+        sources.parentFile?.mkdirs()
+        sources.writeText(debianAptSources(DebianAptMirror.ALIYUN))
+        var mirror = DebianAptMirror.ALIYUN
+        publishProgress("installing", 72, "正在更新国内软件源")
+        DiagnosticLogBridge.append("INFO", "LocalLinux", "apt_source=aliyun")
+        try {
+            runApt(context, rootfs, "update", APT_UPDATE_TIMEOUT_MINUTES, "更新国内软件源")
+        } catch (domesticError: Throwable) {
+            DiagnosticLogBridge.append(
+                "WARN",
+                "LocalLinux",
+                "apt_source_fallback stage=update from=aliyun " +
+                    "detail=${domesticError.message.orEmpty().takeLast(400)}",
+            )
+            mirror = DebianAptMirror.OFFICIAL
+            sources.writeText(debianAptSources(DebianAptMirror.OFFICIAL))
+            publishProgress("installing", 76, "国内源不可用，正在切换官方源")
+            runApt(context, rootfs, "update", APT_UPDATE_TIMEOUT_MINUTES, "更新 Debian 官方软件源")
+        }
+
+        publishProgress("installing", 80, "正在安装 SSH、Git 和下载工具")
+        val installArguments =
+            "install -y --no-install-recommends openssh-server curl git ca-certificates xz-utils"
+        try {
+            runApt(
+                context,
+                rootfs,
+                installArguments,
+                APT_INSTALL_TIMEOUT_MINUTES,
+                "安装 SSH、Git 和下载工具",
+            )
+        } catch (domesticError: Throwable) {
+            if (mirror != DebianAptMirror.ALIYUN) throw domesticError
+            DiagnosticLogBridge.append(
+                "WARN",
+                "LocalLinux",
+                "apt_source_fallback stage=install from=aliyun " +
+                    "detail=${domesticError.message.orEmpty().takeLast(400)}",
+            )
+            sources.writeText(debianAptSources(DebianAptMirror.OFFICIAL))
+            publishProgress("installing", 82, "国内源下载失败，正在切换官方源")
+            runApt(context, rootfs, "update", APT_UPDATE_TIMEOUT_MINUTES, "更新 Debian 官方软件源")
+            publishProgress("installing", 84, "正在从官方源继续安装工具")
+            runApt(
+                context,
+                rootfs,
+                installArguments,
+                APT_INSTALL_TIMEOUT_MINUTES,
+                "从 Debian 官方源安装工具",
+            )
+        }
+        publishProgress("installing", 90, "正在完成 Debian 配置")
+        runProot(
+            context,
+            rootfs,
+            listOf("/bin/sh", "-lc", "apt-get clean && rm -rf /var/lib/apt/lists/*"),
+            1,
+            TimeUnit.MINUTES,
+            operationName = "清理 Debian 软件包缓存",
+        )
+    }
+
+    private fun runApt(
+        context: Context,
+        rootfs: File,
+        arguments: String,
+        timeoutMinutes: Long,
+        operationName: String,
+    ) {
         val command = listOf(
             "/bin/sh",
             "-lc",
-            "export DEBIAN_FRONTEND=noninteractive; " +
-                "apt-get update && " +
-                "apt-get install -y --no-install-recommends openssh-server curl git ca-certificates xz-utils && " +
-                "apt-get clean && rm -rf /var/lib/apt/lists/*",
+            debianAptCommand(arguments),
         )
-        runProot(context, rootfs, command, INSTALL_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+        runProot(
+            context,
+            rootfs,
+            command,
+            timeoutMinutes,
+            TimeUnit.MINUTES,
+            operationName = operationName,
+        )
+    }
+
+    private fun resolvConf(context: Context): String {
+        val networkDns = runCatching {
+            val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            manager.getLinkProperties(manager.activeNetwork)?.dnsServers.orEmpty().mapNotNull { address ->
+                address.hostAddress?.substringBefore('%')?.takeIf(String::isNotBlank)
+            }
+        }.getOrDefault(emptyList())
+        val servers = (networkDns + listOf("223.5.5.5", "119.29.29.29")).distinct().take(4)
+        return servers.joinToString(separator = "\n", postfix = "\n") { "nameserver $it" }
     }
 
     private fun configureSsh(context: Context, rootfs: File, credentials: Credentials) {
@@ -411,6 +543,7 @@ object LocalLinuxManager {
         timeout: Long,
         unit: TimeUnit,
         stdin: String? = null,
+        operationName: String = "准备 Debian",
     ): String {
         val process = prootProcessBuilder(context, rootfs, guestCommand)
             .redirectErrorStream(true)
@@ -426,11 +559,11 @@ object LocalLinuxManager {
             process.destroy()
             process.waitFor(2, TimeUnit.SECONDS)
             if (process.isAlive) process.destroyForcibly()
-            error("Debian 准备超时")
+            error("$operationName 超时，请检查网络后重试")
         }
         reader.join(2_000)
         check(process.exitValue() == 0) {
-            "Debian 准备失败：${output.toString().takeLast(800)}"
+            "$operationName 失败：${output.toString().takeLast(800)}"
         }
         return output.toString()
     }

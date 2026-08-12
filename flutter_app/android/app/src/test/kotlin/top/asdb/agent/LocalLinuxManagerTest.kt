@@ -9,6 +9,31 @@ import org.junit.Test
 
 class LocalLinuxManagerTest {
     @Test
+    fun aptSourcesPreferAliyunAndKeepOfficialFallback() {
+        val aliyun = debianAptSources(DebianAptMirror.ALIYUN)
+        val official = debianAptSources(DebianAptMirror.OFFICIAL)
+
+        assertTrue(aliyun.contains("mirrors.aliyun.com/debian trixie"))
+        assertTrue(aliyun.contains("mirrors.aliyun.com/debian-security trixie-security"))
+        assertFalse(aliyun.contains("deb.debian.org"))
+        assertTrue(official.contains("deb.debian.org/debian trixie"))
+        assertTrue(official.contains("security.debian.org/debian-security trixie-security"))
+    }
+
+    @Test
+    fun aptCommandsUseBoundedIpv4NetworkingAndStrictUpdates() {
+        val update = debianAptCommand("update")
+        val install = debianAptCommand("install -y git")
+
+        assertTrue(update.contains("Acquire::Retries=1"))
+        assertTrue(update.contains("Acquire::ForceIPv4=true"))
+        assertTrue(update.contains("Acquire::http::Timeout=15"))
+        assertTrue(update.contains("APT::Update::Error-Mode=any"))
+        assertFalse(install.contains("APT::Update::Error-Mode"))
+        assertTrue(install.endsWith("install -y git"))
+    }
+
+    @Test
     fun prootPathContainingEqualsIsTheExecutableInsteadOfAnEnvArgument() {
         val directory = Files.createTempDirectory("base==").toFile()
         try {
