@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
@@ -12,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
 
 class _MemoryStore implements ProfileStore {
   @override
@@ -888,6 +890,12 @@ void main() {
       tester.getSize(find.byKey(const Key('composer-attachment-menu'))),
       const Size.square(36),
     );
+    await tester.tap(find.byKey(const Key('composer-attachment-menu')));
+    await tester.pumpAndSettle();
+    expect(find.text('拍照'), findsOneWidget);
+    expect(find.byIcon(Icons.photo_camera_outlined), findsOneWidget);
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
     expect(
       tester.getSize(find.byKey(const Key('composer-action-menu'))),
       const Size.square(36),
@@ -943,6 +951,22 @@ void main() {
       isFalse,
     );
     expect(tester.takeException(), isNull);
+  });
+
+  test('camera photo is prepared as an image attachment', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'work-camera-test-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final photoBytes = <int>[0xff, 0xd8, 0xff, 0xd9];
+    final photo = File('${directory.path}/camera-photo.jpg');
+    await photo.writeAsBytes(photoBytes);
+
+    final upload = await cameraPhotoAttachment(XFile(photo.path));
+
+    expect(upload.name, 'camera-photo.jpg');
+    expect(upload.mimeType, 'image/jpeg');
+    expect(upload.bytes, photoBytes);
   });
 
   testWidgets('matches the original work menu and gates Debug logs', (

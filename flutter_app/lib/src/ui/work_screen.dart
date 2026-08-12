@@ -9,6 +9,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app/app_controller.dart';
@@ -279,6 +280,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
             focusNode: _composerFocus,
             attachmentBusy: _preparingAttachments || state.attachmentUploading,
             onChanged: controller.setComposerDraft,
+            onTakePhoto: _takePhoto,
             onAttachImage: () => _pickAttachments(imagesOnly: true),
             onAttachFile: () => _pickAttachments(imagesOnly: false),
             onRemoveAttachment: controller.removeAttachment,
@@ -649,6 +651,31 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     }
   }
 
+  Future<void> _takePhoto() async {
+    if (_preparingAttachments ||
+        ref.read(appControllerProvider).attachmentUploading) {
+      return;
+    }
+    if (ref.read(appControllerProvider).attachments.length >=
+        maxPendingAttachmentCount) {
+      _showNotice(context, '输入框最多保留 $maxPendingAttachmentCount 个附件');
+      return;
+    }
+    try {
+      setState(() => _preparingAttachments = true);
+      final photo = await ImagePicker().pickImage(source: ImageSource.camera);
+      if (photo == null || !mounted) return;
+      final upload = await cameraPhotoAttachment(photo);
+      await ref.read(appControllerProvider.notifier).uploadAttachments(
+        <LocalAttachmentUpload>[upload],
+      );
+    } catch (error) {
+      if (mounted) _showNotice(context, _displayError(error, '拍照失败'));
+    } finally {
+      if (mounted) setState(() => _preparingAttachments = false);
+    }
+  }
+
   Future<void> _downloadRemoteFile(String path) async {
     if (_fileDownloadPath != null) {
       _showNotice(context, '已有文件正在下载');
@@ -976,6 +1003,21 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       );
     }
   }
+}
+
+Future<LocalAttachmentUpload> cameraPhotoAttachment(XFile photo) async {
+  final length = await photo.length();
+  if (length <= 0) throw StateError('照片为空');
+  if (length > maxLocalAttachmentBytes) {
+    throw StateError('照片不能超过 20 MB');
+  }
+  final bytes = await photo.readAsBytes();
+  if (bytes.isEmpty) throw StateError('照片为空');
+  return LocalAttachmentUpload(
+    name: photo.name,
+    bytes: bytes,
+    mimeType: attachmentMimeType(photo.name, forceImage: true),
+  );
 }
 
 bool shouldDismissWorkKeyboard(AppLifecycleState state) =>
@@ -4199,6 +4241,7 @@ class _Composer extends StatelessWidget {
     required this.focusNode,
     required this.attachmentBusy,
     required this.onChanged,
+    required this.onTakePhoto,
     required this.onAttachImage,
     required this.onAttachFile,
     required this.onRemoveAttachment,
@@ -4217,6 +4260,7 @@ class _Composer extends StatelessWidget {
   final FocusNode focusNode;
   final bool attachmentBusy;
   final ValueChanged<String> onChanged;
+  final VoidCallback onTakePhoto;
   final VoidCallback onAttachImage;
   final VoidCallback onAttachFile;
   final ValueChanged<String> onRemoveAttachment;
@@ -4363,13 +4407,24 @@ class _Composer extends StatelessWidget {
                               padding: EdgeInsets.zero,
                               iconSize: 20,
                               onSelected: (value) {
-                                if (value == 'image') {
+                                if (value == 'camera') {
+                                  onTakePhoto();
+                                } else if (value == 'image') {
                                   onAttachImage();
                                 } else if (value == 'file') {
                                   onAttachFile();
                                 }
                               },
                               itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: 'camera',
+                                  child: ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.photo_camera_outlined),
+                                    title: Text('拍照'),
+                                  ),
+                                ),
                                 PopupMenuItem(
                                   value: 'image',
                                   child: ListTile(

@@ -472,7 +472,7 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   图标、名称和状态；运行状态转圈，
   完成/中断/失败等终态不会被同 turn 的迟到 activity 恢复。存在有效 thread ID 时点击进入 `AppScreen.agentWork`，
   使用真实 `thread/resume`，而没有 thread ID 的活动只显示不可点击状态；父子会话使用独立缓存和设置。
-- Composer 的附件菜单支持多选图片或文件，最多保留 8 项、一次选择总计不超过 40 MiB；单个普通附件
+- Composer 的附件菜单支持调用系统相机拍照，以及多选图片或文件；最多保留 8 项、一次选择总计不超过 40 MiB；单个普通附件
   不超过 20 MiB，内联文本不超过 512 KiB。上传时显示无百分比的进度条，成功项显示可移除 chip，
   发送时可只有附件而没有正文。离开会话会清空待发项；`turn/start` 失败会恢复草稿和待发附件，并移除
   尚未得到服务器确认的 optimistic user row。
@@ -795,6 +795,7 @@ Debug 模式由 Agent 图标连续十次点击开启。`DiagnosticLogger` 将普
 PlatformDispatcher 和 Zone 未捕获异常始终以 FATAL 级别记录。`DiagnosticLogBridge` 在 Android 侧捕获
 Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR 线索），并写入同一目录，所以下次启动可统一查看。
 写入前会移除 ANSI、私钥、URL 凭据、Bearer/API key、password/token/secret 等敏感值，分享和附件读取时再脱敏。
+诊断日志弹窗只读取当前进程正在写入的单个活动分段，不扫描或拼接历史 100 KiB 文件；历史日志仅在分享或作为附件时按需列出。
 日志 sheet 和选择器支持按文件多选、预览、复制、清空和系统分享；分享只生成临时副本，不删除原日志，清空
 同时删除本工具生成的临时分享文件。工作页菜单“添加崩溃 / Debug 日志”默认选中最新崩溃日志，确认后只加入
 输入框附件，不会自动发送。此前为定位会话滚动问题临时加入的 `TranscriptScroll` 高频事件及其几何采样
@@ -1808,6 +1809,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `412` 项测试和 `flutter analyze` 通过，Debug/Release APK 构建通过；APK 的四个 ARM64 ELF、哈希、依赖及
   `extractNativeLibs=true` 已校验。当前 x86_64 模拟器不能执行 ARM64 PRoot，完整安装和 Codex E2E 留待
   ARM64 Android 真机验收。
+
+### 17.34 当前诊断记录与拍照附件（2026-08-12）
+
+- 应用版本：`1.8.51+178`。诊断日志弹窗只读取当前进程正在写入的单个活动分段，不再扫描、拼接或渲染
+  历史 100 KiB 轮转文件；历史记录仍保留，并且只在选择分享或添加日志附件时按需列出。
+- Work Composer 左下角附件菜单新增“拍照”，通过系统相机取得照片后复用既有附件大小、数量、MIME、
+  上传中状态和 SFTP 暂存链路；取消拍照不会产生错误，单张照片仍受 20 MiB 上限约束。
+- 新增当前日志分段隔离、拍照文件名/MIME/字节和菜单布局回归；`image_picker` 及其平台实现通过
+  `pub.flutter-io.cn` 解析并锁定，iOS 同步声明相机用途。
 
 ## 18. 文档维护规则
 

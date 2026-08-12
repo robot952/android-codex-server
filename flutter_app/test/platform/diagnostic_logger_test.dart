@@ -24,6 +24,7 @@ void main() {
   DiagnosticLogger createLogger({
     bool enabled = false,
     DiagnosticShareHandler? shareHandler,
+    DateTime Function()? clock,
   }) {
     final settings = MemoryDiagnosticSettingsStore(enabled: enabled);
     return DiagnosticLogger(
@@ -31,6 +32,7 @@ void main() {
       exportDirectoryProvider: () async => exportDirectory,
       settingsProvider: () async => settings,
       shareHandler: shareHandler,
+      clock: clock,
     );
   }
 
@@ -76,6 +78,27 @@ void main() {
     expect(snapshot.preview, contains('FATAL Crash uncaught_exception'));
     expect(snapshot.preview, isNot(contains('do-not-write')));
     expect(snapshot.preview, isNot(contains('also-hidden')));
+  });
+
+  test('current snapshot reads only the active 100 KiB segment', () async {
+    await File(
+      '${directory.path}/session-1800000000000-000000.log',
+    ).writeAsString('2026-01-01T00:00:00Z INFO Test historical-entry\n');
+    final logger = createLogger(
+      enabled: true,
+      clock: () => DateTime.fromMillisecondsSinceEpoch(1_900_000_000_000),
+    );
+    await logger.initialize();
+    logger.info('Test', 'current-entry');
+
+    final current = await logger.currentSnapshot();
+
+    expect(current.entries, hasLength(1));
+    expect(current.entries.single.isActive, isTrue);
+    expect(current.preview, contains('current-entry'));
+    expect(current.preview, isNot(contains('historical-entry')));
+    expect(current.bytes, lessThanOrEqualTo(DiagnosticLogger.maxSegmentBytes));
+    expect(await logger.listLogs(), hasLength(2));
   });
 
   test(

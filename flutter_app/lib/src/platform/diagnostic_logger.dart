@@ -305,6 +305,55 @@ class DiagnosticLogger {
     );
   }
 
+  /// Reads only the file receiving new records in this process. Historical
+  /// segments remain available through [listLogs] for attachments and sharing.
+  Future<DiagnosticLogSnapshot> currentSnapshot({
+    int previewByteLimit = maxPreviewBytes,
+  }) async {
+    await initialize();
+    await _drainWrites();
+    final directory = _directory;
+    if (directory == null || _sessionStartedAt == 0) {
+      return DiagnosticLogSnapshot(
+        enabled: _enabled,
+        bytes: 0,
+        updatedAt: null,
+        preview: '',
+        entries: const <DiagnosticLogEntry>[],
+      );
+    }
+    final file = _currentFile(directory);
+    if (!file.existsSync()) {
+      return DiagnosticLogSnapshot(
+        enabled: _enabled,
+        bytes: 0,
+        updatedAt: null,
+        preview: '',
+        entries: const <DiagnosticLogEntry>[],
+      );
+    }
+    final contents = _readFileSafely(file);
+    final updatedMillis = file.lastModifiedSync().millisecondsSinceEpoch;
+    final entry = DiagnosticLogEntry(
+      id: file.basename,
+      fileName: file.basename,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(_sessionStartedAt),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(
+        updatedMillis > 0 ? updatedMillis : _sessionStartedAt,
+      ),
+      sizeBytes: file.lengthSync(),
+      isActive: true,
+      hasCrash: RegExp(r'(^|\n).*\sFATAL\s').hasMatch(contents),
+    );
+    return DiagnosticLogSnapshot(
+      enabled: _enabled,
+      bytes: entry.sizeBytes,
+      updatedAt: entry.updatedAt,
+      preview: takeLastUtf8Bytes(contents, previewByteLimit),
+      entries: <DiagnosticLogEntry>[entry],
+    );
+  }
+
   Future<String?> readLog(String id) async {
     await initialize();
     await _drainWrites();

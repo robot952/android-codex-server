@@ -325,11 +325,11 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
   @override
   void initState() {
     super.initState();
-    _snapshot = widget.logger.snapshot();
+    _snapshot = widget.logger.currentSnapshot();
   }
 
   void _refresh() {
-    setState(() => _snapshot = widget.logger.snapshot());
+    setState(() => _snapshot = widget.logger.currentSnapshot());
   }
 
   Future<void> _copy(DiagnosticLogSnapshot snapshot) async {
@@ -427,7 +427,7 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
                           Text(
                             value == null
                                 ? '正在读取…'
-                                : '${_formatBytes(value.bytes)} · 自动轮转',
+                                : '${_formatBytes(value.bytes)} · 当前记录',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ],
