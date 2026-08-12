@@ -9,6 +9,7 @@ import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/platform/background_connection_bridge.dart';
+import 'package:codex_remote/src/platform/diagnostic_logger.dart';
 import 'package:codex_remote/src/platform/local_linux_manager.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
@@ -28,6 +29,26 @@ class _MemoryProfileStore implements ProfileStore {
   Future<void> save(StoredProfiles value) async {
     this.value = value;
     writes.add(value);
+  }
+}
+
+class _RecordingDiagnosticLogger extends DiagnosticLogger {
+  final records = <String>[];
+
+  @override
+  bool get isEnabled => true;
+
+  @override
+  Future<bool> initialize() async => true;
+
+  @override
+  void info(String tag, String message) {
+    records.add('INFO $tag $message');
+  }
+
+  @override
+  void warn(String tag, String message, [Object? error, StackTrace? stack]) {
+    records.add('WARN $tag $message');
   }
 }
 
@@ -1199,11 +1220,17 @@ void main() {
       final host = _FingerprintClient();
       final connections = ServerConnectionManager(clientFactory: () => host);
       final agent = _FailingTurnAgent();
+      final diagnostics = _RecordingDiagnosticLogger();
       final agents = AgentConnectionManager(
         connections,
         clientFactory: (kind) => agent,
       );
-      final controller = AppController(store, connections, agents);
+      final controller = AppController(
+        store,
+        connections,
+        agents,
+        diagnostics,
+      );
       addTearDown(() async {
         controller.dispose();
         await agents.close();
@@ -1213,10 +1240,15 @@ void main() {
       await _waitUntilInitialized(controller);
       await controller.requestConnect(profile);
       await controller.ensureActiveAgent();
+      diagnostics.records.clear();
       await controller.keepAliveRetainedConnections();
 
       expect(host.keepAliveCount, 1);
       expect(agent.keepAliveCount, 1);
+      expect(
+        diagnostics.records.where((record) => record.contains(' Heartbeat ')),
+        isEmpty,
+      );
     },
   );
 
@@ -1232,11 +1264,17 @@ void main() {
       );
       final connections = ServerConnectionManager(clientFactory: () => host);
       final agent = _FailingTurnAgent();
+      final diagnostics = _RecordingDiagnosticLogger();
       final agents = AgentConnectionManager(
         connections,
         clientFactory: (kind) => agent,
       );
-      final controller = AppController(store, connections, agents);
+      final controller = AppController(
+        store,
+        connections,
+        agents,
+        diagnostics,
+      );
       addTearDown(() async {
         controller.dispose();
         await agents.close();
@@ -1246,6 +1284,7 @@ void main() {
       await _waitUntilInitialized(controller);
       await controller.requestConnect(profile);
       await controller.ensureActiveAgent();
+      diagnostics.records.clear();
 
       await expectLater(
         controller.keepAliveRetainedConnections(heartbeatSequence: 42),
@@ -1253,6 +1292,10 @@ void main() {
       );
       expect(host.keepAliveCount, 1);
       expect(agent.keepAliveCount, 1);
+      expect(
+        diagnostics.records,
+        contains(contains('WARN Heartbeat lane_failed sequence=42 lane=host')),
+      );
     },
   );
 

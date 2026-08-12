@@ -20,6 +20,12 @@ import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
 
+internal fun shouldLogHeartbeatCompletion(
+    elapsedMs: Long,
+    skippedBefore: Long,
+    skippedDuring: Long,
+): Boolean = elapsedMs > 5_000L || skippedBefore > 0 || skippedDuring > 0
+
 /**
  * Keeps the Flutter process eligible to run while SSH/Codex channels are
  * active and the activity is backgrounded.  Protocol state remains owned by
@@ -79,11 +85,6 @@ class ConnectionForegroundService : Service() {
         val startedAt = android.os.SystemClock.elapsedRealtime()
         heartbeatStartedAt = startedAt
         val sentAtEpochMs = System.currentTimeMillis()
-        DiagnosticLogBridge.append(
-            "INFO",
-            "Background",
-            "heartbeat_dispatch sequence=$sequence skippedBefore=$skippedBeforeRequest",
-        )
         val result = object : MethodChannel.Result {
             private fun complete(level: String, outcome: String, error: Throwable? = null) {
                 heartbeatInFlight = false
@@ -97,7 +98,18 @@ class ConnectionForegroundService : Service() {
                 )
             }
 
-            override fun success(result: Any?) = complete("INFO", "success")
+            override fun success(result: Any?) {
+                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                heartbeatInFlight = false
+                if (shouldLogHeartbeatCompletion(
+                        elapsed,
+                        skippedBeforeRequest,
+                        skippedHeartbeats,
+                    )
+                ) {
+                    complete("WARN", "slow_or_skipped")
+                }
+            }
 
             override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
                 complete(

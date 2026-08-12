@@ -917,18 +917,16 @@ class AppController extends StateNotifier<AppUiState> {
   }) async {
     final agentDetail = agent == null ? '' : ' agent=$agent';
     final startedAt = Stopwatch()..start();
-    _diagnostics.info(
-      'Heartbeat',
-      'lane_start sequence=$sequence lane=$lane profile=$profileId$agentDetail '
-          'phase=${phase?.name ?? 'none'}',
-    );
     try {
       await operation();
-      _diagnostics.info(
-        'Heartbeat',
-        'lane_success sequence=$sequence lane=$lane profile=$profileId$agentDetail '
-            'elapsedMs=${startedAt.elapsedMilliseconds}',
-      );
+      if (startedAt.elapsed > const Duration(seconds: 5)) {
+        _diagnostics.warn(
+          'Heartbeat',
+          'lane_slow sequence=$sequence lane=$lane profile=$profileId$agentDetail '
+              'phase=${phase?.name ?? 'none'} '
+              'elapsedMs=${startedAt.elapsedMilliseconds}',
+        );
+      }
     } catch (error, stack) {
       _diagnostics.warn(
         'Heartbeat',

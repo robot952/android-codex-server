@@ -95,18 +95,18 @@ class _AppRootState extends ConsumerState<_AppRoot>
           'skippedBefore=${heartbeat.skippedBefore}';
       if (deliveryDelayMs > 15 * 1000) {
         controller.diagnosticLogger.warn('Heartbeat', 'received_late $detail');
-      } else {
-        controller.diagnosticLogger.info('Heartbeat', 'received $detail');
       }
       final startedAt = Stopwatch()..start();
       try {
         await controller.keepAliveRetainedConnections(
           heartbeatSequence: heartbeat.sequence,
         );
-        controller.diagnosticLogger.info(
-          'Heartbeat',
-          'completed $detail elapsedMs=${startedAt.elapsedMilliseconds}',
-        );
+        if (startedAt.elapsed > const Duration(seconds: 5)) {
+          controller.diagnosticLogger.warn(
+            'Heartbeat',
+            'completed_slow $detail elapsedMs=${startedAt.elapsedMilliseconds}',
+          );
+        }
       } catch (error, stack) {
         controller.diagnosticLogger.warn(
           'Heartbeat',
