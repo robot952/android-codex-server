@@ -286,6 +286,7 @@ class ConnectionForegroundService : Service() {
 
     private fun ensureFlutterEngine(connectionIntent: BackgroundConnectionIntent) {
         FlutterEngineCache.getInstance().get(RETAINED_ENGINE_ID)?.let { engine ->
+            LocalLinuxManager.register(applicationContext, engine)
             flutterEngine = engine
             heartbeatChannel = MethodChannel(
                 engine.dartExecutor.binaryMessenger,
@@ -297,6 +298,7 @@ class ConnectionForegroundService : Service() {
             DiagnosticLogBridge.initialize(applicationContext)
             val engine = FlutterEngine(applicationContext)
             FlutterEngineCache.getInstance().put(RETAINED_ENGINE_ID, engine)
+            LocalLinuxManager.register(applicationContext, engine)
             flutterEngine = engine
             heartbeatChannel = MethodChannel(
                 engine.dartExecutor.binaryMessenger,

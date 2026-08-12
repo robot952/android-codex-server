@@ -9,6 +9,7 @@ import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/platform/background_connection_bridge.dart';
+import 'package:codex_remote/src/platform/local_linux_manager.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -215,6 +216,28 @@ class _WorkspaceHost extends _FingerprintClient
     final request = _WorkspaceDirectoryRequest(path);
     directoryRequests.add(request);
     return request.result.future;
+  }
+}
+
+class _FakeLocalLinuxRuntime implements LocalLinuxRuntime {
+  int startCalls = 0;
+  int stopCalls = 0;
+  int uninstallCalls = 0;
+
+  @override
+  Future<LocalLinuxInstance> ensureStarted() async {
+    startCalls++;
+    return _localLinuxInstance;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+
+  @override
+  Future<void> uninstall() async {
+    uninstallCalls++;
   }
 }
 
@@ -948,6 +971,13 @@ const _secondProfile = ServerProfile(
   hostFingerprint: 'SHA256:second',
 );
 
+const _localLinuxInstance = LocalLinuxInstance(
+  port: 41234,
+  password: 'generated-password',
+  architecture: 'arm64-v8a',
+  rootfsVersion: 'debian-test',
+);
+
 class _SubAgentHarness {
   const _SubAgentHarness({
     required this.store,
@@ -1036,6 +1066,88 @@ Future<void> _openSubAgent(
 }
 
 void main() {
+  test(
+    'local Linux connect starts once and persists the fixed profile',
+    () async {
+      final store = _MemoryProfileStore(const StoredProfiles());
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final runtime = _FakeLocalLinuxRuntime();
+      final controller = AppController(
+        store,
+        connections,
+        agents,
+        null,
+        null,
+        null,
+        runtime,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+
+      final connect = controller.connectLocalLinux();
+      await _waitUntil(
+        () => controller.state.connection.phase == ConnectionPhase.probing,
+      );
+
+      expect(runtime.startCalls, 1);
+      expect(controller.state.connection.phase, ConnectionPhase.probing);
+      expect(controller.state.pendingFingerprint, isNull);
+      expect(store.value.profiles.single.id, localLinuxProfileId);
+      expect(store.value.profiles.single.approvalMode, ApprovalMode.fullAccess);
+      host.fingerprint.complete('SHA256:local');
+      await connect;
+      expect(controller.state.pendingFingerprint, 'SHA256:local');
+    },
+  );
+
+  test('disconnecting local Linux also stops the embedded runtime', () async {
+    final profile = localLinuxProfile(
+      _localLinuxInstance,
+    ).copyWith(hostFingerprint: 'SHA256:local');
+    final store = _MemoryProfileStore(
+      StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+    );
+    final host = _FingerprintClient();
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agent = _FailingTurnAgent();
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => agent,
+    );
+    final runtime = _FakeLocalLinuxRuntime();
+    final controller = AppController(
+      store,
+      connections,
+      agents,
+      null,
+      null,
+      null,
+      runtime,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    await controller.requestConnect(profile);
+    await controller.disconnectProfile(profile.id);
+
+    expect(runtime.startCalls, 1);
+    expect(runtime.stopCalls, 1);
+    expect(controller.state.connection.phase, ConnectionPhase.disconnected);
+  });
+
   test(
     'reuses the connected Agent snapshot when re-entering a server',
     () async {

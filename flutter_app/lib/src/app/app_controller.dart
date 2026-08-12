@@ -19,6 +19,7 @@ import 'profile_scoped_back_stack.dart';
 import '../persistence/profile_store.dart';
 import '../platform/background_connection_bridge.dart';
 import '../platform/diagnostic_logger.dart';
+import '../platform/local_linux_manager.dart';
 import '../platform/turn_completion_notifications.dart';
 import '../ssh/server_connection_manager.dart';
 import '../ssh/terminal_manager.dart';
@@ -59,6 +60,7 @@ final appControllerProvider = StateNotifierProvider<AppController, AppUiState>((
     ref.watch(diagnosticLoggerProvider),
     null,
     ref.watch(backgroundRestoreIntentProvider),
+    ref.watch(localLinuxControllerProvider.notifier),
   );
 });
 
@@ -80,6 +82,7 @@ class AppController extends StateNotifier<AppUiState> {
     DiagnosticLogger? diagnosticLogger,
     List<Duration>? reconnectDelays,
     BackgroundConnectionIntent? backgroundRestoreIntent,
+    LocalLinuxRuntime? localLinuxRuntime,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
        _reconnectDelays = List<Duration>.unmodifiable(
@@ -87,6 +90,8 @@ class AppController extends StateNotifier<AppUiState> {
        ),
        _backgroundRestoreIntent =
            backgroundRestoreIntent ?? const BackgroundConnectionIntent(),
+       _localLinuxRuntime =
+           localLinuxRuntime ?? const UnsupportedLocalLinuxRuntime(),
        _ownsAgentConnections = agentConnections == null,
        super(const AppUiState(loading: true)) {
     _connectionSubscription = _connections.stateChanges.listen(
@@ -110,6 +115,7 @@ class AppController extends StateNotifier<AppUiState> {
   final DiagnosticLogger _diagnostics;
   final List<Duration> _reconnectDelays;
   final BackgroundConnectionIntent _backgroundRestoreIntent;
+  final LocalLinuxRuntime _localLinuxRuntime;
   final bool _ownsAgentConnections;
   late final StreamSubscription<Map<String, ConnectionState>>
   _connectionSubscription;
@@ -287,6 +293,59 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   ServerProfile newProfile() => ServerProfile.create();
+
+  Future<ServerProfile> prepareLocalLinux() async {
+    await _ensureInitialized();
+    _diagnostics.info('LocalLinux', 'prepare_requested');
+    try {
+      final instance = await _localLinuxRuntime.ensureStarted();
+      final existing = state.profiles.firstWhereOrNull(
+        (profile) => profile.id == localLinuxProfileId,
+      );
+      final profile = await _saveLocalLinuxProfile(
+        localLinuxProfile(instance, existing: existing),
+      );
+      _diagnostics.info(
+        'LocalLinux',
+        'prepare_success port=${instance.port} arch=${instance.architecture}',
+      );
+      return profile;
+    } catch (error, stack) {
+      _diagnostics.warn('LocalLinux', 'prepare_failed', error, stack);
+      rethrow;
+    }
+  }
+
+  Future<void> connectLocalLinux() async {
+    final profile = await prepareLocalLinux();
+    await _requestConnect(profile, localLinuxPrepared: true);
+  }
+
+  Future<ServerProfile> _saveLocalLinuxProfile(ServerProfile profile) async {
+    final retainHost = _retainedHostConnections.contains(profile.id);
+    final retainedAgents = _retainedAgentConnections
+        .where((key) => key.profileId == profile.id)
+        .toList(growable: false);
+    try {
+      return await saveProfile(profile);
+    } finally {
+      if (retainHost) {
+        _retainedHostConnections.add(profile.id);
+        _retainedAgentConnections.addAll(retainedAgents);
+      }
+    }
+  }
+
+  Future<void> uninstallLocalLinux() async {
+    await _ensureInitialized();
+    final existing = state.profiles.firstWhereOrNull(
+      (profile) => profile.id == localLinuxProfileId,
+    );
+    if (existing != null) await disconnectProfile(existing.id);
+    await _localLinuxRuntime.uninstall();
+    if (existing != null) await deleteProfile(existing.id);
+    _diagnostics.info('LocalLinux', 'uninstall_success');
+  }
 
   Future<ServerProfile> saveProfile(ServerProfile profile) async {
     await _ensureInitialized();
@@ -598,8 +657,23 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
-  Future<void> requestConnect(ServerProfile profile) async {
+  Future<void> requestConnect(ServerProfile profile) =>
+      _requestConnect(profile);
+
+  Future<void> _requestConnect(
+    ServerProfile profile, {
+    bool localLinuxPrepared = false,
+  }) async {
     await _ensureInitialized();
+    if (isLocalLinuxProfile(profile) && !localLinuxPrepared) {
+      try {
+        profile = await prepareLocalLinux();
+        localLinuxPrepared = true;
+      } catch (error) {
+        _setError(error, '本机 Linux 启动失败');
+        return;
+      }
+    }
     state = state.copyWith(
       selectedProfileId: profile.id,
       activeAgent: profile.activeAgent,
@@ -626,7 +700,7 @@ class AppController extends StateNotifier<AppUiState> {
       }
       return;
     }
-    await _connectVerified(profile);
+    await _connectVerified(profile, localLinuxPrepared: localLinuxPrepared);
   }
 
   Future<void> confirmFingerprint() async {
@@ -645,7 +719,10 @@ class AppController extends StateNotifier<AppUiState> {
     final saved = await saveProfile(
       current.copyWith(hostFingerprint: fingerprint),
     );
-    await _connectVerified(saved);
+    await _connectVerified(
+      saved,
+      localLinuxPrepared: isLocalLinuxProfile(saved),
+    );
   }
 
   void cancelFingerprint() {
@@ -653,7 +730,22 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(pendingFingerprint: null);
   }
 
-  Future<void> _connectVerified(ServerProfile profile) async {
+  Future<void> _connectVerified(
+    ServerProfile profile, {
+    bool localLinuxPrepared = false,
+  }) async {
+    if (isLocalLinuxProfile(profile) && !localLinuxPrepared) {
+      try {
+        final instance = await _localLinuxRuntime.ensureStarted();
+        final refreshed = localLinuxProfile(instance, existing: profile);
+        if (!profile.hasSameConnectionIdentity(refreshed)) {
+          profile = await _saveLocalLinuxProfile(refreshed);
+        }
+      } catch (error) {
+        _setError(error, '本机 Linux 启动失败');
+        return;
+      }
+    }
     _invalidateConnectionRecovery(profile.id);
     _clearSubAgentNavigationForProfile(profile.id);
     _diagnostics.info('SSH', 'connect_requested profile=${profile.id}');
@@ -702,34 +794,40 @@ class AppController extends StateNotifier<AppUiState> {
       _invalidateFileManagerRequests();
     }
     try {
-      Object? agentError;
-      StackTrace? agentErrorStack;
-      final agentDisconnect = _agents
-          .disconnect(profileId)
-          .then<void>(
-            (_) {},
-            onError: (Object error, StackTrace stack) {
-              agentError = error;
-              agentErrorStack = stack;
-            },
-          );
-      // Give the app-server channel a short chance to stop while the host
-      // socket is still usable. A hung remote process is unblocked by closing
-      // SSH below, then its cleanup is bounded as well.
-      await Future.any<void>([
-        agentDisconnect,
-        Future<void>.delayed(const Duration(milliseconds: 300)),
-      ]);
       try {
-        await _connections.disconnect(profileId);
+        Object? agentError;
+        StackTrace? agentErrorStack;
+        final agentDisconnect = _agents
+            .disconnect(profileId)
+            .then<void>(
+              (_) {},
+              onError: (Object error, StackTrace stack) {
+                agentError = error;
+                agentErrorStack = stack;
+              },
+            );
+        // Give the app-server channel a short chance to stop while the host
+        // socket is still usable. A hung remote process is unblocked by closing
+        // SSH below, then its cleanup is bounded as well.
+        await Future.any<void>([
+          agentDisconnect,
+          Future<void>.delayed(const Duration(milliseconds: 300)),
+        ]);
+        try {
+          await _connections.disconnect(profileId);
+        } finally {
+          await agentDisconnect.timeout(
+            const Duration(seconds: 2),
+            onTimeout: () {},
+          );
+        }
+        if (agentError != null) {
+          Error.throwWithStackTrace(agentError!, agentErrorStack!);
+        }
       } finally {
-        await agentDisconnect.timeout(
-          const Duration(seconds: 2),
-          onTimeout: () {},
-        );
-      }
-      if (agentError != null) {
-        Error.throwWithStackTrace(agentError!, agentErrorStack!);
+        if (profileId == localLinuxProfileId) {
+          await _localLinuxRuntime.stop();
+        }
       }
       if (mounted) _clearSetupStates(profileId);
       _pendingApprovalsByThread.removeWhere(
@@ -4794,7 +4892,7 @@ class AppController extends StateNotifier<AppUiState> {
       // finish publishing its disconnected snapshot before reconnect emits.
       await Future<void>.delayed(delay);
       if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
-      final profile = state.profiles.firstWhereOrNull(
+      var profile = state.profiles.firstWhereOrNull(
         (candidate) => candidate.id == profileId,
       );
       if (profile == null) {
@@ -4809,6 +4907,14 @@ class AppController extends StateNotifier<AppUiState> {
         'reconnect_attempt profile=$profileId attempt=$attempt',
       );
       try {
+        if (isLocalLinuxProfile(profile)) {
+          final instance = await _localLinuxRuntime.ensureStarted();
+          final refreshed = localLinuxProfile(instance, existing: profile);
+          if (!profile.hasSameConnectionIdentity(refreshed)) {
+            profile = await _saveLocalLinuxProfile(refreshed);
+          }
+          if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
+        }
         await _connections.connect(profile);
         if (!_isConnectionRecoveryCurrent(profileId, revision)) return;
 

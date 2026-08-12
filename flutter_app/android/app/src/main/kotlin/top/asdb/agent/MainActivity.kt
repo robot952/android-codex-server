@@ -62,6 +62,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         FlutterEngineCache.getInstance().put(RETAINED_ENGINE_ID, flutterEngine)
+        LocalLinuxManager.register(applicationContext, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LEGACY_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

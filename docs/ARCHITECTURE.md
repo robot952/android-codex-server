@@ -141,7 +141,8 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/android/app/src/main/kotlin/top/asdb/agent/DiagnosticLogBridge.kt | Java/Native/ANR 历史退出恢复、主线程 watchdog、原生日志轮转与脱敏 | 当前运行；Android 11+ 使用 `ApplicationExitInfo`，旧系统使用进程标记兜底 |
 | flutter_app/lib/src/ui/server_metrics_strip.dart | 两个列表共用的紧凑资源指标和点击详情 | 当前运行 |
 | flutter_app/lib/src/ui/theme.dart | Flutter 主题和产品色值 | 当前运行 |
-| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | legacy Profile、file_export、background Service 和 app_update MethodChannel | 当前运行；负责旧 Profile 导入、SAF 分块文件导出、服务启停、连接期 FlutterEngine 保留及系统下载/安装 |
+| flutter_app/android/app/src/main/kotlin/.../MainActivity.kt | legacy Profile、file_export、background Service、app_update 和 local_linux MethodChannel | 当前运行；负责旧 Profile 导入、SAF 分块文件导出、服务启停、连接期 FlutterEngine 保留、系统下载/安装及本机 Linux 桥接 |
+| flutter_app/android/app/src/main/kotlin/.../LocalLinuxManager.kt | ARM64 PRoot Debian 生命周期、下载校验、解压和回环 SSH | 当前实验能力；只支持 ARM64 Android |
 | flutter_app/android/app/src/main/AndroidManifest.xml | Android 权限、Activity、前台 Service 和应用名 | 当前运行；包含联网、通知、wake lock、dataSync 和未知来源安装声明 |
 | flutter_app/lib/src/domain/models.freezed.dart、models.g.dart | 生成代码 | 不要手工编辑 |
 | flutter_app/test | Flutter 单元测试和 Widget 测试 | 当前门禁 |
@@ -807,6 +808,28 @@ MethodChannel 结果统一回主线程。安装前检查下载文件位于应用
 远端 stderr 会去除 ANSI/控制字符并写入有界 Debug 诊断日志，不能用原始 JSON/Rust 日志或环境警告遮挡
 仍可用的会话；真正断线、认证失败和不可恢复错误仍明确显示。上述后台、通知、终端、文件和日志实现仍需在目标
 Android 设备上验证通知权限、文件选择器、键盘、厂商后台限制和长时运行行为。
+
+### 10.1 本机 Linux 实验模式
+
+服务器页的“本机 Linux”入口在 ARM64 Android 上提供可选 Debian 环境。APK 内置由固定 Termux 包复现的
+PRoot、loader、libandroid-shmem 和 talloc；首次启用下载固定版本 Debian Trixie ARM64 rootfs，下载上限、
+预期大小和 SHA-256 均在原生层校验，归档解压拒绝越界路径、硬链接、符号链接父目录写入和超过 256 MiB 的
+展开内容。基础 rootfs 下载约 35 MB、展开约 173 MB，安装 SSH、Git、下载工具和后续 Codex 后占用继续增加。
+
+PRoot 从 APK 的 `nativeLibraryDir` 执行，Manifest 必须保持 `extractNativeLibs=true`；Android 禁止从可写 App
+数据目录执行下载文件，所以 PRoot 不允许运行时替换。生成脚本固定上游包和哈希，
+`scripts/test-local-linux-runtime.sh [apk]` 离线校验 ARM64 ELF、依赖修补、文件哈希及 APK 内容。
+
+Debian 位于 App 私有目录，只向外提供 `/root/workspace`，不主动绑定 Android 共享存储、应用凭据目录或宿主
+Home。sshd 使用随机端口和随机密码，只监听 `127.0.0.1`，密码与端口通过 Android Keystore 支持的加密
+SharedPreferences 保存；Flutter 将它注册为固定 `agent-local-linux` Profile，然后复用现有 SSH、Agent、终端
+和文件管理链路。断开该 Profile 会停止 PRoot sshd，意外断线和进程恢复前会先重启本机 Linux；卸载会删除
+Debian、Codex、工作区和本机 Profile。
+
+这不是虚拟机或内核级沙箱：PRoot 只做用户态路径和身份转换，Linux 进程仍受 Android App UID 与系统限制。
+当前仅打包 `arm64-v8a`，x86_64 模拟器只能验证 UI、状态机和 APK 内容，首次安装、apt、回环 SSH、Codex
+安装/登录、后台恢复和长时运行必须在 ARM64 Android 真机验证。PRoot 环境无法提供 Codex Linux sandbox 所需
+的 bubblewrap，因此固定使用 full-access 审批模式；模型推理和 Codex 安装仍需要网络，不是离线模型。
 
 ## 11. 隔离规则
 
@@ -1750,6 +1773,20 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `70094d09f03b9695af0c5d17998e5add4a9f1cfce3bddba4b8db482d511314a1`。应用名 `Agent`、包名
   `top.asdb.agent`、`versionName=1.8.42`、`versionCode=169`；稳定签名证书 SHA-256 为
   `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.33 ARM64 本机 Linux 实验模式（2026-08-12）
+
+- 应用版本：`1.8.43+170`。服务器页新增独立“本机 Linux”实验入口，在 ARM64 Android App 私有目录安装
+  Debian Trixie，通过 APK 内置 PRoot 启动仅监听 `127.0.0.1` 的 SSH，再复用现有 Flutter SSH、Agent、
+  会话、终端和文件管理实现。
+- rootfs 和四个原生运行库均固定版本与 SHA-256；解压、路径、大小和进程输出有界。回环 SSH 凭据加密保存，
+  本机 Profile 固定 workspace、Codex 启动命令和 full-access 模式，不在普通服务器列表重复展示。
+- 本机启动覆盖前台连接、指纹确认和后台恢复，主动断开会停止 sshd，删除会清理 Debian、Codex、工作区和
+  Profile；UI 显示首次下载进度、ARM64 限制、磁盘增长、联网需求和删除确认。
+- 新增本机运行状态、并发启动去重、失败恢复、Profile 安全边界及 AppController 启停回归。Flutter 全量
+  `412` 项测试和 `flutter analyze` 通过，Debug/Release APK 构建通过；APK 的四个 ARM64 ELF、哈希、依赖及
+  `extractNativeLibs=true` 已校验。当前 x86_64 模拟器不能执行 ARM64 PRoot，完整安装和 Codex E2E 留待
+  ARM64 Android 真机验收。
 
 ## 18. 文档维护规则
 

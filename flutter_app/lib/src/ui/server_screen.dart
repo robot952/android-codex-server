@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:collection/collection.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +11,7 @@ import '../app/app_controller.dart';
 import '../domain/models.dart';
 import '../platform/app_update_manager.dart';
 import '../platform/diagnostic_logger.dart';
+import '../platform/local_linux_manager.dart';
 import 'app_update_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'server_metrics_strip.dart';
@@ -39,6 +41,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
+    final localLinux = ref.watch(localLinuxControllerProvider);
     ref.listen<AppUpdateState>(appUpdateProvider, _scheduleUpdatePrompt);
     _scheduleFingerprintDialog(state.pendingFingerprint);
     final blocking = _blockingConnection(state);
@@ -120,6 +123,9 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       key: const ValueKey('list'),
                       state: state,
                       onAdd: _newProfile,
+                      localLinux: localLinux,
+                      onOpenLocalLinux: _openLocalLinux,
+                      onUninstallLocalLinux: _uninstallLocalLinux,
                       onSettings: _editProfile,
                       onOpen: _openProfile,
                       onDisconnect: _confirmDisconnect,
@@ -147,6 +153,58 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       _advanced = false;
       _passwordVisible = false;
     });
+  }
+
+  Future<void> _openLocalLinux() async {
+    final localState = ref.read(localLinuxControllerProvider);
+    final appState = ref.read(appControllerProvider);
+    final localProfile = appState.profiles.firstWhereOrNull(
+      isLocalLinuxProfile,
+    );
+    if (localProfile != null &&
+        appState.connectionStates[localLinuxProfileId]?.phase ==
+            ConnectionPhase.connected) {
+      ref.read(appControllerProvider.notifier).selectProfile(localProfile.id);
+      return;
+    }
+    if (!localState.supported &&
+        localState.phase != LocalLinuxPhase.checking &&
+        localState.phase != LocalLinuxPhase.failed) {
+      _showMessage(localState.message);
+      return;
+    }
+    if (!localState.installed) {
+      final approved = await _confirm(
+        title: '安装本机 Linux？',
+        message:
+            '将下载约 35 MB 的 Debian ARM64 环境，解压后约占用 173 MB。'
+            '安装 SSH、Git 和 Codex 后占用会继续增加。'
+            '环境只监听手机本机，不会开放到局域网。Codex 仍需要联网访问模型服务。',
+        confirmLabel: '安装并启动',
+      );
+      if (!approved || !mounted) return;
+    }
+    try {
+      await ref.read(appControllerProvider.notifier).connectLocalLinux();
+    } catch (error) {
+      if (mounted) _showMessage(_errorText(error));
+    }
+  }
+
+  Future<void> _uninstallLocalLinux() async {
+    final approved = await _confirm(
+      title: '删除本机 Linux？',
+      message: '将删除 Debian、已安装的 Codex、Linux 工作区和本机配置。这个操作不能撤销。',
+      confirmLabel: '删除',
+      destructive: true,
+    );
+    if (!approved || !mounted) return;
+    try {
+      await ref.read(appControllerProvider.notifier).uninstallLocalLinux();
+      if (mounted) _showMessage('本机 Linux 已删除');
+    } catch (error) {
+      if (mounted) _showMessage(_errorText(error));
+    }
   }
 
   void _editProfile(ServerProfile profile) {
@@ -691,6 +749,9 @@ class _ServerList extends StatelessWidget {
     super.key,
     required this.state,
     required this.onAdd,
+    required this.localLinux,
+    required this.onOpenLocalLinux,
+    required this.onUninstallLocalLinux,
     required this.onSettings,
     required this.onOpen,
     required this.onDisconnect,
@@ -700,6 +761,9 @@ class _ServerList extends StatelessWidget {
 
   final AppUiState state;
   final VoidCallback onAdd;
+  final LocalLinuxState localLinux;
+  final VoidCallback onOpenLocalLinux;
+  final VoidCallback onUninstallLocalLinux;
   final ValueChanged<ServerProfile> onSettings;
   final void Function(ServerProfile, ConnectionState) onOpen;
   final ValueChanged<ServerProfile> onDisconnect;
@@ -708,14 +772,26 @@ class _ServerList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final connectedCount = state.connectionStates.values
-        .where((connection) => connection.phase == ConnectionPhase.connected)
+    final profiles = state.profiles
+        .where((profile) => !isLocalLinuxProfile(profile))
+        .toList(growable: false);
+    final connectedCount = profiles
+        .where(
+          (profile) =>
+              state.connectionStates[profile.id]?.phase ==
+              ConnectionPhase.connected,
+        )
         .length;
     return SafeArea(
       top: false,
       child: ListView(
         padding: const EdgeInsets.only(bottom: 24),
         children: [
+          _LocalLinuxPanel(
+            state: localLinux,
+            onOpen: onOpenLocalLinux,
+            onUninstall: onUninstallLocalLinux,
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: DecoratedBox(
@@ -741,9 +817,9 @@ class _ServerList extends StatelessWidget {
                                 style: Theme.of(context).textTheme.titleSmall,
                               ),
                               Text(
-                                state.profiles.isEmpty
+                                profiles.isEmpty
                                     ? '添加第一台 SSH 服务器'
-                                    : '${state.profiles.length} 台服务器 · $connectedCount 台已连接',
+                                    : '${profiles.length} 台服务器 · $connectedCount 台已连接',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ],
@@ -761,25 +837,21 @@ class _ServerList extends StatelessWidget {
                     ),
                   ),
                   const Divider(height: 1, color: codexBorder),
-                  if (state.profiles.isEmpty)
+                  if (profiles.isEmpty)
                     _EmptyServerState(onAdd: onAdd)
                   else
-                    for (
-                      var index = 0;
-                      index < state.profiles.length;
-                      index++
-                    ) ...[
+                    for (var index = 0; index < profiles.length; index++) ...[
                       _ServerRow(
-                        profile: state.profiles[index],
+                        profile: profiles[index],
                         connection:
-                            state.connectionStates[state.profiles[index].id] ??
+                            state.connectionStates[profiles[index].id] ??
                             const ConnectionState(),
-                        metrics: state.serverMetrics[state.profiles[index].id],
+                        metrics: state.serverMetrics[profiles[index].id],
                         onOpen: onOpen,
                         onSettings: onSettings,
                         onDisconnect: onDisconnect,
                       ),
-                      if (index != state.profiles.length - 1)
+                      if (index != profiles.length - 1)
                         Padding(
                           padding: EdgeInsets.only(left: 52),
                           child: Divider(
@@ -800,6 +872,139 @@ class _ServerList extends StatelessWidget {
       ),
     );
   }
+}
+
+class _LocalLinuxPanel extends StatelessWidget {
+  const _LocalLinuxPanel({
+    required this.state,
+    required this.onOpen,
+    required this.onUninstall,
+  });
+
+  final LocalLinuxState state;
+  final VoidCallback onOpen;
+  final VoidCallback onUninstall;
+
+  @override
+  Widget build(BuildContext context) {
+    final busy =
+        state.phase == LocalLinuxPhase.installing ||
+        state.phase == LocalLinuxPhase.starting ||
+        state.phase == LocalLinuxPhase.checking;
+    final trailingLabel = switch (state.phase) {
+      LocalLinuxPhase.running => '打开',
+      LocalLinuxPhase.stopped => '启动',
+      LocalLinuxPhase.installing ||
+      LocalLinuxPhase.starting => '${state.progress}%',
+      LocalLinuxPhase.unavailable => '不可用',
+      _ => '安装',
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+      child: DecoratedBox(
+        key: const ValueKey('local-linux-panel'),
+        decoration: BoxDecoration(
+          color: codexSurface,
+          border: Border.all(color: codexBorder),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: InkWell(
+          onTap: busy ? null : onOpen,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 11, 8, 11),
+            child: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: codexRaised,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.phone_android, size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              '本机 Linux',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                          const SizedBox(width: 7),
+                          const _ExperimentalBadge(),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        state.errorMessage ?? state.message,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: state.errorMessage == null ? null : codexRed,
+                        ),
+                      ),
+                      if (busy && state.phase != LocalLinuxPhase.checking) ...[
+                        const SizedBox(height: 7),
+                        LinearProgressIndicator(
+                          value: state.progress > 0
+                              ? state.progress / 100
+                              : null,
+                          minHeight: 3,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (state.installed && !busy)
+                  IconButton(
+                    tooltip: '删除本机 Linux',
+                    onPressed: onUninstall,
+                    icon: const Icon(Icons.delete_outline, size: 20),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    trailingLabel,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: state.running ? codexGreen : codexMuted,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ExperimentalBadge extends StatelessWidget {
+  const _ExperimentalBadge();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+    decoration: BoxDecoration(
+      border: Border.all(color: codexAmber.withValues(alpha: 0.7)),
+      borderRadius: BorderRadius.circular(3),
+    ),
+    child: Text(
+      '实验',
+      style: Theme.of(
+        context,
+      ).textTheme.labelSmall?.copyWith(color: codexAmber, fontSize: 9),
+    ),
+  );
 }
 
 class _DebugLogBar extends StatelessWidget {

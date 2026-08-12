@@ -4,6 +4,7 @@ import 'package:codex_remote/src/app/codex_remote_app.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/platform/local_linux_manager.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -101,8 +102,38 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.text('服务器列表'), findsOneWidget);
     expect(find.text('服务器会话'), findsOneWidget);
+    expect(find.text('本机 Linux'), findsOneWidget);
+    expect(find.text('实验'), findsOneWidget);
     expect(find.text('还没有服务器'), findsOneWidget);
     expect(find.text('Flutter Demo'), findsNothing);
+  });
+
+  testWidgets('local Linux profile is not duplicated as a normal server', (
+    tester,
+  ) async {
+    const instance = LocalLinuxInstance(
+      port: 41234,
+      password: 'generated-password',
+      architecture: 'arm64-v8a',
+      rootfsVersion: 'debian-test',
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          profileStoreProvider.overrideWithValue(
+            _MemoryStore(
+              StoredProfiles(profiles: [localLinuxProfile(instance)]),
+            ),
+          ),
+        ],
+        child: const CodexRemoteApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('本机 Linux'), findsOneWidget);
+    expect(find.text('添加第一台 SSH 服务器'), findsOneWidget);
+    expect(find.text('1 台服务器 · 0 台已连接'), findsNothing);
   });
 
   testWidgets(

@@ -60,6 +60,15 @@ android {
             signingConfig = signingConfigs.getByName("stable")
         }
     }
+
+    packaging {
+        jniLibs {
+            // PRoot is launched as an executable from nativeLibraryDir. Modern
+            // Android versions prohibit executing files from writable app data.
+            useLegacyPackaging = true
+            keepDebugSymbols += setOf("**/libproot.so", "**/libproot-loader.so")
+        }
+    }
 }
 
 kotlin {
@@ -75,4 +84,6 @@ flutter {
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10")
 }
