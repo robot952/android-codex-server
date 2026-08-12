@@ -256,6 +256,18 @@ Debug:   flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
+原生库打包契约：
+
+- `flutter_app/android/app/build.gradle.kts` 必须保持
+  `packaging.jniLibs.useLegacyPackaging = true`，从而设置 `extractNativeLibs=true`；
+- Flutter 和 App 的 `.so` 在 APK 中压缩，Android 安装时再解压到 `nativeLibraryDir`。因此当前 Release
+  APK 约 29 MB、未压缩内容约 66 MB 是正常结果，不应用旧版约 64 MB 的 APK 文件大小判断漏包；
+- 该模式会略微增加 Release 打包和安装耗时，但减少下载与传输体积，并且是从 `nativeLibraryDir` 执行
+  PRoot 的前提；
+- APK 继续交付 `armeabi-v7a`、`arm64-v8a`、`x86_64` 三种 Flutter ABI；仅 PRoot 本机 Linux 运行时只
+  提供 `arm64-v8a`。发布前用 `scripts/test-local-linux-runtime.sh <release-apk>` 校验 PRoot 文件和
+  `extractNativeLibs`，不得为追求构建速度改回未压缩 native library。
+
 本机发布：
 
 ```bash

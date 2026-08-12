@@ -593,14 +593,14 @@ void main() {
             'text':
                 '为什么内容会向下滚动呢？内容从上面冒出来的文本附件 '
                 'agent-diagnostic-session.log.txt:\n'
-                '2026-08-11T23:56:34 INFO TranscriptScroll extent_sample\n'
-                '2026-08-11T23:56:35 INFO TranscriptScroll gesture_end',
+                '2026-08-11T23:56:34 INFO Agent state connected\n'
+                '2026-08-11T23:56:35 INFO Heartbeat completed',
           },
         ],
       }, turnId: 'turn-joined-attachment');
 
       expect(entry?.text, '为什么内容会向下滚动呢？内容从上面冒出来的');
-      expect(entry?.text, isNot(contains('TranscriptScroll')));
+      expect(entry?.text, isNot(contains('Heartbeat completed')));
       expect(entry?.attachments, const <MessageAttachment>[
         MessageAttachment(
           name: 'agent-diagnostic-session.log.txt',

@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
-import 'package:codex_remote/src/platform/diagnostic_logger.dart';
 import 'package:codex_remote/src/platform/local_file_exporter.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
@@ -26,17 +25,14 @@ class _LayoutController extends AppController {
   // The production constructor uses private positional fields, so a public
   // super-parameter cannot be used from this test library.
   // ignore: use_super_parameters
-  _LayoutController(
-    ProfileStore store,
-    ServerConnectionManager manager, [
-    DiagnosticLogger? diagnosticLogger,
-  ]) : super(store, manager, null, diagnosticLogger);
+  _LayoutController(ProfileStore store, ServerConnectionManager manager)
+    : super(store, manager);
 
   void showState(AppUiState value) => state = value;
 }
 
 class _PaginationController extends _LayoutController {
-  _PaginationController(super.store, super.manager, [super.diagnosticLogger]);
+  _PaginationController(super.store, super.manager);
 
   Future<void> Function()? onLoadOlder;
   int loadOlderCalls = 0;
@@ -45,26 +41,6 @@ class _PaginationController extends _LayoutController {
   Future<void> loadOlderTurns() async {
     loadOlderCalls += 1;
     await onLoadOlder?.call();
-  }
-}
-
-class _RecordingDiagnosticLogger extends DiagnosticLogger {
-  final records = <String>[];
-
-  @override
-  bool get isEnabled => true;
-
-  @override
-  Future<bool> initialize() async => true;
-
-  @override
-  void info(String tag, String message) {
-    records.add('INFO $tag $message');
-  }
-
-  @override
-  void warn(String tag, String message, [Object? error, StackTrace? stack]) {
-    records.add('WARN $tag $message');
   }
 }
 
@@ -133,56 +109,6 @@ Future<void> _jumpToTranscriptStart(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  test('formats transcript scroll metrics with stable numeric fields', () {
-    expect(
-      formatTranscriptScrollMetrics(null),
-      'pixels=none min=none max=none before=none after=none viewport=none',
-    );
-    expect(
-      formatTranscriptScrollMetrics(
-        FixedScrollMetrics(
-          minScrollExtent: 0,
-          maxScrollExtent: 900,
-          pixels: 125.25,
-          viewportDimension: 600,
-          axisDirection: AxisDirection.down,
-          devicePixelRatio: 2,
-        ),
-      ),
-      'pixels=125.3 min=0.0 max=900.0 before=125.3 after=774.8 '
-      'viewport=600.0',
-    );
-  });
-
-  test('formats transcript scroll location and normal edge rebound', () {
-    final middle = FixedScrollMetrics(
-      minScrollExtent: 0,
-      maxScrollExtent: 900,
-      pixels: 225,
-      viewportDimension: 600,
-      axisDirection: AxisDirection.down,
-      devicePixelRatio: 2,
-    );
-    final bottomRebound = FixedScrollMetrics(
-      minScrollExtent: 0,
-      maxScrollExtent: 900,
-      pixels: 903.7,
-      viewportDimension: 600,
-      axisDirection: AxisDirection.down,
-      devicePixelRatio: 2,
-    );
-
-    expect(
-      formatTranscriptScrollLocation(middle),
-      'location=middle progress=25.0% overscroll=0.0',
-    );
-    expect(
-      formatTranscriptScrollLocation(bottomRebound),
-      'location=bottom progress=100.0% overscroll=3.7',
-    );
-    expect(transcriptScrollOverscroll(bottomRebound), closeTo(3.7, 0.01));
-  });
 
   test('matches the legacy follow-output state machine', () {
     expect(
@@ -364,9 +290,8 @@ void main() {
               '${List.filled(index % 9 + 1, '不同高度的缓存内容').join('\n')}',
         ),
     ];
-    final logger = _RecordingDiagnosticLogger();
     final manager = ServerConnectionManager();
-    final controller = _LayoutController(_MemoryStore(), manager, logger)
+    final controller = _LayoutController(_MemoryStore(), manager)
       ..showState(
         timelineState(
           timeline: timeline,
@@ -417,11 +342,6 @@ void main() {
     }
     await tester.pumpAndSettle();
 
-    final log = logger.records.join('\n');
-    expect(log, contains('initial_bottom_apply'));
-    expect(log, contains('center=tail'));
-    expect(log, isNot(contains('largeExtent=true')));
-    expect(log, isNot(matches(RegExp('gesture_end .*source=program'))));
     expect(tester.takeException(), isNull);
   });
 
@@ -705,85 +625,6 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('records the complete older-page scroll diagnostic chain', (
-    tester,
-  ) async {
-    tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(420, 840);
-    addTearDown(tester.view.reset);
-
-    final logger = _RecordingDiagnosticLogger();
-
-    final manager = ServerConnectionManager();
-    final controller = _PaginationController(_MemoryStore(), manager, logger)
-      ..showState(
-        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
-      );
-    addTearDown(() async => manager.close());
-    controller.onLoadOlder = () async {
-      controller.showState(controller.state.copyWith(olderTurnsLoading: true));
-      await Future<void>.delayed(const Duration(milliseconds: 80));
-      controller.showState(
-        controller.state.copyWith(
-          timeline: [...entries(-10, 10), ...controller.state.timeline],
-          olderTurnsCursor: null,
-          olderTurnsLoading: false,
-        ),
-      );
-    };
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [appControllerProvider.overrideWith((ref) => controller)],
-        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
-      ),
-    );
-    await tester.pumpAndSettle(
-      const Duration(milliseconds: 16),
-      EnginePhase.sendSemanticsUpdate,
-      const Duration(seconds: 2),
-    );
-
-    final scrollViewFinder = find.byType(CustomScrollView);
-    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
-    await _jumpToTranscriptStart(tester, scrollView.controller!);
-    await tester.drag(scrollViewFinder, const Offset(0, 140));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 80));
-    await tester.pump(const Duration(milliseconds: 220));
-    await tester.pump(const Duration(milliseconds: 220));
-    await tester.pump();
-
-    final log = logger.records.join('\n');
-    expect(log, contains('INFO TranscriptScroll gesture_start'));
-    expect(log, contains('INFO TranscriptScroll pull_threshold state=armed'));
-    expect(log, contains('INFO TranscriptScroll pull_release armed=true'));
-    expect(log, contains('INFO TranscriptScroll position_prepare'));
-    expect(log, contains('INFO TranscriptScroll page_begin'));
-    expect(log, contains('INFO TranscriptScroll page_request'));
-    expect(log, contains('INFO TranscriptScroll page_layout'));
-    expect(log, contains('INFO TranscriptScroll page_end'));
-    expect(log, contains('INFO TranscriptScroll retract_start'));
-    expect(log, contains('INFO TranscriptScroll retract_end'));
-    expect(log, contains('INFO TranscriptScroll extent_sample'));
-    expect(log, contains('source=notification'));
-    expect(log, isNot(contains('source=refresh')));
-    expect(
-      RegExp('INFO TranscriptScroll extent_sample').allMatches(log).length,
-      lessThanOrEqualTo(6),
-    );
-    expect(log, contains('INFO TranscriptScroll header_visibility'));
-    expect(log, contains('INFO TranscriptScroll header_layout'));
-    expect(log, contains('center=tail'));
-    expect(log, contains('viewportState='));
-    expect(log, contains('pixels='));
-    expect(log, contains('location='));
-    expect(log, contains('progress='));
-    expect(log, contains('strategy=center'));
-    expect(log, isNot(contains('strategy=extent')));
-    expect(tester.takeException(), isNull);
-  });
-
   testWidgets('keeps the anchor across repeated older-page pulls', (
     tester,
   ) async {
@@ -890,11 +731,10 @@ void main() {
         ),
     ];
 
-    final logger = _RecordingDiagnosticLogger();
     final manager = ServerConnectionManager();
     final pageSizes = <int>[24, 10, 29, 22, 36];
     var nextStart = 0;
-    final controller = _PaginationController(_MemoryStore(), manager, logger)
+    final controller = _PaginationController(_MemoryStore(), manager)
       ..showState(
         timelineState(
           timeline: variableEntries(0, 27),
@@ -950,12 +790,6 @@ void main() {
       expect(scrollView.controller!.position.extentAfter, greaterThan(100));
     }
 
-    final log = logger.records.join('\n');
-    expect(
-      RegExp('page_layout .*strategy=center').allMatches(log).length,
-      pageSizes.length,
-    );
-    expect(log, isNot(contains('strategy=extent')));
     expect(tester.takeException(), isNull);
   });
 

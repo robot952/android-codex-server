@@ -39,9 +39,11 @@ if [[ -n "$APK" ]]; then
         printf 'APK does not exist: %s\n' "$APK" >&2
         exit 1
     }
+    apk_runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/agent-local-linux-apk.XXXXXX")"
+    trap 'rm -rf "$apk_runtime_dir"' EXIT
     for name in libproot.so libproot-loader.so libandroid-shmem.so libtalloc.so; do
-        unzip -Z1 "$APK" | grep -qx "lib/arm64-v8a/$name"
-        cmp -s <(unzip -p "$APK" "lib/arm64-v8a/$name") "$NATIVE_DIR/$name"
+        unzip -p "$APK" "lib/arm64-v8a/$name" > "$apk_runtime_dir/$name"
+        cmp -s "$apk_runtime_dir/$name" "$NATIVE_DIR/$name"
     done
 fi
 

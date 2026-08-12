@@ -789,7 +789,8 @@ Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR
 写入前会移除 ANSI、私钥、URL 凭据、Bearer/API key、password/token/secret 等敏感值，分享和附件读取时再脱敏。
 日志 sheet 和选择器支持按文件多选、预览、复制、清空和系统分享；分享只生成临时副本，不删除原日志，清空
 同时删除本工具生成的临时分享文件。工作页菜单“添加崩溃 / Debug 日志”默认选中最新崩溃日志，确认后只加入
-输入框附件，不会自动发送。
+输入框附件，不会自动发送。此前为定位会话滚动问题临时加入的 `TranscriptScroll` 高频事件及其几何采样
+已经撤除；当前诊断日志不再记录滚动手势、滚动范围、分页布局或加载头动画。
 
 `AppUpdateController` 从 `PackageInfo` 读取已安装版本，Android 启动时以 5 秒超时查询 Gitee Release API；
 只接受非 prerelease、合法 SemVer 且包含 `Agent-<version>.apk` 或历史兼容
@@ -816,8 +817,11 @@ PRoot、loader、libandroid-shmem 和 talloc；首次启用下载固定版本 De
 预期大小和 SHA-256 均在原生层校验，归档解压拒绝越界路径、硬链接、符号链接父目录写入和超过 256 MiB 的
 展开内容。基础 rootfs 下载约 35 MB、展开约 173 MB，安装 SSH、Git、下载工具和后续 Codex 后占用继续增加。
 
-PRoot 从 APK 的 `nativeLibraryDir` 执行，Manifest 必须保持 `extractNativeLibs=true`；Android 禁止从可写 App
-数据目录执行下载文件，所以 PRoot 不允许运行时替换。生成脚本固定上游包和哈希，
+PRoot 从 APK 的 `nativeLibraryDir` 执行，Manifest 必须保持 `extractNativeLibs=true`；对应 Gradle 配置为
+`packaging.jniLibs.useLegacyPackaging = true`。该模式会压缩 APK 中的原生 `.so`，再由 Android 在安装时
+解压：Release APK 约 29 MB、包内未压缩内容约 66 MB 是预期结果。它会略微增加打包和安装时间，但显著降低
+下载体积，不能为了恢复旧版约 64 MB 的 APK 或缩短少量构建时间而关闭。Android 禁止从可写 App 数据目录
+执行下载文件，所以 PRoot 不允许运行时替换。生成脚本固定上游包和哈希，
 `scripts/test-local-linux-runtime.sh [apk]` 离线校验 ARM64 ELF、依赖修补、文件哈希及 APK 内容。
 
 Debian 位于 App 私有目录，只向外提供 `/root/workspace`，不主动绑定 Android 共享存储、应用凭据目录或宿主
@@ -827,7 +831,8 @@ SharedPreferences 保存；Flutter 将它注册为固定 `agent-local-linux` Pro
 Debian、Codex、工作区和本机 Profile。
 
 这不是虚拟机或内核级沙箱：PRoot 只做用户态路径和身份转换，Linux 进程仍受 Android App UID 与系统限制。
-当前仅打包 `arm64-v8a`，x86_64 模拟器只能验证 UI、状态机和 APK 内容，首次安装、apt、回环 SSH、Codex
+当前只有 PRoot 本机 Linux 运行时限 `arm64-v8a`；APK 的 Flutter 运行时仍包含 `armeabi-v7a`、
+`arm64-v8a` 和 `x86_64`。x86_64 模拟器只能验证本机 Linux 的 UI、状态机和 APK 内容，首次安装、apt、回环 SSH、Codex
 安装/登录、后台恢复和长时运行必须在 ARM64 Android 真机验证。PRoot 环境无法提供 Codex Linux sandbox 所需
 的 bubblewrap，因此固定使用 full-access 审批模式；模型推理和 Codex 安装仍需要网络，不是离线模型。
 
@@ -868,6 +873,10 @@ Debian、Codex、工作区和本机 Profile。
 flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ~~~
+
+构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
+`extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用
+`scripts/test-local-linux-runtime.sh <release-apk>` 检查，不得仅依据 APK 文件大小判断 ABI 是否完整。
 
 签名是不可破坏的升级契约：
 

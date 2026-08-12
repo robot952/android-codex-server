@@ -139,6 +139,13 @@ flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
+Android 构建必须保留 `flutter_app/android/app/build.gradle.kts` 中的
+`packaging.jniLibs.useLegacyPackaging = true`。该配置让 APK 内的原生 `.so` 保持压缩，并在安装时由
+Android 解压到 `nativeLibraryDir`：Release APK 通常约 29 MB，而包内未压缩内容仍约 66 MB。这个大小
+变化是预期的，不代表裁掉 ABI 或功能；同时本机 Linux 的 PRoot 必须从该目录执行。不要为了缩短少量打包或
+安装时间把它改回未压缩 native library。当前 APK 仍包含 `armeabi-v7a`、`arm64-v8a` 和 `x86_64`，只有
+本机 Linux 的 PRoot 运行时限 `arm64-v8a`。
+
 安装 Debug APK：
 
 ```bash

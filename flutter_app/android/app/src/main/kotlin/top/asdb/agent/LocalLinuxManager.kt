@@ -34,6 +34,48 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal data class ProotProcessSpec(
+    val command: List<String>,
+    val environment: Map<String, String>,
+)
+
+internal fun buildProotProcessSpec(
+    nativeDirectory: File,
+    rootfs: File,
+    temp: File,
+    guestCommand: List<String>,
+): ProotProcessSpec {
+    val proot = File(nativeDirectory, "libproot.so")
+    val loader = File(nativeDirectory, "libproot-loader.so")
+    check(proot.canExecute() && loader.isFile) { "APK 中缺少 ARM64 PRoot 运行时" }
+    return ProotProcessSpec(
+        command = buildList {
+            add(proot.absolutePath)
+            add("--link2symlink")
+            add("--kill-on-exit")
+            add("--root-id")
+            add("--rootfs=${rootfs.absolutePath}")
+            add("--cwd=/root")
+            add("--bind=/dev")
+            add("--bind=/proc")
+            add("--bind=/sys")
+            add("/usr/bin/env")
+            add("-i")
+            add("HOME=/root")
+            add("LANG=C.UTF-8")
+            add("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            add("TERM=xterm-256color")
+            add("TMPDIR=/tmp")
+            addAll(guestCommand)
+        },
+        environment = mapOf(
+            "PROOT_LOADER" to loader.absolutePath,
+            "PROOT_TMP_DIR" to temp.absolutePath,
+            "LD_LIBRARY_PATH" to nativeDirectory.absolutePath,
+        ),
+    )
+}
+
 /** Owns the experimental PRoot Debian instance and its loopback-only SSH server. */
 object LocalLinuxManager {
     private const val CHANNEL = "top.asdb.agent/local_linux"
@@ -345,12 +387,11 @@ object LocalLinuxManager {
     }
 
     private fun startSsh(context: Context, rootfs: File): Process {
-        val command = prootCommand(
+        val process = prootProcessBuilder(
             context,
             rootfs,
             listOf("/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ssh/sshd_config.agent"),
         )
-        val process = ProcessBuilder(command)
             .redirectErrorStream(true)
             .start()
         Thread {
@@ -371,7 +412,7 @@ object LocalLinuxManager {
         unit: TimeUnit,
         stdin: String? = null,
     ): String {
-        val process = ProcessBuilder(prootCommand(context, rootfs, guestCommand))
+        val process = prootProcessBuilder(context, rootfs, guestCommand)
             .redirectErrorStream(true)
             .start()
         if (stdin != null) {
@@ -394,34 +435,16 @@ object LocalLinuxManager {
         return output.toString()
     }
 
-    private fun prootCommand(context: Context, rootfs: File, guestCommand: List<String>): List<String> {
-        val nativeDir = context.applicationInfo.nativeLibraryDir
-        val proot = File(nativeDir, "libproot.so")
-        val loader = File(nativeDir, "libproot-loader.so")
-        check(proot.canExecute() && loader.isFile) { "APK 中缺少 ARM64 PRoot 运行时" }
+    private fun prootProcessBuilder(
+        context: Context,
+        rootfs: File,
+        guestCommand: List<String>,
+    ): ProcessBuilder {
+        val nativeDirectory = File(context.applicationInfo.nativeLibraryDir)
         val temp = File(runtimeDirectory(context), "proot-tmp").apply { mkdirs() }
-        return buildList {
-            add("/system/bin/env")
-            add("PROOT_LOADER=${loader.absolutePath}")
-            add("PROOT_TMP_DIR=${temp.absolutePath}")
-            add("LD_LIBRARY_PATH=$nativeDir")
-            add(proot.absolutePath)
-            add("--link2symlink")
-            add("--kill-on-exit")
-            add("--root-id")
-            add("--rootfs=${rootfs.absolutePath}")
-            add("--cwd=/root")
-            add("--bind=/dev")
-            add("--bind=/proc")
-            add("--bind=/sys")
-            add("/usr/bin/env")
-            add("-i")
-            add("HOME=/root")
-            add("LANG=C.UTF-8")
-            add("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-            add("TERM=xterm-256color")
-            add("TMPDIR=/tmp")
-            addAll(guestCommand)
+        val spec = buildProotProcessSpec(nativeDirectory, rootfs, temp, guestCommand)
+        return ProcessBuilder(spec.command).apply {
+            environment().putAll(spec.environment)
         }
     }
 
