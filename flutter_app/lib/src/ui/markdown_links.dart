@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:markdown/markdown.dart' as md;
 
 final RegExp _markdownRemoteFileLink = RegExp(r'\[([^\]\r\n]+)]\((/[^\s)]+)\)');
+final RegExp _markdownHttpLink = RegExp(
+  r'\[([^\]\r\n]+)]\((https?://[^\s)]+)\)',
+);
 final RegExp _remoteFileToken = RegExp(r'^[A-Za-z0-9_-]+$');
 
 const String _remoteFileLinkPrefix = 'https://codex-remote.local/remote-file/';
@@ -53,13 +56,21 @@ class AdjacentHttpAutolinkSyntax extends md.AutolinkExtensionSyntax {
 }
 
 /// Rewrites absolute server paths to internal links that are decoded locally
-/// and are never sent to a browser. Ordinary Markdown links stay untouched so
-/// their destination is not duplicated in the visible transcript.
+/// and are never sent to a browser. Labeled HTTP links keep the label as plain
+/// text and expose only their destination as a link on the next line.
 String markdownWithVisibleLinkDestinations(String markdown) {
-  return markdown.replaceAllMapped(_markdownRemoteFileLink, (match) {
+  final rendered = markdown.replaceAllMapped(_markdownRemoteFileLink, (match) {
     final link = remoteFileLinkForPath(match.group(2) ?? '');
     if (link == null) return match.group(0) ?? '';
     return '[${match.group(1)}]($link)';
+  });
+  return rendered.replaceAllMapped(_markdownHttpLink, (match) {
+    final label = (match.group(1) ?? '').trim();
+    final url = match.group(2) ?? '';
+    if (remoteFilePathFromLink(url) != null || label == url) {
+      return match.group(0) ?? '';
+    }
+    return '$label\n[$url]($url)';
   });
 }
 

@@ -47,6 +47,42 @@ const _threadB = AgentThread(
 );
 
 void main() {
+  test('returning to the list silently refreshes thread recency', () async {
+    final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+    final harness = await _createHarness(agent);
+    expect(agent.listThreadsCount, 1);
+
+    harness.controller.openThread(_threadA);
+    await _waitUntil(
+      () =>
+          harness.controller.state.screen == AppScreen.work &&
+          !harness.controller.state.loading,
+    );
+    agent.threads = const [
+      AgentThread(
+        id: 'thread-a',
+        title: 'Thread A',
+        preview: 'Updated preview',
+        source: 'appServer',
+        status: 'idle',
+        updatedAt: 30,
+      ),
+      _threadB,
+    ];
+
+    harness.controller.backToThreadList();
+
+    expect(harness.controller.state.screen, AppScreen.threads);
+    expect(harness.controller.state.loading, isFalse);
+    expect(harness.controller.state.threads, isNotEmpty);
+    await _waitUntil(
+      () =>
+          agent.listThreadsCount == 2 &&
+          harness.controller.state.threads.first.updatedAt == 30,
+    );
+    expect(harness.controller.state.threads.first.preview, 'Updated preview');
+  });
+
   test('connection loss replays a buffered terminal event', () async {
     final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
     final harness = await _createHarness(agent);
@@ -612,7 +648,8 @@ class _Host implements RemoteServerClient {
 class _ResumeAgent implements RemoteAgentClient, RemoteAgentGenerationClient {
   _ResumeAgent({required this.threads});
 
-  final List<AgentThread> threads;
+  List<AgentThread> threads;
+  int listThreadsCount = 0;
   final StreamController<RemoteAgentEvent> _events =
       StreamController<RemoteAgentEvent>.broadcast(sync: true);
   final Map<String, List<Completer<AgentSession>>> _resumeGates = {};
@@ -657,8 +694,10 @@ class _ResumeAgent implements RemoteAgentClient, RemoteAgentGenerationClient {
   Future<List<AgentModel>> listModels() async => const <AgentModel>[];
 
   @override
-  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
-      AgentThreadPage(threads: threads);
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async {
+    listThreadsCount += 1;
+    return AgentThreadPage(threads: threads);
+  }
 
   @override
   Future<AgentSession> resumeThread(

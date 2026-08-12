@@ -583,6 +583,32 @@ void main() {
       ]);
     });
 
+    test('compacts a text attachment joined directly to historical text', () {
+      final entry = CodexPayloadParser.parseItem(<String, Object?>{
+        'id': 'message-joined-attachment',
+        'type': 'userMessage',
+        'content': <Object?>[
+          <String, Object?>{
+            'type': 'text',
+            'text':
+                '为什么内容会向下滚动呢？内容从上面冒出来的文本附件 '
+                'agent-diagnostic-session.log.txt:\n'
+                '2026-08-11T23:56:34 INFO TranscriptScroll extent_sample\n'
+                '2026-08-11T23:56:35 INFO TranscriptScroll gesture_end',
+          },
+        ],
+      }, turnId: 'turn-joined-attachment');
+
+      expect(entry?.text, '为什么内容会向下滚动呢？内容从上面冒出来的');
+      expect(entry?.text, isNot(contains('TranscriptScroll')));
+      expect(entry?.attachments, const <MessageAttachment>[
+        MessageAttachment(
+          name: 'agent-diagnostic-session.log.txt',
+          mimeType: 'text/plain',
+        ),
+      ]);
+    });
+
     test('bounds thread fields and timeline text with visible markers', () {
       final oversizedMetadata = 'm'.padRight(codexMaxThreadFieldChars + 1, 'm');
       final oversizedText = 't'.padRight(codexMaxTimelineTextChars + 1, 't');

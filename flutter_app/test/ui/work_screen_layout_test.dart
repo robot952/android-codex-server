@@ -82,13 +82,19 @@ class _TrackingFileExporter implements LocalFileExporter {
 }
 
 TapGestureRecognizer _linkRecognizer(WidgetTester tester, String text) {
+  final recognizer = _maybeLinkRecognizer(tester, text);
+  if (recognizer != null) return recognizer;
+  throw TestFailure('No clickable link span found for $text');
+}
+
+TapGestureRecognizer? _maybeLinkRecognizer(WidgetTester tester, String text) {
   for (final selectable in tester.widgetList<SelectableText>(
     find.byType(SelectableText),
   )) {
     final recognizer = _findLinkRecognizer(selectable.textSpan, text);
     if (recognizer != null) return recognizer;
   }
-  throw TestFailure('No clickable link span found for $text');
+  return null;
 }
 
 TapGestureRecognizer? _findLinkRecognizer(InlineSpan? span, String text) {
@@ -103,6 +109,11 @@ TapGestureRecognizer? _findLinkRecognizer(InlineSpan? span, String text) {
   }
   return null;
 }
+
+Finder _popupItemForText(String text) => find.ancestor(
+  of: find.text(text),
+  matching: find.byWidgetPredicate((widget) => widget is PopupMenuItem),
+);
 
 Future<void> _jumpToTranscriptStart(
   WidgetTester tester,
@@ -1146,6 +1157,93 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('anchors work popups like the original Android layout', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'popup-thread', title: '弹窗位置'),
+        activeAgentCapabilities: AgentCapabilities.codex,
+        tokenUsage: TokenUsage(
+          last: TokenUsageBreakdown(totalTokens: 14_300),
+          modelContextWindow: 258_000,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final topButton = find.byKey(const Key('work-action-menu'));
+    final topButtonWidget = tester.widget<PopupMenuButton<String>>(topButton);
+    expect(topButtonWidget.position, PopupMenuPosition.under);
+    expect(topButtonWidget.popUpAnimationStyle, AnimationStyle.noAnimation);
+    final topButtonRect = tester.getRect(topButton);
+    await tester.tap(topButton);
+    await tester.pump();
+    expect(find.text('重命名'), findsOneWidget);
+    final topFirstItemRect = tester.getRect(_popupItemForText('重命名'));
+    expect(
+      topFirstItemRect.top,
+      greaterThanOrEqualTo(topButtonRect.bottom + 8),
+    );
+    expect((topFirstItemRect.right - topButtonRect.right).abs(), lessThan(9));
+    await tester.tapAt(const Offset(8, 400));
+    await tester.pumpAndSettle();
+
+    final composerButton = find.byKey(const Key('composer-action-menu'));
+    final composerButtonWidget = tester.widget<PopupMenuButton<String>>(
+      composerButton,
+    );
+    expect(
+      composerButtonWidget.popUpAnimationStyle,
+      AnimationStyle.noAnimation,
+    );
+    final composerButtonRect = tester.getRect(composerButton);
+    await tester.tap(composerButton);
+    await tester.pump();
+    expect(find.text('选择模型'), findsOneWidget);
+    final composerLastItemRect = tester.getRect(_popupItemForText('权限'));
+    expect(
+      composerLastItemRect.bottom,
+      lessThanOrEqualTo(composerButtonRect.top - 28),
+    );
+    final composerFirstItemRect = tester.getRect(_popupItemForText('设置目标'));
+    expect(
+      (composerFirstItemRect.left - composerButtonRect.left).abs(),
+      lessThan(9),
+    );
+    expect(composerFirstItemRect.width, lessThanOrEqualTo(150));
+    await tester.tapAt(const Offset(410, 300));
+    await tester.pumpAndSettle();
+
+    final contextButton = find.byKey(const Key('composer-context-usage'));
+    final contextButtonRect = tester.getRect(contextButton);
+    await tester.tap(contextButton);
+    await tester.pumpAndSettle();
+    final contextItemRect = tester.getRect(_popupItemForText('背景信息窗口：'));
+    expect(
+      contextItemRect.bottom,
+      lessThanOrEqualTo(contextButtonRect.top - 28),
+    );
+    expect(contextItemRect.center.dx, closeTo(contextButtonRect.center.dx, 1));
+    expect(contextItemRect.width, closeTo(196, 1));
+    expect(find.text('5% 已用（剩余 95%）'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('opens adjacent URLs and previews linked remote images', (
     tester,
   ) async {
@@ -1188,14 +1286,18 @@ void main() {
           TimelineEntry(
             id: 'links-1',
             kind: TimelineKind.agentMessage,
-            text: '内网：$url\n\n[竖屏验收截图]($imagePath)',
+            text:
+                '[内网下载]($url)\n\n'
+                '[竖屏验收截图]($imagePath)',
           ),
         ],
       ),
     );
     await tester.pumpAndSettle();
 
-    _linkRecognizer(tester, url).onTap!();
+    expect(_maybeLinkRecognizer(tester, '内网下载'), isNull);
+    final visibleUrlRecognizer = _linkRecognizer(tester, url);
+    visibleUrlRecognizer.onTap!();
     await tester.pumpAndSettle();
     expect(find.text('打开链接'), findsOneWidget);
     expect(find.text(url), findsWidgets);
@@ -1207,6 +1309,12 @@ void main() {
     expect(loadedImagePath, imagePath);
     expect(find.byType(InteractiveViewer), findsOneWidget);
     expect(find.text('latest-release.png'), findsOneWidget);
+    final previewImage = tester.widget<Image>(find.byType(Image));
+    expect(previewImage.fit, BoxFit.contain);
+    final resizedImage = previewImage.image as ResizeImage;
+    expect(resizedImage.width, 2048);
+    expect(resizedImage.height, 2048);
+    expect(resizedImage.policy, ResizeImagePolicy.fit);
     expect(exporter.beginCalls, 0);
     await tester.tap(find.byTooltip('关闭图片'));
     await tester.pumpAndSettle();
@@ -1294,7 +1402,16 @@ void main() {
             id: 'files-1',
             kind: TimelineKind.fileChange,
             changes: [
-              FileChange(path: '/tmp/a.dart', diff: '-old\n+new'),
+              FileChange(
+                path: '/tmp/a.dart',
+                diff:
+                    'diff --git a/tmp/a.dart b/tmp/a.dart\n'
+                    '--- a/tmp/a.dart\n'
+                    '+++ b/tmp/a.dart\n'
+                    '@@ -1 +1 @@\n'
+                    '-old\n'
+                    '+new',
+              ),
               FileChange(path: '/tmp/b.dart', diff: '+line'),
               FileChange(path: '/tmp/c.dart', diff: '-line'),
               FileChange(path: '/tmp/d.dart', diff: '+line'),
@@ -1312,7 +1429,37 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('文件差异'), findsOneWidget);
     expect(find.text('/tmp/a.dart'), findsOneWidget);
-    expect(find.text('-old\n+new'), findsOneWidget);
+    expect(find.text('-old'), findsOneWidget);
+    expect(find.text('+new'), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.text('+new')).style?.color,
+      const Color(0xFFB3E6BC),
+    );
+    expect(
+      tester
+          .widget<Container>(find.byKey(const ValueKey('diff-line-added-5')))
+          .color,
+      const Color(0xFF17351E),
+    );
+    expect(
+      tester.widget<Text>(find.text('-old')).style?.color,
+      const Color(0xFFF4B1B5),
+    );
+    expect(
+      tester
+          .widget<Container>(find.byKey(const ValueKey('diff-line-removed-4')))
+          .color,
+      const Color(0xFF3B1D20),
+    );
+    expect(
+      tester.widget<Text>(find.text('@@ -1 +1 @@')).style?.color,
+      const Color(0xFFAFCBF1),
+    );
+    expect(
+      tester.widget<Text>(find.text('+++ b/tmp/a.dart')).style?.color,
+      codexMuted,
+    );
+    expect(find.byType(SelectionArea), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -1589,6 +1589,168 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 定向 `4` 项、Flutter 全量 `397` 项、`flutter analyze`、Debug/Release 构建和 Android 14 Release 竖屏 smoke 全部通过。唯一一次 `publish` 主门禁用时 `6m46.205s`，其中 Android full `3m41.154s`、Release smoke `22.447s`、CodeGraph `0.265s`、本地发布和默认下载回验 `2m33.558s`。
 - `dist/Agent-1.8.33.apk`、内网和公网 `agent.apk` 整包回下载一致，大小 `67,223,079` 字节，SHA-256 为 `440ce2ee7f273641ddd8169a54f9596a2b732df34ae35f9b6876cd918f001df8`。应用名 `Agent`、包名 `top.asdb.agent`、`versionName=1.8.33`、`versionCode=160`，稳定签名证书未变化。
 
+### 17.24 Work 弹窗锚定对齐（2026-08-12）
+
+- 应用版本：`1.8.34+161`。Work 页右上角会话菜单改为明确锚定在按钮下方，保留 `8dp`
+  间距并关闭弹出动画，点击后在同一帧直接显示；菜单宽度、图标和行高保持旧 Compose 页面的
+  视觉层级。
+- 输入区会话操作菜单固定为 `144dp` 窄菜单并在三点按钮上方展开；恢复与旧版一致的目标、
+  压缩会话、选择模型和权限项及图标，并按当前 capability/目标状态动态计算向上偏移。上下文
+  用量弹窗恢复约 `232dp` 宽度、相对圆环向左 `200dp` 且向上展开的旧版位置。
+- 新增 `420x840` Widget 几何回归，精确断言三个弹窗相对触发按钮的上下方向、左右对齐、
+  宽度和间距，并验证右上角菜单无动画。WorkScreen 定向 `21` 项、Flutter 全量 `398` 项、
+  `flutter analyze`、Debug/Release 构建和 Android 14 Release 竖屏 smoke 全部通过。唯一一次
+  `publish` 主门禁用时 `7m03.643s`，其中 Android full `3m38.995s`、Release smoke `26.096s`、
+  CodeGraph `1.216s`、本地发布和默认下载回验 `2m39.334s`。
+- `dist/Agent-1.8.34.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载一致，
+  大小 `67,305,083` 字节，SHA-256 为
+  `5182daff845802d95a7be79116b92cd7fde268d4ce873a436cfa5a0db9581773`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.34`、`versionCode=161`，稳定签名证书未变化。
+
+### 17.25 Work 用量弹窗与链接展示修正（2026-08-12）
+
+- 应用版本：`1.8.35+162`。上下文用量弹窗固定为 `196dp` 宽，在圆环正上方展开；弹窗与圆环的
+  水平中心误差不超过 `1dp`，不再偏向圆环左侧。输入区“权限”左侧的三点菜单关闭弹出动画，
+  点击后同一帧直接显示。
+- 普通 HTTP/HTTPS Markdown 命名链接同时展示链接名称和完整目标地址，名称与地址都可点击，且地址
+  链接边界不会吞入后续中文标点；名称本身已经是目标 URL 时不重复显示，App 内远程文件链接仍保持
+  原有隐藏目标地址的安全行为。
+- Markdown 与 WorkScreen 定向 `28` 项、Flutter 全量 `398` 项、`flutter analyze`、Debug/Release
+  构建和 Android 14 Release 竖屏 smoke 全部通过。唯一一次 `publish` 主门禁用时 `6m54.704s`，
+  其中 Android full `3m36.040s`、Release smoke `22.391s`、CodeGraph `0.913s`、本地发布和默认
+  下载回验 `2m40.500s`。
+- `dist/Agent-1.8.35.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,305,083` 字节，SHA-256 为
+  `22246806e28d9e2a3c006f5a973e608fb5b533ba031c5c8c10d52b87fdad0d9f`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.35`、`versionCode=162`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.26 会话列表相对时间与返回刷新（2026-08-12）
+
+- 应用版本：`1.8.36+163`。会话列表右侧更新时间不再显示当天时刻或月/日，统一按当前时间显示
+  “刚刚 / N 分钟 / N 小时 / N 天 / N 周 / N 个月”；兼容秒和毫秒时间戳，未来时间按“刚刚”
+  处理，列表保持打开时每分钟自动重算可见文案。
+- 从普通对话返回会话列表时，先立即展示保留的列表快照，再在后台静默请求当前搜索条件的第一页；
+  成功后同步会话的更新时间、摘要、状态及服务端排序，失败时保留原列表且不显示全屏加载动画。
+  若用户在静默刷新期间立即滚到底部，分页会先等待第一页完成，再使用新的 cursor，避免旧游标丢页。
+- 相对时间单元测试覆盖秒/毫秒输入和全部显示档位，Widget 回归覆盖页面保持打开时的分钟更新；控制器
+  回归验证返回列表不闪空并采用服务端的新更新时间，同时保留返回后立即分页的并发测试。
+- Flutter 全量 `401` 项、`flutter analyze`、Debug/Release 构建和 Android 14 Release 竖屏 smoke
+  全部通过。唯一一次 `publish` 主门禁用时 `6m40.845s`，其中 Android full `3m36.115s`、
+  Release smoke `22.164s`、CodeGraph `1.093s`、本地发布和默认下载回验 `2m35.722s`。
+- `dist/Agent-1.8.36.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,370,619` 字节，SHA-256 为
+  `d0d735e68c47c91ad214ff2723d7e7ef3483953a087d0e5b803597ab028f26f5`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.36`、`versionCode=163`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.27 会话列表下拉刷新（2026-08-12）
+
+- 应用版本：`1.8.37+164`。已连接 Agent 的会话列表支持从顶部下拉刷新；长列表、短列表及空结果
+  都使用可下拉滚动物理效果，松手后复用第一页静默刷新，因此当前会话内容保持可见，不切换到全屏
+  加载状态。
+- 下拉方向与到底分页明确隔离：只有朝列表底部滚动且剩余范围不足 `240dp` 时才加载下一页，顶部
+  下拉不会误触发分页；顶部刷新按钮继续保留并与手势刷新共享请求去重逻辑。Widget 回归直接对短
+  列表执行下拉手势，验证只触发一次静默刷新且原会话仍然显示。
+- Flutter 全量 `402` 项、`flutter analyze`、Debug/Release 构建和 Android 14 Release 竖屏 smoke
+  全部通过。唯一一次 `publish` 主门禁用时 `6m56.777s`，其中 Android full `3m39.121s`、
+  Release smoke `26.276s`、CodeGraph `0.624s`、本地发布和默认下载回验 `2m34.840s`。
+- `dist/Agent-1.8.37.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,387,007` 字节，SHA-256 为
+  `851cb679bea832ed41204d3432c330b62211aadaff7856cbc00328f5a0284bd0`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.37`、`versionCode=164`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.28 下载链接样式与刷新入口收敛（2026-08-12）
+
+- 应用版本：`1.8.38+165`。普通 HTTP/HTTPS 命名链接改为“普通正文标题 + 下一行完整 URL 链接”，
+  不再把“内网下载 / 公网下载”等标题误渲染为蓝色链接；完整 URL 仍可点击和复制。App 内远程
+  文件链接继续使用内部安全链接和原有预览/下载处理。
+- 会话列表顶部刷新图标已移除，刷新入口统一为列表下拉手势；搜索提交、返回列表静默刷新和底部
+  分页逻辑不变。
+- Markdown、WorkScreen 与会话列表定向 `38` 项、Flutter 全量 `402` 项、`flutter analyze`、
+  Debug/Release 构建和 Android 14 Release 竖屏 smoke 全部通过。成功的 `publish` 主门禁用时
+  `6m41.222s`，其中 Android full `3m30.291s`、Release smoke `26.328s`、CodeGraph `0.727s`、
+  本地发布和默认下载回验 `2m42.179s`。
+- `dist/Agent-1.8.38.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,387,003` 字节，SHA-256 为
+  `a1b195351d26edf26b0225638ffab2c1a95f7f7b798607eea705f719731c4cfd`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.38`、`versionCode=165`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.29 会话区域跟手下拉刷新（2026-08-12）
+
+- 应用版本：`1.8.39+166`。下拉刷新由列表内部的小型 `RefreshIndicator` 改为会话区域级跟手容器；
+  搜索框及其上方区域保持固定，搜索框下方的“最近任务 / 数量”、诊断信息和整个会话列表随手势一起
+  下移。
+- 刷新头按拖动状态显示“下拉刷新 / 松开刷新 / 正在刷新”，越过 `72dp` 阈值后松手触发静默刷新；
+  请求期间会话区域固定保留 `52dp` 刷新头，完成后用 `220ms` 动画回位。列表使用 Clamping 物理
+  效果，避免系统 overscroll 与自定义位移叠加；底部分页规则保持不变。
+- Widget 回归使用可控刷新请求，验证搜索框坐标不变、会话标题跟手下移、三段刷新文案、静默请求和
+  完成回位。
+- 会话列表定向 Widget `10` 项、Flutter 全量 `402` 项、`flutter analyze`、Debug/Release 构建和
+  Android 14 Release 竖屏 smoke 全部通过。成功的 `publish` 主门禁用时 `7m04.190s`，其中
+  Android full `3m51.207s`、Release smoke `26.190s`、CodeGraph `0.636s`、本地发布和下载回验
+  `2m36.444s`。
+- `dist/Agent-1.8.39.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,387,055` 字节，SHA-256 为
+  `c9620554cb924fbac74797841976021bc0f7d4d934257d4b98158a0f7a934443`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.39`、`versionCode=166`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.30 图片预览保持原始比例（2026-08-12）
+
+- 应用版本：`1.8.40+167`。远程图片预览仍将解码尺寸限制在 `2048x2048` 以内以控制内存，但解码
+  策略由分别强制宽高的 `exact` 改为保持原始宽高比的 `fit`；显示层继续使用 `BoxFit.contain`，
+  因此横图、竖图都只会等比例缩放，不会再被压扁或拉长。保存图片继续写入原始字节，不受预览缩放
+  影响。
+- WorkScreen Widget 回归同时断言预览解码使用 `ResizeImagePolicy.fit`、显示使用
+  `BoxFit.contain`，防止后续重新引入非方形图片变形。
+- WorkScreen 定向 `21` 项、Flutter 全量 `402` 项、`flutter analyze`、Debug/Release 构建和
+  Android 14 Release 竖屏 smoke 全部通过。成功的 `publish` 主门禁用时 `6m46.019s`，其中
+  Android full `3m35.727s`、Release smoke `24.480s`、CodeGraph `0.927s`、本地发布和下载回验
+  `2m38.131s`。
+- `dist/Agent-1.8.40.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,387,055` 字节，SHA-256 为
+  `993872cacef584027d1ded78e746e4de2c4aff15727a0fbc38e3d7d333c38ac9`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.40`、`versionCode=167`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.31 历史文本附件折叠兼容（2026-08-12）
+
+- 应用版本：`1.8.41+168`。Codex 历史记录可能把用户正文和随后发送的文本附件合并成一个 text
+  content，并且不在 `文本附件 <文件名>:` 前补换行。历史解析现在也识别这种直接拼接的传输标记，
+  只保留用户正文，将 `.txt`、`.log.txt` 等附件恢复为紧凑附件条目，不再把附件全文展开在用户消息
+  气泡中。
+- 保留原有分离 content、换行合并 content、图片和普通文件附件兼容；新增与诊断日志历史负载一致的
+  无换行拼接回归，断言日志正文被移出可见消息且文件名被恢复。
+- Codex 协议定向 `27` 项、Flutter 全量 `403` 项、`flutter analyze`、Debug/Release 构建和
+  Android 14 Release 竖屏 smoke 全部通过。成功的 `publish` 主门禁用时 `6m58.800s`，其中
+  Android full `3m47.699s`、Release smoke `22.217s`、CodeGraph `0.920s`、本地发布和下载回验
+  `2m37.152s`。
+- `dist/Agent-1.8.41.apk`、构建产物、本地发布文件及内外网 `agent.apk` 独立整包回下载逐字节一致，
+  大小 `67,387,051` 字节，SHA-256 为
+  `5a48b1fad1005761ee03c86ec4174d6c322e716b917be9d996ed6dcf2eaba211`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.41`、`versionCode=168`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.32 Git 风格文件差异（2026-08-12）
+
+- 应用版本：`1.8.42+169`。文件差异页由整块白色纯文本改为按 unified diff 语义逐行渲染：新增行
+  使用绿色文字和浅绿色背景，删除行使用红色文字和浅红色背景，`@@` 区块头使用蓝色；`diff --git`、
+  `index`、`+++`、`---` 等文件元数据保持中性，避免误判为内容增删。
+- 差异仍支持纵向和横向滚动，并通过 `SelectionArea` 保留跨行选择复制。Widget 回归验证增删行的
+  前景色与背景色、区块头颜色、文件头例外和可选择性。
+- WorkScreen 定向 `21` 项、Flutter 全量 `403` 项、`flutter analyze`、Debug/Release 构建和
+  Android 14 Release 竖屏 smoke 全部通过。`publish` 主门禁用时 `6m59.007s`，其中 Android full
+  `3m40.881s`、Release smoke `26.171s`、CodeGraph `0.893s`；自动公网下载回验期间连接提前关闭，
+  随后独立重试内外网 `agent.apk` 均完整下载并通过逐字节比对。
+- `dist/Agent-1.8.42.apk`、构建产物、本地发布文件及内外网 `agent.apk` 大小均为
+  `67,387,051` 字节，SHA-256 为
+  `70094d09f03b9695af0c5d17998e5add4a9f1cfce3bddba4b8db482d511314a1`。应用名 `Agent`、包名
+  `top.asdb.agent`、`versionName=1.8.42`、`versionCode=169`；稳定签名证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
 ## 18. 文档维护规则
 
 以下变化必须同一任务更新本文，并在合适处标明当前实现或迁移目标：

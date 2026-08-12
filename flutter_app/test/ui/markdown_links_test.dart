@@ -3,10 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown/markdown.dart' as md;
 
 void main() {
-  test('keeps standard HTTP links without exposing duplicate destinations', () {
+  test('shows only HTTP destinations as links on the next line', () {
     expect(
       markdownWithVisibleLinkDestinations('[文档](https://example.com/docs)'),
-      '[文档](https://example.com/docs)',
+      '文档\n'
+      '[https://example.com/docs](https://example.com/docs)',
     );
     expect(
       markdownWithVisibleLinkDestinations(
@@ -16,21 +17,24 @@ void main() {
     );
   });
 
-  test('keeps localized text after a labeled link outside the link', () {
+  test('keeps localized text after the visible link destination', () {
     const url = 'http://192.168.8.107/agent.apk';
     final markdown = markdownWithVisibleLinkDestinations(
       '[内网下载]($url)：仅同一局域网可用',
     );
+    expect(markdown, '内网下载\n[$url]($url)：仅同一局域网可用');
     final nodes = md.Document(
       inlineSyntaxes: workMarkdownInlineSyntaxes,
       extensionSet: md.ExtensionSet.gitHubFlavored,
       encodeHtml: false,
     ).parseInline(markdown);
 
-    expect(nodes, hasLength(2));
-    final link = nodes.first as md.Element;
-    expect(link.textContent, '内网下载');
-    expect(link.attributes['href'], url);
+    expect(nodes, hasLength(3));
+    expect(nodes.first.textContent.trim(), '内网下载');
+    expect(nodes.first, isNot(isA<md.Element>()));
+    final visibleUrl = nodes.whereType<md.Element>().single;
+    expect(visibleUrl.textContent, url);
+    expect(visibleUrl.attributes['href'], url);
     expect(nodes.last.textContent, '：仅同一局域网可用');
   });
 

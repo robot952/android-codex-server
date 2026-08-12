@@ -1778,7 +1778,7 @@ class _ParsedUserMessageText {
 }
 
 final RegExp _transportAttachmentMarker = RegExp(
-  r'^[\t ]*(?:(文本附件) ([^\r\n:]+):\r?\n|(附件) ([^\r\n:]+):[\t ]+([^\r\n]+))',
+  r'[\t ]*(文本附件) ([^\r\n:]+):\r?\n|^[\t ]*(附件) ([^\r\n:]+):[\t ]+([^\r\n]+)',
   multiLine: true,
 );
 

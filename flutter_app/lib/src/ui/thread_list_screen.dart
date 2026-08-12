@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,7 +9,9 @@ import 'server_metrics_strip.dart';
 import 'theme.dart';
 
 class ThreadListScreen extends ConsumerStatefulWidget {
-  const ThreadListScreen({super.key});
+  const ThreadListScreen({super.key, this.now});
+
+  final DateTime Function()? now;
 
   @override
   ConsumerState<ThreadListScreen> createState() => _ThreadListScreenState();
@@ -16,10 +20,20 @@ class ThreadListScreen extends ConsumerStatefulWidget {
 class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
+  Timer? _relativeTimeTimer;
   String? _requestedLane;
 
   @override
+  void initState() {
+    super.initState();
+    _relativeTimeTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
+    _relativeTimeTimer?.cancel();
     _searchController.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -60,6 +74,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
       state.threadSearch,
       agentConnected: agentConnected,
     );
+    final now = widget.now?.call() ?? DateTime.now();
 
     if (!_searchFocus.hasFocus &&
         _searchController.text != state.threadSearch) {
@@ -117,18 +132,6 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
             tooltip: '终端',
             onPressed: hostConnected ? controller.openTerminal : null,
             icon: const Icon(Icons.terminal),
-          ),
-          IconButton(
-            tooltip: '刷新会话',
-            onPressed: agentConnected && !loading
-                ? controller.refreshThreads
-                : null,
-            icon: hostConnected && loading
-                ? const SizedBox.square(
-                    dimension: 19,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh),
           ),
           IconButton(
             tooltip: '新建会话',
@@ -191,36 +194,42 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
               ),
             ),
             Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, animation) => FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0.05, 0),
-                      end: Offset.zero,
-                    ).animate(animation),
-                    child: child,
+              child: _ThreadListPullRefresh(
+                onRefresh: agentConnected
+                    ? () => controller.refreshThreads(silent: true)
+                    : null,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0.05, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: child,
+                    ),
                   ),
-                ),
-                child: _ThreadListBody(
-                  key: ValueKey(state.activeAgent),
-                  agent: state.activeAgent,
-                  hostConnected: hostConnected,
-                  connectionState: agentState,
-                  loading: loading,
-                  query: state.threadSearch,
-                  threads: threads,
-                  diagnostic: state.diagnostic,
-                  onRetry: controller.ensureActiveAgent,
-                  onReconnect: profile == null
-                      ? null
-                      : () => controller.requestConnect(profile),
-                  onOpen: controller.openThread,
-                  hasMoreThreads: controller.activeThreadListHasMore,
-                  onLoadMore: controller.loadMoreThreads,
+                  child: _ThreadListBody(
+                    key: ValueKey(state.activeAgent),
+                    agent: state.activeAgent,
+                    hostConnected: hostConnected,
+                    connectionState: agentState,
+                    loading: loading,
+                    query: state.threadSearch,
+                    threads: threads,
+                    now: now,
+                    diagnostic: state.diagnostic,
+                    onRetry: controller.ensureActiveAgent,
+                    onReconnect: profile == null
+                        ? null
+                        : () => controller.requestConnect(profile),
+                    onOpen: controller.openThread,
+                    hasMoreThreads: controller.activeThreadListHasMore,
+                    onLoadMore: controller.loadMoreThreads,
+                  ),
                 ),
               ),
             ),
@@ -827,6 +836,171 @@ class _AgentSegment extends StatelessWidget {
   }
 }
 
+const double _threadRefreshTriggerExtent = 72;
+const double _threadRefreshHoldExtent = 52;
+const double _threadRefreshMaxExtent = 104;
+
+class _ThreadListPullRefresh extends StatefulWidget {
+  const _ThreadListPullRefresh({required this.onRefresh, required this.child});
+
+  final Future<void> Function()? onRefresh;
+  final Widget child;
+
+  @override
+  State<_ThreadListPullRefresh> createState() => _ThreadListPullRefreshState();
+}
+
+class _ThreadListPullRefreshState extends State<_ThreadListPullRefresh> {
+  int? _pointer;
+  double? _lastPointerY;
+  double _pulledExtent = 0;
+  bool _atTop = true;
+  bool _pullEligible = false;
+  bool _refreshing = false;
+
+  bool get _armed => _pulledExtent >= _threadRefreshTriggerExtent;
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (_pointer != null || _refreshing || widget.onRefresh == null) return;
+    _pointer = event.pointer;
+    _lastPointerY = event.position.dy;
+    _pullEligible = _atTop;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (_pointer != event.pointer || !_pullEligible || _refreshing) return;
+    final lastY = _lastPointerY;
+    _lastPointerY = event.position.dy;
+    if (lastY == null) return;
+    final delta = event.position.dy - lastY;
+    if (delta == 0) return;
+    final next = (_pulledExtent + delta * 0.52).clamp(
+      0.0,
+      _threadRefreshMaxExtent,
+    );
+    if (next == _pulledExtent) return;
+    setState(() => _pulledExtent = next);
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    if (_pointer != event.pointer) return;
+    final shouldRefresh = _armed && widget.onRefresh != null;
+    _clearPointer();
+    if (shouldRefresh) {
+      setState(() {
+        _refreshing = true;
+        _pulledExtent = _threadRefreshHoldExtent;
+      });
+      unawaited(_runRefresh(widget.onRefresh!));
+    } else if (_pulledExtent != 0) {
+      setState(() => _pulledExtent = 0);
+    }
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    if (_pointer != event.pointer) return;
+    _clearPointer();
+    if (_pulledExtent != 0) setState(() => _pulledExtent = 0);
+  }
+
+  void _clearPointer() {
+    _pointer = null;
+    _lastPointerY = null;
+    _pullEligible = false;
+  }
+
+  bool _handleScroll(ScrollNotification notification) {
+    if (notification.depth == 0 && !_refreshing && _pulledExtent == 0) {
+      _atTop = notification.metrics.extentBefore <= 0.5;
+    }
+    return false;
+  }
+
+  Future<void> _runRefresh(Future<void> Function() refresh) async {
+    try {
+      await refresh();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _refreshing = false;
+          _pulledExtent = 0;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dragging = _pointer != null;
+    final label = _refreshing
+        ? '正在刷新'
+        : _armed
+        ? '松开刷新'
+        : '下拉刷新';
+    return Listener(
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerUp,
+      onPointerCancel: _handlePointerCancel,
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _handleScroll,
+        child: ClipRect(
+          child: Stack(
+            key: const ValueKey('thread-list-refresh'),
+            children: [
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: _threadRefreshHoldExtent,
+                child: Center(
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 120),
+                    opacity: _pulledExtent > 10 ? 1 : 0,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_refreshing)
+                          const SizedBox.square(
+                            dimension: 17,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        else
+                          AnimatedRotation(
+                            duration: const Duration(milliseconds: 120),
+                            turns: _armed ? 0.5 : 0,
+                            child: const Icon(Icons.arrow_downward, size: 19),
+                          ),
+                        const SizedBox(width: 8),
+                        Text(
+                          label,
+                          key: const ValueKey('thread-list-refresh-label'),
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: AnimatedContainer(
+                  key: const ValueKey('thread-list-panel'),
+                  duration: dragging
+                      ? Duration.zero
+                      : const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  transform: Matrix4.translationValues(0, _pulledExtent, 0),
+                  child: widget.child,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ThreadListBody extends StatefulWidget {
   const _ThreadListBody({
     super.key,
@@ -836,6 +1010,7 @@ class _ThreadListBody extends StatefulWidget {
     required this.loading,
     required this.query,
     required this.threads,
+    required this.now,
     required this.diagnostic,
     required this.onRetry,
     required this.onReconnect,
@@ -850,6 +1025,7 @@ class _ThreadListBody extends StatefulWidget {
   final bool loading;
   final String query;
   final List<AgentThread> threads;
+  final DateTime now;
   final String? diagnostic;
   final Future<void> Function() onRetry;
   final Future<void> Function()? onReconnect;
@@ -885,7 +1061,11 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
   }
 
   bool _handleScroll(ScrollNotification notification) {
-    if (notification.metrics.extentAfter < 240 &&
+    final scrollingTowardEnd =
+        notification is ScrollUpdateNotification &&
+        (notification.scrollDelta ?? 0) > 0;
+    if (scrollingTowardEnd &&
+        notification.metrics.extentAfter < 240 &&
         widget.hasMoreThreads &&
         !_loadingMore) {
       _loadMore();
@@ -901,6 +1081,7 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
     final loading = widget.loading;
     final query = widget.query;
     final threads = widget.threads;
+    final now = widget.now;
     final diagnostic = widget.diagnostic;
     final onRetry = widget.onRetry;
     final onReconnect = widget.onReconnect;
@@ -944,6 +1125,10 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
             header,
             Expanded(
               child: ListView.builder(
+                key: const ValueKey('thread-list-scroll'),
+                physics: const ClampingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics(),
+                ),
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
@@ -962,6 +1147,7 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                   }
                   return _ThreadRow(
                     threads[index],
+                    now: now,
                     onTap: () => onOpen(threads[index]),
                   );
                 },
@@ -1004,35 +1190,48 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
       children: [
         header,
         Expanded(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    failed ? Icons.error_outline : Icons.terminal,
-                    size: 30,
-                    color: failed
-                        ? Theme.of(context).colorScheme.error
-                        : codexMuted,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final emptyState = Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        failed ? Icons.error_outline : Icons.terminal,
+                        size: 30,
+                        color: failed
+                            ? Theme.of(context).colorScheme.error
+                            : codexMuted,
+                      ),
+                      const SizedBox(height: 9),
+                      Text(message, textAlign: TextAlign.center),
+                      if ((!hostConnected && onReconnect != null) ||
+                          (failed && hostConnected)) ...[
+                        const SizedBox(height: 12),
+                        IconButton.filledTonal(
+                          tooltip: hostConnected
+                              ? '重新连接 ${agent.label}'
+                              : '重新连接服务器',
+                          onPressed: hostConnected ? onRetry : onReconnect,
+                          icon: const Icon(Icons.refresh),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 9),
-                  Text(message, textAlign: TextAlign.center),
-                  if ((!hostConnected && onReconnect != null) ||
-                      (failed && hostConnected)) ...[
-                    const SizedBox(height: 12),
-                    IconButton.filledTonal(
-                      tooltip: hostConnected
-                          ? '重新连接 ${agent.label}'
-                          : '重新连接服务器',
-                      onPressed: hostConnected ? onRetry : onReconnect,
-                      icon: const Icon(Icons.refresh),
-                    ),
-                  ],
+                ),
+              );
+              return ListView(
+                key: const ValueKey('thread-list-scroll'),
+                physics: const ClampingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics(),
+                ),
+                children: [
+                  SizedBox(height: constraints.maxHeight, child: emptyState),
                 ],
-              ),
-            ),
+              );
+            },
           ),
         ),
       ],
@@ -1041,15 +1240,16 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
 }
 
 class _ThreadRow extends StatelessWidget {
-  const _ThreadRow(this.thread, {required this.onTap});
+  const _ThreadRow(this.thread, {required this.now, required this.onTap});
 
   final AgentThread thread;
+  final DateTime now;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final running = isAgentThreadRunning(thread);
-    final updatedAt = _updatedAtLabel(thread.updatedAt);
+    final updatedAt = threadUpdatedAtLabel(thread.updatedAt, now: now);
     return Column(
       children: [
         Material(
@@ -1203,16 +1403,18 @@ bool isAgentThreadRunning(AgentThread thread) {
   };
 }
 
-String? _updatedAtLabel(int value) {
+String? threadUpdatedAtLabel(int value, {DateTime? now}) {
   if (value <= 0) return null;
   final millis = value < 100000000000 ? value * 1000 : value;
-  final updated = DateTime.fromMillisecondsSinceEpoch(millis).toLocal();
-  final now = DateTime.now();
-  if (updated.year == now.year &&
-      updated.month == now.month &&
-      updated.day == now.day) {
-    return '${updated.hour.toString().padLeft(2, '0')}:'
-        '${updated.minute.toString().padLeft(2, '0')}';
-  }
-  return '${updated.month}/${updated.day}';
+  final current = now ?? DateTime.now();
+  final deltaSeconds = current
+      .difference(DateTime.fromMillisecondsSinceEpoch(millis))
+      .inSeconds
+      .clamp(0, 1 << 62);
+  if (deltaSeconds < 60) return '刚刚';
+  if (deltaSeconds < 3600) return '${deltaSeconds ~/ 60} 分钟';
+  if (deltaSeconds < 86400) return '${deltaSeconds ~/ 3600} 小时';
+  if (deltaSeconds < 604800) return '${deltaSeconds ~/ 86400} 天';
+  if (deltaSeconds < 2592000) return '${deltaSeconds ~/ 604800} 周';
+  return '${deltaSeconds ~/ 2592000} 个月';
 }

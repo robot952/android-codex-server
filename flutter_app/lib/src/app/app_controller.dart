@@ -1177,7 +1177,7 @@ class AppController extends StateNotifier<AppUiState> {
     );
   }
 
-  Future<void> refreshThreads() async {
+  Future<void> refreshThreads({bool silent = false}) async {
     await _initialization;
     if (!mounted) return;
     final profileId = state.selectedProfileId;
@@ -1190,7 +1190,7 @@ class AppController extends StateNotifier<AppUiState> {
       profileId: profileId,
       agent: state.activeAgent,
     );
-    await _loadAgentData(key, profile);
+    await _loadAgentData(key, profile, silent: silent);
   }
 
   bool get activeThreadListHasMore {
@@ -1221,6 +1221,9 @@ class AppController extends StateNotifier<AppUiState> {
       profileId: profileId,
       agent: state.activeAgent,
     );
+    final activeLoad = _agentLoadRequests[key];
+    if (activeLoad != null) await activeLoad;
+    if (!mounted || !_isActiveKey(key)) return;
     final cursor = _agentThreadNextCursors[key]?.trim();
     if (cursor == null ||
         cursor.isEmpty ||
@@ -2588,6 +2591,9 @@ class AppController extends StateNotifier<AppUiState> {
       attachmentUploading: false,
       loading: false,
     );
+    // Match the original Android behavior: show the retained list immediately,
+    // then reconcile recency, preview, status, and ordering in the background.
+    unawaited(refreshThreads(silent: true));
   }
 
   /// Shows the interactive SSH terminal for the selected server. The PTY is
@@ -4287,6 +4293,7 @@ class AppController extends StateNotifier<AppUiState> {
     ServerProfile profile, {
     bool includeModels = false,
     bool runtimePrepared = false,
+    bool silent = false,
   }) {
     final pending = _agentLoadRequests[key];
     if (pending != null) return pending;
@@ -4299,6 +4306,7 @@ class AppController extends StateNotifier<AppUiState> {
           profile,
           includeModels: includeModels,
           runtimePrepared: runtimePrepared,
+          silent: silent,
           loadRevision: loadRevision,
         ).whenComplete(() {
           if (identical(_agentLoadRequests[key], request)) {
@@ -4314,12 +4322,13 @@ class AppController extends StateNotifier<AppUiState> {
     ServerProfile profile, {
     required bool includeModels,
     required bool runtimePrepared,
+    required bool silent,
     required int loadRevision,
   }) async {
     if (!_isAgentLoadCurrent(key, loadRevision)) return;
     _agentThreadCursorSearches[key] = '';
     _agentThreadNextCursors[key] = null;
-    _setAgentLoading(key, true);
+    if (!silent) _setAgentLoading(key, true);
     try {
       final effectiveProfile = runtimePrepared
           ? profile
@@ -4407,18 +4416,19 @@ class AppController extends StateNotifier<AppUiState> {
             : state.activeAgentCapabilities,
         diagnostic: _agentLoadDiagnostic(threadError, modelError),
       );
-      if (threadError != null && threadPage == null) {
+      if (!silent && threadError != null && threadPage == null) {
         state = state.copyWith(error: _message(threadError!, '读取会话失败'));
       }
       _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
     } catch (error) {
       if (_isAgentLoadCurrent(key, loadRevision) && _isActiveKey(key)) {
-        state = state.copyWith(
-          error: _message(error, '${key.agent.label} 连接失败'),
-        );
+        final message = _message(error, '${key.agent.label} 连接失败');
+        state = silent
+            ? state.copyWith(diagnostic: message)
+            : state.copyWith(error: message);
       }
     } finally {
-      if (_isAgentLoadCurrent(key, loadRevision)) {
+      if (!silent && _isAgentLoadCurrent(key, loadRevision)) {
         _setAgentLoading(key, false);
       }
     }

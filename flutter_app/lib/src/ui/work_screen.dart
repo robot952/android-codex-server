@@ -180,6 +180,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
             surfaceTintColor: Colors.transparent,
             constraints: const BoxConstraints(minWidth: 196, maxWidth: 280),
             menuPadding: const EdgeInsets.symmetric(vertical: 8),
+            position: PopupMenuPosition.under,
+            offset: const Offset(0, 8),
+            popUpAnimationStyle: AnimationStyle.noAnimation,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(4),
             ),
@@ -4285,26 +4288,121 @@ class _DiffScreen extends StatelessWidget {
         ],
       ),
     ),
-    body: SafeArea(
-      top: false,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(12),
+    body: SafeArea(top: false, child: _UnifiedDiffView(diff: change.diff)),
+  );
+}
+
+enum _DiffLineKind { context, header, hunk, added, removed }
+
+_DiffLineKind _diffLineKind(String line) {
+  if (line.startsWith('@@')) return _DiffLineKind.hunk;
+  if (line.startsWith('diff --git ') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ') ||
+      line.startsWith('new file mode ') ||
+      line.startsWith('deleted file mode ') ||
+      line.startsWith('old mode ') ||
+      line.startsWith('new mode ') ||
+      line.startsWith('similarity index ') ||
+      line.startsWith('rename from ') ||
+      line.startsWith('rename to ') ||
+      line.startsWith('Binary files ')) {
+    return _DiffLineKind.header;
+  }
+  if (line.startsWith('+')) return _DiffLineKind.added;
+  if (line.startsWith('-')) return _DiffLineKind.removed;
+  return _DiffLineKind.context;
+}
+
+class _UnifiedDiffView extends StatelessWidget {
+  const _UnifiedDiffView({required this.diff});
+
+  final String diff;
+
+  @override
+  Widget build(BuildContext context) {
+    if (diff.trim().isEmpty) {
+      return const Center(child: Text('没有可显示的差异'));
+    }
+    final lines = diff.split('\n');
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 12),
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
-          child: SelectableText(
-            change.diff.trim().isEmpty ? '没有可显示的差异' : change.diff,
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 12,
-              color: codexText,
-              letterSpacing: 0,
-              height: 1.35,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minWidth: (constraints.maxWidth - 24).clamp(0, double.infinity),
+            ),
+            child: SelectionArea(
+              child: IntrinsicWidth(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var index = 0; index < lines.length; index++)
+                      _DiffLine(index: index, line: lines[index]),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
+}
+
+class _DiffLine extends StatelessWidget {
+  const _DiffLine({required this.index, required this.line});
+
+  final int index;
+  final String line;
+
+  @override
+  Widget build(BuildContext context) {
+    final kind = _diffLineKind(line);
+    final (foreground, background, semanticsLabel) = switch (kind) {
+      _DiffLineKind.added => (
+        const Color(0xFFB3E6BC),
+        const Color(0xFF17351E),
+        '新增行',
+      ),
+      _DiffLineKind.removed => (
+        const Color(0xFFF4B1B5),
+        const Color(0xFF3B1D20),
+        '删除行',
+      ),
+      _DiffLineKind.hunk => (
+        const Color(0xFFAFCBF1),
+        const Color(0xFF1D3047),
+        '差异区块',
+      ),
+      _DiffLineKind.header => (codexMuted, const Color(0xFF222222), '差异文件头'),
+      _DiffLineKind.context => (codexText, Colors.transparent, '上下文行'),
+    };
+    return Semantics(
+      label: semanticsLabel,
+      container: true,
+      child: Container(
+        key: ValueKey('diff-line-${kind.name}-$index'),
+        color: background,
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+        child: Text(
+          line.isEmpty ? ' ' : line,
+          softWrap: false,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 12,
+            color: foreground,
+            letterSpacing: 0,
+            height: 1.35,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _RemoteImageDialog extends StatefulWidget {
@@ -4370,10 +4468,11 @@ class _RemoteImageDialogState extends State<_RemoteImageDialog> {
                       maxScale: 5,
                       child: Center(
                         child: Image(
-                          image: ResizeImage.resizeIfNeeded(
-                            2048,
-                            2048,
+                          image: ResizeImage(
                             MemoryImage(widget.bytes),
+                            width: 2048,
+                            height: 2048,
+                            policy: ResizeImagePolicy.fit,
                           ),
                           fit: BoxFit.contain,
                           gaplessPlayback: true,
@@ -4759,14 +4858,25 @@ class _Composer extends StatelessWidget {
                               enabled: !state.loading && !attachmentBusy,
                               padding: EdgeInsets.zero,
                               iconSize: 20,
+                              position: PopupMenuPosition.over,
+                              offset: Offset(
+                                0,
+                                -_composerActionMenuHeight(state) - 28,
+                              ),
+                              constraints: const BoxConstraints(
+                                minWidth: 144,
+                                maxWidth: 144,
+                              ),
+                              popUpAnimationStyle: AnimationStyle.noAnimation,
                               onSelected: (value) => unawaited(onAction(value)),
                               itemBuilder: (context) => [
                                 if (state.activeAgentCapabilities.threadGoals)
                                   PopupMenuItem(
                                     value: 'goal',
                                     enabled: !state.submitting,
-                                    child: Text(
-                                      state.activeGoal == null
+                                    child: _ComposerPopupMenuRow(
+                                      icon: Icons.track_changes,
+                                      label: state.activeGoal == null
                                           ? '设置目标'
                                           : '编辑目标',
                                     ),
@@ -4779,8 +4889,14 @@ class _Composer extends StatelessWidget {
                                   PopupMenuItem(
                                     value: 'toggle-goal',
                                     enabled: !state.submitting,
-                                    child: Text(
-                                      state.activeGoal!.status ==
+                                    child: _ComposerPopupMenuRow(
+                                      icon:
+                                          state.activeGoal!.status ==
+                                              ThreadGoalStatus.paused
+                                          ? Icons.play_circle_outline
+                                          : Icons.pause_circle_outline,
+                                      label:
+                                          state.activeGoal!.status ==
                                               ThreadGoalStatus.paused
                                           ? '继续目标'
                                           : '暂停目标',
@@ -4790,8 +4906,17 @@ class _Composer extends StatelessWidget {
                                   PopupMenuItem(
                                     value: 'clear-goal',
                                     enabled: !state.submitting,
-                                    child: const Text('删除目标'),
+                                    child: const _ComposerPopupMenuRow(
+                                      icon: Icons.delete_outline,
+                                      label: '删除目标',
+                                    ),
                                   ),
+                                if (state
+                                        .activeAgentCapabilities
+                                        .compactThread ||
+                                    state.activeAgentCapabilities.models ||
+                                    state.activeAgentCapabilities.approvals)
+                                  const PopupMenuDivider(height: 1),
                                 if (state.activeAgentCapabilities.compactThread)
                                   PopupMenuItem(
                                     value: 'compact',
@@ -4799,7 +4924,28 @@ class _Composer extends StatelessWidget {
                                         !state.loading &&
                                         !state.submitting &&
                                         !state.running,
-                                    child: const Text('压缩会话'),
+                                    child: const _ComposerPopupMenuRow(
+                                      icon: Icons.pending,
+                                      label: '压缩会话',
+                                    ),
+                                  ),
+                                if (state.activeAgentCapabilities.models)
+                                  const PopupMenuItem(
+                                    value: 'model',
+                                    child: _ComposerPopupMenuRow(
+                                      icon: Icons.smart_toy,
+                                      label: '选择模型',
+                                    ),
+                                  ),
+                                if (state.activeAgentCapabilities.approvals)
+                                  PopupMenuItem(
+                                    value: 'permissions',
+                                    child: _ComposerPopupMenuRow(
+                                      icon: _approvalModeIcon(
+                                        state.approvalMode,
+                                      ),
+                                      label: '权限',
+                                    ),
                                   ),
                               ],
                               icon: const Icon(Icons.more_vert),
@@ -4972,6 +5118,43 @@ class _WorkPopupMenuRow extends StatelessWidget {
   }
 }
 
+class _ComposerPopupMenuRow extends StatelessWidget {
+  const _ComposerPopupMenuRow({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Icon(icon, size: 22),
+      const SizedBox(width: 12),
+      Flexible(
+        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+    ],
+  );
+}
+
+double _composerActionMenuHeight(AppUiState state) {
+  var itemCount = 0;
+  if (state.activeAgentCapabilities.threadGoals) itemCount += 1;
+  if (state.activeGoal != null &&
+      (state.activeGoal!.status == ThreadGoalStatus.active ||
+          state.activeGoal!.status == ThreadGoalStatus.paused)) {
+    itemCount += 1;
+  }
+  if (state.activeGoal != null) itemCount += 1;
+  if (state.activeAgentCapabilities.compactThread) itemCount += 1;
+  if (state.activeAgentCapabilities.models) itemCount += 1;
+  if (state.activeAgentCapabilities.approvals) itemCount += 1;
+  final hasDivider =
+      state.activeAgentCapabilities.compactThread ||
+      state.activeAgentCapabilities.models ||
+      state.activeAgentCapabilities.approvals;
+  return itemCount * 48.0 + (hasDivider ? 1.0 : 0.0) + 16.0;
+}
+
 class _ThreadGoalBar extends StatelessWidget {
   const _ThreadGoalBar({
     required this.goal,
@@ -5129,11 +5312,18 @@ class _ContextUsageButton extends StatelessWidget {
     return PopupMenuButton<void>(
       tooltip: '上下文用量',
       padding: EdgeInsets.zero,
+      position: PopupMenuPosition.over,
+      offset: const Offset(82, -128),
+      constraints: const BoxConstraints(minWidth: 196, maxWidth: 196),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      color: codexRaised,
+      surfaceTintColor: Colors.transparent,
+      menuPadding: EdgeInsets.zero,
       itemBuilder: (context) => [
         PopupMenuItem<void>(
           enabled: false,
           child: SizedBox(
-            width: 232,
+            width: 164,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,

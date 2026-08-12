@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:codex_remote/src/app/codex_remote_app.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart' hide ConnectionState;
@@ -27,10 +29,53 @@ class _ThreadListController extends AppController {
   _ThreadListController(ProfileStore store, ServerConnectionManager manager)
     : super(store, manager);
 
+  int refreshThreadsCount = 0;
+  bool? lastRefreshSilent;
+  Completer<void>? refreshGate;
+
   void showState(AppUiState value) => state = value;
+
+  @override
+  Future<void> refreshThreads({bool silent = false}) async {
+    refreshThreadsCount += 1;
+    lastRefreshSilent = silent;
+    await refreshGate?.future;
+  }
 }
 
 void main() {
+  test(
+    'formats thread timestamps as relative time at every requested scale',
+    () {
+      final now = DateTime.fromMillisecondsSinceEpoch(2_000_000_000_000);
+      int secondsAgo(int seconds) =>
+          now.subtract(Duration(seconds: seconds)).millisecondsSinceEpoch ~/
+          1000;
+
+      expect(threadUpdatedAtLabel(0, now: now), isNull);
+      expect(threadUpdatedAtLabel(secondsAgo(30), now: now), '刚刚');
+      expect(threadUpdatedAtLabel(secondsAgo(5 * 60), now: now), '5 分钟');
+      expect(threadUpdatedAtLabel(secondsAgo(3 * 3600), now: now), '3 小时');
+      expect(threadUpdatedAtLabel(secondsAgo(4 * 86400), now: now), '4 天');
+      expect(threadUpdatedAtLabel(secondsAgo(3 * 604800), now: now), '3 周');
+      expect(threadUpdatedAtLabel(secondsAgo(4 * 2592000), now: now), '4 个月');
+      expect(
+        threadUpdatedAtLabel(
+          now.subtract(const Duration(hours: 2)).millisecondsSinceEpoch,
+          now: now,
+        ),
+        '2 小时',
+      );
+      expect(
+        threadUpdatedAtLabel(
+          now.add(const Duration(minutes: 5)).millisecondsSinceEpoch,
+          now: now,
+        ),
+        '刚刚',
+      );
+    },
+  );
+
   test('keeps cached threads visible while the agent lane reconnects', () {
     const threads = <AgentThread>[AgentThread(id: 'one', title: 'One')];
 
@@ -201,5 +246,132 @@ void main() {
     expect(tester.takeException(), isNull);
     final sourceRight = tester.getTopRight(find.text('vscode')).dx;
     expect(sourceRight, greaterThanOrEqualTo(338));
+  });
+
+  testWidgets('updates visible relative times while the list remains open', (
+    tester,
+  ) async {
+    var now = DateTime.now();
+    final manager = ServerConnectionManager();
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    const profile = ServerProfile(
+      id: 'server',
+      name: '测试服务器',
+      host: 'example.test',
+      username: 'root',
+      authMode: AuthMode.password,
+    );
+    const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+    final updatedAt =
+        now.subtract(const Duration(seconds: 30)).millisecondsSinceEpoch ~/
+        1000;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: ThreadListScreen(now: () => now),
+        ),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        profiles: const [profile],
+        selectedProfileId: 'server',
+        connectionStates: const {
+          'server': domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentConnectionStates: {
+          key: const domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentThreadLists: {
+          key: [AgentThread(id: 'thread', title: '相对时间', updatedAt: updatedAt)],
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('刚刚'), findsOneWidget);
+    now = now.add(const Duration(minutes: 1));
+    await tester.pump(const Duration(minutes: 1));
+    expect(find.text('刚刚'), findsNothing);
+    expect(find.textContaining('分钟'), findsOneWidget);
+  });
+
+  testWidgets('pulling the thread panel reveals refresh states below search', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    const profile = ServerProfile(
+      id: 'server',
+      name: '测试服务器',
+      host: 'example.test',
+      username: 'root',
+      authMode: AuthMode.password,
+    );
+    const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: const ThreadListScreen(),
+        ),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        profiles: const [profile],
+        selectedProfileId: 'server',
+        connectionStates: const {
+          'server': domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentConnectionStates: {
+          key: const domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentThreadLists: {
+          key: const [AgentThread(id: 'thread', title: '短对话')],
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('thread-list-refresh')), findsOneWidget);
+    expect(find.byType(RefreshIndicator), findsNothing);
+    final searchTop = tester.getTopLeft(find.byType(TextField)).dy;
+    final headerTop = tester.getTopLeft(find.text('最近任务')).dy;
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('thread-list-scroll'))),
+    );
+    await gesture.moveBy(const Offset(0, 180));
+    await tester.pump();
+
+    expect(find.text('松开刷新'), findsOneWidget);
+    expect(tester.getTopLeft(find.byType(TextField)).dy, searchTop);
+    expect(
+      tester.getTopLeft(find.text('最近任务')).dy,
+      greaterThan(headerTop + 70),
+    );
+
+    controller.refreshGate = Completer<void>();
+    await gesture.up();
+    await tester.pump();
+
+    expect(find.text('正在刷新'), findsOneWidget);
+    expect(controller.refreshThreadsCount, 1);
+    expect(controller.lastRefreshSilent, isTrue);
+    expect(tester.getTopLeft(find.byType(TextField)).dy, searchTop);
+    expect(tester.getTopLeft(find.text('最近任务')).dy, greaterThan(headerTop));
+
+    controller.refreshGate!.complete();
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(find.text('最近任务')).dy, closeTo(headerTop, 0.1));
+    expect(find.text('短对话'), findsOneWidget);
   });
 }
