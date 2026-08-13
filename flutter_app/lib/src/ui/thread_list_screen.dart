@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app/app_controller.dart';
 import '../domain/models.dart';
 import '../platform/windows_local_server_client.dart';
+import '../ssh/terminal_manager.dart';
 import 'server_metrics_strip.dart';
 import 'theme.dart';
 
@@ -48,6 +49,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         .where((candidate) => candidate.id == state.selectedProfileId)
         .firstOrNull;
     final profileId = profile?.id;
+    final terminalManager = ref.watch(terminalManagerProvider);
     final localWindows = profile != null && isLocalWindowsProfile(profile);
     final hostConnected =
         profileId != null &&
@@ -131,11 +133,22 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         ),
         actions: [
           IconButton(
+            key: const ValueKey('thread-list-terminal'),
             tooltip: '终端',
             onPressed: hostConnected && !localWindows
                 ? controller.openTerminal
                 : null,
-            icon: const Icon(Icons.terminal),
+            icon: ListenableBuilder(
+              listenable: terminalManager,
+              builder: (context, _) => Icon(
+                Icons.terminal,
+                color:
+                    terminalManager.stateFor(profileId ?? '')?.phase ==
+                        TerminalPhase.connected
+                    ? codexGreen
+                    : null,
+              ),
+            ),
           ),
           IconButton(
             tooltip: '新建会话',

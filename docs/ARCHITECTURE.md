@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.55+182，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.58+185，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -137,7 +137,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/ui/diagnostic_log_sheet.dart | Debug 日志预览、复制、清空、分享和关闭 Debug | 当前运行 |
 | flutter_app/lib/src/ui/app_update_dialog.dart | 更新日志、下载进度、后台继续、忽略版本、失败重试和安装操作 | 当前运行 |
 | flutter_app/lib/src/ssh/terminal_manager.dart | 每 profile 独立 SSH PTY、输出历史、resize、重试和 generation 隔离 | 当前运行 |
-| flutter_app/lib/src/ui/terminal_screen.dart | xterm 终端显示、输入、重连、隐藏和显式关闭 | 当前运行 |
+| flutter_app/lib/src/ui/terminal_screen.dart | 旧版黑绿 xterm、复制/粘贴、两排快捷键、重连、隐藏和显式关闭 | 当前运行 |
 | flutter_app/lib/src/ui/file_manager_screen.dart | SFTP 文件浏览、上传/下载、重命名、删除、复制/移动和 SAF 保存 | 当前运行；尚需真机回归 |
 | flutter_app/android/app/src/main/kotlin/top/asdb/agent/ConnectionForegroundService.kt | Android 前台连接保护通知、partial wake lock 和粘性进程恢复 | 当前运行；`START_STICKY`，强制停止/厂商限制除外 |
 | flutter_app/android/app/src/main/kotlin/top/asdb/agent/DiagnosticLogBridge.kt | Java/Native/ANR 历史退出恢复、主线程 watchdog、原生日志轮转与脱敏 | 当前运行；Android 11+ 使用 `ApplicationExitInfo`，旧系统使用进程标记兜底 |
@@ -1865,6 +1865,18 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 当前 Linux 门禁已覆盖共享 Agent/Host 逻辑、全量 Flutter 测试和 Android 构建；Windows x64 编译由现有
   GitHub Actions Windows runner 执行。首次 EXE 安装、原生沙箱初始化和真实模型/附件链路仍需 Windows
   实机验收，不能仅凭跨平台单元测试标记为已运行通过。
+
+### 17.37 终端页面与连接状态恢复（2026-08-13）
+
+- 应用版本：`1.8.56+183`。Flutter 终端恢复旧版黑底、绿色默认文字和绿色光标，同时保留远端 ANSI
+  调色；顶部恢复复制、粘贴、隐藏和显式关闭，底部恢复 `ESC/TAB`、方向、`HOME/END`、`CTRL/ALT`
+  及常用符号快捷键。
+- 隐藏终端只退出页面并保留每个 Profile 独立的 SSH PTY；对话列表通过同一个 `TerminalManager`
+  监听终端状态，当前服务器的终端连接成功后按钮显示绿色，明确关闭或 SSH 断开后恢复普通颜色。
+- `1.8.57+184` 将方向键从单行改为标准方向区：上键居中，左/下/右位于下一排；方向键点击区域至少
+  `44x36dp`。`ESC/TAB` 位于方向区左侧，`HOME/END` 位于右侧，修饰键和常用符号保留在底行。
+- `1.8.58+185` 将整个快捷键区压缩为固定两行，同时保持上键与下键同列、左/下/右连续排列；终端正文
+  支持双指缩放，字号限制在 `8–28pt`，缩放时显示当前字号并自动触发 PTY 行列数重算。
 
 ## 18. 文档维护规则
 

@@ -8,6 +8,7 @@ import 'package:codex_remote/src/domain/models.dart'
     show ConnectionState;
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
+import 'package:codex_remote/src/ssh/terminal_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
 import 'package:codex_remote/src/ui/thread_list_screen.dart';
 import 'package:codex_remote/src/ui/work_screen.dart';
@@ -41,6 +42,18 @@ class _ThreadListController extends AppController {
     lastRefreshSilent = silent;
     await refreshGate?.future;
   }
+}
+
+class _ConnectedTerminalManager extends TerminalManager {
+  _ConnectedTerminalManager(super.connections);
+
+  @override
+  TerminalSessionState? stateFor(String profileId) => TerminalSessionState(
+    profileId: profileId,
+    profileName: '测试服务器',
+    endpoint: 'root@example.test:22',
+    phase: TerminalPhase.connected,
+  );
 }
 
 void main() {
@@ -298,6 +311,56 @@ void main() {
     await tester.pump(const Duration(minutes: 1));
     expect(find.text('刚刚'), findsNothing);
     expect(find.textContaining('分钟'), findsOneWidget);
+  });
+
+  testWidgets('shows a green terminal icon while its PTY remains connected', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final terminalManager = _ConnectedTerminalManager(manager);
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(terminalManager.close);
+    addTearDown(manager.close);
+    const profile = ServerProfile(
+      id: 'server',
+      name: '测试服务器',
+      host: 'example.test',
+      username: 'root',
+      authMode: AuthMode.password,
+    );
+    const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appControllerProvider.overrideWith((ref) => controller),
+          terminalManagerProvider.overrideWithValue(terminalManager),
+        ],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: const ThreadListScreen(),
+        ),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        profiles: const [profile],
+        selectedProfileId: 'server',
+        connectionStates: const {
+          'server': domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+        agentConnectionStates: {
+          key: const domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+      ),
+    );
+    await tester.pump();
+
+    final button = find.byKey(const ValueKey('thread-list-terminal'));
+    final icon = tester.widget<Icon>(
+      find.descendant(of: button, matching: find.byIcon(Icons.terminal)),
+    );
+    expect(icon.color, codexGreen);
   });
 
   testWidgets('pulling the thread panel reveals refresh states below search', (
