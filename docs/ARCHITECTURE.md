@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.58+185，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.59+186，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1877,6 +1877,8 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `44x36dp`。`ESC/TAB` 位于方向区左侧，`HOME/END` 位于右侧，修饰键和常用符号保留在底行。
 - `1.8.58+185` 将整个快捷键区压缩为固定两行，同时保持上键与下键同列、左/下/右连续排列；终端正文
   支持双指缩放，字号限制在 `8–28pt`，缩放时显示当前字号并自动触发 PTY 行列数重算。
+- `1.8.59+186` 移除 Windows 本机 Agent 切换入口和控制器中遗留的 Codex-only 限制；Windows x64
+  现在可以从会话列表选择 OpenCode，并进入已有的原生运行时检测、安装进度和本机 bridge 连接链路。
 
 ## 18. 文档维护规则
 

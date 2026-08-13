@@ -998,10 +998,6 @@ class AppController extends StateNotifier<AppUiState> {
       (candidate) => candidate.id == profileId,
     );
     if (profile == null) return;
-    if (isLocalWindowsProfile(profile) && agent != AgentKind.codex) {
-      state = state.copyWith(error: '本机 Windows 当前仅支持 Codex');
-      return;
-    }
     final key = AgentConnectionKey(profileId: profileId, agent: agent);
     final changingAgent = state.activeAgent != agent;
     if (changingAgent) {

@@ -11,6 +11,7 @@ import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/platform/background_connection_bridge.dart';
 import 'package:codex_remote/src/platform/diagnostic_logger.dart';
 import 'package:codex_remote/src/platform/local_linux_manager.dart';
+import 'package:codex_remote/src/platform/windows_local_server_client.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -1143,6 +1144,72 @@ Future<void> _openSubAgent(
 }
 
 void main() {
+  test('persists OpenCode selection for the native Windows profile', () async {
+    final profile = localWindowsProfile();
+    final store = _MemoryProfileStore(
+      StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+    );
+    final connections = ServerConnectionManager(
+      clientFactory: _FingerprintClient.new,
+    );
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => _FailingTurnAgent(),
+    );
+    final controller = AppController(store, connections, agents);
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+
+    controller.selectAgent(AgentKind.openCode);
+    await _waitUntil(
+      () =>
+          controller.state.activeAgent == AgentKind.openCode &&
+          store.value.profiles.single.activeAgent == AgentKind.openCode,
+    );
+
+    expect(controller.state.error, isNull);
+  });
+
+  test(
+    'selecting OpenCode on native Windows opens its runtime setup prompt',
+    () async {
+      final profile = localWindowsProfile();
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      await connections.connect(profile);
+      final openCode = _RuntimeAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) =>
+            kind == AgentKind.openCode ? openCode : _FailingTurnAgent(),
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+
+      controller.selectAgent(AgentKind.openCode);
+      await _waitUntil(
+        () => controller.state.remoteSetup?.agent == AgentKind.openCode,
+      );
+
+      expect(openCode.inspectCalls, 1);
+      expect(controller.state.remoteSetup?.title, '安装 Windows 原生 OpenCode');
+      expect(controller.state.activeAgent, AgentKind.openCode);
+      expect(controller.state.error, isNull);
+    },
+  );
+
   test(
     'local Linux connect starts once and persists the fixed profile',
     () async {

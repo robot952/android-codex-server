@@ -189,7 +189,6 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
               child: _AgentSwitcher(
                 activeAgent: state.activeAgent,
                 enabled: hostConnected && !loading,
-                openCodeEnabled: !localWindows,
                 setupFor: setupFor,
                 connectionFor: (agent) =>
                     state.agentConnectionStates[AgentConnectionKey(
@@ -667,7 +666,6 @@ class _AgentSwitcher extends StatelessWidget {
   const _AgentSwitcher({
     required this.activeAgent,
     required this.enabled,
-    required this.openCodeEnabled,
     required this.setupFor,
     required this.connectionFor,
     required this.onSelect,
@@ -676,7 +674,6 @@ class _AgentSwitcher extends StatelessWidget {
 
   final AgentKind activeAgent;
   final bool enabled;
-  final bool openCodeEnabled;
   final AgentSetupState? Function(AgentKind agent) setupFor;
   final ConnectionState? Function(AgentKind agent) connectionFor;
   final ValueChanged<AgentKind> onSelect;
@@ -735,7 +732,7 @@ class _AgentSwitcher extends StatelessWidget {
                     _AgentSegment(
                       agent: AgentKind.openCode,
                       selected: !selected,
-                      enabled: enabled && openCodeEnabled,
+                      enabled: enabled,
                       setup: setupFor(AgentKind.openCode),
                       connection: connectionFor(AgentKind.openCode),
                       onTap: () => onSelect(AgentKind.openCode),

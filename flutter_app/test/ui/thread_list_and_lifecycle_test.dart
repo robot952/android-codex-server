@@ -7,6 +7,7 @@ import 'package:codex_remote/src/domain/models.dart'
     as domain
     show ConnectionState;
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/platform/windows_local_server_client.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/terminal_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
@@ -33,8 +34,14 @@ class _ThreadListController extends AppController {
   int refreshThreadsCount = 0;
   bool? lastRefreshSilent;
   Completer<void>? refreshGate;
+  AgentKind? selectedAgent;
 
   void showState(AppUiState value) => state = value;
+
+  @override
+  void selectAgent(AgentKind agent) {
+    selectedAgent = agent;
+  }
 
   @override
   Future<void> refreshThreads({bool silent = false}) async {
@@ -259,6 +266,52 @@ void main() {
     expect(tester.takeException(), isNull);
     final sourceRight = tester.getTopRight(find.text('vscode')).dx;
     expect(sourceRight, greaterThanOrEqualTo(338));
+  });
+
+  testWidgets('allows selecting OpenCode for the native Windows profile', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    final profile = localWindowsProfile();
+    final codexKey = AgentConnectionKey(
+      profileId: profile.id,
+      agent: AgentKind.codex,
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: const ThreadListScreen(),
+        ),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        profiles: [profile],
+        selectedProfileId: profile.id,
+        connectionStates: {
+          profile.id: const domain.ConnectionState(
+            phase: ConnectionPhase.connected,
+          ),
+        },
+        agentConnectionStates: {
+          codexKey: const domain.ConnectionState(
+            phase: ConnectionPhase.connected,
+          ),
+        },
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('OpenCode'));
+    await tester.pump();
+
+    expect(controller.selectedAgent, AgentKind.openCode);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('updates visible relative times while the list remains open', (
