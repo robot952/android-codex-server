@@ -494,14 +494,15 @@ bool _sameAttachmentSet(
 ) {
   if (first.length != second.length) return false;
   for (final attachment in second) {
-    final found = first.any(
-      (candidate) =>
-          candidate.name == attachment.name &&
-          candidate.remotePath == attachment.remotePath &&
+    final found = first.any((candidate) {
+      final sameIdentity = candidate.remotePath.isNotEmpty
+          ? candidate.remotePath == attachment.remotePath
+          : attachment.remotePath.isEmpty && candidate.name == attachment.name;
+      return sameIdentity &&
           (candidate.mimeType == attachment.mimeType ||
               candidate.mimeType == 'image/*' ||
-              attachment.mimeType == 'image/*'),
-    );
+              attachment.mimeType == 'image/*');
+    });
     if (!found) return false;
   }
   return true;
