@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../agent/remote_bootstrap.dart';
+import '../domain/install_progress_format.dart';
 import '../domain/models.dart';
 import 'theme.dart';
 
@@ -368,6 +369,11 @@ class _InstallProgress extends StatelessWidget {
     final downloadPercent = state.setupDownloadPercent?.clamp(0, 100);
     final progress = state.setupProgress.trim();
     final detail = state.setupProgressDetail.trim();
+    final transfer =
+        state.setupDownloadedBytes != null ||
+        state.setupTotalBytes != null ||
+        state.setupBytesPerSecond != null ||
+        state.setupElapsedSeconds != null;
 
     return Container(
       key: const ValueKey('remote-setup-progress'),
@@ -427,7 +433,7 @@ class _InstallProgress extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
-          if (downloadPercent != null) ...[
+          if (downloadPercent != null || state.setupProgressIndeterminate) ...[
             const SizedBox(height: 11),
             Row(
               children: [
@@ -437,13 +443,14 @@ class _InstallProgress extends StatelessWidget {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
-                Text(
-                  '$downloadPercent%',
-                  key: const ValueKey('remote-setup-download-percent'),
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelMedium?.copyWith(color: codexMuted),
-                ),
+                if (downloadPercent != null)
+                  Text(
+                    '$downloadPercent%',
+                    key: const ValueKey('remote-setup-download-percent'),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelMedium?.copyWith(color: codexMuted),
+                  ),
               ],
             ),
             const SizedBox(height: 5),
@@ -452,11 +459,33 @@ class _InstallProgress extends StatelessWidget {
               value: '$downloadPercent%',
               child: LinearProgressIndicator(
                 key: const ValueKey('remote-setup-download-progress'),
-                value: downloadPercent / 100,
+                value: downloadPercent == null ? null : downloadPercent / 100,
                 minHeight: 4,
                 borderRadius: BorderRadius.circular(3),
                 color: codexGreen,
               ),
+            ),
+          ],
+          if (state.setupProgressIndeterminate && downloadPercent == null) ...[
+            const SizedBox(height: 10),
+            Text(
+              '当前阶段仍在处理，暂无可计算的总大小',
+              key: const ValueKey('remote-setup-indeterminate-detail'),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          if (transfer) ...[
+            const SizedBox(height: 9),
+            Text(
+              formatInstallTransfer(
+                downloadedBytes: state.setupDownloadedBytes,
+                totalBytes: state.setupTotalBytes,
+                bytesPerSecond: state.setupBytesPerSecond,
+                elapsedSeconds: state.setupElapsedSeconds,
+                action: progress.contains('下载') ? '已下载' : '已处理',
+              ),
+              key: const ValueKey('remote-setup-transfer-summary'),
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
         ],

@@ -192,7 +192,20 @@ rm -rf -- "$HOME/.local/share/codex-remote/opencode"
 
 const _openCodeInstallTemplate = r'''
 set -eu
-progress() { printf '::progress::%s|%s|%s|%s\n' "$1" "$2" "$3" "$4"; }
+progress() {
+  printf '::progress::%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" "${7:-}" "${8:-}";
+}
+format_bytes() {
+  BYTES="$1"
+  if [ "$BYTES" -ge 1048576 ]; then
+    awk -v bytes="$BYTES" 'BEGIN { printf "%.1f MB", bytes / 1048576 }'
+  elif [ "$BYTES" -ge 1024 ]; then
+    awk -v bytes="$BYTES" 'BEGIN { printf "%.1f KB", bytes / 1024 }'
+  else
+    printf '%s B' "$BYTES"
+  fi
+}
 ROOT="$HOME/.local/share/codex-remote"
 BIN_DIR="$HOME/.local/bin"
 OPENCODE_ROOT="$ROOT/opencode"
@@ -245,12 +258,62 @@ progress 74 '' '分析 OpenCode 下载清单' "通过国内源锁定 $PLATFORM_P
   PATH="$NODE_BIN:$PATH" "$NPM" install --package-lock-only \
     --ignore-scripts --omit=dev --no-audit --no-fund --loglevel=error
 )
-progress 78 0 '下载并安装 OpenCode __OPENCODE_VERSION__' "正在从国内源下载 $PLATFORM_PACKAGE"
+PACKAGE_TOTAL="$("$NODE" -e 'const lock = require(process.argv[1]); const packages = lock.packages || {}; console.log(Object.keys(packages).filter((path) => path.startsWith("node_modules/")).length)' "$WORK/package-lock.json")"
+case "$PACKAGE_TOTAL" in
+  ''|*[!0-9]*) PACKAGE_TOTAL=1 ;;
+esac
+progress 78 0 '下载并安装 OpenCode __OPENCODE_VERSION__' "通过国内源下载 $PLATFORM_PACKAGE · 共 $PACKAGE_TOTAL 个组件"
+NPM_LOG="$WORK/npm-install.log"
+NPM_STARTED="$(date +%s)"
 (
   cd "$WORK"
   PATH="$NODE_BIN:$PATH" "$NPM" ci \
     --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund --loglevel=error
-)
+) > "$NPM_LOG" 2>&1 &
+NPM_PID="$!"
+NPM_LAST=
+while kill -0 "$NPM_PID" 2>/dev/null; do
+  NPM_COMPLETE="$(find "$WORK/node_modules" -type f -name package.json 2>/dev/null | wc -l | tr -d '[:space:]')"
+  case "$NPM_COMPLETE" in
+    ''|*[!0-9]*) NPM_COMPLETE=0 ;;
+  esac
+  if [ "$NPM_COMPLETE" -gt "$PACKAGE_TOTAL" ]; then PACKAGE_TOTAL="$NPM_COMPLETE"; fi
+  NPM_PERCENT="$((NPM_COMPLETE * 100 / PACKAGE_TOTAL))"
+  if [ "$NPM_PERCENT" -gt 99 ]; then NPM_PERCENT=99; fi
+  NPM_OVERALL="$((78 + NPM_PERCENT * 16 / 100))"
+  NPM_SIZE_KB="$(du -sk "$WORK/node_modules" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  case "$NPM_SIZE_KB" in
+    ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
+  esac
+  NPM_NOW="$(date +%s)"
+  NPM_ELAPSED="$((NPM_NOW - NPM_STARTED))"
+  if [ "$NPM_ELAPSED" -lt 1 ]; then NPM_ELAPSED=1; fi
+  NPM_BYTES="$((NPM_SIZE_KB * 1024))"
+  NPM_SPEED="$((NPM_BYTES / NPM_ELAPSED))"
+  NPM_DETAIL="已处理 $NPM_COMPLETE / $PACKAGE_TOTAL 个组件 · $(format_bytes "$NPM_BYTES") · 速度 $(format_bytes "$NPM_SPEED")/s · 已用时 ${NPM_ELAPSED}s"
+  if [ "$NPM_DETAIL" != "$NPM_LAST" ]; then
+    progress "$NPM_OVERALL" "$NPM_PERCENT" '下载并安装 OpenCode __OPENCODE_VERSION__' "$NPM_DETAIL" \
+      "$NPM_BYTES" '' "$NPM_SPEED" "$NPM_ELAPSED"
+    NPM_LAST="$NPM_DETAIL"
+  fi
+  sleep 1
+done
+if wait "$NPM_PID"; then
+  NPM_FINISHED_AT="$(date +%s)"
+  NPM_ELAPSED="$((NPM_FINISHED_AT - NPM_STARTED))"
+  NPM_SIZE_KB="$(du -sk "$WORK/node_modules" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  case "$NPM_SIZE_KB" in
+    ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
+  esac
+  NPM_BYTES="$((NPM_SIZE_KB * 1024))"
+  progress 94 100 '下载并安装 OpenCode __OPENCODE_VERSION__' \
+    "已完成 $PACKAGE_TOTAL 个组件 · $(format_bytes "$NPM_BYTES") · 已用时 ${NPM_ELAPSED}s" \
+    "$NPM_BYTES" '' '' "$NPM_ELAPSED"
+else
+  NPM_STATUS="$?"
+  cat "$NPM_LOG" >&2 || true
+  exit "$NPM_STATUS"
+fi
 PLATFORM_BIN="$WORK/node_modules/$PLATFORM_PACKAGE/bin/opencode"
 if [ ! -x "$PLATFORM_BIN" ]; then
   printf 'OpenCode 平台运行文件缺失: %s\n' "$PLATFORM_PACKAGE" >&2
@@ -268,7 +331,7 @@ case "$ACTUAL" in
   *__OPENCODE_VERSION__*) ;;
   *) printf 'OpenCode 版本校验失败: %s\n' "$ACTUAL" >&2; exit 65 ;;
 esac
-progress 94 100 '下载并安装 OpenCode __OPENCODE_VERSION__' "$ACTUAL"
+progress 95 100 '校验 OpenCode 运行时 __OPENCODE_VERSION__' "$ACTUAL"
 rm -rf -- "$RELEASE"
 mv "$WORK" "$RELEASE"
 mkdir -p "$OPENCODE_ROOT"

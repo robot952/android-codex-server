@@ -115,7 +115,6 @@ object LocalLinuxManager {
     private const val ROOTFS_SHA256 =
         "9bd3b19ff7cd300c7c7bf33124b726eb199f4bab9a3b1472f34749c6d12c9195"
     private const val ROOTFS_MAX_BYTES = 48L * 1024L * 1024L
-    private const val ROOTFS_EXPECTED_BYTES = 35_401_288L
     private const val PROCESS_OUTPUT_LIMIT = 256 * 1024
     private const val APT_UPDATE_TIMEOUT_MINUTES = 3L
     private const val APT_INSTALL_TIMEOUT_MINUTES = 12L
@@ -294,13 +293,17 @@ object LocalLinuxManager {
                 "Debian 下载失败（HTTP ${connection.responseCode}）"
             }
             val declared = connection.contentLengthLong.takeIf { it > 0 }
-            val progressTotal = declared ?: ROOTFS_EXPECTED_BYTES
-            check(progressTotal <= ROOTFS_MAX_BYTES) { "Debian 下载文件超过大小限制" }
+            val progressTotal = declared
+            check(progressTotal == null || progressTotal <= ROOTFS_MAX_BYTES) {
+                "Debian 下载文件超过大小限制"
+            }
             var downloaded = 0L
+            val startedAtMillis = System.currentTimeMillis()
             BufferedInputStream(connection.inputStream).use { input ->
                 BufferedOutputStream(FileOutputStream(target)).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     var lastPercent = -1
+                    var lastReportedAtMillis = 0L
                     while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
@@ -309,16 +312,27 @@ object LocalLinuxManager {
                             "Debian 下载文件超过大小限制"
                         }
                         output.write(buffer, 0, count)
-                        val percent =
+                        val percent = if (progressTotal == null) {
+                            4
+                        } else {
                             4 + ((downloaded * 40 / progressTotal).coerceIn(0, 40)).toInt()
-                        if (percent != lastPercent) {
+                        }
+                        val now = System.currentTimeMillis()
+                        if (percent != lastPercent || now - lastReportedAtMillis >= 1_000L) {
                             lastPercent = percent
+                            lastReportedAtMillis = now
+                            val elapsedSeconds =
+                                ((System.currentTimeMillis() - startedAtMillis) / 1000L).coerceAtLeast(1L)
+                            val bytesPerSecond = downloaded / elapsedSeconds
                             publishProgress(
                                 "installing",
                                 percent,
                                 "正在下载 Debian",
                                 downloadedBytes = downloaded,
                                 totalBytes = progressTotal,
+                                bytesPerSecond = bytesPerSecond,
+                                elapsedSeconds = elapsedSeconds,
+                                indeterminate = progressTotal == null,
                             )
                         }
                     }
@@ -337,6 +351,7 @@ object LocalLinuxManager {
         val stagingPath = staging.toPath().toAbsolutePath().normalize()
         var extractedBytes = 0L
         var entries = 0
+        val startedAtMillis = System.currentTimeMillis()
         TarArchiveInputStream(XZInputStream(BufferedInputStream(FileInputStream(archive)))).use { tar ->
             while (true) {
                 val entry = tar.nextEntry as? TarArchiveEntry ?: break
@@ -368,7 +383,17 @@ object LocalLinuxManager {
                 entries++
                 if (entries % 250 == 0) {
                     val percent = 48 + (entries / 250).coerceAtMost(20)
-                    publishProgress("installing", percent, "正在解压 Debian")
+                    val elapsedSeconds =
+                        ((System.currentTimeMillis() - startedAtMillis) / 1000L).coerceAtLeast(1L)
+                    publishProgress(
+                        "installing",
+                        percent,
+                        "正在解压 Debian",
+                        downloadedBytes = extractedBytes,
+                        bytesPerSecond = extractedBytes / elapsedSeconds,
+                        elapsedSeconds = elapsedSeconds,
+                        indeterminate = true,
+                    )
                 }
             }
         }
@@ -401,7 +426,14 @@ object LocalLinuxManager {
         publishProgress("installing", 72, "正在更新国内软件源")
         DiagnosticLogBridge.append("INFO", "LocalLinux", "apt_source=aliyun")
         try {
-            runApt(context, rootfs, "update", APT_UPDATE_TIMEOUT_MINUTES, "更新国内软件源")
+            runApt(
+                context,
+                rootfs,
+                "update",
+                APT_UPDATE_TIMEOUT_MINUTES,
+                "更新国内软件源",
+                progressPercent = 72,
+            )
         } catch (domesticError: Throwable) {
             DiagnosticLogBridge.append(
                 "WARN",
@@ -412,7 +444,14 @@ object LocalLinuxManager {
             mirror = DebianAptMirror.OFFICIAL
             sources.writeText(debianAptSources(DebianAptMirror.OFFICIAL))
             publishProgress("installing", 76, "国内源不可用，正在切换官方源")
-            runApt(context, rootfs, "update", APT_UPDATE_TIMEOUT_MINUTES, "更新 Debian 官方软件源")
+            runApt(
+                context,
+                rootfs,
+                "update",
+                APT_UPDATE_TIMEOUT_MINUTES,
+                "更新 Debian 官方软件源",
+                progressPercent = 76,
+            )
         }
 
         publishProgress("installing", 80, "正在安装 SSH、Git 和下载工具")
@@ -425,6 +464,7 @@ object LocalLinuxManager {
                 installArguments,
                 APT_INSTALL_TIMEOUT_MINUTES,
                 "安装 SSH、Git 和下载工具",
+                progressPercent = 80,
             )
         } catch (domesticError: Throwable) {
             if (mirror != DebianAptMirror.ALIYUN) throw domesticError
@@ -436,7 +476,14 @@ object LocalLinuxManager {
             )
             sources.writeText(debianAptSources(DebianAptMirror.OFFICIAL))
             publishProgress("installing", 82, "国内源下载失败，正在切换官方源")
-            runApt(context, rootfs, "update", APT_UPDATE_TIMEOUT_MINUTES, "更新 Debian 官方软件源")
+            runApt(
+                context,
+                rootfs,
+                "update",
+                APT_UPDATE_TIMEOUT_MINUTES,
+                "更新 Debian 官方软件源",
+                progressPercent = 82,
+            )
             publishProgress("installing", 84, "正在从官方源继续安装工具")
             runApt(
                 context,
@@ -444,6 +491,7 @@ object LocalLinuxManager {
                 installArguments,
                 APT_INSTALL_TIMEOUT_MINUTES,
                 "从 Debian 官方源安装工具",
+                progressPercent = 84,
             )
         }
         publishProgress("installing", 90, "正在完成 Debian 配置")
@@ -463,6 +511,7 @@ object LocalLinuxManager {
         arguments: String,
         timeoutMinutes: Long,
         operationName: String,
+        progressPercent: Int,
     ) {
         val command = listOf(
             "/bin/sh",
@@ -476,6 +525,7 @@ object LocalLinuxManager {
             timeoutMinutes,
             TimeUnit.MINUTES,
             operationName = operationName,
+            progressPercent = progressPercent,
         )
     }
 
@@ -544,6 +594,7 @@ object LocalLinuxManager {
         unit: TimeUnit,
         stdin: String? = null,
         operationName: String = "准备 Debian",
+        progressPercent: Int? = null,
     ): String {
         val process = prootProcessBuilder(context, rootfs, guestCommand)
             .redirectErrorStream(true)
@@ -554,12 +605,41 @@ object LocalLinuxManager {
             process.outputStream.close()
         }
         val output = StringBuilder()
+        val startedAtMillis = System.currentTimeMillis()
+        val progressActive = AtomicBoolean(true)
+        val progressThread = if (progressPercent != null) {
+            Thread {
+                while (progressActive.get() && process.isAlive) {
+                    val elapsedSeconds =
+                        ((System.currentTimeMillis() - startedAtMillis) / 1000L).coerceAtLeast(1L)
+                    publishProgress(
+                        "installing",
+                        progressPercent,
+                        operationName,
+                        elapsedSeconds = elapsedSeconds,
+                        indeterminate = true,
+                    )
+                    Thread.sleep(1_000L)
+                }
+            }.apply {
+                name = "local-linux-progress"
+                isDaemon = true
+                start()
+            }
+        } else {
+            null
+        }
         val reader = executorForOutput(process, output)
-        if (!process.waitFor(timeout, unit)) {
-            process.destroy()
-            process.waitFor(2, TimeUnit.SECONDS)
-            if (process.isAlive) process.destroyForcibly()
-            error("$operationName 超时，请检查网络后重试")
+        try {
+            if (!process.waitFor(timeout, unit)) {
+                process.destroy()
+                process.waitFor(2, TimeUnit.SECONDS)
+                if (process.isAlive) process.destroyForcibly()
+                error("$operationName 超时，请检查网络后重试")
+            }
+        } finally {
+            progressActive.set(false)
+            progressThread?.join(1_200L)
         }
         reader.join(2_000)
         check(process.exitValue() == 0) {
@@ -664,6 +744,9 @@ object LocalLinuxManager {
         message: String,
         downloadedBytes: Long = 0,
         totalBytes: Long? = null,
+        bytesPerSecond: Long? = null,
+        elapsedSeconds: Long? = null,
+        indeterminate: Boolean = false,
         installed: Boolean = false,
     ) {
         val payload = linkedMapOf<String, Any?>(
@@ -672,6 +755,9 @@ object LocalLinuxManager {
             "message" to message,
             "downloadedBytes" to downloadedBytes.coerceAtLeast(0),
             "totalBytes" to totalBytes,
+            "bytesPerSecond" to bytesPerSecond?.coerceAtLeast(0),
+            "elapsedSeconds" to elapsedSeconds?.coerceAtLeast(0),
+            "indeterminate" to indeterminate,
             "installed" to installed,
         )
         mainHandler.post { channel?.invokeMethod("progress", payload) }

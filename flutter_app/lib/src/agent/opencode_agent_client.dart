@@ -5,6 +5,7 @@ import '../domain/models.dart';
 import '../ssh/ssh_server_client.dart';
 import 'codex_agent_client.dart';
 import 'codex_global_settings.dart';
+import 'codex_host_capabilities.dart';
 import 'open_code_bootstrap.dart';
 import 'open_code_bridge_asset.dart';
 import 'remote_agent_client.dart';
@@ -31,7 +32,8 @@ class OpenCodeAgentClient extends CodexAgentClient
     super.sessionOpener,
     super.dedicatedHostFactory,
     OpenCodeBridgeLoader? bridgeLoader,
-  }) : _bridgeLoader = bridgeLoader ?? OpenCodeBridgeAsset.load;
+  }) : _bridgeLoader = bridgeLoader ?? OpenCodeBridgeAsset.load,
+       super(processAgent: AgentKind.openCode);
 
   final OpenCodeBridgeLoader _bridgeLoader;
   final Map<String, String> _ensuredCustomModels = <String, String>{};
@@ -50,6 +52,13 @@ class OpenCodeAgentClient extends CodexAgentClient
     ServerProfile profile,
     RemoteServerClient host,
   ) async {
+    if (host is RemoteServerOpenCodeRuntimeClient) {
+      final bridgeSource = await _bridgeLoader();
+      return (host as RemoteServerOpenCodeRuntimeClient).inspectOpenCodeRuntime(
+        profile,
+        bridgeSource: bridgeSource,
+      );
+    }
     final scriptHost = host is RemoteServerScriptClient
         ? host as RemoteServerScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持安全执行探测脚本');
@@ -68,6 +77,14 @@ class OpenCodeAgentClient extends CodexAgentClient
     RemoteServerClient host, {
     required void Function(RemoteInstallProgress progress) onProgress,
   }) async {
+    if (host is RemoteServerOpenCodeRuntimeClient) {
+      final bridgeSource = await _bridgeLoader();
+      return (host as RemoteServerOpenCodeRuntimeClient).installOpenCodeRuntime(
+        profile,
+        bridgeSource: bridgeSource,
+        onProgress: onProgress,
+      );
+    }
     final scriptHost = host is RemoteServerStreamingScriptClient
         ? host as RemoteServerStreamingScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持流式执行安装脚本');
@@ -88,6 +105,11 @@ class OpenCodeAgentClient extends CodexAgentClient
             message: '准备 OpenCode 运行时 · ${progress.message}',
             detail: progress.detail,
             downloadPercent: progress.downloadPercent,
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            bytesPerSecond: progress.bytesPerSecond,
+            elapsedSeconds: progress.elapsedSeconds,
+            indeterminate: progress.indeterminate,
           ),
         );
       },
@@ -114,6 +136,10 @@ class OpenCodeAgentClient extends CodexAgentClient
     RemoteServerClient host,
   ) async {
     await disconnect();
+    if (host is RemoteServerOpenCodeRuntimeClient) {
+      return (host as RemoteServerOpenCodeRuntimeClient)
+          .uninstallOpenCodeRuntime(profile);
+    }
     final scriptHost = host is RemoteServerScriptClient
         ? host as RemoteServerScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持安全执行卸载脚本');
@@ -128,11 +154,11 @@ class OpenCodeAgentClient extends CodexAgentClient
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
     _invalidateCustomModelCache();
     final command = buildOpenCodeBridgeCommand(profile.workspace);
+    final connectionProfile = host is LocalRemoteServerClient
+        ? profile
+        : profile.copyWith(workspace: '', remoteCommand: command);
     try {
-      await super.connect(
-        profile.copyWith(workspace: '', remoteCommand: command),
-        host,
-      );
+      await super.connect(connectionProfile, host);
     } catch (_) {
       _invalidateCustomModelCache();
       rethrow;

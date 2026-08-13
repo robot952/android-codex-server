@@ -400,7 +400,10 @@ class CodexAgentClient
     this.maxLineChars = 8 * 1024 * 1024,
     CodexSessionOpener? sessionOpener,
     this.dedicatedHostFactory,
-  }) : _sessionOpener = sessionOpener ?? _openSession,
+    AgentKind processAgent = AgentKind.codex,
+  }) : _sessionOpener =
+           sessionOpener ??
+           ((host, command) => _openSession(host, command, processAgent)),
        _usesDefaultSessionOpener = sessionOpener == null;
 
   static const _stderrLineLimit = 8 * 1024;
@@ -1602,7 +1605,13 @@ String sanitizeAgentDiagnostic(String value) => value
 Future<CodexSession> _openSession(
   RemoteServerClient host,
   String command,
+  AgentKind agent,
 ) async {
+  if (host is RemoteServerAgentProcessClient) {
+    final session = await (host as RemoteServerAgentProcessClient)
+        .openAgentAppServer(agent);
+    return _RemoteProcessCodexSession(session);
+  }
   if (host is RemoteServerCodexProcessClient) {
     final session = await (host as RemoteServerCodexProcessClient)
         .openCodexAppServer();

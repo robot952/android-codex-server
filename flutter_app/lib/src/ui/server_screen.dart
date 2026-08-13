@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app/app_controller.dart';
+import '../domain/install_progress_format.dart';
 import '../domain/models.dart';
 import '../platform/app_update_manager.dart';
 import '../platform/diagnostic_logger.dart';
@@ -991,11 +992,30 @@ class _LocalLinuxPanel extends StatelessWidget {
                       if (busy && state.phase != LocalLinuxPhase.checking) ...[
                         const SizedBox(height: 7),
                         LinearProgressIndicator(
-                          value: state.progress > 0
+                          value: !state.indeterminate && state.progress > 0
                               ? state.progress / 100
                               : null,
                           minHeight: 3,
                           borderRadius: BorderRadius.circular(2),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          formatInstallTransfer(
+                            downloadedBytes:
+                                state.downloadedBytes > 0 ||
+                                    state.totalBytes != null ||
+                                    state.bytesPerSecond != null
+                                ? state.downloadedBytes
+                                : null,
+                            totalBytes: state.totalBytes,
+                            bytesPerSecond: state.bytesPerSecond,
+                            elapsedSeconds: state.elapsedSeconds,
+                            action: state.message.contains('解压')
+                                ? '已处理'
+                                : '已下载',
+                          ),
+                          key: const ValueKey('local-linux-transfer-summary'),
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
                     ],

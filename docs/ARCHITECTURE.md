@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.53+180，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.55+182，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -128,8 +128,8 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/ui/work_content.dart | Codex 图片结果识别、文件名和 MIME 辅助 | 当前运行 |
 | flutter_app/lib/src/ui/markdown_links.dart | HTTP/HTTPS Markdown/裸链接和远程绝对文件路径的内部安全链接 | 当前运行 |
 | flutter_app/lib/src/platform/local_file_exporter.dart | Android 文件导出 MethodChannel 抽象和分块会话 | 当前运行 |
-| flutter_app/lib/src/platform/windows_local_server_client.dart | Windows 本地 Host、原生 Codex 进程、安装、工作区/附件和用户配置/API | 已实现；不依赖 WSL/SSH，待 Windows x64 实机验收 |
-| flutter_app/lib/src/agent/codex_host_capabilities.dart | Host 原生 Codex 运行时与配置可选能力 | SSH 脚本和 Windows Dart 实现共用 Agent adapter |
+| flutter_app/lib/src/platform/windows_local_server_client.dart | Windows 本地 Host、原生 Codex/OpenCode 进程、安装、工作区/附件和用户配置/API | 已实现；不依赖 WSL/SSH，待 Windows x64 实机验收 |
+| flutter_app/lib/src/agent/codex_host_capabilities.dart | Host 原生 Codex/OpenCode 运行时与配置可选能力 | SSH 脚本和 Windows Dart 实现共用 Agent adapter |
 | flutter_app/lib/src/platform/background_connection_bridge.dart | Flutter 到 Android 前台连接保护 Service 的启停桥接 | 当前运行；平台失败隔离 |
 | flutter_app/lib/src/platform/turn_completion_notifications.dart | 回合完成通知、bounded 去重、子 Agent 过滤和点击深链 | 当前运行；通知权限/插件失败降级 |
 | flutter_app/lib/src/platform/diagnostic_logger.dart | 持久化 Debug 日志、崩溃记录、脱敏、分段轮转、导出和分享 | 当前运行；普通日志需显式开启 |
@@ -210,10 +210,11 @@ Release 检查和系统下载/安装，不进入 profile 或会话状态。Widge
 serverMetricChanges 流回 AppUiState.serverMetrics，不得把采样失败写成全局连接错误。
 
 Windows EXE 使用固定 `agent-local-windows` Profile 和 `WindowsLocalServerClient`，不经过 SSH 或 WSL。
-该 Host 只实现可选能力：Codex 本地进程、运行时安装、用户配置/API、工作区目录、附件、图片和文件下载。
+该 Host 实现 Codex 和 OpenCode 的本地进程、运行时安装、用户配置/API、工作区目录、附件、图片和文件下载。
 `CodexAgentClient` 把本地 `Process` 适配成既有 `CodexSession`，initialize、RPC、JSONL、有界解析、审批、
-reducer、缓存和页面状态均与 SSH Codex 共用，不允许复制 Windows 专用 Agent 协议栈。首版不提供 Windows
-本地终端、完整文件管理和 OpenCode，相关入口必须禁用；普通 SSH Profile 在 Windows 仍保持可用。
+reducer、缓存和页面状态均与 SSH Codex 共用，不允许复制 Windows 专用 Agent 协议栈。OpenCode 复用同一
+`CodexAgentClient` JSONL 层，由本机 Node 启动打包 bridge，bridge 再启动 OpenCode loopback 服务；普通
+SSH Profile 在 Windows 仍保持可用。
 
 当前页面选择逻辑：
 
@@ -668,8 +669,16 @@ $HOME/.local/share/codex-remote/opencode
 $HOME/.local/bin/codex-remote-opencode-bridge
 ~~~
 
-进度协议为 `::progress::<overall>|<download>|<message>|<detail>`；UI 分开显示总体与当前下载进度，
+进度协议为 `::progress::<overall>|<download>|<message>|<detail>|<downloadedBytes>|<totalBytes>|<bytesPerSecond>|<elapsedSeconds>`，并兼容旧四段格式；UI 分开显示总体与当前下载进度，
+展示已处理/下载大小、实时平均速度和耗时。总大小未知时当前阶段使用不确定进度，不伪造固定百分比；
 最小化后会将总体进度保留在会话页对应 Agent 按钮中，点击后恢复原弹窗。
+
+Windows 原生 OpenCode 复用同一安装弹窗和进度协议：`WindowsLocalServerClient` 在
+`%LOCALAPPDATA%\\CodexRemote\\opencode` 写入锁定的 `opencode-ai 1.18.11`、对应
+`opencode-windows-x64/arm64` 平台包和打包 bridge。安装优先使用 `registry.npmmirror.com`，失败后切换
+官方 npm registry；安装过程中扫描托管目录的文件数/字节数，按已处理量计算实时平均速度和耗时，未知总量
+显示不确定进度。连接时由共享 `CodexAgentClient` 通过本机 Node 启动 bridge，bridge 再启动 OpenCode
+服务，因此不依赖 WSL、SSH 或重复实现 JSONL 会话协议。
 同一服务器安装由 `AgentConnectionManager` 的 profile 级锁串行化，每个 `profileId + AgentKind` 独立
 保存弹窗状态。安装中关闭只最小化，任务继续受前台 Service 保护；失败保留弹窗并允许用户修改代理
 后重试。成功后必须再次探测，确认兼容命令，再自动连接和加载模型/会话。
@@ -1841,7 +1850,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.36 Windows 原生 Codex Host（2026-08-13）
 
-- 应用版本：`1.8.53+180`。Windows x64 EXE 自动创建“本机 Windows”Profile，直接启动 Windows 原生
+- 应用版本：`1.8.55+182`。Windows x64 EXE 自动创建“本机 Windows”Profile，直接启动 Windows 原生
   `codex.exe app-server --listen stdio://`，不要求 WSL、虚拟机或本机 SSH 服务。
 - 本机进程通过 `RemoteServerProcessSession` 适配为既有 `CodexSession`；Codex JSONL、线程、消息、审批、
   模型和 reducer 完全复用。`ServerConnectionManager` 新增 profile-aware Host 工厂，同时保留旧无参数工厂
@@ -1850,8 +1859,9 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   本机网络 API 测试/模型列表。模型 HTTP 响应与 SSH curl 复用同一个结构化解析器，配置写入使用同目录
   临时文件替换。
 - 运行时优先复用已有 Codex；未安装时先用系统 npm 安装固定 `0.146.0`，下载先尝试 npmmirror，失败自动
-  回退 npm 官方源；没有 npm 时调用 OpenAI 官方 Windows 独立安装脚本。首版明确不提供 Windows 本地终端、
-  完整文件管理和 OpenCode，SSH 服务器能力不受影响。
+  回退 npm 官方源；没有 npm 时调用 OpenAI 官方 Windows 独立安装脚本。OpenCode 则自包含下载并校验固定
+  Node，安装固定 OpenCode 平台包和 bridge，并复用同一 JSONL 连接层。当前不提供 Windows 本地终端和
+  完整文件管理，SSH 服务器能力不受影响。
 - 当前 Linux 门禁已覆盖共享 Agent/Host 逻辑、全量 Flutter 测试和 Android 构建；Windows x64 编译由现有
   GitHub Actions Windows runner 执行。首次 EXE 安装、原生沙箱初始化和真实模型/附件链路仍需 Windows
   实机验收，不能仅凭跨平台单元测试标记为已运行通过。

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/codex_agent_client.dart';
+import 'package:codex_remote/src/agent/opencode_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
@@ -142,6 +143,22 @@ class _FakeLocalCodexHost extends _FakeCodexHost
   @override
   Future<RemoteServerProcessSession> openCodexAppServer() async {
     openCount++;
+    return session;
+  }
+}
+
+class _FakeLocalOpenCodeHost extends _FakeCodexHost
+    implements LocalRemoteServerClient, RemoteServerAgentProcessClient {
+  _FakeLocalOpenCodeHost(this.session);
+
+  final RemoteServerProcessSession session;
+  int openCount = 0;
+  AgentKind? openedAgent;
+
+  @override
+  Future<RemoteServerProcessSession> openAgentAppServer(AgentKind agent) async {
+    openCount++;
+    openedAgent = agent;
     return session;
   }
 }
@@ -365,6 +382,31 @@ void main() {
     await client.disconnect();
     expect(session.terminated, isTrue);
   });
+
+  test(
+    'OpenCode selects the native OpenCode process on a local Host',
+    () async {
+      final session = _FakeCodexSession();
+      final host = _FakeLocalOpenCodeHost(session);
+      final client = OpenCodeAgentClient(bridgeLoader: () async => 'bridge');
+      const profile = ServerProfile(
+        id: 'agent-local-windows',
+        host: 'local-windows',
+        port: 1,
+        username: 'local',
+        hostFingerprint: 'local-windows',
+      );
+
+      await client.connect(profile, host);
+
+      expect(host.openCount, 1);
+      expect(host.openedAgent, AgentKind.openCode);
+      expect(session.writes, hasLength(2));
+
+      await client.disconnect();
+      client.close();
+    },
+  );
 
   test(
     'coalesces Agent heartbeats while the previous ping is pending',

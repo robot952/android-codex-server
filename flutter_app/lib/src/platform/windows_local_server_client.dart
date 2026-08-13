@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:path/path.dart' as path;
 import 'package:uuid/uuid.dart';
 
 import '../agent/codex_global_settings.dart';
 import '../agent/codex_host_capabilities.dart';
+import '../agent/open_code_bootstrap.dart';
 import '../agent/remote_bootstrap.dart';
+import '../domain/install_progress_format.dart';
 import '../domain/models.dart';
 import '../ssh/ssh_server_client.dart';
 
@@ -36,7 +39,7 @@ ServerProfile localWindowsProfile({ServerProfile? existing}) {
     approvalMode: existing?.approvalMode ?? ApprovalMode.requestApproval,
     remoteCommand: managedCodexRemoteCommand,
     workspacePromptShown: existing?.workspacePromptShown ?? true,
-    activeAgent: AgentKind.codex,
+    activeAgent: existing?.activeAgent ?? AgentKind.codex,
     agentModelSettings:
         existing?.agentModelSettings ?? const <AgentKind, AgentModelSettings>{},
   );
@@ -49,7 +52,9 @@ class WindowsLocalServerClient
         RemoteServerClient,
         LocalRemoteServerClient,
         RemoteServerCodexProcessClient,
+        RemoteServerAgentProcessClient,
         RemoteServerCodexRuntimeClient,
+        RemoteServerOpenCodeRuntimeClient,
         RemoteServerCodexSettingsClient,
         RemoteServerAttachmentClient,
         RemoteServerImageClient,
@@ -134,6 +139,186 @@ class WindowsLocalServerClient
   }
 
   @override
+  Future<RemoteServerProcessSession> openAgentAppServer(AgentKind agent) async {
+    if (agent != AgentKind.openCode) {
+      return openCodexAppServer();
+    }
+    final executable = await _findOpenCodeExecutable();
+    if (executable == null) throw StateError('没有找到 Windows 原生 OpenCode');
+    final bridge = File(_openCodeBridgeFile);
+    if (!await bridge.exists()) {
+      throw StateError('OpenCode 桥接文件不存在，请重新安装 OpenCode');
+    }
+    final node = await _findManagedNodeExecutable();
+    if (node == null) throw StateError('没有找到 OpenCode 所需的 Node.js 运行时');
+    final profile = _requireConnectedProfile();
+    final environment = await _openCodeEnvironment(profile);
+    environment['OPENCODE_BIN'] = executable;
+    final process = await Process.start(
+      node,
+      <String>[
+        bridge.path,
+        if (profile.workspace.trim().isNotEmpty) ...[
+          '--directory',
+          profile.workspace.trim(),
+        ],
+      ],
+      workingDirectory: _workspace(profile),
+      environment: environment,
+      includeParentEnvironment: true,
+      runInShell: false,
+    );
+    late final _WindowsProcessSession session;
+    session = _WindowsProcessSession(process, () => _sessions.remove(session));
+    _sessions.add(session);
+    return session;
+  }
+
+  @override
+  Future<AgentRuntimeInspection> inspectOpenCodeRuntime(
+    ServerProfile profile, {
+    required String bridgeSource,
+  }) async {
+    _requireConnectedProfile(profile);
+    final executable = await _findOpenCodeExecutable();
+    final node = await _findManagedNodeExecutable();
+    final bridge = File(_openCodeBridgeFile);
+    String? version;
+    if (executable != null) {
+      final result = await Process.run(executable, const <String>[
+        '--version',
+      ]).timeout(const Duration(seconds: 15));
+      if (result.exitCode == 0) version = result.stdout.toString().trim();
+    }
+    final compatible =
+        executable != null &&
+        node != null &&
+        await bridge.exists() &&
+        version?.contains(pinnedOpenCodeVersion) == true &&
+        await bridge.readAsString() == bridgeSource;
+    return AgentRuntimeInspection(
+      os: 'Windows',
+      architecture: _windowsArchitecture(),
+      home: _userHome,
+      libc: '',
+      hasShell: true,
+      hasTar: true,
+      hasSha256: true,
+      hasFlock: true,
+      hasSetsidWait: true,
+      managedVersion: version,
+      managedPath: executable,
+      downloader: 'npm',
+      fallbackCommand: compatible ? 'windows-native-opencode' : null,
+    );
+  }
+
+  @override
+  Future<void> installOpenCodeRuntime(
+    ServerProfile profile, {
+    required String bridgeSource,
+    required void Function(RemoteInstallProgress progress) onProgress,
+  }) async {
+    _requireConnectedProfile(profile);
+    final started = DateTime.now();
+    onProgress(
+      const RemoteInstallProgress(
+        percent: 5,
+        message: '正在检测 OpenCode 安装环境',
+        detail: '检查共享 Node.js、npm 和 OpenCode 平台包',
+        indeterminate: true,
+      ),
+    );
+    final runtime = await _ensureWindowsNodeRuntime(
+      profile,
+      onProgress: onProgress,
+    );
+    await Directory(_openCodeRoot).create(recursive: true);
+    final packageJson = File(path.join(_openCodeRoot, 'package.json'));
+    await packageJson.writeAsString(
+      '{"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"$pinnedOpenCodeVersion","opencode-${_windowsPackageSuffix()}":"$pinnedOpenCodeVersion"}}\n',
+      flush: true,
+    );
+    final install = await _runOpenCodeNpmInstall(
+      runtime.npm,
+      profile,
+      registry: 'https://registry.npmmirror.com',
+      minimumPercent: 25,
+      onProgress: onProgress,
+    );
+    if (install.exitCode != 0) {
+      onProgress(
+        const RemoteInstallProgress(
+          percent: 45,
+          message: '国内镜像不可用，正在切换官方源',
+          detail: '保留已显示的处理量，重新获取 OpenCode 依赖',
+          indeterminate: true,
+        ),
+      );
+      final retry = await _runOpenCodeNpmInstall(
+        runtime.npm,
+        profile,
+        registry: 'https://registry.npmjs.org',
+        minimumPercent: 45,
+        onProgress: onProgress,
+      );
+      if (retry.exitCode != 0) {
+        throw StateError('OpenCode npm 安装失败：${_short(retry.stderr)}');
+      }
+    }
+    onProgress(
+      const RemoteInstallProgress(
+        percent: 85,
+        message: '校验 OpenCode 运行时',
+        detail: '检查平台运行文件和固定版本',
+        indeterminate: true,
+      ),
+    );
+    final executable = await _findOpenCodeExecutable();
+    if (executable == null) throw StateError('OpenCode 安装完成，但没有找到可执行文件');
+    final actual = await Process.run(executable, const <String>['--version']);
+    if (actual.exitCode != 0 ||
+        !actual.stdout.toString().contains(pinnedOpenCodeVersion)) {
+      throw StateError('OpenCode 版本校验失败：${_short(actual.stdout.toString())}');
+    }
+    onProgress(
+      const RemoteInstallProgress(
+        percent: 92,
+        message: '写入 OpenCode 移动端桥接',
+        detail: '发布应用自带的 JSONL bridge',
+        indeterminate: true,
+      ),
+    );
+    await File(_openCodeBridgeFile).writeAsString(bridgeSource, flush: true);
+    final stats = await _readInstallStats(Directory(_openCodeRoot));
+    final elapsed = DateTime.now().difference(started).inSeconds;
+    final rate = elapsed <= 0 ? null : stats.bytes ~/ elapsed;
+    onProgress(
+      RemoteInstallProgress(
+        percent: 100,
+        message: 'Windows 原生 OpenCode 已就绪',
+        detail:
+            '桥接服务、Node.js 和 OpenCode $pinnedOpenCodeVersion 已准备完成 · '
+            '已处理 ${formatInstallBytes(stats.bytes)} · ${formatInstallRate(rate)} · '
+            '已用时 ${elapsed}s',
+        downloadedBytes: stats.bytes,
+        bytesPerSecond: rate,
+        elapsedSeconds: elapsed,
+      ),
+    );
+  }
+
+  @override
+  Future<void> uninstallOpenCodeRuntime(ServerProfile profile) async {
+    _requireConnectedProfile(profile);
+    for (final session in _sessions.toList()) {
+      session.terminate();
+    }
+    final root = Directory(_openCodeRoot);
+    if (await root.exists()) await root.delete(recursive: true);
+  }
+
+  @override
   Future<AgentRuntimeInspection> inspectCodexRuntime(
     ServerProfile profile,
   ) async {
@@ -190,22 +375,36 @@ class WindowsLocalServerClient
     final npm = await _where('npm.cmd') ?? await _where('npm');
     if (npm != null) {
       onProgress(
-        const RemoteInstallProgress(percent: 20, message: '正在通过 npm 安装 Codex'),
+        const RemoteInstallProgress(
+          percent: 20,
+          message: '正在通过 npm 安装 Codex',
+          detail: '国内镜像 · 正在获取依赖清单',
+          indeterminate: true,
+        ),
       );
       await Directory(_managedRoot).create(recursive: true);
       var install = await _runNpmInstall(
         npm,
         profile,
         registry: 'https://registry.npmmirror.com',
+        minimumPercent: 20,
+        onProgress: onProgress,
       );
       if (install.exitCode != 0) {
         onProgress(
-          const RemoteInstallProgress(percent: 35, message: '国内镜像不可用，正在切换官方源'),
+          const RemoteInstallProgress(
+            percent: 35,
+            message: '国内镜像不可用，正在切换官方源',
+            detail: '上一次安装输出已结束，重新获取依赖清单',
+            indeterminate: true,
+          ),
         );
         install = await _runNpmInstall(
           npm,
           profile,
           registry: 'https://registry.npmjs.org',
+          minimumPercent: 35,
+          onProgress: onProgress,
         );
       }
       if (install.exitCode != 0) {
@@ -213,9 +412,15 @@ class WindowsLocalServerClient
       }
     } else {
       onProgress(
-        const RemoteInstallProgress(percent: 20, message: '正在运行 Codex 官方安装器'),
+        const RemoteInstallProgress(
+          percent: 20,
+          message: '正在运行 Codex 官方安装器',
+          detail: 'PowerShell 安装器 · 正在下载并配置',
+          indeterminate: true,
+        ),
       );
-      final result = await Process.run(
+      final started = DateTime.now();
+      final process = await Process.start(
         'powershell.exe',
         const <String>[
           '-NoLogo',
@@ -233,9 +438,45 @@ class WindowsLocalServerClient
           },
         },
         includeParentEnvironment: true,
-      ).timeout(const Duration(minutes: 15));
-      if (result.exitCode != 0) {
-        throw StateError('Codex 官方安装器失败：${_short(result.stderr.toString())}');
+      );
+      final stdoutFuture = utf8.decoder.bind(process.stdout).forEach((chunk) {
+        final text = chunk.trim();
+        if (text.isEmpty) return;
+        onProgress(
+          RemoteInstallProgress(
+            percent: 20,
+            message: '正在运行 Codex 官方安装器',
+            detail: 'PowerShell 安装器 · $text',
+            indeterminate: true,
+            elapsedSeconds: DateTime.now().difference(started).inSeconds,
+          ),
+        );
+      });
+      final stderrFuture = utf8.decoder.bind(process.stderr).join();
+      final timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        onProgress(
+          RemoteInstallProgress(
+            percent: 20,
+            message: '正在运行 Codex 官方安装器',
+            detail: 'PowerShell 安装器 · 正在下载并配置',
+            indeterminate: true,
+            elapsedSeconds: DateTime.now().difference(started).inSeconds,
+          ),
+        );
+      });
+      late final int exitCode;
+      try {
+        exitCode = await process.exitCode.timeout(const Duration(minutes: 15));
+      } on TimeoutException {
+        process.kill();
+        throw StateError('Codex 官方安装器超时，请检查网络或代理后重试');
+      } finally {
+        timer.cancel();
+      }
+      await stdoutFuture;
+      final stderr = await stderrFuture;
+      if (exitCode != 0) {
+        throw StateError('Codex 官方安装器失败：${_short(stderr)}');
       }
     }
     if (await _findCodexExecutable() == null) {
@@ -561,6 +802,10 @@ class WindowsLocalServerClient
       ? Platform.environment['LOCALAPPDATA']!.trim()
       : path.join(_userHome, 'AppData', 'Local');
   String get _managedRoot => path.join(_localAppData, 'CodexRemote', 'codex');
+  String get _openCodeRoot =>
+      path.join(_localAppData, 'CodexRemote', 'opencode');
+  String get _runtimeRoot => path.join(_localAppData, 'CodexRemote', 'runtime');
+  String get _openCodeBridgeFile => path.join(_openCodeRoot, 'bridge.cjs');
   String get _uploadRoot => path.join(_localAppData, 'CodexRemote', 'uploads');
   String get _codexHome => path.join(_userHome, '.codex');
   String get _configFile => path.join(_codexHome, 'config.toml');
@@ -599,6 +844,35 @@ class WindowsLocalServerClient
         await _where('codex');
   }
 
+  Future<String?> _findOpenCodeExecutable() async {
+    final suffix = _windowsPackageSuffix();
+    final candidates = <String>[
+      path.join(
+        _openCodeRoot,
+        'node_modules',
+        'opencode-$suffix',
+        'bin',
+        'opencode.exe',
+      ),
+      path.join(
+        _openCodeRoot,
+        'node_modules',
+        'opencode-ai',
+        'bin',
+        'opencode.exe',
+      ),
+    ];
+    for (final candidate in candidates) {
+      if (await File(candidate).exists()) return candidate;
+    }
+    return null;
+  }
+
+  Future<String?> _findManagedNodeExecutable() async {
+    final pinned = await _findPinnedNodeRuntime();
+    return pinned?.node ?? await _where('node.exe') ?? await _where('node');
+  }
+
   Future<String?> _where(String executable) async {
     try {
       final result = await Process.run('where.exe', <String>[
@@ -632,11 +906,257 @@ class WindowsLocalServerClient
     };
   }
 
+  Future<Map<String, String>> _openCodeEnvironment(
+    ServerProfile profile,
+  ) async {
+    final proxy = profile.proxyUrl.trim();
+    return <String, String>{
+      if (proxy.isNotEmpty) ...{
+        'HTTP_PROXY': proxy,
+        'HTTPS_PROXY': proxy,
+        'ALL_PROXY': proxy,
+        'http_proxy': proxy,
+        'https_proxy': proxy,
+        'all_proxy': proxy,
+      },
+    };
+  }
+
+  Future<_WindowsNodeRuntime?> _findPinnedNodeRuntime() async {
+    final directory = path.join(
+      _runtimeRoot,
+      'node-v$pinnedNodeVersion-win-${_windowsNodeArchitecture()}',
+    );
+    final node = path.join(directory, 'node.exe');
+    final npm = path.join(directory, 'npm.cmd');
+    if (!await File(node).exists() || !await File(npm).exists()) return null;
+    try {
+      final result = await Process.run(node, const <String>[
+        '--version',
+      ]).timeout(const Duration(seconds: 10));
+      if (result.exitCode != 0 ||
+          result.stdout.toString().trim() != 'v$pinnedNodeVersion') {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+    return _WindowsNodeRuntime(node: node, npm: npm);
+  }
+
+  Future<_WindowsNodeRuntime> _ensureWindowsNodeRuntime(
+    ServerProfile profile, {
+    required void Function(RemoteInstallProgress progress) onProgress,
+  }) async {
+    final existing = await _findPinnedNodeRuntime();
+    if (existing != null) {
+      onProgress(
+        const RemoteInstallProgress(
+          percent: 22,
+          message: '复用现有 Node.js 运行时',
+          detail: '固定版本 Node.js 已通过校验',
+        ),
+      );
+      return existing;
+    }
+    final arch = _windowsNodeArchitecture();
+    final name = 'node-v$pinnedNodeVersion-win-$arch';
+    final checksum = arch == 'arm64'
+        ? '78355dc9ca117bb71d3f081e4b1b281855e2b134f3939bb0ca314f7567b0e621'
+        : '721ab118a3aac8584348b132767eadf51379e0616f0db802cc1e66d7f0d98f85';
+    final archive = File(path.join(_runtimeRoot, '$name.zip'));
+    await archive.parent.create(recursive: true);
+    final mirrors = <Uri>[
+      Uri.parse(
+        'https://npmmirror.com/mirrors/node/v$pinnedNodeVersion/$name.zip',
+      ),
+      Uri.parse('https://nodejs.org/dist/v$pinnedNodeVersion/$name.zip'),
+    ];
+    Object? lastError;
+    for (var index = 0; index < mirrors.length; index++) {
+      try {
+        final minimumPercent = index == 0 ? 8 : 14;
+        final maximumPercent = index == 0 ? 13 : 18;
+        onProgress(
+          RemoteInstallProgress(
+            percent: minimumPercent,
+            message: index == 0 ? '下载独立 Node.js 运行时' : '国内镜像不可用，正在切换官方源',
+            detail: index == 0 ? 'Node.js 国内镜像' : 'Node.js 官方下载源',
+            indeterminate: true,
+          ),
+        );
+        await _downloadInstallFile(
+          mirrors[index],
+          archive,
+          profile,
+          minimumPercent: minimumPercent,
+          maximumPercent: maximumPercent,
+          label: '下载独立 Node.js 运行时',
+          onProgress: onProgress,
+        );
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError != null) {
+      throw StateError('Node.js 下载失败：${_short('$lastError')}');
+    }
+    onProgress(
+      const RemoteInstallProgress(
+        percent: 19,
+        message: '校验 Node.js 下载文件',
+        detail: '校验 SHA-256',
+      ),
+    );
+    final actual = (await sha256.bind(archive.openRead()).first).toString();
+    if (actual != checksum) throw StateError('Node.js 下载文件校验失败');
+    onProgress(
+      const RemoteInstallProgress(
+        percent: 20,
+        message: '解压 Node.js 运行时',
+        detail: '正在准备独立 Windows 运行环境',
+        indeterminate: true,
+      ),
+    );
+    final result = await Process.run('powershell.exe', <String>[
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      r'param($archive,$destination,$runtime); New-Item -ItemType Directory -Force -Path $destination | Out-Null; if (Test-Path -LiteralPath $runtime) { Remove-Item -LiteralPath $runtime -Recurse -Force }; Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force',
+      archive.path,
+      _runtimeRoot,
+      path.join(_runtimeRoot, name),
+    ]).timeout(const Duration(minutes: 5));
+    if (result.exitCode != 0) {
+      throw StateError('Node.js 解压失败：${_short(result.stderr.toString())}');
+    }
+    final runtime = await _findPinnedNodeRuntime();
+    if (runtime == null) throw StateError('Node.js 解压完成，但运行时校验失败');
+    try {
+      await archive.delete();
+    } on FileSystemException {
+      // The verified runtime is already committed; a stale archive is harmless.
+    }
+    onProgress(
+      const RemoteInstallProgress(
+        percent: 22,
+        message: 'Node.js 运行时已就绪',
+        detail: '固定版本运行环境准备完成',
+      ),
+    );
+    return runtime;
+  }
+
+  Future<void> _downloadInstallFile(
+    Uri uri,
+    File target,
+    ServerProfile profile, {
+    required int minimumPercent,
+    required int maximumPercent,
+    required String label,
+    required void Function(RemoteInstallProgress progress) onProgress,
+  }) async {
+    final client = _httpClient(profile.proxyUrl.trim());
+    final started = DateTime.now();
+    var received = 0;
+    try {
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 20));
+      final response = await request.close().timeout(
+        const Duration(seconds: 30),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
+      }
+      final total = response.contentLength > 0 ? response.contentLength : null;
+      final sink = target.openWrite();
+      try {
+        await for (final chunk in response.timeout(
+          const Duration(seconds: 45),
+        )) {
+          sink.add(chunk);
+          received += chunk.length;
+          final elapsed = DateTime.now().difference(started).inSeconds;
+          final rate = elapsed <= 0 ? null : received ~/ elapsed;
+          final downloadPercent = total == null
+              ? null
+              : (received * 100 ~/ total).clamp(0, 99);
+          onProgress(
+            RemoteInstallProgress(
+              percent: downloadPercent == null
+                  ? minimumPercent
+                  : minimumPercent +
+                        ((maximumPercent - minimumPercent) *
+                            downloadPercent ~/
+                            100),
+              message: label,
+              detail: total == null
+                  ? '已下载 ${formatInstallBytes(received)} · ${formatInstallRate(rate)} · 已用时 ${elapsed}s'
+                  : '${formatInstallBytes(received)} / ${formatInstallBytes(total)} · ${formatInstallRate(rate)} · 已用时 ${elapsed}s',
+              downloadPercent: downloadPercent,
+              downloadedBytes: received,
+              totalBytes: total,
+              bytesPerSecond: rate,
+              elapsedSeconds: elapsed,
+              indeterminate: total == null,
+            ),
+          );
+        }
+      } finally {
+        await sink.close();
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   Future<({int exitCode, String stderr})> _runNpmInstall(
     String npm,
     ServerProfile profile, {
     required String registry,
+    required int minimumPercent,
+    required void Function(RemoteInstallProgress progress) onProgress,
   }) async {
+    final started = DateTime.now();
+    var sampling = false;
+    var finished = false;
+    Future<void> publishStats({String? output}) async {
+      if (sampling || finished) return;
+      sampling = true;
+      try {
+        final stats = await _readManagedInstallStats();
+        if (finished) return;
+        final elapsed = DateTime.now().difference(started).inSeconds;
+        final rate = elapsed <= 0 ? null : stats.bytes ~/ elapsed;
+        final outputSuffix = output == null || output.isEmpty
+            ? '正在解析和安装依赖'
+            : output;
+        onProgress(
+          RemoteInstallProgress(
+            // npm does not expose a reliable total download size. Let the
+            // observed file count move this stage forward without crossing
+            // the next explicit phase boundary.
+            percent: minimumPercent + (stats.fileCount ~/ 250).clamp(0, 11),
+            message: '正在通过 npm 安装 Codex',
+            detail:
+                '$registry · 已写入 ${stats.fileCount} 个文件 · '
+                '已写入 ${formatInstallBytes(stats.bytes)} · '
+                '${formatInstallRate(rate)} · $outputSuffix',
+            downloadedBytes: stats.bytes,
+            bytesPerSecond: rate,
+            elapsedSeconds: elapsed,
+            indeterminate: true,
+          ),
+        );
+      } finally {
+        sampling = false;
+      }
+    }
+
     final process = await Process.start(
       npm,
       <String>[
@@ -657,11 +1177,151 @@ class WindowsLocalServerClient
       includeParentEnvironment: true,
       runInShell: npm.toLowerCase().endsWith('.cmd'),
     );
-    final stdoutFuture = process.stdout.drain<void>();
+    final stdoutFuture = process.stdout.transform(utf8.decoder).forEach((
+      chunk,
+    ) {
+      final lines = chunk.split(RegExp(r'\r?\n'));
+      for (final line in lines) {
+        final text = line.trim();
+        if (text.isNotEmpty) {
+          unawaited(publishStats(output: text));
+        }
+      }
+    });
     final stderrFuture = utf8.decoder.bind(process.stderr).join();
+    final timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      unawaited(publishStats());
+    });
     final exitCode = await process.exitCode;
+    timer.cancel();
+    finished = true;
     await stdoutFuture;
+    final finalStats = await _readManagedInstallStats();
+    onProgress(
+      RemoteInstallProgress(
+        percent: minimumPercent + 12,
+        message: '正在通过 npm 安装 Codex',
+        detail:
+            '$registry · npm 命令已完成 · 已写入 ${finalStats.fileCount} 个文件 · '
+            '${formatInstallBytes(finalStats.bytes)}',
+        downloadedBytes: finalStats.bytes,
+        indeterminate: false,
+        elapsedSeconds: DateTime.now().difference(started).inSeconds,
+      ),
+    );
     return (exitCode: exitCode, stderr: await stderrFuture);
+  }
+
+  Future<({int exitCode, String stderr})> _runOpenCodeNpmInstall(
+    String npm,
+    ServerProfile profile, {
+    required String registry,
+    required int minimumPercent,
+    required void Function(RemoteInstallProgress progress) onProgress,
+  }) async {
+    final started = DateTime.now();
+    var sampling = false;
+    var finished = false;
+    Future<void> publishStats({String? output}) async {
+      if (sampling || finished) return;
+      sampling = true;
+      try {
+        final stats = await _readInstallStats(Directory(_openCodeRoot));
+        if (finished) return;
+        final elapsed = DateTime.now().difference(started).inSeconds;
+        final rate = elapsed <= 0 ? null : stats.bytes ~/ elapsed;
+        onProgress(
+          RemoteInstallProgress(
+            percent: minimumPercent + (stats.fileCount ~/ 80).clamp(0, 14),
+            message: '正在通过 npm 安装 OpenCode',
+            detail:
+                '$registry · 已处理 ${stats.fileCount} 个文件 · '
+                '已写入 ${formatInstallBytes(stats.bytes)} · '
+                '${formatInstallRate(rate)} · 已用时 ${elapsed}s'
+                '${output == null || output.isEmpty ? '' : ' · $output'}',
+            downloadedBytes: stats.bytes,
+            bytesPerSecond: rate,
+            elapsedSeconds: elapsed,
+            indeterminate: true,
+          ),
+        );
+      } finally {
+        sampling = false;
+      }
+    }
+
+    final process = await Process.start(
+      npm,
+      <String>[
+        'install',
+        '--prefix',
+        _openCodeRoot,
+        '--no-audit',
+        '--no-fund',
+        '--omit=dev',
+        '--omit=optional',
+        '--ignore-scripts',
+        '--loglevel=error',
+      ],
+      environment: <String, String>{
+        ...await _openCodeEnvironment(profile),
+        'npm_config_registry': registry,
+      },
+      includeParentEnvironment: true,
+      runInShell: npm.toLowerCase().endsWith('.cmd'),
+    );
+    final stdoutFuture = utf8.decoder.bind(process.stdout).forEach((chunk) {
+      final text = chunk.trim();
+      if (text.isNotEmpty) unawaited(publishStats(output: text));
+    });
+    final stderrFuture = utf8.decoder.bind(process.stderr).join();
+    final timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      unawaited(publishStats());
+    });
+    final exitCode = await process.exitCode;
+    timer.cancel();
+    finished = true;
+    await stdoutFuture;
+    final stats = await _readInstallStats(Directory(_openCodeRoot));
+    onProgress(
+      RemoteInstallProgress(
+        percent: minimumPercent + 15,
+        message: '正在通过 npm 安装 OpenCode',
+        detail:
+            '$registry · npm 命令已完成 · 已写入 ${formatInstallBytes(stats.bytes)}',
+        downloadedBytes: stats.bytes,
+        elapsedSeconds: DateTime.now().difference(started).inSeconds,
+      ),
+    );
+    return (exitCode: exitCode, stderr: await stderrFuture);
+  }
+
+  Future<_WindowsInstallStats> _readManagedInstallStats() async {
+    return _readInstallStats(Directory(_managedRoot));
+  }
+
+  Future<_WindowsInstallStats> _readInstallStats(Directory root) async {
+    if (!await root.exists()) return const _WindowsInstallStats();
+    var fileCount = 0;
+    var bytes = 0;
+    try {
+      await for (final entity in root.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entity is! File) continue;
+        fileCount++;
+        try {
+          final size = await entity.length();
+          bytes = _saturatingAdd(bytes, size);
+        } on FileSystemException {
+          // npm can remove a file between list() and stat(); keep the sample.
+        }
+      }
+    } on FileSystemException {
+      // The directory can be replaced while npm is unpacking a package.
+    }
+    return _WindowsInstallStats(fileCount: fileCount, bytes: bytes);
   }
 
   Future<void> _loginWithApiKey(ServerProfile profile, String apiKey) async {
@@ -691,6 +1351,25 @@ class WindowsLocalServerClient
       throw StateError('Codex API 密钥登录失败：${_short(stderr)}');
     }
   }
+}
+
+class _WindowsInstallStats {
+  const _WindowsInstallStats({this.fileCount = 0, this.bytes = 0});
+
+  final int fileCount;
+  final int bytes;
+}
+
+class _WindowsNodeRuntime {
+  const _WindowsNodeRuntime({required this.node, required this.npm});
+
+  final String node;
+  final String npm;
+}
+
+int _saturatingAdd(int current, int value) {
+  final next = current + value;
+  return next < current ? 0x7fffffffffffffff : next;
 }
 
 class _WindowsProcessSession implements RemoteServerProcessSession {
@@ -738,6 +1417,18 @@ String _windowsArchitecture() {
   if (value.contains('arm64')) return 'arm64';
   if (value.contains('amd64') || value.contains('x86_64')) return 'amd64';
   return value;
+}
+
+String _windowsNodeArchitecture() =>
+    _windowsArchitecture() == 'arm64' ? 'arm64' : 'x64';
+
+String _windowsPackageSuffix() {
+  final value =
+      (Platform.environment['PROCESSOR_ARCHITEW6432'] ??
+              Platform.environment['PROCESSOR_ARCHITECTURE'] ??
+              '')
+          .toLowerCase();
+  return value.contains('arm64') ? 'windows-arm64' : 'windows-x64-baseline';
 }
 
 String _safeFileName(String value) {

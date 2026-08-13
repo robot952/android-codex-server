@@ -60,6 +60,9 @@ class LocalLinuxState {
     this.message = '正在检查本机 Linux',
     this.downloadedBytes = 0,
     this.totalBytes,
+    this.bytesPerSecond,
+    this.elapsedSeconds,
+    this.indeterminate = false,
     this.errorMessage,
     this.instance,
   });
@@ -72,6 +75,9 @@ class LocalLinuxState {
   final String message;
   final int downloadedBytes;
   final int? totalBytes;
+  final int? bytesPerSecond;
+  final int? elapsedSeconds;
+  final bool indeterminate;
   final String? errorMessage;
   final LocalLinuxInstance? instance;
 
@@ -85,6 +91,11 @@ class LocalLinuxState {
     int? downloadedBytes,
     int? totalBytes,
     bool clearTotalBytes = false,
+    int? bytesPerSecond,
+    bool clearBytesPerSecond = false,
+    int? elapsedSeconds,
+    bool clearElapsedSeconds = false,
+    bool? indeterminate,
     String? errorMessage,
     bool clearError = false,
     LocalLinuxInstance? instance,
@@ -98,6 +109,13 @@ class LocalLinuxState {
     message: message ?? this.message,
     downloadedBytes: downloadedBytes ?? this.downloadedBytes,
     totalBytes: clearTotalBytes ? null : totalBytes ?? this.totalBytes,
+    bytesPerSecond: clearBytesPerSecond
+        ? null
+        : bytesPerSecond ?? this.bytesPerSecond,
+    elapsedSeconds: clearElapsedSeconds
+        ? null
+        : elapsedSeconds ?? this.elapsedSeconds,
+    indeterminate: indeterminate ?? this.indeterminate,
     errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
     instance: clearInstance ? null : instance ?? this.instance,
   );
@@ -260,6 +278,9 @@ class LocalLinuxController extends StateNotifier<LocalLinuxState>
       supported: true,
       running: false,
       message: state.installed ? '正在启动本机 Linux' : '正在准备本机 Linux',
+      clearBytesPerSecond: true,
+      clearElapsedSeconds: true,
+      indeterminate: false,
       clearError: true,
     );
     try {
@@ -316,6 +337,9 @@ class LocalLinuxController extends StateNotifier<LocalLinuxState>
       message: '需要首次安装',
       downloadedBytes: 0,
       clearTotalBytes: true,
+      clearBytesPerSecond: true,
+      clearElapsedSeconds: true,
+      indeterminate: false,
       clearInstance: true,
       clearError: true,
     );
@@ -336,6 +360,12 @@ class LocalLinuxController extends StateNotifier<LocalLinuxState>
       message: wire['message']?.toString() ?? state.message,
       downloadedBytes: _boundedInt(wire['downloadedBytes']),
       totalBytes: _nullableBoundedInt(wire['totalBytes']),
+      clearTotalBytes: _nullableBoundedInt(wire['totalBytes']) == null,
+      bytesPerSecond: _nullableBoundedInt(wire['bytesPerSecond']),
+      clearBytesPerSecond: _nullableBoundedInt(wire['bytesPerSecond']) == null,
+      elapsedSeconds: _nullableBoundedInt(wire['elapsedSeconds']),
+      clearElapsedSeconds: _nullableBoundedInt(wire['elapsedSeconds']) == null,
+      indeterminate: wire['indeterminate'] == true,
       clearError: true,
     );
   }

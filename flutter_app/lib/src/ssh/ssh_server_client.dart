@@ -40,6 +40,12 @@ abstract interface class RemoteServerCodexProcessClient {
   Future<RemoteServerProcessSession> openCodexAppServer();
 }
 
+/// Optional native process capability for Agent adapters that launch an
+/// app-owned bridge instead of the Codex executable directly.
+abstract interface class RemoteServerAgentProcessClient {
+  Future<RemoteServerProcessSession> openAgentAppServer(AgentKind agent);
+}
+
 /// Optional transport-level keepalive used by the Android foreground service.
 /// Keeping this capability separate means lightweight test clients and desktop
 /// hosts do not need to emulate SSH global requests.

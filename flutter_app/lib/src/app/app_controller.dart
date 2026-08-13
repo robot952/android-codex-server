@@ -1198,6 +1198,11 @@ class AppController extends StateNotifier<AppUiState> {
               percent: progress.percent.clamp(0, 100).toInt(),
               detail: progress.detail,
               downloadPercent: progress.downloadPercent,
+              downloadedBytes: progress.downloadedBytes,
+              totalBytes: progress.totalBytes,
+              bytesPerSecond: progress.bytesPerSecond,
+              elapsedSeconds: progress.elapsedSeconds,
+              progressIndeterminate: progress.indeterminate,
             ),
           );
         },
@@ -1257,6 +1262,11 @@ class AppController extends StateNotifier<AppUiState> {
       setupProgressPercent: 0,
       setupProgressDetail: '',
       setupDownloadPercent: null,
+      setupDownloadedBytes: null,
+      setupTotalBytes: null,
+      setupBytesPerSecond: null,
+      setupElapsedSeconds: null,
+      setupProgressIndeterminate: false,
       agentSetupStates: Map.unmodifiable({
         ...state.agentSetupStates,
         key: setup.copyWith(minimized: true),
@@ -2799,6 +2809,7 @@ class AppController extends StateNotifier<AppUiState> {
       attachments: const <PendingAttachment>[],
       attachmentUploading: false,
       loading: false,
+      diagnostic: null,
     );
     // Match the original Android behavior: show the retained list immediately,
     // then reconcile recency, preview, status, and ordering in the background.
@@ -4739,6 +4750,19 @@ class AppController extends StateNotifier<AppUiState> {
       setupDownloadPercent: visible
           ? next.downloadPercent
           : state.setupDownloadPercent,
+      setupDownloadedBytes: visible
+          ? next.downloadedBytes
+          : state.setupDownloadedBytes,
+      setupTotalBytes: visible ? next.totalBytes : state.setupTotalBytes,
+      setupBytesPerSecond: visible
+          ? next.bytesPerSecond
+          : state.setupBytesPerSecond,
+      setupElapsedSeconds: visible
+          ? next.elapsedSeconds
+          : state.setupElapsedSeconds,
+      setupProgressIndeterminate: visible
+          ? next.progressIndeterminate
+          : state.setupProgressIndeterminate,
     );
   }
 
@@ -4759,6 +4783,11 @@ class AppController extends StateNotifier<AppUiState> {
       setupProgressPercent: visible.percent,
       setupProgressDetail: visible.detail,
       setupDownloadPercent: visible.downloadPercent,
+      setupDownloadedBytes: visible.downloadedBytes,
+      setupTotalBytes: visible.totalBytes,
+      setupBytesPerSecond: visible.bytesPerSecond,
+      setupElapsedSeconds: visible.elapsedSeconds,
+      setupProgressIndeterminate: visible.progressIndeterminate,
       agentSetupStates: Map.unmodifiable({
         ...state.agentSetupStates,
         key: visible,
@@ -4783,6 +4812,13 @@ class AppController extends StateNotifier<AppUiState> {
       setupProgressPercent: visible ? 0 : state.setupProgressPercent,
       setupProgressDetail: visible ? '' : state.setupProgressDetail,
       setupDownloadPercent: visible ? null : state.setupDownloadPercent,
+      setupDownloadedBytes: visible ? null : state.setupDownloadedBytes,
+      setupTotalBytes: visible ? null : state.setupTotalBytes,
+      setupBytesPerSecond: visible ? null : state.setupBytesPerSecond,
+      setupElapsedSeconds: visible ? null : state.setupElapsedSeconds,
+      setupProgressIndeterminate: visible
+          ? false
+          : state.setupProgressIndeterminate,
     );
   }
 
@@ -4801,6 +4837,13 @@ class AppController extends StateNotifier<AppUiState> {
       setupProgressPercent: visible ? 0 : state.setupProgressPercent,
       setupProgressDetail: visible ? '' : state.setupProgressDetail,
       setupDownloadPercent: visible ? null : state.setupDownloadPercent,
+      setupDownloadedBytes: visible ? null : state.setupDownloadedBytes,
+      setupTotalBytes: visible ? null : state.setupTotalBytes,
+      setupBytesPerSecond: visible ? null : state.setupBytesPerSecond,
+      setupElapsedSeconds: visible ? null : state.setupElapsedSeconds,
+      setupProgressIndeterminate: visible
+          ? false
+          : state.setupProgressIndeterminate,
     );
   }
 

@@ -694,6 +694,11 @@ abstract class AgentSetupState with _$AgentSetupState {
     @Default(0) int percent,
     @Default('') String detail,
     int? downloadPercent,
+    int? downloadedBytes,
+    int? totalBytes,
+    int? bytesPerSecond,
+    int? elapsedSeconds,
+    @Default(false) bool progressIndeterminate,
     @Default(false) bool minimized,
   }) = _AgentSetupState;
 }
@@ -743,6 +748,11 @@ abstract class AppUiState with _$AppUiState {
     @Default(0) int setupProgressPercent,
     @Default('') String setupProgressDetail,
     int? setupDownloadPercent,
+    int? setupDownloadedBytes,
+    int? setupTotalBytes,
+    int? setupBytesPerSecond,
+    int? setupElapsedSeconds,
+    @Default(false) bool setupProgressIndeterminate,
     @Default(<AgentConnectionKey, AgentSetupState>{})
     Map<AgentConnectionKey, AgentSetupState> agentSetupStates,
     @Default(<AgentConnectionKey, List<AgentThread>>{})

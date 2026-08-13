@@ -73,6 +73,10 @@ void main() {
           setupProgressPercent: 46,
           setupProgressDetail: '正在下载远程安装包',
           setupDownloadPercent: 73,
+          setupDownloadedBytes: 3 * 1024 * 1024,
+          setupTotalBytes: 4 * 1024 * 1024,
+          setupBytesPerSecond: 512 * 1024,
+          setupElapsedSeconds: 6,
         ),
         onInstall: () => installs += 1,
         onMinimize: () => minimizes += 1,
@@ -90,6 +94,9 @@ void main() {
     );
     expect(find.text('46%'), findsOneWidget);
     expect(find.text('73%'), findsOneWidget);
+    expect(find.textContaining('3.0 MB / 4.0 MB'), findsOneWidget);
+    expect(find.textContaining('512.0 KB/s'), findsOneWidget);
+    expect(find.textContaining('用时 6s'), findsOneWidget);
     expect(
       tester
           .widget<LinearProgressIndicator>(
@@ -124,6 +131,42 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('remote-setup-minimize')));
     expect(minimizes, 1);
     expect(installs, 0);
+  });
+
+  testWidgets('shows an indeterminate current stage when total is unknown', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const _DialogHarness(
+        state: AppUiState(
+          remoteSetup: RemoteSetupPrompt(
+            title: '安装远程 Codex',
+            detail: '需要安装固定版本。',
+            os: 'Windows',
+            architecture: 'x64',
+            home: r'C:\Users\tester',
+          ),
+          setupInProgress: true,
+          setupProgress: '正在通过 npm 安装 Codex',
+          setupProgressPercent: 24,
+          setupDownloadedBytes: 2 * 1024 * 1024,
+          setupBytesPerSecond: 256 * 1024,
+          setupElapsedSeconds: 8,
+          setupProgressIndeterminate: true,
+        ),
+      ),
+    );
+
+    expect(find.text('当前阶段仍在处理，暂无可计算的总大小'), findsOneWidget);
+    expect(
+      tester
+          .widget<LinearProgressIndicator>(
+            find.byKey(const ValueKey('remote-setup-download-progress')),
+          )
+          .value,
+      isNull,
+    );
+    expect(find.textContaining('已处理 2.0 MB / 总大小未知'), findsOneWidget);
   });
 
   testWidgets('renders an installation failure as a retry state', (

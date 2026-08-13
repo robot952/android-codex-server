@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../domain/install_progress_format.dart';
 import 'diagnostic_logger.dart';
 
 const appUpdateRepositoryUrl =
@@ -87,6 +88,8 @@ class AppUpdateDownloadState {
     this.downloadId,
     this.downloadedBytes = 0,
     this.totalBytes,
+    this.bytesPerSecond,
+    this.elapsedSeconds,
     this.status = AppUpdateDownloadStatus.idle,
     this.errorMessage,
   });
@@ -95,6 +98,8 @@ class AppUpdateDownloadState {
   final String? downloadId;
   final int downloadedBytes;
   final int? totalBytes;
+  final int? bytesPerSecond;
+  final int? elapsedSeconds;
   final AppUpdateDownloadStatus status;
   final String? errorMessage;
 }
@@ -378,6 +383,7 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
   String? _installOperationId;
   String? _pollingDownloadId;
   final Set<String> _monitoringDownloadIds = <String>{};
+  final Map<String, DateTime> _downloadStartedAt = <String, DateTime>{};
 
   Future<void> initialize() {
     final existing = _initialization;
@@ -439,6 +445,7 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
       ),
     );
     _pollingDownloadId = pending.downloadId;
+    _downloadStartedAt.putIfAbsent(pending.downloadId, DateTime.now);
     unawaited(_monitorDownload(pending.downloadId, pending.versionName));
     DiagnosticLogger.instance.info(
       'Update',
@@ -588,6 +595,7 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
         ),
       );
       _pollingDownloadId = id;
+      _downloadStartedAt[id] = DateTime.now();
       unawaited(_monitorDownload(id, update.versionName));
       DiagnosticLogger.instance.info(
         'Update',
@@ -629,12 +637,19 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
           }
           if (!mounted || state.download.downloadId != id) return;
           final status = snapshot.status;
+          final elapsedSeconds = _downloadElapsed(id);
+          final bytesPerSecond = _downloadRate(
+            snapshot.downloadedBytes,
+            elapsedSeconds,
+          );
           state = state.copyWith(
             download: AppUpdateDownloadState(
               versionName: versionName,
               downloadId: id,
               downloadedBytes: snapshot.downloadedBytes,
               totalBytes: snapshot.totalBytes,
+              bytesPerSecond: bytesPerSecond,
+              elapsedSeconds: elapsedSeconds,
               status: status,
               errorMessage: snapshot.errorMessage,
             ),
@@ -694,6 +709,8 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
         downloadId: id,
         downloadedBytes: state.download.downloadedBytes,
         totalBytes: state.download.totalBytes,
+        bytesPerSecond: state.download.bytesPerSecond,
+        elapsedSeconds: state.download.elapsedSeconds,
         status: AppUpdateDownloadStatus.failed,
         errorMessage: message,
       ),
@@ -745,6 +762,11 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
           downloadId: id,
           downloadedBytes: snapshot.downloadedBytes,
           totalBytes: snapshot.totalBytes,
+          bytesPerSecond: _downloadRate(
+            snapshot.downloadedBytes,
+            _downloadElapsed(id),
+          ),
+          elapsedSeconds: _downloadElapsed(id),
           status: snapshot.status,
           errorMessage: snapshot.errorMessage,
         ),
@@ -753,6 +775,7 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
         await _discardDownload(id);
       } else if (snapshot.status == AppUpdateDownloadStatus.downloading) {
         _pollingDownloadId = id;
+        _downloadStartedAt.putIfAbsent(id, DateTime.now);
         unawaited(_monitorDownload(id, versionName));
       }
     } catch (error, stack) {
@@ -812,6 +835,8 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
           downloadId: id,
           downloadedBytes: state.download.downloadedBytes,
           totalBytes: state.download.totalBytes,
+          bytesPerSecond: state.download.bytesPerSecond,
+          elapsedSeconds: state.download.elapsedSeconds,
           status: outcome.status,
           errorMessage: outcome.errorMessage,
         ),
@@ -826,6 +851,8 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
               downloadId: id,
               downloadedBytes: state.download.downloadedBytes,
               totalBytes: state.download.totalBytes,
+              bytesPerSecond: state.download.bytesPerSecond,
+              elapsedSeconds: state.download.elapsedSeconds,
               status: AppUpdateDownloadStatus.installing,
             ),
           );
@@ -843,6 +870,8 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
             downloadId: id,
             downloadedBytes: state.download.downloadedBytes,
             totalBytes: state.download.totalBytes,
+            bytesPerSecond: state.download.bytesPerSecond,
+            elapsedSeconds: state.download.elapsedSeconds,
             status: AppUpdateDownloadStatus.failed,
             errorMessage: _shortError(error),
           ),
@@ -862,6 +891,7 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
   void dispose() {
     _pollingDownloadId = null;
     _monitoringDownloadIds.clear();
+    _downloadStartedAt.clear();
     if (_ownsClient) _client.close();
     super.dispose();
   }
@@ -924,6 +954,17 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
     } catch (_) {
       return null;
     }
+  }
+
+  int _downloadElapsed(String id) {
+    final startedAt = _downloadStartedAt.putIfAbsent(id, DateTime.now);
+    return DateTime.now().difference(startedAt).inSeconds.clamp(0, 1 << 31);
+  }
+
+  int _downloadRate(int downloadedBytes, int elapsedSeconds) {
+    if (downloadedBytes <= 0) return 0;
+    return (downloadedBytes / (elapsedSeconds == 0 ? 1 : elapsedSeconds))
+        .round();
   }
 }
 
@@ -1035,15 +1076,7 @@ double? updateDownloadProgressFraction(int downloadedBytes, int? totalBytes) {
   return (downloadedBytes.clamp(0, totalBytes) / totalBytes).toDouble();
 }
 
-String formatAppUpdateByteSize(int bytes) {
-  if (bytes < 0) return '未知大小';
-  if (bytes < 1024) return '$bytes B';
-  final kibibytes = bytes / 1024;
-  if (kibibytes < 1024) return '${kibibytes.toStringAsFixed(1)} KB';
-  final mebibytes = kibibytes / 1024;
-  if (mebibytes < 1024) return '${mebibytes.toStringAsFixed(1)} MB';
-  return '${(mebibytes / 1024).toStringAsFixed(1)} GB';
-}
+String formatAppUpdateByteSize(int bytes) => formatInstallBytes(bytes);
 
 int compareSemanticVersions(String left, String right) {
   final leftVersion = _parseSemanticVersion(left);

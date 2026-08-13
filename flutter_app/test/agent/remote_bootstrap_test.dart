@@ -222,6 +222,9 @@ __CODEX_REMOTE_DOWNLOADER=wget
         final clamped = parseRemoteInstallProgressLine(
           '::progress::150|120|完成|全部完成',
         );
+        final extended = parseRemoteInstallProgressLine(
+          '::progress::65||下载依赖|总大小未知|1048576||262144|4',
+        );
         final legacy = parseRemoteInstallProgressLine('::progress::-10|准备环境');
 
         expect(detailed?.percent, 72);
@@ -230,6 +233,11 @@ __CODEX_REMOTE_DOWNLOADER=wget
         expect(detailed?.detail, '已处理 24 / 36|18.4 MB');
         expect(clamped?.percent, 100);
         expect(clamped?.downloadPercent, 100);
+        expect(extended?.downloadedBytes, 1048576);
+        expect(extended?.totalBytes, isNull);
+        expect(extended?.bytesPerSecond, 262144);
+        expect(extended?.elapsedSeconds, 4);
+        expect(extended?.indeterminate, isTrue);
         expect(legacy?.percent, 0);
         expect(legacy?.message, '准备环境');
         expect(parseRemoteInstallProgressLine('ordinary output'), isNull);

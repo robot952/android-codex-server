@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../domain/install_progress_format.dart';
 import '../platform/app_update_manager.dart';
 import 'theme.dart';
 
@@ -138,8 +139,8 @@ class _DownloadStatus extends StatelessWidget {
             const LinearProgressIndicator(value: 1),
             const SizedBox(height: 7),
             Text(
-              '已下载 ${formatAppUpdateByteSize(download.downloadedBytes)} / '
-              '${formatAppUpdateByteSize(download.totalBytes ?? download.downloadedBytes)}',
+              '已下载 ${formatInstallBytes(download.downloadedBytes)} / '
+              '${formatInstallBytes(download.totalBytes ?? download.downloadedBytes)}',
               style: Theme.of(
                 context,
               ).textTheme.bodySmall?.copyWith(color: muted),
@@ -223,8 +224,10 @@ String _downloadProgressText(
 ) {
   final total = download.totalBytes == null
       ? '正在获取总大小'
-      : formatAppUpdateByteSize(download.totalBytes!);
+      : formatInstallBytes(download.totalBytes!);
   final percentage = progress == null ? '' : '（${(progress * 100).round()}%）';
-  return '已下载 ${formatAppUpdateByteSize(download.downloadedBytes)} / '
-      '$total$percentage';
+  final speed = formatInstallRate(download.bytesPerSecond);
+  final elapsed = formatInstallDuration(download.elapsedSeconds);
+  return '已下载 ${formatInstallBytes(download.downloadedBytes)} / '
+      '$total$percentage · $speed · $elapsed';
 }

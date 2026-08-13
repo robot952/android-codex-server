@@ -103,12 +103,22 @@ class RemoteInstallProgress {
     required this.message,
     this.detail = '',
     this.downloadPercent,
+    this.downloadedBytes,
+    this.totalBytes,
+    this.bytesPerSecond,
+    this.elapsedSeconds,
+    this.indeterminate = false,
   });
 
   final int percent;
   final String message;
   final String detail;
   final int? downloadPercent;
+  final int? downloadedBytes;
+  final int? totalBytes;
+  final int? bytesPerSecond;
+  final int? elapsedSeconds;
+  final bool indeterminate;
 }
 
 class RemoteBootstrap {
@@ -305,11 +315,34 @@ RemoteInstallProgress? parseRemoteInstallProgressLine(String line) {
   final percent = _boundedPercent(parts.firstOrNull) ?? 0;
   if (parts.length >= 4) {
     final message = parts[2].trim().isEmpty ? value.trim() : parts[2].trim();
+    final extended =
+        parts.length >= 8 &&
+        parts.sublist(parts.length - 4).every(_isOptionalInteger);
+    final hasTransferStats =
+        extended &&
+        parts.sublist(parts.length - 4).any((part) => part.trim().isNotEmpty);
+    final detailEnd = extended ? parts.length - 4 : parts.length;
     return RemoteInstallProgress(
       percent: percent,
       downloadPercent: _boundedPercent(parts[1]),
       message: message,
-      detail: parts.sublist(3).join('|').trim(),
+      detail: parts.sublist(3, detailEnd).join('|').trim(),
+      downloadedBytes: hasTransferStats
+          ? _boundedBytes(parts[parts.length - 4])
+          : null,
+      totalBytes: hasTransferStats
+          ? _boundedNullableBytes(parts[parts.length - 3])
+          : null,
+      bytesPerSecond: hasTransferStats
+          ? _boundedBytes(parts[parts.length - 2])
+          : null,
+      elapsedSeconds: hasTransferStats
+          ? _boundedBytes(parts[parts.length - 1])
+          : null,
+      indeterminate:
+          hasTransferStats &&
+          (parts[parts.length - 3].trim().isEmpty ||
+              _boundedNullableBytes(parts[parts.length - 3]) == null),
     );
   }
   final separator = value.indexOf('|');
@@ -329,6 +362,21 @@ int? _boundedPercent(String? value) {
   return parsed?.clamp(0, 100).toInt();
 }
 
+int? _boundedBytes(String? value) {
+  final parsed = int.tryParse(value?.trim() ?? '');
+  return parsed?.clamp(0, 1 << 53).toInt();
+}
+
+int? _boundedNullableBytes(String? value) {
+  if (value?.trim().isEmpty ?? true) return null;
+  return _boundedBytes(value);
+}
+
+bool _isInteger(String value) => int.tryParse(value.trim()) != null;
+
+bool _isOptionalInteger(String value) =>
+    value.trim().isEmpty || _isInteger(value);
+
 bool _notEmpty(String? value) => value?.trim().isNotEmpty == true;
 
 extension<T> on List<T> {
@@ -337,7 +385,10 @@ extension<T> on List<T> {
 
 const _installTemplate = r'''
 set -eu
-progress() { printf '::progress::%s|%s|%s|%s\n' "$1" "$2" "$3" "$4"; }
+progress() {
+  printf '::progress::%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" "${7:-}" "${8:-}";
+}
 format_bytes() {
   BYTES="$1"
   if [ "$BYTES" -ge 1048576 ]; then
@@ -376,6 +427,7 @@ download_file() {
     ''|*[!0-9]*) DOWNLOAD_TOTAL=0 ;;
   esac
   progress "$DOWNLOAD_FROM" 0 "$DOWNLOAD_LABEL" '正在连接下载服务器'
+  DOWNLOAD_STARTED="$(date +%s)"
   if command -v curl >/dev/null 2>&1; then
     curl --fail --location --retry 3 --connect-timeout 15 --silent --show-error \
       --output "$DOWNLOAD_DEST" "$DOWNLOAD_URL" &
@@ -384,27 +436,37 @@ download_file() {
   fi
   DOWNLOAD_PID="$!"
   DOWNLOAD_LAST=-1
+  DOWNLOAD_SPEED=0
+  DOWNLOAD_ELAPSED=0
   while kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
     DOWNLOAD_BYTES="$(file_size "$DOWNLOAD_DEST")"
+    DOWNLOAD_NOW="$(date +%s)"
+    DOWNLOAD_ELAPSED="$((DOWNLOAD_NOW - DOWNLOAD_STARTED))"
+    if [ "$DOWNLOAD_ELAPSED" -lt 1 ]; then DOWNLOAD_ELAPSED=1; fi
+    DOWNLOAD_SPEED="$((DOWNLOAD_BYTES / DOWNLOAD_ELAPSED))"
     if [ "$DOWNLOAD_TOTAL" -gt 0 ]; then
       DOWNLOAD_PERCENT="$((DOWNLOAD_BYTES * 100 / DOWNLOAD_TOTAL))"
       if [ "$DOWNLOAD_PERCENT" -gt 99 ]; then DOWNLOAD_PERCENT=99; fi
       DOWNLOAD_OVERALL="$((DOWNLOAD_FROM + (DOWNLOAD_TO - DOWNLOAD_FROM) * DOWNLOAD_PERCENT / 100))"
       if [ "$DOWNLOAD_BYTES" != "$DOWNLOAD_LAST" ]; then
         progress "$DOWNLOAD_OVERALL" "$DOWNLOAD_PERCENT" "$DOWNLOAD_LABEL" \
-          "$(format_bytes "$DOWNLOAD_BYTES") / $(format_bytes "$DOWNLOAD_TOTAL")"
+          "$(format_bytes "$DOWNLOAD_BYTES") / $(format_bytes "$DOWNLOAD_TOTAL")" \
+          "$DOWNLOAD_BYTES" "$DOWNLOAD_TOTAL" "$DOWNLOAD_SPEED" "$DOWNLOAD_ELAPSED"
         DOWNLOAD_LAST="$DOWNLOAD_BYTES"
       fi
     elif [ "$DOWNLOAD_BYTES" != "$DOWNLOAD_LAST" ]; then
       progress "$DOWNLOAD_FROM" '' "$DOWNLOAD_LABEL" \
-        "已下载 $(format_bytes "$DOWNLOAD_BYTES")（服务器未提供总大小）"
+        "已下载 $(format_bytes "$DOWNLOAD_BYTES")（服务器未提供总大小）" \
+        "$DOWNLOAD_BYTES" '' "$DOWNLOAD_SPEED" "$DOWNLOAD_ELAPSED"
       DOWNLOAD_LAST="$DOWNLOAD_BYTES"
     fi
     sleep 1
   done
   if wait "$DOWNLOAD_PID"; then
     progress "$DOWNLOAD_TO" 100 "$DOWNLOAD_LABEL" \
-      "$(format_bytes "$(file_size "$DOWNLOAD_DEST")") 下载完成"
+      "$(format_bytes "$(file_size "$DOWNLOAD_DEST")") 下载完成" \
+      "$(file_size "$DOWNLOAD_DEST")" "$DOWNLOAD_TOTAL" "$DOWNLOAD_SPEED" \
+      "$(( $(date +%s) - DOWNLOAD_STARTED ))"
   else
     DOWNLOAD_STATUS="$?"
     exit "$DOWNLOAD_STATUS"
@@ -555,6 +617,7 @@ case "$PACKAGE_TOTAL" in
 esac
 progress 65 0 '下载并安装 Codex CLI __CODEX_VERSION__' "共 $PACKAGE_TOTAL 个组件"
 NPM_LOG="$WORK/npm-install.log"
+NPM_STARTED="$(date +%s)"
 (
   cd "$TEMP_RELEASE"
   PATH="$NODE_DIR/bin:$PATH" "$NODE_DIR/bin/npm" ci \
@@ -576,14 +639,29 @@ while kill -0 "$NPM_PID" 2>/dev/null; do
     ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
   esac
   NPM_DETAIL="已处理 $NPM_COMPLETE / $PACKAGE_TOTAL 个组件 · $(format_bytes "$((NPM_SIZE_KB * 1024))")"
+  NPM_NOW="$(date +%s)"
+  NPM_ELAPSED="$((NPM_NOW - NPM_STARTED))"
+  if [ "$NPM_ELAPSED" -lt 1 ]; then NPM_ELAPSED=1; fi
+  NPM_BYTES="$((NPM_SIZE_KB * 1024))"
+  NPM_SPEED="$((NPM_BYTES / NPM_ELAPSED))"
+  NPM_DETAIL="$NPM_DETAIL · 速度 $(format_bytes "$NPM_SPEED")/s · 已用时 ${NPM_ELAPSED}s"
   if [ "$NPM_DETAIL" != "$NPM_LAST" ]; then
-    progress "$NPM_OVERALL" "$NPM_PERCENT" "下载并安装 Codex CLI __CODEX_VERSION__" "$NPM_DETAIL"
+    progress "$NPM_OVERALL" "$NPM_PERCENT" "下载并安装 Codex CLI __CODEX_VERSION__" "$NPM_DETAIL" \
+      "$NPM_BYTES" '' "$NPM_SPEED" "$NPM_ELAPSED"
     NPM_LAST="$NPM_DETAIL"
   fi
   sleep 1
 done
 if wait "$NPM_PID"; then
-  progress 88 100 '下载并安装 Codex CLI __CODEX_VERSION__' "已完成 $PACKAGE_TOTAL 个组件"
+  NPM_FINISHED_AT="$(date +%s)"
+  NPM_ELAPSED="$((NPM_FINISHED_AT - NPM_STARTED))"
+  NPM_SIZE_KB="$(du -sk "$TEMP_RELEASE/node_modules" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  case "$NPM_SIZE_KB" in
+    ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
+  esac
+  NPM_BYTES="$((NPM_SIZE_KB * 1024))"
+  progress 88 100 '下载并安装 Codex CLI __CODEX_VERSION__' "已完成 $PACKAGE_TOTAL 个组件 · 已用时 ${NPM_ELAPSED}s" \
+    "$NPM_BYTES" '' '' "$NPM_ELAPSED"
 else
   NPM_STATUS="$?"
   cat "$NPM_LOG" >&2 || true

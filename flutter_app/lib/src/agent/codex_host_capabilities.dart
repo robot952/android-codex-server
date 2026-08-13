@@ -13,6 +13,22 @@ abstract interface class RemoteServerCodexRuntimeClient {
   Future<void> uninstallCodexRuntime(ServerProfile profile);
 }
 
+/// Native Host operations for the app-owned OpenCode bridge and runtime.
+abstract interface class RemoteServerOpenCodeRuntimeClient {
+  Future<AgentRuntimeInspection> inspectOpenCodeRuntime(
+    ServerProfile profile, {
+    required String bridgeSource,
+  });
+
+  Future<void> installOpenCodeRuntime(
+    ServerProfile profile, {
+    required String bridgeSource,
+    required void Function(RemoteInstallProgress progress) onProgress,
+  });
+
+  Future<void> uninstallOpenCodeRuntime(ServerProfile profile);
+}
+
 /// Native Host operations for the user's Codex configuration and API access.
 abstract interface class RemoteServerCodexSettingsClient {
   Future<AgentGlobalSettings> readCodexSettings(ServerProfile profile);

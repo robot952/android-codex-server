@@ -84,11 +84,29 @@ void main() {
       'message': '正在下载 Debian',
       'downloadedBytes': 1024,
       'totalBytes': 4096,
+      'bytesPerSecond': 512,
+      'elapsedSeconds': 2,
+      'indeterminate': false,
     });
     expect(controller.state.phase, LocalLinuxPhase.installing);
     expect(controller.state.progress, 25);
     expect(controller.state.downloadedBytes, 1024);
     expect(controller.state.totalBytes, 4096);
+    expect(controller.state.bytesPerSecond, 512);
+    expect(controller.state.elapsedSeconds, 2);
+    expect(controller.state.indeterminate, isFalse);
+
+    platform.emitProgress({
+      'phase': 'installing',
+      'percent': 46,
+      'message': '正在解压 Debian',
+      'downloadedBytes': 8192,
+      'bytesPerSecond': 2048,
+      'elapsedSeconds': 4,
+      'indeterminate': true,
+    });
+    expect(controller.state.totalBytes, isNull);
+    expect(controller.state.indeterminate, isTrue);
   });
 
   test('ensureStarted coalesces concurrent native start requests', () async {

@@ -698,6 +698,51 @@ class _PaginatedThreadAgent extends _SubAgentNavigationAgent
   }
 }
 
+class _ThreadMutationAgent extends _SubAgentNavigationAgent
+    implements RemoteAgentThreadMutationClient {
+  String? compactedThreadId;
+
+  @override
+  Future<void> compactThread(String threadId) async {
+    compactedThreadId = threadId;
+  }
+
+  @override
+  Future<AgentSession> rollbackThread(
+    String threadId, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+    int turns = 1,
+  }) async => _SubAgentNavigationAgent.sessions[threadId]!;
+
+  @override
+  Future<void> archiveThread(String threadId) async {}
+
+  @override
+  Future<void> setThreadName(String threadId, String name) async {}
+
+  @override
+  Future<void> startReview(String threadId) async {}
+
+  @override
+  Future<ThreadGoal?> getThreadGoal(String threadId) async => null;
+
+  @override
+  Future<ThreadGoal> setThreadGoal(
+    String threadId, {
+    String? objective,
+    ThreadGoalStatus? status,
+    int? tokenBudget,
+  }) async => ThreadGoal(
+    threadId: threadId,
+    objective: objective ?? '',
+    status: status ?? ThreadGoalStatus.unknown,
+    tokenBudget: tokenBudget,
+  );
+
+  @override
+  Future<void> clearThreadGoal(String threadId) async {}
+}
+
 class _ConnectFailingAgent extends _FailingTurnAgent {
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
@@ -1369,6 +1414,24 @@ void main() {
         <String>['root-thread', 'child-thread'],
       );
       expect(harness.controller.activeThreadListHasMore, isFalse);
+    },
+  );
+
+  test(
+    'clears the work diagnostic when returning to the thread list',
+    () async {
+      final agent = _ThreadMutationAgent();
+      final harness = await _createSubAgentHarness(agent: agent);
+
+      await harness.controller.compactActiveThread();
+
+      expect(agent.compactedThreadId, _SubAgentNavigationAgent.rootThread.id);
+      expect(harness.controller.state.diagnostic, '已开始压缩会话上下文');
+
+      harness.controller.backToThreadList();
+
+      expect(harness.controller.state.screen, AppScreen.threads);
+      expect(harness.controller.state.diagnostic, isNull);
     },
   );
 
