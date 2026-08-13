@@ -8,13 +8,18 @@ import '../domain/models.dart';
 import 'ssh_server_client.dart';
 
 typedef RemoteServerClientFactory = RemoteServerClient Function();
+typedef ProfiledRemoteServerClientFactory =
+    RemoteServerClient Function(ServerProfile profile);
 typedef ServerConnectionLease = ({RemoteServerClient client, int generation});
 
 class ServerConnectionManager {
-  ServerConnectionManager({RemoteServerClientFactory? clientFactory})
-    : _clientFactory = clientFactory ?? DartSshServerClient.new;
+  ServerConnectionManager({
+    RemoteServerClientFactory? clientFactory,
+    this.profiledClientFactory,
+  }) : _clientFactory = clientFactory ?? DartSshServerClient.new;
 
   final RemoteServerClientFactory _clientFactory;
+  final ProfiledRemoteServerClientFactory? profiledClientFactory;
   final Map<String, _ServerEntry> _entries = {};
   final Map<String, ConnectionState> _states = {};
   final Map<String, ServerMetrics> _serverMetrics = {};
@@ -46,7 +51,10 @@ class ServerConnectionManager {
       _clearServerMetrics(profile.id);
       existing.client.close();
     }
-    final entry = _ServerEntry(profile, _clientFactory());
+    final entry = _ServerEntry(
+      profile,
+      profiledClientFactory?.call(profile) ?? _clientFactory(),
+    );
     _entries[profile.id] = entry;
     _setState(profile.id, const ConnectionState());
     return entry.client;
@@ -87,9 +95,11 @@ class ServerConnectionManager {
       final generation = ++entry.generation;
       _setState(
         profile.id,
-        const ConnectionState(
+        ConnectionState(
           phase: ConnectionPhase.probing,
-          message: '正在读取 SSH 指纹',
+          message: client is LocalRemoteServerClient
+              ? '正在检查本机 Host'
+              : '正在读取 SSH 指纹',
         ),
       );
       try {
@@ -125,18 +135,22 @@ class ServerConnectionManager {
       if (entry.client.isConnected) {
         _setState(
           profile.id,
-          const ConnectionState(
+          ConnectionState(
             phase: ConnectionPhase.connected,
-            message: 'SSH 已连接',
+            message: entry.client is LocalRemoteServerClient
+                ? '本机 Host 已连接'
+                : 'SSH 已连接',
           ),
         );
         return;
       }
       _setState(
         profile.id,
-        const ConnectionState(
+        ConnectionState(
           phase: ConnectionPhase.connecting,
-          message: '正在连接 SSH',
+          message: entry.client is LocalRemoteServerClient
+              ? '正在连接本机 Host'
+              : '正在连接 SSH',
         ),
       );
       final generation = ++entry.generation;
@@ -148,9 +162,11 @@ class ServerConnectionManager {
         }
         _setState(
           profile.id,
-          const ConnectionState(
+          ConnectionState(
             phase: ConnectionPhase.connected,
-            message: 'SSH 已连接',
+            message: entry.client is LocalRemoteServerClient
+                ? '本机 Host 已连接'
+                : 'SSH 已连接',
           ),
         );
         unawaited(_watchDisconnect(profile.id, entry, generation));

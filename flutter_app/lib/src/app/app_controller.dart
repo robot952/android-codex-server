@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,7 +22,9 @@ import '../platform/background_connection_bridge.dart';
 import '../platform/diagnostic_logger.dart';
 import '../platform/local_linux_manager.dart';
 import '../platform/turn_completion_notifications.dart';
+import '../platform/windows_local_server_client.dart';
 import '../ssh/server_connection_manager.dart';
+import '../ssh/ssh_server_client.dart';
 import '../ssh/terminal_manager.dart';
 
 final profileStoreProvider = Provider<ProfileStore>((ref) {
@@ -31,7 +34,12 @@ final profileStoreProvider = Provider<ProfileStore>((ref) {
 final serverConnectionManagerProvider = Provider<ServerConnectionManager>((
   ref,
 ) {
-  final manager = ServerConnectionManager();
+  final manager = ServerConnectionManager(
+    profiledClientFactory: (profile) =>
+        Platform.isWindows && isLocalWindowsProfile(profile)
+        ? WindowsLocalServerClient()
+        : DartSshServerClient(),
+  );
   ref.onDispose(() => unawaited(manager.close()));
   return manager;
 });
@@ -208,6 +216,22 @@ class AppController extends StateNotifier<AppUiState> {
   Future<void> _initialize() async {
     try {
       _stored = await _store.load();
+      if (Platform.isWindows) {
+        final existing = _stored.profiles.firstWhereOrNull(
+          isLocalWindowsProfile,
+        );
+        final local = localWindowsProfile(existing: existing);
+        final profiles =
+            _stored.profiles
+                .where((profile) => !isLocalWindowsProfile(profile))
+                .toList(growable: true)
+              ..insert(0, local);
+        _stored = _stored.copyWith(
+          profiles: profiles,
+          selectedProfileId: _stored.selectedProfileId ?? local.id,
+        );
+        await _store.save(_stored);
+      }
       for (final profile in _stored.profiles) {
         _connections.registerProfile(profile);
         _agents.registerProfile(profile);
@@ -665,6 +689,13 @@ class AppController extends StateNotifier<AppUiState> {
     bool localLinuxPrepared = false,
   }) async {
     await _ensureInitialized();
+    if (isLocalWindowsProfile(profile) && !Platform.isWindows) {
+      _setError(
+        UnsupportedError('本机 Windows 仅支持 Windows EXE'),
+        '本机 Windows 不可用',
+      );
+      return;
+    }
     if (isLocalLinuxProfile(profile) && !localLinuxPrepared) {
       try {
         profile = await prepareLocalLinux();
@@ -683,6 +714,10 @@ class AppController extends StateNotifier<AppUiState> {
       error: null,
     );
     await _persist((stored) => stored.copyWith(selectedProfileId: profile.id));
+    if (isLocalWindowsProfile(profile)) {
+      await _connectVerified(profile);
+      return;
+    }
     if (profile.hostFingerprint.trim().isEmpty) {
       try {
         final fingerprint = await _connections.probeFingerprint(profile);
@@ -748,20 +783,29 @@ class AppController extends StateNotifier<AppUiState> {
     }
     _invalidateConnectionRecovery(profile.id);
     _clearSubAgentNavigationForProfile(profile.id);
-    _diagnostics.info('SSH', 'connect_requested profile=${profile.id}');
+    final connectionKind = isLocalWindowsProfile(profile) ? 'Host' : 'SSH';
+    _diagnostics.info(
+      connectionKind,
+      'connect_requested profile=${profile.id}',
+    );
     state = state.copyWith(loading: true, error: null);
     try {
       await _connections.connect(profile);
       if (!mounted) return;
       _retainedHostConnections.add(profile.id);
-      _diagnostics.info('SSH', 'connect_success profile=${profile.id}');
+      _diagnostics.info(
+        connectionKind,
+        'connect_success profile=${profile.id}',
+      );
       state = state.copyWith(
         selectedProfileId: profile.id,
         connection:
             _connections.states[profile.id] ??
-            const ConnectionState(
+            ConnectionState(
               phase: ConnectionPhase.connected,
-              message: 'SSH 已连接',
+              message: isLocalWindowsProfile(profile)
+                  ? '本机 Host 已连接'
+                  : 'SSH 已连接',
             ),
         screen: AppScreen.threads,
         activeAgent: profile.activeAgent,
@@ -776,12 +820,15 @@ class AppController extends StateNotifier<AppUiState> {
       unawaited(ensureActiveAgent());
     } catch (error, stack) {
       _diagnostics.warn(
-        'SSH',
+        connectionKind,
         'connect_failed profile=${profile.id}',
         error,
         stack,
       );
-      _setError(error, 'SSH 连接失败');
+      _setError(
+        error,
+        isLocalWindowsProfile(profile) ? '本机 Host 连接失败' : 'SSH 连接失败',
+      );
     }
   }
 
@@ -951,6 +998,10 @@ class AppController extends StateNotifier<AppUiState> {
       (candidate) => candidate.id == profileId,
     );
     if (profile == null) return;
+    if (isLocalWindowsProfile(profile) && agent != AgentKind.codex) {
+      state = state.copyWith(error: '本机 Windows 当前仅支持 Codex');
+      return;
+    }
     final key = AgentConnectionKey(profileId: profileId, agent: agent);
     final changingAgent = state.activeAgent != agent;
     if (changingAgent) {
@@ -4615,11 +4666,16 @@ class AppController extends StateNotifier<AppUiState> {
     if (problem != null) throw StateError(problem);
     if (inspection.compatibleCommand != null) return profile;
 
+    final localWindows = isLocalWindowsProfile(profile);
     final detail = inspection.detectedVersion == null
-        ? '${key.agent.label} 尚未安装，将在当前 SSH 用户目录安装。'
+        ? localWindows
+              ? '${key.agent.label} 尚未安装，将在当前 Windows 用户目录安装。'
+              : '${key.agent.label} 尚未安装，将在当前 SSH 用户目录安装。'
         : '${key.agent.label} 检测到 ${inspection.detectedVersion}，需要安装兼容版本。';
     final prompt = RemoteSetupPrompt(
-      title: '安装远程 ${key.agent.label}',
+      title: localWindows
+          ? '安装 Windows 原生 ${key.agent.label}'
+          : '安装远程 ${key.agent.label}',
       detail: detail,
       os: inspection.os,
       architecture: inspection.architecture,
@@ -5931,6 +5987,9 @@ class AppController extends StateNotifier<AppUiState> {
       : AgentCapabilities.none;
 
   ServerProfile _normalizeProfile(ServerProfile profile) {
+    if (isLocalWindowsProfile(profile)) {
+      return localWindowsProfile(existing: profile);
+    }
     if (profile.host.trim().isEmpty) throw StateError('服务器地址不能为空');
     if (profile.port < 1 || profile.port > 65535) {
       throw StateError('SSH 端口必须在 1 到 65535 之间');

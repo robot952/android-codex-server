@@ -76,6 +76,12 @@ class AgentRuntimeInspection {
 
   String? get installationProblem {
     if (fallbackCommand != null) return null;
+    if (os == 'Windows') {
+      if (!_supportedArchitectures.contains(architecture.toLowerCase())) {
+        return '暂不支持 ${architecture.isEmpty ? '未知' : architecture} 架构';
+      }
+      return null;
+    }
     if (os != 'Linux') return '暂不支持在 ${os.isEmpty ? '未知系统' : os} 上自动安装';
     if (!_supportedArchitectures.contains(architecture)) {
       return '暂不支持 ${architecture.isEmpty ? '未知' : architecture} 架构';

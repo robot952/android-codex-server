@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/app_controller.dart';
 import '../domain/models.dart';
+import '../platform/windows_local_server_client.dart';
 import 'server_metrics_strip.dart';
 import 'theme.dart';
 
@@ -47,6 +48,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         .where((candidate) => candidate.id == state.selectedProfileId)
         .firstOrNull;
     final profileId = profile?.id;
+    final localWindows = profile != null && isLocalWindowsProfile(profile);
     final hostConnected =
         profileId != null &&
         state.connectionStates[profileId]?.phase == ConnectionPhase.connected;
@@ -130,7 +132,9 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
         actions: [
           IconButton(
             tooltip: '终端',
-            onPressed: hostConnected ? controller.openTerminal : null,
+            onPressed: hostConnected && !localWindows
+                ? controller.openTerminal
+                : null,
             icon: const Icon(Icons.terminal),
           ),
           IconButton(
@@ -172,6 +176,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
               child: _AgentSwitcher(
                 activeAgent: state.activeAgent,
                 enabled: hostConnected && !loading,
+                openCodeEnabled: !localWindows,
                 setupFor: setupFor,
                 connectionFor: (agent) =>
                     state.agentConnectionStates[AgentConnectionKey(
@@ -336,6 +341,9 @@ void _showThreadSettings(
   AppUiState state,
   AppController controller,
 ) {
+  final profile = state.profiles
+      .where((candidate) => candidate.id == state.selectedProfileId)
+      .firstOrNull;
   showDialog<void>(
     context: context,
     builder: (_) => _ThreadSettingsDialog(
@@ -349,6 +357,7 @@ void _showThreadSettings(
               ?.phase ==
           ConnectionPhase.connected,
       canConfigureAgent: state.activeAgentCapabilities.globalSettings,
+      canManageFiles: profile != null && !isLocalWindowsProfile(profile),
       hostConnected:
           state.selectedProfileId != null &&
           state.connectionStates[state.selectedProfileId]?.phase ==
@@ -395,6 +404,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
     required this.agent,
     required this.agentConnected,
     required this.canConfigureAgent,
+    required this.canManageFiles,
     required this.hostConnected,
     required this.onSelectWorkspace,
     required this.onConfigureAgent,
@@ -404,6 +414,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
   final AgentKind agent;
   final bool agentConnected;
   final bool canConfigureAgent;
+  final bool canManageFiles;
   final bool hostConnected;
   final VoidCallback onSelectWorkspace;
   final VoidCallback onConfigureAgent;
@@ -447,7 +458,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
                 icon: Icons.folder_open,
                 title: '文件管理',
                 detail: '浏览和管理服务器文件',
-                enabled: hostConnected,
+                enabled: hostConnected && canManageFiles,
                 onTap: onOpenFileManager,
               ),
             ],
@@ -643,6 +654,7 @@ class _AgentSwitcher extends StatelessWidget {
   const _AgentSwitcher({
     required this.activeAgent,
     required this.enabled,
+    required this.openCodeEnabled,
     required this.setupFor,
     required this.connectionFor,
     required this.onSelect,
@@ -651,6 +663,7 @@ class _AgentSwitcher extends StatelessWidget {
 
   final AgentKind activeAgent;
   final bool enabled;
+  final bool openCodeEnabled;
   final AgentSetupState? Function(AgentKind agent) setupFor;
   final ConnectionState? Function(AgentKind agent) connectionFor;
   final ValueChanged<AgentKind> onSelect;
@@ -709,7 +722,7 @@ class _AgentSwitcher extends StatelessWidget {
                     _AgentSegment(
                       agent: AgentKind.openCode,
                       selected: !selected,
-                      enabled: enabled,
+                      enabled: enabled && openCodeEnabled,
                       setup: setupFor(AgentKind.openCode),
                       connection: connectionFor(AgentKind.openCode),
                       onTap: () => onSelect(AgentKind.openCode),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:collection/collection.dart';
 import 'package:file_picker/file_picker.dart';
@@ -12,6 +13,7 @@ import '../domain/models.dart';
 import '../platform/app_update_manager.dart';
 import '../platform/diagnostic_logger.dart';
 import '../platform/local_linux_manager.dart';
+import '../platform/windows_local_server_client.dart';
 import 'app_update_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'server_metrics_strip.dart';
@@ -126,6 +128,12 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       localLinux: localLinux,
                       onOpenLocalLinux: _openLocalLinux,
                       onUninstallLocalLinux: _uninstallLocalLinux,
+                      localWindows: Platform.isWindows
+                          ? state.profiles.firstWhereOrNull(
+                              isLocalWindowsProfile,
+                            )
+                          : null,
+                      onOpenLocalWindows: _openLocalWindows,
                       onSettings: _editProfile,
                       onOpen: _openProfile,
                       onDisconnect: _confirmDisconnect,
@@ -188,6 +196,19 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       await ref.read(appControllerProvider.notifier).connectLocalLinux();
     } catch (error) {
       if (mounted) _showMessage(_errorText(error));
+    }
+  }
+
+  Future<void> _openLocalWindows() async {
+    final controller = ref.read(appControllerProvider.notifier);
+    final state = ref.read(appControllerProvider);
+    final profile = state.profiles.firstWhereOrNull(isLocalWindowsProfile);
+    if (profile == null) return;
+    if (state.connectionStates[profile.id]?.phase ==
+        ConnectionPhase.connected) {
+      controller.selectProfile(profile.id);
+    } else {
+      await controller.requestConnect(profile);
     }
   }
 
@@ -752,6 +773,8 @@ class _ServerList extends StatelessWidget {
     required this.localLinux,
     required this.onOpenLocalLinux,
     required this.onUninstallLocalLinux,
+    required this.localWindows,
+    required this.onOpenLocalWindows,
     required this.onSettings,
     required this.onOpen,
     required this.onDisconnect,
@@ -764,6 +787,8 @@ class _ServerList extends StatelessWidget {
   final LocalLinuxState localLinux;
   final VoidCallback onOpenLocalLinux;
   final VoidCallback onUninstallLocalLinux;
+  final ServerProfile? localWindows;
+  final VoidCallback onOpenLocalWindows;
   final ValueChanged<ServerProfile> onSettings;
   final void Function(ServerProfile, ConnectionState) onOpen;
   final ValueChanged<ServerProfile> onDisconnect;
@@ -773,7 +798,10 @@ class _ServerList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final profiles = state.profiles
-        .where((profile) => !isLocalLinuxProfile(profile))
+        .where(
+          (profile) =>
+              !isLocalLinuxProfile(profile) && !isLocalWindowsProfile(profile),
+        )
         .toList(growable: false);
     final connectedCount = profiles
         .where(
@@ -787,11 +815,20 @@ class _ServerList extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.only(bottom: 24),
         children: [
-          _LocalLinuxPanel(
-            state: localLinux,
-            onOpen: onOpenLocalLinux,
-            onUninstall: onUninstallLocalLinux,
-          ),
+          if (!Platform.isWindows)
+            _LocalLinuxPanel(
+              state: localLinux,
+              onOpen: onOpenLocalLinux,
+              onUninstall: onUninstallLocalLinux,
+            ),
+          if (localWindows != null)
+            _LocalWindowsPanel(
+              profile: localWindows!,
+              connection:
+                  state.connectionStates[localWindows!.id] ??
+                  const ConnectionState(),
+              onOpen: onOpenLocalWindows,
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: DecoratedBox(
@@ -979,6 +1016,98 @@ class _LocalLinuxPanel extends StatelessWidget {
                     ),
                   ),
                 ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LocalWindowsPanel extends StatelessWidget {
+  const _LocalWindowsPanel({
+    required this.profile,
+    required this.connection,
+    required this.onOpen,
+  });
+
+  final ServerProfile profile;
+  final ConnectionState connection;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final busy =
+        connection.phase == ConnectionPhase.connecting ||
+        connection.phase == ConnectionPhase.probing;
+    final connected = connection.phase == ConnectionPhase.connected;
+    final failed = connection.phase == ConnectionPhase.failed;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+      child: DecoratedBox(
+        key: const ValueKey('local-windows-panel'),
+        decoration: BoxDecoration(
+          color: codexSurface,
+          border: Border.all(color: codexBorder),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: InkWell(
+          onTap: busy ? null : onOpen,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 11, 16, 11),
+            child: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: codexRaised,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.desktop_windows_outlined, size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        profile.name,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        failed
+                            ? connection.message
+                            : connected
+                            ? 'Windows 原生 Codex'
+                            : busy
+                            ? connection.message
+                            : '使用本机工作区和网络',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: failed ? codexRed : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (busy)
+                  const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  Text(
+                    connected ? '打开' : '连接',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: connected ? codexGreen : codexMuted,
+                    ),
+                  ),
               ],
             ),
           ),

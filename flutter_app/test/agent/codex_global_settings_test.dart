@@ -43,6 +43,24 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
     });
+
+    test('parses native and SSH model responses through one decoder', () {
+      final options = parseCodexApiModelsJson(
+        utf8.encode(
+          '{"data":['
+          '{"id":"gpt-native","display_name":"Native",'
+          '"context_window":131072,"max_output_tokens":32768},'
+          '{"id":"gpt-native"}'
+          ']}',
+        ),
+      );
+
+      expect(options, hasLength(1));
+      expect(options.single.modelId, 'gpt-native');
+      expect(options.single.displayName, 'Native');
+      expect(options.single.contextWindowTokens, 131072);
+      expect(options.single.maxOutputTokens, 32768);
+    });
   });
 
   group('Codex global settings shell scripts', () {

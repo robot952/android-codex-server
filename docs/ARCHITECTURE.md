@@ -13,10 +13,10 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.52+179，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.53+180，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
-| 当前交付目标 | Android Flutter APK |
+| 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
 
 app/ 是旧 Kotlin/Jetpack Compose 的完整实现，只能作为迁移参考和历史行为基线，不能写成当前
 Flutter 应用的运行架构、构建入口或已验收能力。文中出现“迁移目标”或“历史参考”时，表示尚未
@@ -128,6 +128,8 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/ui/work_content.dart | Codex 图片结果识别、文件名和 MIME 辅助 | 当前运行 |
 | flutter_app/lib/src/ui/markdown_links.dart | HTTP/HTTPS Markdown/裸链接和远程绝对文件路径的内部安全链接 | 当前运行 |
 | flutter_app/lib/src/platform/local_file_exporter.dart | Android 文件导出 MethodChannel 抽象和分块会话 | 当前运行 |
+| flutter_app/lib/src/platform/windows_local_server_client.dart | Windows 本地 Host、原生 Codex 进程、安装、工作区/附件和用户配置/API | 已实现；不依赖 WSL/SSH，待 Windows x64 实机验收 |
+| flutter_app/lib/src/agent/codex_host_capabilities.dart | Host 原生 Codex 运行时与配置可选能力 | SSH 脚本和 Windows Dart 实现共用 Agent adapter |
 | flutter_app/lib/src/platform/background_connection_bridge.dart | Flutter 到 Android 前台连接保护 Service 的启停桥接 | 当前运行；平台失败隔离 |
 | flutter_app/lib/src/platform/turn_completion_notifications.dart | 回合完成通知、bounded 去重、子 Agent 过滤和点击深链 | 当前运行；通知权限/插件失败降级 |
 | flutter_app/lib/src/platform/diagnostic_logger.dart | 持久化 Debug 日志、崩溃记录、脱敏、分段轮转、导出和分享 | 当前运行；普通日志需显式开启 |
@@ -184,6 +186,10 @@ main.dart
                                                                            +-- dartssh2 / SSH socket
                                                                            +-- bounded exec/metrics/SFTP/PTY
                                                                            +-- TerminalManager (profile PTY lanes)
+                                                                     |
+                                                                     +-- WindowsLocalServerClient (Windows EXE)
+                                                                           +-- Process / native file system / HttpClient
+                                                                           +-- codex.exe app-server --listen stdio://
                                                                +-- AgentConnectionManager
                                                                      |
                                                                      +-- CodexAgentClient
@@ -202,6 +208,12 @@ Release 检查和系统下载/安装，不进入 profile 或会话状态。Widge
 但不能自己复制一份长期 Profile 或连接状态。连接状态通过 ServerConnectionManager.stateChanges
 流回控制器，再由 AppUiState.connectionStates 按 profile 更新页面；资源采样通过独立的
 serverMetricChanges 流回 AppUiState.serverMetrics，不得把采样失败写成全局连接错误。
+
+Windows EXE 使用固定 `agent-local-windows` Profile 和 `WindowsLocalServerClient`，不经过 SSH 或 WSL。
+该 Host 只实现可选能力：Codex 本地进程、运行时安装、用户配置/API、工作区目录、附件、图片和文件下载。
+`CodexAgentClient` 把本地 `Process` 适配成既有 `CodexSession`，initialize、RPC、JSONL、有界解析、审批、
+reducer、缓存和页面状态均与 SSH Codex 共用，不允许复制 Windows 专用 Agent 协议栈。首版不提供 Windows
+本地终端、完整文件管理和 OpenCode，相关入口必须禁用；普通 SSH Profile 在 Windows 仍保持可用。
 
 当前页面选择逻辑：
 
@@ -1826,6 +1838,23 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   而发送瞬间的乐观消息使用相机原文件名；旧逻辑同时比较名称和路径，因而把同一条带图消息显示两次。
 - 乐观消息确认现在对有路径的附件使用稳定的 `remotePath + MIME` 匹配，忽略展示名称变化；无路径的内联
   附件仍按名称匹配。回归同时验证同路径不同名称会合并、不同路径不会误合并。
+
+### 17.36 Windows 原生 Codex Host（2026-08-13）
+
+- 应用版本：`1.8.53+180`。Windows x64 EXE 自动创建“本机 Windows”Profile，直接启动 Windows 原生
+  `codex.exe app-server --listen stdio://`，不要求 WSL、虚拟机或本机 SSH 服务。
+- 本机进程通过 `RemoteServerProcessSession` 适配为既有 `CodexSession`；Codex JSONL、线程、消息、审批、
+  模型和 reducer 完全复用。`ServerConnectionManager` 新增 profile-aware Host 工厂，同时保留旧无参数工厂
+  以兼容测试和 SSH 调用方；本地 Host 会跳过 Agent 的 dedicated SSH 和 Unix socket durable transport。
+- Windows Host 支持用户工作区目录、附件暂存、图片读取、文件导出、`%USERPROFILE%\.codex` 全局配置和
+  本机网络 API 测试/模型列表。模型 HTTP 响应与 SSH curl 复用同一个结构化解析器，配置写入使用同目录
+  临时文件替换。
+- 运行时优先复用已有 Codex；未安装时先用系统 npm 安装固定 `0.146.0`，下载先尝试 npmmirror，失败自动
+  回退 npm 官方源；没有 npm 时调用 OpenAI 官方 Windows 独立安装脚本。首版明确不提供 Windows 本地终端、
+  完整文件管理和 OpenCode，SSH 服务器能力不受影响。
+- 当前 Linux 门禁已覆盖共享 Agent/Host 逻辑、全量 Flutter 测试和 Android 构建；Windows x64 编译由现有
+  GitHub Actions Windows runner 执行。首次 EXE 安装、原生沙箱初始化和真实模型/附件链路仍需 Windows
+  实机验收，不能仅凭跨平台单元测试标记为已运行通过。
 
 ## 18. 文档维护规则
 

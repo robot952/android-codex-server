@@ -1,8 +1,9 @@
-# Codex Remote for Android
+# Codex Remote
 
 Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Codex 插件体验的 Flutter 客户端。
-当前 Android 构建入口是 `flutter_app/`；旧 Kotlin/Jetpack Compose 工程保留为行为基线，Flutter
-版本已经覆盖服务器、Agent、会话和工作区的主要链路。
+Windows x64 EXE 还可直接使用本机原生 Codex，无需 WSL 或本机 SSH 服务。当前构建入口是
+`flutter_app/`；旧 Kotlin/Jetpack Compose 工程保留为行为基线，Flutter 版本已经覆盖服务器、Agent、
+会话和工作区的主要链路。
 
 > 当前状态（2026-08-09）：Flutter Agent 核心迁移已提交到 `flutter-refactor` 分支，Codex/OpenCode
 > 共用会话协议和 Work 页面。后台 SSH/Agent 恢复、Release APK 和约 1.5K 模拟器回归已完成，目标真实
@@ -24,11 +25,14 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 - Android 前台连接保护、回合完成通知、Debug 日志导出分享和按会话缓存。
 - 服务器页在目标竖屏和放大字体下的 Widget 回归。
 - Android Debug 和 Release APK 使用同一把长期稳定签名，可覆盖安装历史同签名版本。
+- Windows x64 的“本机 Windows”Profile 直接启动原生 `codex.exe app-server`，复用同一套 Codex
+  JSONL、审批、会话和 Work 页面；支持本机工作区、附件及全局模型配置。
 
 ## 当前验收缺口
 
 以下项目已经有实现和测试覆盖，但本轮环境无法完成最终运行验收：
 
+- Windows x64 CI 编译、安装器覆盖安装，以及原生 Codex 检测、安装、沙箱、模型 API 和附件链路。
 - 在目标真实服务器上验证 OpenCode 固定版本的安装、卸载和真实 Provider/API 连通性。
 - 长时间 turn、steer、interrupt、断线重连和 Android 厂商后台限制下的持续运行。
 - 目标真实服务器上的长时 turn、steer、interrupt、Provider/API 和厂商后台策略。
@@ -47,6 +51,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 | `flutter_app/lib` | 当前 Flutter 应用源码 |
 | `flutter_app/test` | 当前 Flutter 单元测试和 Widget 测试 |
 | `flutter_app/android` | 当前 Android 宿主、签名和旧 Profile 导入桥接 |
+| `flutter_app/lib/src/platform/windows_local_server_client.dart` | Windows 原生 Codex Host、安装、文件和配置能力 |
 | `flutter_app/ios` | Flutter 自动生成的 iOS 工程骨架，尚未作为交付版本验收 |
 | `app` | 旧 Kotlin/Compose 完整实现，仅作迁移参考和行为基线 |
 | `server` | 固定 Agent 安装、受限入口和 app-server smoke test 辅助脚本 |
@@ -68,7 +73,7 @@ Codex Remote 是一个通过 SSH 连接远程服务器、提供接近 VS Code Co
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.52+179`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.53+180`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |

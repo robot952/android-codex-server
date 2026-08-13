@@ -230,7 +230,7 @@ class AgentConnectionManager {
       if (host == null ||
           !host.isConnected ||
           hostState?.phase != ConnectionPhase.connected) {
-        throw StateError('请先连接 SSH 服务器');
+        throw StateError('请先连接 Host');
       }
       if (entry.client.isConnected) {
         _setState(

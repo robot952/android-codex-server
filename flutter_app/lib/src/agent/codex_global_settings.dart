@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import '../domain/models.dart';
 
@@ -296,9 +297,21 @@ List<ApiModelOption> parseCodexApiModels(String output) {
       .join();
   if (encoded.isEmpty) throw StateError('模型 API 没有返回模型列表');
 
+  Uint8List decoded;
+  try {
+    decoded = base64.decode(encoded);
+  } on FormatException {
+    throw StateError('模型列表数据无法解析');
+  }
+  return parseCodexApiModelsJson(decoded);
+}
+
+/// Parses the OpenAI-compatible model response shared by SSH curl and native
+/// desktop HTTP clients.
+List<ApiModelOption> parseCodexApiModelsJson(List<int> bytes) {
   Object? root;
   try {
-    root = jsonDecode(utf8.decode(base64.decode(encoded)));
+    root = jsonDecode(utf8.decode(bytes));
   } on FormatException {
     throw StateError('模型列表数据无法解析');
   }

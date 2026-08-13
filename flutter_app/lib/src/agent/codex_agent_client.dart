@@ -9,6 +9,7 @@ import 'package:dartssh2/dartssh2.dart';
 import '../domain/models.dart';
 import '../ssh/ssh_server_client.dart';
 import 'codex_global_settings.dart';
+import 'codex_host_capabilities.dart';
 import 'codex_protocol.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
@@ -63,6 +64,27 @@ final class _SshCodexSession implements CodexSession {
       } catch (_) {}
     }
   }
+}
+
+final class _RemoteProcessCodexSession implements CodexSession {
+  _RemoteProcessCodexSession(this._session);
+
+  final RemoteServerProcessSession _session;
+
+  @override
+  Stream<Uint8List> get stdout => _session.stdout;
+
+  @override
+  Stream<Uint8List> get stderr => _session.stderr;
+
+  @override
+  Future<void> get done => _session.done;
+
+  @override
+  void write(Uint8List data) => _session.write(data);
+
+  @override
+  void terminate() => _session.terminate();
 }
 
 final class _WebSocketCodexSession implements CodexSession {
@@ -417,6 +439,7 @@ class CodexAgentClient
   String _stderrBuffer = '';
   bool _discardStderrLine = false;
   String? _durableStopCommand;
+  bool _connectedHostIsLocal = false;
 
   @override
   AgentKind get kind => AgentKind.codex;
@@ -434,7 +457,8 @@ class CodexAgentClient
   }
 
   @override
-  bool get usesIndependentConnection => dedicatedHostFactory != null;
+  bool get usesIndependentConnection =>
+      dedicatedHostFactory != null && !_connectedHostIsLocal;
 
   @override
   Stream<RemoteAgentEvent> get events => _eventController.stream;
@@ -444,6 +468,11 @@ class CodexAgentClient
     ServerProfile profile,
     RemoteServerClient host,
   ) async {
+    if (host is RemoteServerCodexRuntimeClient) {
+      return (host as RemoteServerCodexRuntimeClient).inspectCodexRuntime(
+        profile,
+      );
+    }
     final scriptHost = host is RemoteServerScriptClient
         ? host as RemoteServerScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持安全执行探测脚本');
@@ -461,6 +490,12 @@ class CodexAgentClient
     RemoteServerClient host, {
     required void Function(RemoteInstallProgress progress) onProgress,
   }) async {
+    if (host is RemoteServerCodexRuntimeClient) {
+      return (host as RemoteServerCodexRuntimeClient).installCodexRuntime(
+        profile,
+        onProgress: onProgress,
+      );
+    }
     final scriptHost = host is RemoteServerStreamingScriptClient
         ? host as RemoteServerStreamingScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持流式执行安装脚本');
@@ -482,6 +517,11 @@ class CodexAgentClient
     RemoteServerClient host,
   ) async {
     await disconnect();
+    if (host is RemoteServerCodexRuntimeClient) {
+      return (host as RemoteServerCodexRuntimeClient).uninstallCodexRuntime(
+        profile,
+      );
+    }
     final scriptHost = host is RemoteServerScriptClient
         ? host as RemoteServerScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持安全执行卸载脚本');
@@ -496,11 +536,12 @@ class CodexAgentClient
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
     if (_closed) throw StateError('${kind.label} 通道已经关闭');
     await disconnect();
+    _connectedHostIsLocal = host is LocalRemoteServerClient;
 
     var sessionHost = host;
     RemoteServerClient? dedicatedHost;
     final dedicatedHostFactory = this.dedicatedHostFactory;
-    if (dedicatedHostFactory != null) {
+    if (dedicatedHostFactory != null && host is! LocalRemoteServerClient) {
       dedicatedHost = dedicatedHostFactory();
       try {
         await dedicatedHost.connect(profile);
@@ -517,6 +558,7 @@ class CodexAgentClient
     late CodexSession session;
     try {
       if (_usesDefaultSessionOpener &&
+          sessionHost is! LocalRemoteServerClient &&
           supportsDurableCodexAppServer(profile.remoteCommand)) {
         try {
           final durable = buildDurableCodexAppServerCommands(profile);
@@ -1101,7 +1143,12 @@ class CodexAgentClient
 
   @override
   Future<AgentGlobalSettings> readGlobalSettings(ServerProfile profile) async {
-    final host = _requireSettingsHost(profile);
+    final connectedHost = _requireConnectedSettingsHost(profile);
+    if (connectedHost is RemoteServerCodexSettingsClient) {
+      return (connectedHost as RemoteServerCodexSettingsClient)
+          .readCodexSettings(profile);
+    }
+    final host = _requireScriptSettingsHost(connectedHost);
     final output = await host.runShellScript(
       readCodexGlobalSettingsScript,
       timeout: const Duration(seconds: 30),
@@ -1120,7 +1167,20 @@ class CodexAgentClient
     required String defaultReasoningEffort,
     required bool preserveCurrentProvider,
   }) async {
-    final host = _requireSettingsHost(profile);
+    final connectedHost = _requireConnectedSettingsHost(profile);
+    if (connectedHost is RemoteServerCodexSettingsClient) {
+      return (connectedHost as RemoteServerCodexSettingsClient)
+          .writeCodexSettings(
+            profile,
+            baseUrl: baseUrl,
+            apiKey: apiKey,
+            proxyUrl: proxyUrl,
+            defaultModel: defaultModel,
+            defaultReasoningEffort: defaultReasoningEffort,
+            preserveCurrentProvider: preserveCurrentProvider,
+          );
+    }
+    final host = _requireScriptSettingsHost(connectedHost);
     final output = await host.runShellScript(
       buildWriteCodexGlobalSettingsScript(
         baseUrl: baseUrl,
@@ -1147,7 +1207,19 @@ class CodexAgentClient
     required String testModel,
     ModelApiProtocol? apiProtocol,
   }) async {
-    final host = _requireSettingsHost(profile);
+    final connectedHost = _requireConnectedSettingsHost(profile);
+    if (connectedHost is RemoteServerCodexSettingsClient) {
+      return (connectedHost as RemoteServerCodexSettingsClient)
+          .testCodexSettings(
+            profile,
+            baseUrl: baseUrl,
+            apiKey: apiKey,
+            proxyUrl: proxyUrl,
+            testModel: testModel,
+            apiProtocol: apiProtocol,
+          );
+    }
+    final host = _requireScriptSettingsHost(connectedHost);
     final output = await host.runShellScript(
       buildTestCodexGlobalSettingsScript(
         baseUrl: baseUrl,
@@ -1169,7 +1241,17 @@ class CodexAgentClient
     required String apiKey,
     required String proxyUrl,
   }) async {
-    final host = _requireSettingsHost(profile);
+    final connectedHost = _requireConnectedSettingsHost(profile);
+    if (connectedHost is RemoteServerCodexSettingsClient) {
+      return (connectedHost as RemoteServerCodexSettingsClient)
+          .fetchCodexApiModels(
+            profile,
+            baseUrl: baseUrl,
+            apiKey: apiKey,
+            proxyUrl: proxyUrl,
+          );
+    }
+    final host = _requireScriptSettingsHost(connectedHost);
     final output = await host.runShellScript(
       buildFetchCodexApiModelsScript(
         baseUrl: baseUrl,
@@ -1182,7 +1264,7 @@ class CodexAgentClient
     return parseCodexApiModels(output);
   }
 
-  RemoteServerScriptClient _requireSettingsHost(ServerProfile profile) {
+  RemoteServerClient _requireConnectedSettingsHost(ServerProfile profile) {
     final host = _settingsHost;
     final connectedProfile = _connectedProfile;
     if (!isConnected || host == null || connectedProfile == null) {
@@ -1191,11 +1273,14 @@ class CodexAgentClient
     if (!connectedProfile.hasSameConnectionIdentity(profile)) {
       throw StateError('${kind.label} 连接配置已更新');
     }
-    if (host is! RemoteServerScriptClient) {
-      throw UnsupportedError('当前 SSH 客户端不支持安全执行配置脚本');
-    }
-    return host as RemoteServerScriptClient;
+    return host;
   }
+
+  RemoteServerScriptClient _requireScriptSettingsHost(
+    RemoteServerClient host,
+  ) => host is RemoteServerScriptClient
+      ? host as RemoteServerScriptClient
+      : throw UnsupportedError('当前 Host 不支持安全执行配置操作');
 
   @override
   void close() {
@@ -1518,6 +1603,11 @@ Future<CodexSession> _openSession(
   RemoteServerClient host,
   String command,
 ) async {
+  if (host is RemoteServerCodexProcessClient) {
+    final session = await (host as RemoteServerCodexProcessClient)
+        .openCodexAppServer();
+    return _RemoteProcessCodexSession(session);
+  }
   final session = await host.requireSshClient().execute(command);
   return _SshCodexSession(session);
 }

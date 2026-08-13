@@ -21,6 +21,25 @@ abstract interface class RemoteServerClient {
   void close();
 }
 
+/// Marker for a Host implemented by the current desktop OS instead of SSH.
+/// Agent adapters use this only to avoid opening a second SSH connection.
+abstract interface class LocalRemoteServerClient {}
+
+/// A byte-oriented local process session. It intentionally mirrors only the
+/// stdio surface needed by app-server protocols.
+abstract interface class RemoteServerProcessSession {
+  Stream<Uint8List> get stdout;
+  Stream<Uint8List> get stderr;
+  Future<void> get done;
+  void write(Uint8List data);
+  void terminate();
+}
+
+/// Optional capability for starting Codex app-server on the Host itself.
+abstract interface class RemoteServerCodexProcessClient {
+  Future<RemoteServerProcessSession> openCodexAppServer();
+}
+
 /// Optional transport-level keepalive used by the Android foreground service.
 /// Keeping this capability separate means lightweight test clients and desktop
 /// hosts do not need to emulate SSH global requests.

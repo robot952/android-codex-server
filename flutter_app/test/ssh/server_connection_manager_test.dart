@@ -270,6 +270,25 @@ void main() {
     await manager.close();
   });
 
+  test('selects a Host client from the registered profile', () async {
+    final selectedProfiles = <ServerProfile>[];
+    final clients = <_FakeClient>[];
+    final manager = ServerConnectionManager(
+      profiledClientFactory: (profile) {
+        selectedProfiles.add(profile);
+        final client = _FakeClient();
+        clients.add(client);
+        return client;
+      },
+    );
+
+    final client = manager.registerProfile(first);
+
+    expect(selectedProfiles, <ServerProfile>[first]);
+    expect(client, same(clients.single));
+    await manager.close();
+  });
+
   test('reads a bounded image through the connected host lane', () async {
     final bytes = Uint8List.fromList(<int>[1, 2, 3]);
     final client = _FakeImageClient(Future<Uint8List>.value(bytes));

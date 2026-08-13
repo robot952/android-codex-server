@@ -82,7 +82,7 @@ class _FakeCodexHost
   }
 }
 
-class _FakeCodexSession implements CodexSession {
+class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
   final StreamController<Uint8List> _stdout = StreamController<Uint8List>(
     sync: true,
   );
@@ -129,6 +129,20 @@ class _FakeCodexSession implements CodexSession {
     if (!_done.isCompleted) _done.complete();
     unawaited(_stdout.close());
     unawaited(_stderr.close());
+  }
+}
+
+class _FakeLocalCodexHost extends _FakeCodexHost
+    implements LocalRemoteServerClient, RemoteServerCodexProcessClient {
+  _FakeLocalCodexHost(this.session);
+
+  final RemoteServerProcessSession session;
+  int openCount = 0;
+
+  @override
+  Future<RemoteServerProcessSession> openCodexAppServer() async {
+    openCount++;
+    return session;
   }
 }
 
@@ -318,6 +332,38 @@ void main() {
     expect(session.terminated, isTrue);
     expect(dedicatedHost.disconnectCount, 1);
     expect(host.disconnectCount, 0);
+  });
+
+  test('reuses JSONL protocol over a native Host process session', () async {
+    final session = _FakeCodexSession();
+    final host = _FakeLocalCodexHost(session);
+    final dedicatedHost = _FakeCodexHost(connected: false);
+    final client = CodexAgentClient(dedicatedHostFactory: () => dedicatedHost);
+    const profile = ServerProfile(
+      id: 'agent-local-windows',
+      host: 'local-windows',
+      port: 1,
+      username: 'local',
+      hostFingerprint: 'local-windows',
+    );
+
+    await client.connect(profile, host);
+
+    expect(host.openCount, 1);
+    expect(dedicatedHost.connectCount, 0);
+    expect(client.usesIndependentConnection, isFalse);
+    expect(session.writes, hasLength(2));
+    expect(
+      jsonDecode(session.writes.first),
+      containsPair('method', 'initialize'),
+    );
+    expect(
+      jsonDecode(session.writes.last),
+      containsPair('method', 'initialized'),
+    );
+
+    await client.disconnect();
+    expect(session.terminated, isTrue);
   });
 
   test(
