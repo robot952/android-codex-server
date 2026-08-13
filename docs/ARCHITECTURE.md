@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.33+160，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.52+179，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK |
@@ -1108,7 +1108,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 17. 本机构建下载优先使用 127.0.0.1:7890；已有依赖保持离线增量构建。
 18. 每次修改按风险执行最近的定向测试并只选择一个主门禁；不能只以“编译通过”代替模拟器和真实流程
     验证，也不要重复执行已经由同指纹成功 stamp 证明的 analyze、全量测试或 APK 构建。第一次写文件前
-    开始计时，收尾必须报告总耗时、各阶段耗时、缓存命中和失败返工。
+    开始计时，收尾必须报告总耗时、各阶段耗时、缓存命中和失败返工。用户明确要求“推送到远端并出包”
+    时视为已完成本地验收，跳过上述本地门禁，直接推送并只跟踪云端流水线和 Release。
 19. Git 提交信息使用中文；得到授权后才同步配置好的 Gitee origin。
 20. “低价中转站优选”必须由系统浏览器打开 https://lowapi.asdb.top，不可内嵌 WebView。
 21. 非致命远端 stderr 去除 ANSI/控制字符后写入有界 Debug 日志，不覆盖会话页状态；真正断线、认证失败和不可恢复错误仍明确显示。
