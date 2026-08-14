@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.59+186，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.70+197，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1904,6 +1904,16 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   同一 turn 继续运行，从 `06:23:59` 到手动停止的 `06:35:00` 冻结为 `11m 1s`，未发现 Flutter
   crash 或 ANR。该测试账号本轮没有返回模型或子 Agent 事件，因此不将本次记为真实 malformed
   自动恢复或子 Agent 端到端通过；这两条由受控 stderr/turn 回归覆盖。
+
+### 17.40 子 Agent 状态、恢复去重与命令耗时收敛（2026-08-14）
+
+- 应用版本：`1.8.70+197`。子 Agent 活动在收到真实 child thread ID 前只显示准备中，不伪造运行转圈；
+  子会话终态会同步到当前时间线和缓存中的父会话，Composer 下方恢复显示当前回合的后台 Agent 数量及
+  可展开列表。重复的时间线行使用稳定的出现序号，避免 Sliver/`TapRegion` 在恢复和分页期间崩溃。
+- resume 快照和实时回放按复合身份及用户消息语义去重，避免重连后重复用户气泡；保留整回合完成/停止耗时，
+  命令卡片不再采集或展示单条命令耗时。
+- 定向测试、Flutter 全量测试、`flutter analyze`、Release 构建和 Android 14 竖屏模拟器 smoke 已通过；
+  `1.8.70+197` Release APK 使用稳定签名并完成内网/外网下载回验。
 
 ## 18. 文档维护规则
 
