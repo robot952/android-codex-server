@@ -2,8 +2,8 @@ name: Flutter Refactor Cross-platform Release
 
 on:
   push:
-    branches:
-      - flutter-refactor
+    tags:
+      - 'flutter-refactor-v*'
   workflow_dispatch:
 
 permissions:
@@ -392,8 +392,14 @@ jobs:
           version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' flutter_app/pubspec.yaml | head -n 1)"
           release_version="${version%%+*}"
           short_sha="${GITHUB_SHA:0:7}"
-          tag="flutter-refactor-v${release_version}-${short_sha}"
-          title="Flutter refactor v${release_version} (${short_sha})"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            title="Flutter refactor ${tag#flutter-refactor-}"
+          else
+            # Keep manual workflow_dispatch runs publishable from a branch.
+            tag="flutter-refactor-v${release_version}-${short_sha}"
+            title="Flutter refactor v${release_version} (${short_sha})"
+          fi
           notes_file="release-assets/flutter-refactor-release.md"
           mapfile -t assets < <(
             find release-assets -type f \
