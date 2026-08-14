@@ -73,7 +73,7 @@ Windows x64 EXE 还可直接使用本机原生 Codex，无需 WSL 或本机 SSH 
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.59+186`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.70+197`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |
