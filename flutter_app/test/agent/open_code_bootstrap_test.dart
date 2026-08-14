@@ -190,18 +190,12 @@ __CODEX_REMOTE_OPENCODE_INVALID
       expect(script, contains('aarch64|arm64) PLATFORM_PACKAGE='));
       expect(script, contains('PLATFORM_PACKAGE=opencode-linux-arm64'));
       expect(script, contains('PLATFORM_PACKAGE=opencode-linux-x64'));
-      expect(
-        script,
-        contains('PLATFORM_PACKAGE=opencode-linux-x64-baseline'),
-      );
+      expect(script, contains('PLATFORM_PACKAGE=opencode-linux-x64-baseline'));
       expect(script, isNot(contains('opencode-linux-arm64-musl')));
       expect(script, isNot(contains('opencode-linux-x64-musl')));
       expect(script, contains('--ignore-scripts'));
       expect(script, contains('--omit=optional'));
-      expect(
-        script,
-        contains('ln -s "../\$PLATFORM_PACKAGE/bin/opencode"'),
-      );
+      expect(script, contains('ln -s "../\$PLATFORM_PACKAGE/bin/opencode"'));
       expect(script, contains('PROXY=${shellQuote(proxy)}'));
       expect(script, contains('HTTP_PROXY="\$PROXY"'));
       expect(script, contains(OpenCodeBootstrap.bridgeSha256(bridge)));

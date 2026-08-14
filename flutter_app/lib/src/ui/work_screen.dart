@@ -294,6 +294,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
             onEditGoal: () => _showGoalDialog(state, controller),
             onToggleGoal: () => _toggleGoal(state, controller),
             onClearGoal: () => _confirmClearGoal(controller),
+            onOpenSubAgent: controller.openSubAgentThread,
           ),
         ],
       ),
@@ -2121,6 +2122,7 @@ class _Transcript extends StatelessWidget {
       }
     }
     final contentItems = <Widget>[];
+    final rowKeyCounts = <String, int>{};
     for (final row in rows) {
       final child = switch (row) {
         TimelineEntryRenderRow(:final entry) => _TimelineCard(
@@ -2153,11 +2155,14 @@ class _Transcript extends StatelessWidget {
             onOpenSubAgent: onOpenSubAgent,
           ),
       };
+      final baseKey = '${state.activeThread?.id}:${row.stableKey}';
+      final occurrence = rowKeyCounts.update(
+        baseKey,
+        (count) => count + 1,
+        ifAbsent: () => 0,
+      );
       contentItems.add(
-        KeyedSubtree(
-          key: ValueKey('${state.activeThread?.id}:${row.stableKey}'),
-          child: child,
-        ),
+        KeyedSubtree(key: ValueKey('$baseKey:$occurrence'), child: child),
       );
     }
     if (state.aggregateDiff.trim().isNotEmpty) {
@@ -2207,7 +2212,6 @@ class _Transcript extends StatelessWidget {
         sliver: SliverList(
           delegate: SliverChildBuilderDelegate(
             (context, index) => Padding(
-              key: items[index].key,
               padding: EdgeInsets.only(
                 top: index == items.length - 1 ? _transcriptVerticalPadding : 0,
                 bottom: index == 0 ? 0 : 10,
@@ -2654,7 +2658,7 @@ class _SubAgentStatusVisual extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = _subAgentStatusColor(agent.status);
-    if (agent.status.isActive) {
+    if (agent.showsProgressIndicator) {
       return SizedBox.square(
         dimension: 14,
         child: CircularProgressIndicator(
@@ -2683,6 +2687,141 @@ Color _subAgentStatusColor(SubAgentDisplayStatus status) => switch (status) {
   SubAgentDisplayStatus.unavailable => codexRed,
   SubAgentDisplayStatus.stopped => codexMuted,
 };
+
+class _BackgroundAgentsPanel extends StatefulWidget {
+  const _BackgroundAgentsPanel({
+    required this.sessionId,
+    required this.agents,
+    required this.enabled,
+    required this.onOpenSubAgent,
+  });
+
+  final String sessionId;
+  final List<SubAgentPresentation> agents;
+  final bool enabled;
+  final void Function(String threadId, String agentName) onOpenSubAgent;
+
+  @override
+  State<_BackgroundAgentsPanel> createState() => _BackgroundAgentsPanelState();
+}
+
+class _BackgroundAgentsPanelState extends State<_BackgroundAgentsPanel> {
+  bool _expanded = false;
+
+  @override
+  void didUpdateWidget(_BackgroundAgentsPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId != widget.sessionId) _expanded = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = '${widget.agents.length} 个后台智能体';
+    return Material(
+      color: _workRaised,
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: _workBorder),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            key: const Key('background-agents-toggle'),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+              child: Row(
+                children: [
+                  const Icon(Icons.smart_toy_outlined, size: 17),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                  AnimatedRotation(
+                    turns: _expanded ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    child: const Icon(Icons.keyboard_arrow_down, size: 20),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Divider(height: 1, color: _workBorder),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 176),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            children: [
+                              for (final agent in widget.agents)
+                                _BackgroundAgentRow(
+                                  agent: agent,
+                                  enabled: widget.enabled,
+                                  onOpenSubAgent: widget.onOpenSubAgent,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BackgroundAgentRow extends StatelessWidget {
+  const _BackgroundAgentRow({
+    required this.agent,
+    required this.enabled,
+    required this.onOpenSubAgent,
+  });
+
+  final SubAgentPresentation agent;
+  final bool enabled;
+  final void Function(String threadId, String agentName) onOpenSubAgent;
+
+  @override
+  Widget build(BuildContext context) {
+    final canOpen = enabled && agent.isOpenable;
+    return InkWell(
+      onTap: canOpen ? () => onOpenSubAgent(agent.threadId, agent.name) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        child: Row(
+          children: [
+            _SubAgentAvatar(agent: agent),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                agent.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            _SubAgentStatusVisual(agent: agent),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _OlderHistoryIndicator extends StatelessWidget {
   const _OlderHistoryIndicator({required this.loading, required this.armed});
@@ -2814,31 +2953,43 @@ class _UserMessageTimelineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: _workRaised,
-      borderRadius: BorderRadius.circular(6),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (entry.text.isNotEmpty) SelectableText(entry.text),
-            if (entry.attachments.isNotEmpty) ...[
-              if (entry.text.isNotEmpty) const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final attachment in entry.attachments)
-                    _AttachmentChip(
-                      attachment: attachment,
-                      loading: imageLoadingPath == attachment.remotePath,
-                      onOpenImage: onOpenImage,
-                    ),
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.88;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Material(
+          key: Key('user-message-card-${entry.id}'),
+          color: const Color(0xFF2B3730),
+          shape: RoundedRectangleBorder(
+            side: const BorderSide(color: Color(0xFF53735D)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (entry.text.isNotEmpty) SelectableText(entry.text),
+                if (entry.attachments.isNotEmpty) ...[
+                  if (entry.text.isNotEmpty) const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final attachment in entry.attachments)
+                        _AttachmentChip(
+                          attachment: attachment,
+                          loading: imageLoadingPath == attachment.remotePath,
+                          onOpenImage: onOpenImage,
+                        ),
+                    ],
+                  ),
                 ],
-              ),
-            ],
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -3519,32 +3670,47 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
                       ).textTheme.bodySmall?.copyWith(color: status.color),
                     ),
                   const SizedBox(width: 4),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    size: 18,
+                  AnimatedRotation(
+                    key: const Key('command-expand-arrow'),
+                    turns: _expanded ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    child: const Icon(Icons.keyboard_arrow_down, size: 18),
                   ),
                 ],
               ),
             ),
           ),
-          if (_expanded) ...[
-            if (entry.command.isNotEmpty) _CommandOutputBlock(entry.command),
-            if (entry.output.isNotEmpty) ...[
-              if (entry.command.isNotEmpty)
-                const Divider(height: 1, color: _workBorder),
-              _CommandOutputBlock(entry.output),
-            ],
-            if (entry.command.isEmpty && entry.output.isEmpty)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(11, 8, 11, 10),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('未提供命令内容', style: TextStyle(color: codexMuted)),
-                ),
-              ),
-          ],
+          AnimatedSize(
+            key: const Key('command-details-animation'),
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Column(
+                    children: [
+                      if (entry.command.isNotEmpty)
+                        _CommandOutputBlock(entry.command),
+                      if (entry.output.isNotEmpty) ...[
+                        if (entry.command.isNotEmpty)
+                          const Divider(height: 1, color: _workBorder),
+                        _CommandOutputBlock(entry.output),
+                      ],
+                      if (entry.command.isEmpty && entry.output.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(11, 8, 11, 10),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '未提供命令内容',
+                              style: TextStyle(color: codexMuted),
+                            ),
+                          ),
+                        ),
+                    ],
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
         ],
       ),
     );
@@ -4253,6 +4419,7 @@ class _Composer extends StatelessWidget {
     required this.onEditGoal,
     required this.onToggleGoal,
     required this.onClearGoal,
+    required this.onOpenSubAgent,
   });
 
   final AppUiState state;
@@ -4272,6 +4439,7 @@ class _Composer extends StatelessWidget {
   final Future<void> Function() onEditGoal;
   final Future<void> Function() onToggleGoal;
   final Future<void> Function() onClearGoal;
+  final void Function(String threadId, String agentName) onOpenSubAgent;
 
   @override
   Widget build(BuildContext context) {
@@ -4289,6 +4457,16 @@ class _Composer extends StatelessWidget {
     final permissionColor = state.approvalMode == ApprovalMode.fullAccess
         ? _workAmber
         : codexMuted;
+    final backgroundAgents = state.activeAgentCapabilities.subAgents
+        ? state.timeline.toBackgroundSubAgentPresentations(
+            running: state.running,
+            activeTurnId: state.running
+                ? state.activeTurnId
+                : state.turnTiming?.turnId,
+          )
+        : const <SubAgentPresentation>[];
+    final canOpenSubAgents =
+        !state.loading && !state.submitting && state.approvalQueue.isEmpty;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 170),
       curve: Curves.easeOutCubic,
@@ -4309,6 +4487,15 @@ class _Composer extends StatelessWidget {
                     onEdit: onEditGoal,
                     onTogglePause: onToggleGoal,
                     onDelete: onClearGoal,
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                if (backgroundAgents.isNotEmpty) ...[
+                  _BackgroundAgentsPanel(
+                    sessionId: state.activeThread?.id ?? '',
+                    agents: backgroundAgents,
+                    enabled: canOpenSubAgents,
+                    onOpenSubAgent: onOpenSubAgent,
                   ),
                   const SizedBox(height: 6),
                 ],

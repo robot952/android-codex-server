@@ -158,6 +158,8 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, ThreadSessionCache> _threadCaches = {};
   final Map<AgentConnectionKey, ResumeNotificationBuffer>
   _resumeNotificationBuffers = {};
+  final Map<AgentConnectionKey, ({String threadId, String turnId})>
+  _collaborationRecoveryTurns = {};
   final Map<String, _ThreadOpenRequest> _threadOpenRequests = {};
   final ProfileScopedBackStack<_SubAgentNavigationFrame>
   _subAgentNavigationStacks = ProfileScopedBackStack();
@@ -2785,6 +2787,7 @@ class AppController extends StateNotifier<AppUiState> {
         agent: state.activeAgent,
       );
       _advanceSessionNavigation(key);
+      _cacheActiveThreadSession(key);
       _subAgentNavigationStacks.clear(_subAgentNavigationScope(key));
     }
     state = state.copyWith(
@@ -5444,10 +5447,12 @@ class AppController extends StateNotifier<AppUiState> {
             'profile=${envelope.key.profileId} '
                 'agent=${envelope.key.agent.name} detail=$message',
           );
+          _recoverMalformedCollaborationTurn(envelope.key, message);
         } else if (active) {
           state = state.copyWith(diagnostic: message);
         }
       case RemoteAgentConnectionLost(:final message):
+        _collaborationRecoveryTurns.remove(envelope.key);
         _diagnostics.info(
           'Agent',
           'connection_lost profile=${envelope.key.profileId} '
@@ -5487,6 +5492,7 @@ class AppController extends StateNotifier<AppUiState> {
       case RemoteAgentNotification(:final message):
         final before = state;
         final routedMessage = _withResolvedNotificationThreadId(message);
+        _clearCollaborationRecoveryForCompletion(envelope.key, routedMessage);
         _rememberSubAgentReferences(
           envelope.key,
           before.agentThreadLists[envelope.key] ?? const <AgentThread>[],
@@ -5499,6 +5505,7 @@ class AppController extends StateNotifier<AppUiState> {
         if (publishCompletion) {
           _publishTurnCompletionIfNeeded(envelope.key, routedMessage, before);
         }
+        _applyChildSubAgentCompletion(envelope.key, routedMessage);
         if (buffered) return;
         if (!_notificationTargetsVisibleThread(envelope.key, routedMessage)) {
           _applyBackgroundAgentNotification(envelope.key, routedMessage);
@@ -5587,6 +5594,79 @@ class AppController extends StateNotifier<AppUiState> {
           _syncVisibleApprovals(envelope.key, threadId: state.activeThread?.id);
         }
     }
+  }
+
+  void _recoverMalformedCollaborationTurn(
+    AgentConnectionKey key,
+    String message,
+  ) {
+    if (!_isMalformedCollaborationToolDiagnostic(message) ||
+        key.agent != AgentKind.codex ||
+        !_isActiveKey(key) ||
+        !state.running ||
+        !state.activeAgentCapabilities.steerTurn) {
+      return;
+    }
+    final threadId = state.activeThread?.id.trim() ?? '';
+    final turnId = state.activeTurnId?.trim() ?? '';
+    if (threadId.isEmpty || turnId.isEmpty) return;
+
+    final recoveryTurn = (threadId: threadId, turnId: turnId);
+    if (_collaborationRecoveryTurns[key] == recoveryTurn) return;
+    _collaborationRecoveryTurns[key] = recoveryTurn;
+    _diagnostics.info(
+      'Agent',
+      'collaboration_recovery_requested profile=${key.profileId} '
+          'agent=${key.agent.name} thread=$threadId turn=$turnId',
+    );
+    unawaited(
+      _steerCollaborationRecovery(key, threadId: threadId, turnId: turnId),
+    );
+  }
+
+  Future<void> _steerCollaborationRecovery(
+    AgentConnectionKey key, {
+    required String threadId,
+    required String turnId,
+  }) async {
+    try {
+      await _agents.steerTurn(
+        key,
+        threadId: threadId,
+        turnId: turnId,
+        text: _collaborationRecoveryPrompt,
+      );
+      if (!mounted) return;
+      _diagnostics.info(
+        'Agent',
+        'collaboration_recovery_accepted profile=${key.profileId} '
+            'agent=${key.agent.name} thread=$threadId turn=$turnId',
+      );
+    } catch (error, stack) {
+      if (!mounted) return;
+      _diagnostics.warn(
+        'Agent',
+        'collaboration_recovery_failed profile=${key.profileId} '
+            'agent=${key.agent.name} thread=$threadId turn=$turnId',
+        error,
+        stack,
+      );
+    }
+  }
+
+  void _clearCollaborationRecoveryForCompletion(
+    AgentConnectionKey key,
+    CodexRpcNotification message,
+  ) {
+    if (!_isCompletionNotification(message)) return;
+    final recoveryTurn = _collaborationRecoveryTurns[key];
+    if (recoveryTurn == null) return;
+    final threadId = _notificationThreadId(message);
+    final turnId = _notificationTurnId(message);
+    if (threadId.isEmpty && turnId.isEmpty) return;
+    if (threadId.isNotEmpty && threadId != recoveryTurn.threadId) return;
+    if (turnId.isNotEmpty && turnId != recoveryTurn.turnId) return;
+    _collaborationRecoveryTurns.remove(key);
   }
 
   void _publishTurnCompletionIfNeeded(
@@ -5743,6 +5823,43 @@ class AppController extends StateNotifier<AppUiState> {
       );
     }
     _rememberSubAgentReferences(key, reduced.threads, reduced.timeline);
+  }
+
+  void _applyChildSubAgentCompletion(
+    AgentConnectionKey key,
+    CodexRpcNotification message,
+  ) {
+    final childThreadId = _notificationThreadId(message);
+    final terminalStatus = _subAgentTerminalStatusFromCompletion(message);
+    if (childThreadId.isEmpty ||
+        terminalStatus == null ||
+        !_subAgentThreadRegistry.contains(key, childThreadId)) {
+      return;
+    }
+
+    var visibleTimelineChanged = false;
+    if (_isActiveKey(key)) {
+      final timeline = _withSubAgentTerminalStatus(
+        state.timeline,
+        childThreadId,
+        terminalStatus,
+      );
+      if (!identical(timeline, state.timeline)) {
+        visibleTimelineChanged = true;
+        state = state.copyWith(timeline: timeline);
+      }
+    }
+
+    final cache = _threadCaches[key];
+    cache?.updateSubAgentStatus(childThreadId, terminalStatus);
+    if (visibleTimelineChanged && state.activeThread != null) {
+      (cache ?? _threadCaches.putIfAbsent(key, ThreadSessionCache.new)).put(
+        state.activeThread!,
+        state.timeline,
+        nextTurnsCursor: state.olderTurnsCursor,
+        tokenUsage: state.tokenUsage,
+      );
+    }
   }
 
   bool _notificationTargetsVisibleThread(
@@ -6067,6 +6184,7 @@ class AppController extends StateNotifier<AppUiState> {
     }
     _customModelSyncTimers.clear();
     _resumeNotificationBuffers.clear();
+    _collaborationRecoveryTurns.clear();
     unawaited(_connectionSubscription.cancel());
     unawaited(_serverMetricsSubscription.cancel());
     unawaited(_agentConnectionSubscription.cancel());
@@ -6089,6 +6207,12 @@ const List<Duration> _defaultReconnectDelays = <Duration>[
 ];
 const int _maxSessionSnapshotEntries = 512;
 const int _maxSessionSnapshotWeightChars = 2 * 1024 * 1024;
+const String _collaborationRecoveryPrompt =
+    '协作工具参数校验失败。不要重复空参数调用：'
+    'spawn_agent 必须提供 task_name 和 message；'
+    'send_message/followup_task 必须提供 target 和 message；'
+    'interrupt_agent 必须提供 target。'
+    '请使用完整 JSON 参数重新执行刚才的协作步骤，然后继续当前任务。';
 const Duration _customModelSyncDebounce = Duration(milliseconds: 350);
 
 List<String> _noModelReasoningEfforts(String _) => const <String>[];
@@ -6419,6 +6543,80 @@ bool _isCompletionNotification(CodexRpcNotification message) {
   };
 }
 
+bool _isMalformedCollaborationToolDiagnostic(String message) {
+  return message.contains('codex_core::tools::router') &&
+      message.contains('failed to parse function arguments') &&
+      (message.contains('missing field `message`') ||
+          message.contains('missing field `target`'));
+}
+
+String? _subAgentTerminalStatusFromCompletion(CodexRpcNotification message) {
+  final method = message.method;
+  final params = message.params;
+  final turn = _notificationMap(params['turn']);
+  final status = _notificationStatus(
+    method == 'turn/completed'
+        ? (turn == null ? null : turn['status'])
+        : params['status'],
+  ).toLowerCase();
+  if (method == 'turn/completed') {
+    return switch (status) {
+      'interrupted' ||
+      'stopped' ||
+      'aborted' ||
+      'cancelled' ||
+      'canceled' => 'interrupted',
+      'failed' || 'error' || 'systemerror' => 'errored',
+      _ => 'completed',
+    };
+  }
+  if (method != 'thread/status/changed') return null;
+  return switch (status) {
+    'idle' || 'completed' || 'complete' || 'done' => 'completed',
+    'interrupted' ||
+    'stopped' ||
+    'aborted' ||
+    'cancelled' ||
+    'canceled' => 'interrupted',
+    'failed' || 'error' || 'systemerror' => 'errored',
+    _ => null,
+  };
+}
+
+String _notificationStatus(Object? value) {
+  if (value is String) return value.trim();
+  return _notificationString(_notificationMap(value), const ['type', 'status']);
+}
+
+List<TimelineEntry> _withSubAgentTerminalStatus(
+  List<TimelineEntry> timeline,
+  String childThreadId,
+  String terminalStatus,
+) {
+  var changed = false;
+  final result = timeline
+      .map((entry) {
+        if (entry.kind != TimelineKind.subAgent ||
+            entry.subAgentThreadId != childThreadId ||
+            !_isActiveSubAgentTimelineStatus(entry.status)) {
+          return entry;
+        }
+        changed = true;
+        return entry.copyWith(status: terminalStatus);
+      })
+      .toList(growable: false);
+  return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
+}
+
+bool _isActiveSubAgentTimelineStatus(String status) => const <String>{
+  'pendingInit',
+  'running',
+  'inProgress',
+  'started',
+  'interacted',
+  'unknown',
+}.contains(status);
+
 Map<String, Object?>? _notificationMap(Object? value) {
   if (value is! Map) return null;
   final result = <String, Object?>{};
@@ -6444,6 +6642,15 @@ String _notificationThreadId(CodexRpcNotification message) {
           'thread_id',
         ]),
       );
+}
+
+String _notificationTurnId(CodexRpcNotification message) {
+  final params = message.params;
+  return _notificationString(_notificationMap(params['turn']), const [
+    'id',
+    'turnId',
+    'turn_id',
+  ]).ifEmpty(() => _notificationString(params, const ['turnId', 'turn_id']));
 }
 
 CodexRpcNotification _withResolvedNotificationThreadId(
@@ -6510,20 +6717,39 @@ ResumedTimelineMerge reconcileResumedTimeline({
   int? refreshedThreadUpdatedAt,
   String refreshedItemsView = 'full',
 }) {
+  // A resumed snapshot can contain the same user item more than once when a
+  // connection is recovered while the previous snapshot is still being
+  // replayed. Normalize both sides before matching; otherwise every formal
+  // item id is treated as a new bubble and the cached copies accumulate.
+  final normalizedCachedTimeline = cachedTimeline == null
+      ? null
+      : _normalizeResumedTimeline(cachedTimeline);
+  final normalizedRefreshedTimeline = _normalizeResumedTimeline(
+    refreshedTimeline,
+  );
   final refreshedTurns =
       (refreshedTurnIds ??
-              refreshedTimeline
+              normalizedRefreshedTimeline
                   .map((entry) => entry.turnId)
                   .where((id) => id.isNotEmpty))
           .toSet();
   final overlapIndex =
-      cachedTimeline?.indexWhere(
+      normalizedCachedTimeline?.indexWhere(
         (entry) => refreshedTurns.contains(entry.turnId),
       ) ??
       -1;
   final retainedPrefix = overlapIndex < 0
       ? const <TimelineEntry>[]
-      : cachedTimeline!.take(overlapIndex).toList(growable: false);
+      : normalizedCachedTimeline!.take(overlapIndex).toList(growable: false);
+  final refreshedDetails = overlapIndex < 0
+      ? normalizedRefreshedTimeline
+      : _mergeRefreshedTimeline(
+          normalizedCachedTimeline!
+              .skip(overlapIndex)
+              .where((entry) => refreshedTurns.contains(entry.turnId))
+              .toList(growable: false),
+          normalizedRefreshedTimeline,
+        );
   final revisionUnchanged =
       cachedThreadUpdatedAt != null &&
       refreshedThreadUpdatedAt != null &&
@@ -6533,7 +6759,7 @@ ResumedTimelineMerge reconcileResumedTimeline({
   final hasVerifiedOverlap =
       overlapIndex >= 0 && revisionUnchanged && cachedBoundaryUsable;
   final unchangedSummary =
-      cachedTimeline != null &&
+      normalizedCachedTimeline != null &&
       revisionUnchanged &&
       cachedBoundaryUsable &&
       refreshedItemsView == 'summary';
@@ -6543,20 +6769,25 @@ ResumedTimelineMerge reconcileResumedTimeline({
       cachedBoundaryUsable &&
       refreshedItemsView == 'notLoaded';
   final unchangedEmptyPage =
-      cachedTimeline != null &&
-      refreshedTimeline.isEmpty &&
+      normalizedCachedTimeline != null &&
+      normalizedRefreshedTimeline.isEmpty &&
       cachedNextCursor == refreshedNextCursor &&
       revisionUnchanged;
 
   final List<TimelineEntry> timeline;
   if (unchangedNotLoaded || unchangedEmptyPage) {
-    timeline = cachedTimeline;
+    timeline = normalizedCachedTimeline!;
   } else if (unchangedSummary) {
-    timeline = _mergeSummaryTimeline(cachedTimeline, refreshedTimeline);
+    timeline = _mergeRefreshedTimeline(
+      normalizedCachedTimeline,
+      normalizedRefreshedTimeline,
+    );
   } else if (hasVerifiedOverlap) {
-    timeline = <TimelineEntry>[...retainedPrefix, ...refreshedTimeline];
+    timeline = <TimelineEntry>[...retainedPrefix, ...refreshedDetails];
+  } else if (overlapIndex >= 0) {
+    timeline = refreshedDetails;
   } else {
-    timeline = refreshedTimeline;
+    timeline = normalizedRefreshedTimeline;
   }
   final retainCursor =
       hasVerifiedOverlap ||
@@ -6564,24 +6795,201 @@ ResumedTimelineMerge reconcileResumedTimeline({
       unchangedNotLoaded ||
       unchangedEmptyPage;
   return ResumedTimelineMerge(
-    timeline: List<TimelineEntry>.unmodifiable(timeline),
+    timeline: List<TimelineEntry>.unmodifiable(
+      _normalizeResumedTimeline(timeline),
+    ),
     nextCursor: retainCursor ? cachedNextCursor : refreshedNextCursor,
   );
 }
 
-List<TimelineEntry> _mergeSummaryTimeline(
-  List<TimelineEntry> cached,
-  List<TimelineEntry> summary,
+List<TimelineEntry> _normalizeResumedTimeline(List<TimelineEntry> entries) {
+  final result = <TimelineEntry>[];
+  final identityIndexes = <(String, TimelineKind, String), int>{};
+  final userIndexes = <(String, String, String), int>{};
+  for (final entry in entries) {
+    final identity = _timelineIdentity(entry);
+    final existingIdentityIndex = identityIndexes[identity];
+    if (existingIdentityIndex != null) {
+      result[existingIdentityIndex] = mergeCodexTimelineEntry(
+        result[existingIdentityIndex],
+        entry,
+      );
+      continue;
+    }
+    if (entry.kind == TimelineKind.userMessage) {
+      final semanticKey = (
+        entry.turnId,
+        entry.text.trim(),
+        _timelineAttachmentKey(entry),
+      );
+      final existingUserIndex = _findResumedUserIndex(
+        result,
+        entry,
+        userIndexes,
+      );
+      if (existingUserIndex != null) {
+        final merged = mergeCodexTimelineEntry(
+          result[existingUserIndex],
+          entry,
+        );
+        // Prefer the authoritative server id over a local optimistic id.
+        result[existingUserIndex] = merged;
+        identityIndexes[identity] = existingUserIndex;
+        continue;
+      }
+      userIndexes[semanticKey] = result.length;
+    }
+    identityIndexes[identity] = result.length;
+    result.add(entry);
+  }
+  return List<TimelineEntry>.unmodifiable(result);
+}
+
+int? _findResumedUserIndex(
+  List<TimelineEntry> entries,
+  TimelineEntry incoming,
+  Map<(String, String, String), int> indexed,
 ) {
-  final replacements = <(String, TimelineKind, String), TimelineEntry>{
-    for (final entry in summary) _timelineIdentity(entry): entry,
+  final key = (
+    incoming.turnId,
+    incoming.text.trim(),
+    _timelineAttachmentKey(incoming),
+  );
+  final exact = indexed[key];
+  if (exact != null) return exact;
+  for (var index = entries.length - 1; index >= 0; index -= 1) {
+    final candidate = entries[index];
+    if (candidate.kind != TimelineKind.userMessage ||
+        candidate.text.trim() != incoming.text.trim() ||
+        _timelineAttachmentKey(candidate) != _timelineAttachmentKey(incoming)) {
+      continue;
+    }
+    final sameTurn =
+        candidate.turnId.isNotEmpty &&
+        incoming.turnId.isNotEmpty &&
+        candidate.turnId == incoming.turnId;
+    final unresolvedTurn = candidate.turnId.isEmpty && incoming.turnId.isEmpty;
+    final optimisticPair =
+        candidate.id.startsWith('local-user-') ||
+        incoming.id.startsWith('local-user-');
+    if (sameTurn || unresolvedTurn || optimisticPair) return index;
+  }
+  return null;
+}
+
+String _timelineAttachmentKey(TimelineEntry entry) => entry.attachments
+    .map(
+      (attachment) =>
+          '${attachment.name}|${attachment.remotePath}|${attachment.mimeType}',
+    )
+    .toList(growable: false)
+    .join(';;');
+
+List<TimelineEntry> _mergeRefreshedTimeline(
+  List<TimelineEntry> cached,
+  List<TimelineEntry> refreshed,
+) {
+  final matches = <int, int>{};
+  final consumed = <int>{};
+  var minimumRefreshedIndex = 0;
+  for (var cachedIndex = 0; cachedIndex < cached.length; cachedIndex += 1) {
+    final cachedEntry = cached[cachedIndex];
+    var refreshedIndex = -1;
+    for (
+      var index = minimumRefreshedIndex;
+      index < refreshed.length;
+      index += 1
+    ) {
+      if (!consumed.contains(index) &&
+          _timelineIdentity(refreshed[index]) ==
+              _timelineIdentity(cachedEntry)) {
+        refreshedIndex = index;
+        break;
+      }
+    }
+    if (refreshedIndex < 0) {
+      for (
+        var index = minimumRefreshedIndex;
+        index < refreshed.length;
+        index += 1
+      ) {
+        if (!consumed.contains(index) &&
+            _sameResumedTimelineItem(cachedEntry, refreshed[index])) {
+          refreshedIndex = index;
+          break;
+        }
+      }
+    }
+    if (refreshedIndex < 0) continue;
+    matches[cachedIndex] = refreshedIndex;
+    consumed.add(refreshedIndex);
+    minimumRefreshedIndex = refreshedIndex + 1;
+  }
+
+  final result = <TimelineEntry>[];
+  for (var cachedIndex = 0; cachedIndex < cached.length; cachedIndex += 1) {
+    final cachedEntry = cached[cachedIndex];
+    final refreshedIndex = matches[cachedIndex];
+    if (refreshedIndex == null) {
+      result.add(cachedEntry);
+      continue;
+    }
+    result.add(mergeCodexTimelineEntry(cachedEntry, refreshed[refreshedIndex]));
+  }
+  for (var index = 0; index < refreshed.length; index += 1) {
+    if (!consumed.contains(index)) result.add(refreshed[index]);
+  }
+  return result;
+}
+
+bool _sameResumedTimelineItem(TimelineEntry cached, TimelineEntry refreshed) {
+  if (cached.kind != refreshed.kind ||
+      (cached.turnId.isNotEmpty &&
+          refreshed.turnId.isNotEmpty &&
+          cached.turnId != refreshed.turnId)) {
+    return false;
+  }
+  if (cached.kind == TimelineKind.userMessage &&
+      cached.id.startsWith('local-user-')) {
+    return findMatchingOptimisticUserTimelineEntry(
+          <TimelineEntry>[cached],
+          refreshed,
+          allowEmptyContent: false,
+        ) ==
+        0;
+  }
+  return switch (cached.kind) {
+    TimelineKind.agentMessage || TimelineKind.plan =>
+      cached.text.trim().isNotEmpty &&
+          cached.text.trim() == refreshed.text.trim(),
+    TimelineKind.reasoning =>
+      cached.reasoningSummary.isNotEmpty || cached.reasoningContent.isNotEmpty
+          ? _sameStringList(
+                  cached.reasoningSummary,
+                  refreshed.reasoningSummary,
+                ) &&
+                _sameStringList(
+                  cached.reasoningContent,
+                  refreshed.reasoningContent,
+                )
+          : cached.text.trim().isNotEmpty &&
+                cached.text.trim() == refreshed.text.trim(),
+    TimelineKind.command =>
+      cached.command.trim().isNotEmpty &&
+          cached.command.trim() == refreshed.command.trim() &&
+          (cached.cwd.trim().isEmpty ||
+              refreshed.cwd.trim().isEmpty ||
+              cached.cwd.trim() == refreshed.cwd.trim()),
+    _ => false,
   };
-  final cachedIdentities = cached.map(_timelineIdentity).toSet();
-  return <TimelineEntry>[
-    for (final entry in cached) replacements[_timelineIdentity(entry)] ?? entry,
-    for (final entry in summary)
-      if (!cachedIdentities.contains(_timelineIdentity(entry))) entry,
-  ];
+}
+
+bool _sameStringList(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index].trim() != right[index].trim()) return false;
+  }
+  return true;
 }
 
 (String, TimelineKind, String) _timelineIdentity(TimelineEntry entry) =>

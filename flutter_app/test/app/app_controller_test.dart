@@ -495,6 +495,22 @@ class _EventAgent extends _FailingTurnAgent {
   }
 }
 
+class _EventSteeringAgent extends _SteeringAgent {
+  final StreamController<RemoteAgentEvent> eventController =
+      StreamController<RemoteAgentEvent>.broadcast(sync: true);
+
+  @override
+  Stream<RemoteAgentEvent> get events => eventController.stream;
+
+  void emit(RemoteAgentEvent event) => eventController.add(event);
+
+  @override
+  void close() {
+    super.close();
+    unawaited(eventController.close());
+  }
+}
+
 class _SteeringAgent extends _FailingTurnAgent
     implements RemoteAgentSteerClient {
   static const activeThread = AgentThread(
@@ -509,6 +525,7 @@ class _SteeringAgent extends _FailingTurnAgent
   String? steeredTurnId;
   String? steeredText;
   List<PendingAttachment>? steeredAttachments;
+  int steerCallCount = 0;
 
   @override
   AgentCapabilities get capabilities => const AgentCapabilities(
@@ -546,6 +563,7 @@ class _SteeringAgent extends _FailingTurnAgent
     required String text,
     List<PendingAttachment> attachments = const <PendingAttachment>[],
   }) async {
+    steerCallCount += 1;
     steeredThreadId = threadId;
     steeredTurnId = turnId;
     steeredText = text;
@@ -675,6 +693,58 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
     } finally {
       completedThreadIds.add(threadId);
     }
+  }
+}
+
+class _SubAgentEventAgent extends _SubAgentNavigationAgent {
+  static const _parentTurnId = 'parent-turn';
+  static const _childThreadA = 'child-thread-a';
+  static const _childThreadB = 'child-thread-b';
+
+  final StreamController<RemoteAgentEvent> eventController =
+      StreamController<RemoteAgentEvent>.broadcast(sync: true);
+
+  @override
+  Stream<RemoteAgentEvent> get events => eventController.stream;
+
+  void emit(RemoteAgentEvent event) => eventController.add(event);
+
+  @override
+  Future<AgentSession> resumeThread(
+    String threadId, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async {
+    if (threadId == _SubAgentNavigationAgent.rootThread.id) {
+      return AgentSession(
+        thread: _SubAgentNavigationAgent.rootThread.copyWith(
+          status: 'active',
+          activeTurnId: _parentTurnId,
+        ),
+        timeline: const <TimelineEntry>[
+          TimelineEntry(
+            id: 'child-a-running',
+            kind: TimelineKind.subAgent,
+            status: 'running',
+            turnId: _parentTurnId,
+            subAgentThreadId: _childThreadA,
+          ),
+          TimelineEntry(
+            id: 'child-b-running',
+            kind: TimelineKind.subAgent,
+            status: 'running',
+            turnId: _parentTurnId,
+            subAgentThreadId: _childThreadB,
+          ),
+        ],
+      );
+    }
+    return super.resumeThread(threadId, approvalMode: approvalMode);
+  }
+
+  @override
+  void close() {
+    super.close();
+    unawaited(eventController.close());
   }
 }
 
@@ -1458,6 +1528,163 @@ void main() {
       agent.emit(const RemoteAgentDiagnostic('Agent status changed'));
       await _drainAsyncWork();
       expect(controller.state.diagnostic, 'Agent status changed');
+    },
+  );
+
+  for (final missingField in const <String>['message', 'target']) {
+    test('recovers a running turn once when collaboration diagnostics report '
+        'missing $missingField', () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _AttachmentHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _EventSteeringAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(_firstProfile);
+      await controller.ensureActiveAgent();
+      controller.openThread(_SteeringAgent.activeThread);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id ==
+                _SteeringAgent.activeThread.id &&
+            controller.state.running,
+      );
+
+      agent.emit(
+        const RemoteAgentDiagnostic(
+          'ERROR unrelated stderr diagnostic',
+          isStderr: true,
+        ),
+      );
+      await _drainAsyncWork();
+      expect(agent.steerCallCount, 0);
+
+      final diagnostic = RemoteAgentDiagnostic(
+        'ERROR codex_core::tools::router: error=failed to parse function '
+        'arguments: missing field `$missingField` at line 1 column 2',
+        isStderr: true,
+      );
+      agent.emit(diagnostic);
+      agent.emit(diagnostic);
+      expect(controller.state.running, isTrue);
+      agent.emit(diagnostic);
+      await _drainAsyncWork();
+
+      expect(agent.interruptedThreadId, isNull);
+      expect(agent.interruptedTurnId, isNull);
+      expect(controller.state.running, isTrue);
+      expect(controller.state.activeTurnId, 'turn-running');
+      expect(controller.state.turnTiming?.stopped, isFalse);
+      expect(controller.state.error, isNull);
+      expect(agent.steerCallCount, 1);
+      expect(agent.steeredThreadId, _SteeringAgent.activeThread.id);
+      expect(agent.steeredTurnId, 'turn-running');
+      expect(agent.steeredText, contains('spawn_agent'));
+      expect(agent.steeredText, contains('task_name'));
+      expect(agent.steeredText, contains('target'));
+      expect(agent.steeredAttachments, isEmpty);
+
+      agent.emit(
+        RemoteAgentNotification(
+          CodexRpcNotification(
+            generation: 1,
+            sequence: 1,
+            raw: const <String, Object?>{
+              'method': 'turn/completed',
+              'params': <String, Object?>{},
+            },
+            method: 'turn/completed',
+            params: const <String, Object?>{
+              'threadId': 'active-thread',
+              'turn': <String, Object?>{
+                'id': 'turn-running',
+                'status': 'completed',
+              },
+            },
+            isKnown: true,
+          ),
+        ),
+      );
+      await _waitUntil(() => !controller.state.running);
+      agent.emit(diagnostic);
+      await _drainAsyncWork();
+      expect(agent.steerCallCount, 1);
+    });
+  }
+
+  test(
+    'marks a child agent completed while its parent turn remains active',
+    () async {
+      final harness = await _createSubAgentHarness(
+        agent: _SubAgentEventAgent(),
+      );
+      final agent = harness.agent as _SubAgentEventAgent;
+      expect(harness.controller.state.running, isTrue);
+      expect(
+        harness.controller.state.activeTurnId,
+        _SubAgentEventAgent._parentTurnId,
+      );
+
+      agent.emit(
+        RemoteAgentNotification(
+          CodexRpcNotification(
+            generation: 1,
+            sequence: 1,
+            raw: const <String, Object?>{
+              'method': 'turn/completed',
+              'params': <String, Object?>{},
+            },
+            method: 'turn/completed',
+            params: const <String, Object?>{
+              'threadId': _SubAgentEventAgent._childThreadA,
+              'turn': <String, Object?>{
+                'id': 'child-turn-a',
+                'status': 'completed',
+              },
+            },
+            isKnown: true,
+          ),
+        ),
+      );
+      await _waitUntil(
+        () =>
+            harness.controller.state.timeline
+                .firstWhere(
+                  (entry) =>
+                      entry.subAgentThreadId ==
+                      _SubAgentEventAgent._childThreadA,
+                )
+                .status ==
+            'completed',
+      );
+
+      final childA = harness.controller.state.timeline.firstWhere(
+        (entry) => entry.subAgentThreadId == _SubAgentEventAgent._childThreadA,
+      );
+      final childB = harness.controller.state.timeline.firstWhere(
+        (entry) => entry.subAgentThreadId == _SubAgentEventAgent._childThreadB,
+      );
+      expect(childA.status, 'completed');
+      expect(childB.status, 'running');
+      expect(harness.controller.state.running, isTrue);
+      expect(
+        harness.controller.state.activeTurnId,
+        _SubAgentEventAgent._parentTurnId,
+      );
     },
   );
 

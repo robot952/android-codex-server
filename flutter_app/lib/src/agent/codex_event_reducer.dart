@@ -97,6 +97,7 @@ AppUiState reduceCodexNotification(
       final resolvedTurnId = completedId.isNotEmpty
           ? completedId
           : (state.activeTurnId ?? '');
+      final turnStatus = _wireStatus(turn?['status']);
       var next = updateRuntime(state, status: 'idle', activeTurnId: null);
       if (!appliesToActive) return next;
       final errorObject = _map(turn?['error']);
@@ -112,14 +113,17 @@ AppUiState reduceCodexNotification(
           ? timing.copyWith(
               turnId: resolvedTurnId.isEmpty ? timing.turnId : resolvedTurnId,
               completedAtMillis: now,
-              stopped:
-                  timing.stopped ||
-                  _isStoppedStatus(_string(turn, const ['status'])),
+              stopped: timing.stopped || _isStoppedStatus(turnStatus),
             )
           : timing;
       next = next.copyWith(
         activeTurnId: null,
         running: false,
+        timeline: _completeSubAgentsForTurn(
+          next.timeline,
+          resolvedTurnId,
+          _subAgentStatusForTurn(turnStatus),
+        ),
         turnTiming: completedTiming,
         error: error.isEmpty ? next.error : error,
       );
@@ -201,19 +205,26 @@ AppUiState reduceCodexNotification(
       final itemType = _string(item, const ['type']);
       var entry = CodexPayloadParser.parseItem(item, turnId: _turnId(params));
       if (entry == null) return state;
+      if (entry.kind == TimelineKind.command &&
+          method == 'item/completed' &&
+          entry.status.trim().isEmpty) {
+        entry = entry.copyWith(status: 'completed');
+      }
       if (itemType == 'contextCompaction') {
         entry = entry.copyWith(
           text: method == 'item/started' ? '正在压缩上下文' : '上下文已压缩',
           status: method == 'item/started' ? 'inProgress' : 'completed',
         );
       }
-      return state.copyWith(
-        timeline: _upsertTimeline(
-          state.timeline,
-          entry,
-          allowEmptyOptimisticUserMatch: method == 'item/started',
-        ),
+      var timeline = _upsertTimeline(
+        state.timeline,
+        entry,
+        allowEmptyOptimisticUserMatch: method == 'item/started',
       );
+      if (itemType == 'collabAgentToolCall') {
+        timeline = _applySubAgentStates(timeline, item, entry.turnId);
+      }
+      return state.copyWith(timeline: timeline);
 
     case 'item/agentMessage/delta':
       if (!appliesToActive) return state;
@@ -437,27 +448,61 @@ List<TimelineEntry> _upsertTimeline(
     // item id. The live `item/started`/`item/completed` echo is authoritative;
     // fold it into that row instead of rendering the same prompt twice.
     final optimisticIndex = incoming.kind == TimelineKind.userMessage
-        ? _findMatchingOptimisticUser(
+        ? findMatchingOptimisticUserTimelineEntry(
             result,
             incoming,
             allowEmptyContent: allowEmptyOptimisticUserMatch,
           )
         : -1;
-    if (optimisticIndex >= 0) {
-      result[optimisticIndex] = _mergeTimelineEntry(
-        result[optimisticIndex],
+    final existingUserIndex = optimisticIndex >= 0
+        ? optimisticIndex
+        : incoming.kind == TimelineKind.userMessage
+        ? findMatchingResumedUserTimelineEntry(result, incoming)
+        : -1;
+    if (existingUserIndex >= 0) {
+      result[existingUserIndex] = mergeCodexTimelineEntry(
+        result[existingUserIndex],
         incoming,
       );
     } else {
       result.add(incoming);
     }
   } else {
-    result[index] = _mergeTimelineEntry(result[index], incoming);
+    result[index] = mergeCodexTimelineEntry(result[index], incoming);
   }
   return List<TimelineEntry>.unmodifiable(result);
 }
 
-int _findMatchingOptimisticUser(
+/// Reconnects can replay a formal user item with a fresh id. Once the
+/// optimistic row has already been replaced, keep that replay from creating
+/// another identical bubble in the same turn.
+int findMatchingResumedUserTimelineEntry(
+  List<TimelineEntry> entries,
+  TimelineEntry incoming,
+) {
+  if (incoming.kind != TimelineKind.userMessage ||
+      incoming.turnId.trim().isEmpty ||
+      incoming.text.trim().isEmpty) {
+    return -1;
+  }
+  final incomingText = incoming.text.trim();
+  for (var index = entries.length - 1; index >= 0; index -= 1) {
+    final candidate = entries[index];
+    if (candidate.kind != TimelineKind.userMessage ||
+        candidate.turnId != incoming.turnId ||
+        candidate.text.trim() != incomingText) {
+      continue;
+    }
+    if (incoming.attachments.isNotEmpty &&
+        !_sameAttachmentSet(candidate.attachments, incoming.attachments)) {
+      continue;
+    }
+    return index;
+  }
+  return -1;
+}
+
+int findMatchingOptimisticUserTimelineEntry(
   List<TimelineEntry> entries,
   TimelineEntry incoming, {
   required bool allowEmptyContent,
@@ -528,7 +573,7 @@ List<TimelineEntry> _updateTimelineEntry(
   return List<TimelineEntry>.unmodifiable(result);
 }
 
-TimelineEntry _mergeTimelineEntry(
+TimelineEntry mergeCodexTimelineEntry(
   TimelineEntry previous,
   TimelineEntry incoming,
 ) {
@@ -592,6 +637,72 @@ bool _isTerminalSubAgentStatus(String status) => const <String>{
   'shutdown',
   'notFound',
 }.contains(status);
+
+String _subAgentStatusForTurn(String turnStatus) => switch (turnStatus.trim()) {
+  'interrupted' => 'interrupted',
+  'failed' || 'systemError' => 'errored',
+  _ => 'completed',
+};
+
+List<TimelineEntry> _completeSubAgentsForTurn(
+  List<TimelineEntry> timeline,
+  String turnId,
+  String terminalStatus,
+) {
+  if (turnId.isEmpty) return timeline;
+  var changed = false;
+  final result = timeline
+      .map((entry) {
+        if (entry.kind != TimelineKind.subAgent ||
+            entry.turnId != turnId ||
+            !_isActiveSubAgentStatus(entry.status)) {
+          return entry;
+        }
+        changed = true;
+        return entry.copyWith(status: terminalStatus);
+      })
+      .toList(growable: false);
+  return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
+}
+
+List<TimelineEntry> _applySubAgentStates(
+  List<TimelineEntry> timeline,
+  Map<String, Object?> collabItem,
+  String turnId,
+) {
+  final rawStates = _map(
+    collabItem['agentsStates'] ?? collabItem['agents_states'],
+  );
+  if (rawStates == null || rawStates.isEmpty) return timeline;
+  final states = <String, String>{};
+  for (final raw in rawStates.entries) {
+    final status = _string(_map(raw.value), const ['status']);
+    if (raw.key.isNotEmpty &&
+        (_isActiveSubAgentStatus(status) ||
+            _isTerminalSubAgentStatus(status))) {
+      states[raw.key] = status;
+    }
+  }
+  if (states.isEmpty) return timeline;
+  var changed = false;
+  final result = timeline
+      .map((entry) {
+        if (entry.kind != TimelineKind.subAgent ||
+            (turnId.isNotEmpty && entry.turnId != turnId)) {
+          return entry;
+        }
+        final status = states[entry.subAgentThreadId];
+        if (status == null ||
+            !_isActiveSubAgentStatus(entry.status) ||
+            status == entry.status) {
+          return entry;
+        }
+        changed = true;
+        return entry.copyWith(status: status);
+      })
+      .toList(growable: false);
+  return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
+}
 
 List<TimelineEntry> _reduceTextDelta(
   List<TimelineEntry> timeline,

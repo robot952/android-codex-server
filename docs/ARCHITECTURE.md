@@ -33,22 +33,25 @@ git branch --show-current
 
 ## 1. AI 五分钟入口
 
-1. 只在本仓库目录工作，不修改同级 ssh-client、lobe-android、mihomo-web 或其他人的工作区。
-2. 仓库存在 .codegraph/ 时，理解源码前先运行：
+1. 每次开始工作都从仓库磁盘重新完整阅读根目录 `AGENTS.md` 和本文；新会话、任务恢复、上下文压缩或
+   摘要恢复后同样必须重读，聊天记录、记忆和压缩摘要只能辅助定位，不能代替原文。涉及构建、测试或
+   发布时还必须完整阅读 `docs/LOCAL_WORKFLOW.md`。
+2. 只在本仓库目录工作，不修改同级 ssh-client、lobe-android、mihomo-web 或其他人的工作区。
+3. 仓库存在 .codegraph/ 时，理解源码前先运行：
 
    ~~~bash
    codegraph explore "描述问题，并写出相关文件或符号"
    ~~~
 
    若 PATH 中没有命令，使用 /root/.local/bin/codegraph。先看本文的当前实现、迁移缺口和回归矩阵。
-3. 第一次写文件前记录开始时间；手工编辑使用 apply_patch，不顺手重构无关模块，不运行 flutter clean
+4. 第一次写文件前记录开始时间；手工编辑使用 apply_patch，不顺手重构无关模块，不运行 flutter clean
    或 Gradle clean。
-4. 先通过 ./scripts/flutter-tool.sh 运行格式化和最接近改动的定向测试，再按风险只选择 quick、check、
+5. 先通过 ./scripts/flutter-tool.sh 运行格式化和最接近改动的定向测试，再按风险只选择 quick、check、
    full 或 publish 中一个主门禁；不要机械串行重复全部门禁。具体风险表、缓存和模拟器规则见
    LOCAL_WORKFLOW.md。
-5. 源码修改完成后运行 codegraph sync；纯文档修改不需要同步索引。最后运行 git diff --check，记录从
+6. 源码修改完成后运行 codegraph sync；纯文档修改不需要同步索引。最后运行 git diff --check，记录从
    第一次写文件到最终检查的总耗时和 .workflow-cache/latest-workflow-timing.tsv 中的阶段耗时。
-6. Git 提交信息使用中文；本任务没有得到提交授权时不要提交或推送。
+7. Git 提交信息使用中文；本任务没有得到提交授权时不要提交或推送。
 
 ## 2. 项目边界
 
@@ -927,7 +930,8 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 外网：http://frp.asdb.top:18080/codex.apk
 ~~~
 
-交付时必须同时给出两个完整地址和 APK SHA-256。不要在文档、提交或回复中写访问 token。
+每次交付 APK 或下载链接时，无需用户再次提醒，必须同时给出两个完整地址、版本、APK SHA-256 和签名
+证书信息。不要在文档、提交或回复中写访问 token。
 
 ## 13. 本地测试环境与门禁
 
@@ -1880,7 +1884,32 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - `1.8.59+186` 移除 Windows 本机 Agent 切换入口和控制器中遗留的 Codex-only 限制；Windows x64
   现在可以从会话列表选择 OpenCode，并进入已有的原生运行时检测、安装进度和本机 bridge 连接链路。
 
+### 17.38 消息识别与命令卡片（2026-08-13）
+
+- 应用版本：`1.8.60+187`。用户消息改为右侧对齐的独立深绿色调气泡和细边框，最大宽度为视口的
+  `88%`；不增加“你”等身份标签，助手消息继续直接显示在对话背景上。
+- 命令卡片继续显示运行、完成或失败状态，不采集或展示单条命令耗时。命令详情使用 `220ms` 高度
+  过渡，箭头同步旋转；用户消息样式和命令展开动画均有回归测试覆盖。
+
+### 17.39 协作工具参数错误自动恢复（2026-08-14）
+
+- 应用版本：`1.8.69+196`。Codex 在运行中的父 turn 内反复产生缺少 `message` 或 `target`
+  的协作工具参数时，客户端会对当前 thread/turn 发送一次有界纠错引导，要求模型用完整 JSON
+  参数重试刚才的协作步骤，不再因连续 stderr 中断父 turn。
+- 恢复仅在精确命中 `codex_core::tools::router` 参数校验错误、当前 lane/thread/turn 仍运行且
+  Agent 支持 steer 时触发；同一 turn 最多一次，连接断开或 turn 完成时清理，其他 stderr 仍只进诊断日志。
+- 定向 AppController `67` 项和 Flutter 全量 `455` 项测试通过，`flutter analyze`、Debug/Release APK 构建、
+  Android 14 Release 竖屏模拟器 smoke 和 CodeGraph 同步通过。模拟器保留数据安装后连接本机
+  `codexemu`，进入真实历史会话并发送子 Agent 任务；服务端接受 `turn/start`，前后台页面切换后
+  同一 turn 继续运行，从 `06:23:59` 到手动停止的 `06:35:00` 冻结为 `11m 1s`，未发现 Flutter
+  crash 或 ANR。该测试账号本轮没有返回模型或子 Agent 事件，因此不将本次记为真实 malformed
+  自动恢复或子 Agent 端到端通过；这两条由受控 stderr/turn 回归覆盖。
+
 ## 18. 文档维护规则
+
+根目录 `AGENTS.md` 是所有 AI 协作的固定入口。任何新会话、任务恢复、上下文压缩或摘要恢复都必须从
+仓库磁盘重新完整阅读 `AGENTS.md` 和本文；涉及本地构建、测试或发布时还必须完整阅读
+`docs/LOCAL_WORKFLOW.md`。不得假设此前已经读过，也不得让聊天记忆或摘要成为唯一规则来源。
 
 以下变化必须同一任务更新本文，并在合适处标明当前实现或迁移目标：
 

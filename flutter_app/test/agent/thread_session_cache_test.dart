@@ -77,4 +77,23 @@ void main() {
     expect(cache.getStale('one'), isNull);
     expect(cache.contextUsage('one'), isNull);
   });
+
+  test('marks a completed child across cached parent transcripts', () {
+    final cache = ThreadSessionCache(nowEpochMillis: () => now);
+    cache.put(thread('parent'), const <TimelineEntry>[
+      TimelineEntry(
+        id: 'child-item',
+        kind: TimelineKind.subAgent,
+        status: 'running',
+        turnId: 'parent-turn',
+        subAgentThreadId: 'child-thread',
+      ),
+    ]);
+    cache.put(thread('unrelated'), [entry('message', 'unchanged')]);
+
+    expect(cache.updateSubAgentStatus('child-thread', 'completed'), isTrue);
+    expect(cache.getStale('parent')?.timeline.single.status, 'completed');
+    expect(cache.getStale('unrelated')?.timeline.single.text, 'unchanged');
+    expect(cache.updateSubAgentStatus('child-thread', 'completed'), isFalse);
+  });
 }

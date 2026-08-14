@@ -969,6 +969,191 @@ void main() {
     expect(upload.bytes, photoBytes);
   });
 
+  testWidgets('shows completed background agents above the composer', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'agents-thread', title: '子智能体'),
+        activeAgentCapabilities: AgentCapabilities.codex,
+        timeline: <TimelineEntry>[
+          TimelineEntry(
+            id: 'agent-a',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-1',
+            subAgentPath: 'team/check_workspace',
+            subAgentThreadId: 'child-a',
+          ),
+          TimelineEntry(
+            id: 'agent-b',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-1',
+            subAgentPath: 'team/check_time',
+            subAgentThreadId: 'child-b',
+          ),
+          TimelineEntry(
+            id: 'agent-c',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-1',
+            subAgentPath: 'team/check_system',
+            subAgentThreadId: 'child-c',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('3 个后台智能体'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('background-agents-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.text('check_workspace'), findsWidgets);
+    expect(find.text('check_time'), findsWidgets);
+    expect(find.text('check_system'), findsWidgets);
+    expect(find.text('已完成'), findsNWidgets(6));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shows only current-turn background agents while running', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'agents-thread'),
+        activeTurnId: 'turn-current',
+        running: true,
+        activeAgentCapabilities: AgentCapabilities.codex,
+        timeline: <TimelineEntry>[
+          TimelineEntry(
+            id: 'old-a',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-old',
+            subAgentThreadId: 'old-a',
+          ),
+          TimelineEntry(
+            id: 'old-b',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-old',
+            subAgentThreadId: 'old-b',
+          ),
+          TimelineEntry(
+            id: 'old-c',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-old',
+            subAgentThreadId: 'old-c',
+          ),
+          TimelineEntry(
+            id: 'current-a',
+            kind: TimelineKind.subAgent,
+            status: 'running',
+            turnId: 'turn-current',
+            subAgentThreadId: 'current-a',
+          ),
+          TimelineEntry(
+            id: 'current-b',
+            kind: TimelineKind.subAgent,
+            status: 'running',
+            turnId: 'turn-current',
+            subAgentThreadId: 'current-b',
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('2 个后台智能体'), findsOneWidget);
+    expect(find.text('5 个后台智能体'), findsNothing);
+  });
+
+  testWidgets(
+    'does not show unconfirmed sub-agent attempts as background agents',
+    (tester) async {
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager);
+      addTearDown(() async => manager.close());
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      controller.showState(
+        const AppUiState(
+          screen: AppScreen.work,
+          activeThread: AgentThread(id: 'agents-thread'),
+          activeTurnId: 'turn-current',
+          running: true,
+          activeAgentCapabilities: AgentCapabilities.codex,
+          timeline: <TimelineEntry>[
+            TimelineEntry(
+              id: 'attempt-a',
+              kind: TimelineKind.subAgent,
+              status: 'running',
+              turnId: 'turn-current',
+              subAgentPath: 'team/check_workspace',
+              subAgentActivity: 'started',
+            ),
+            TimelineEntry(
+              id: 'attempt-b',
+              kind: TimelineKind.subAgent,
+              status: 'running',
+              turnId: 'turn-current',
+              subAgentPath: 'team/check_time',
+              subAgentActivity: 'started',
+            ),
+            TimelineEntry(
+              id: 'attempt-c',
+              kind: TimelineKind.subAgent,
+              status: 'running',
+              turnId: 'turn-current',
+              subAgentPath: 'team/check_system',
+              subAgentActivity: 'started',
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('3 个后台智能体'), findsNothing);
+      expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
+      expect(find.text('准备中'), findsNWidgets(3));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('matches the original work menu and gates Debug logs', (
     tester,
   ) async {
@@ -1225,6 +1410,114 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('echo details'), findsOneWidget);
     expect(find.text('command output'), findsOneWidget);
+  });
+
+  testWidgets('distinguishes user messages without adding an identity label', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'thread-user-style', title: '消息样式'),
+        timeline: [
+          TimelineEntry(
+            id: 'user-style-1',
+            kind: TimelineKind.userMessage,
+            text: '这是用户发送的内容',
+          ),
+          TimelineEntry(
+            id: 'agent-style-1',
+            kind: TimelineKind.agentMessage,
+            text: '这是助手回复',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final card = find.byKey(const Key('user-message-card-user-style-1'));
+    final cardMaterial = tester.widget<Material>(card);
+    final viewport = tester.getRect(find.byType(CustomScrollView));
+    final cardRect = tester.getRect(card);
+    expect(cardMaterial.color, const Color(0xFF2B3730));
+    expect(cardRect.right, closeTo(viewport.right - 9, 1));
+    expect(cardRect.width, lessThan(viewport.width));
+    expect(find.text('你'), findsNothing);
+  });
+
+  testWidgets('shows command status and animates expanded details', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        screen: AppScreen.work,
+        activeThread: const AgentThread(
+          id: 'thread-command-animation',
+          title: '命令详情',
+        ),
+        timeline: [
+          const TimelineEntry(
+            id: 'command-animation-1',
+            kind: TimelineKind.command,
+            status: 'running',
+            command: 'sleep 10',
+            output: 'still running',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('运行中'), findsOneWidget);
+    expect(find.textContaining('秒'), findsNothing);
+    await tester.ensureVisible(find.text('运行了命令'));
+    await tester.pump();
+    await tester.tap(find.text('运行了命令'));
+    await tester.pump();
+    expect(find.text('sleep 10'), findsOneWidget);
+    expect(tester.hasRunningAnimations, isTrue);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.hasRunningAnimations, isTrue);
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(
+      tester
+          .widget<AnimatedSize>(
+            find.byKey(const Key('command-details-animation')).first,
+          )
+          .duration,
+      const Duration(milliseconds: 220),
+    );
+    expect(
+      tester
+          .widgetList<AnimatedRotation>(
+            find.byKey(const Key('command-expand-arrow')),
+          )
+          .map((animation) => animation.turns),
+      contains(0.5),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 
   testWidgets('renders original file-change cards and opens the full diff', (

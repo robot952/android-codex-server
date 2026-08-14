@@ -27,7 +27,10 @@ void main() {
     expect(agent.name, 'review-agent');
     expect(agent.path, 'team/review-agent');
     expect(agent.threadId, isEmpty);
+    expect(agent.isConfirmed, isFalse);
     expect(agent.isOpenable, isFalse);
+    expect(agent.status, SubAgentDisplayStatus.preparing);
+    expect(agent.showsProgressIndicator, isFalse);
   });
 
   test(
@@ -61,6 +64,82 @@ void main() {
     expect(agent.turnId, 'turn-2');
   });
 
+  test('limits composer agents to the active turn while a task is running', () {
+    final entries = <TimelineEntry>[
+      _agent('old-a', 'old-a', 'turn-old', 'completed'),
+      _agent('old-b', 'old-b', 'turn-old', 'completed'),
+      _agent('old-c', 'old-c', 'turn-old', 'completed'),
+      _agent('current-a', 'current-a', 'turn-current', 'running'),
+      _agent('current-b', 'current-b', 'turn-current', 'running'),
+    ];
+
+    final agents = entries.toBackgroundSubAgentPresentations(
+      running: true,
+      activeTurnId: 'turn-current',
+    );
+
+    expect(agents.map((agent) => agent.threadId), <String>[
+      'current-b',
+      'current-a',
+    ]);
+  });
+
+  test('does not show historical agents before a running turn has an id', () {
+    final agents = <TimelineEntry>[
+      _agent('old-a', 'old-a', 'turn-old', 'completed'),
+      _agent('old-b', 'old-b', 'turn-old', 'completed'),
+    ].toBackgroundSubAgentPresentations(running: true);
+
+    expect(agents, isEmpty);
+  });
+
+  test('does not count unconfirmed creation attempts as background agents', () {
+    final agents =
+        <TimelineEntry>[
+          _agent(
+            'attempt-a',
+            '',
+            'turn-current',
+            'running',
+            activity: 'started',
+          ),
+          _agent(
+            'attempt-b',
+            '',
+            'turn-current',
+            'running',
+            activity: 'started',
+          ),
+          _agent('confirmed', 'child-thread', 'turn-current', 'running'),
+        ].toBackgroundSubAgentPresentations(
+          running: true,
+          activeTurnId: 'turn-current',
+        );
+
+    expect(agents.map((agent) => agent.threadId), <String>['child-thread']);
+  });
+
+  test('uses the latest sub-agent turn after the task has finished', () {
+    final agents = <TimelineEntry>[
+      _agent('old', 'old', 'turn-old', 'completed'),
+      _agent('latest', 'latest', 'turn-latest', 'completed'),
+    ].toBackgroundSubAgentPresentations(running: false);
+
+    expect(agents.single.threadId, 'latest');
+  });
+
+  test('does not fall back to an older turn after one without agents', () {
+    final agents =
+        <TimelineEntry>[
+          _agent('old', 'old', 'turn-old', 'completed'),
+        ].toBackgroundSubAgentPresentations(
+          running: false,
+          activeTurnId: 'turn-without-agents',
+        );
+
+    expect(agents, isEmpty);
+  });
+
   test(
     'maps activities and mixed terminal groups to Chinese display statuses',
     () {
@@ -88,6 +167,20 @@ void main() {
       expect(failed.status, SubAgentDisplayStatus.failed);
       expect(failed.statusLabel, '失败');
       expect(failed.isActive, isFalse);
+    },
+  );
+
+  test(
+    'marks unconfirmed activity as preparing without treating it as running',
+    () {
+      final group = <TimelineEntry>[
+        _agent('attempt', '', 'turn', 'running', activity: 'started'),
+      ].toSubAgentActivityGroupPresentation();
+
+      expect(group.agents.single.status, SubAgentDisplayStatus.preparing);
+      expect(group.status, SubAgentDisplayStatus.preparing);
+      expect(group.statusLabel, '准备中');
+      expect(group.isActive, isFalse);
     },
   );
 

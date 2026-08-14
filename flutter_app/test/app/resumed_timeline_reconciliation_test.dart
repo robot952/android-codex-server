@@ -59,6 +59,204 @@ void main() {
       expect(result.nextCursor, 'fresh-cursor');
     });
 
+    test(
+      'keeps cached command details for refreshed turns after revision changes',
+      () {
+        const cachedCommand = TimelineEntry(
+          id: 'command-1',
+          kind: TimelineKind.command,
+          command: 'flutter test',
+          status: 'completed',
+          output: 'All tests passed',
+          turnId: 'turn-2',
+        );
+        const refreshedAgentMessage = TimelineEntry(
+          id: 'agent-1',
+          kind: TimelineKind.agentMessage,
+          text: '测试完成',
+          turnId: 'turn-2',
+        );
+
+        final result = reconcileResumedTimeline(
+          cachedTimeline: const <TimelineEntry>[
+            TimelineEntry(
+              id: 'old-turn',
+              kind: TimelineKind.agentMessage,
+              text: '旧回合',
+              turnId: 'turn-1',
+            ),
+            cachedCommand,
+          ],
+          cachedNextCursor: 'old-cursor',
+          refreshedTimeline: const <TimelineEntry>[refreshedAgentMessage],
+          refreshedNextCursor: null,
+          refreshedTurnIds: const <String>['turn-2'],
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 11,
+        );
+
+        expect(result.timeline, <TimelineEntry>[
+          cachedCommand,
+          refreshedAgentMessage,
+        ]);
+        expect(result.nextCursor, isNull);
+      },
+    );
+
+    test('deduplicates resumed turn rows without reordering its command', () {
+      const optimisticUser = TimelineEntry(
+        id: 'local-user-123',
+        kind: TimelineKind.userMessage,
+        text: '再运行一个20秒的命令',
+        turnId: 'turn-2',
+      );
+      const command = TimelineEntry(
+        id: 'command-1',
+        kind: TimelineKind.command,
+        command: 'sleep 20',
+        status: 'inProgress',
+        turnId: 'turn-2',
+      );
+      const serverUser = TimelineEntry(
+        id: 'server-user-1',
+        kind: TimelineKind.userMessage,
+        text: '再运行一个20秒的命令',
+        turnId: 'turn-2',
+      );
+      const agentMessage = TimelineEntry(
+        id: 'live-agent-1',
+        kind: TimelineKind.agentMessage,
+        text: '开始运行 sleep 20',
+        turnId: 'turn-2',
+      );
+      const serverAgentMessage = TimelineEntry(
+        id: 'server-agent-1',
+        kind: TimelineKind.agentMessage,
+        text: '开始运行 sleep 20',
+        turnId: 'turn-2',
+      );
+      const liveReasoning = TimelineEntry(
+        id: 'live-reasoning-1',
+        kind: TimelineKind.reasoning,
+        reasoningSummary: <String>['正在等待命令完成'],
+        turnId: 'turn-2',
+      );
+      const serverReasoning = TimelineEntry(
+        id: 'server-reasoning-1',
+        kind: TimelineKind.reasoning,
+        reasoningSummary: <String>['正在等待命令完成'],
+        turnId: 'turn-2',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[
+          optimisticUser,
+          agentMessage,
+          command,
+          liveReasoning,
+        ],
+        cachedNextCursor: null,
+        refreshedTimeline: const <TimelineEntry>[
+          serverUser,
+          serverAgentMessage,
+          command,
+          serverReasoning,
+        ],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-2'],
+        cachedThreadUpdatedAt: 10,
+        refreshedThreadUpdatedAt: 11,
+      );
+
+      expect(result.timeline, const <TimelineEntry>[
+        serverUser,
+        serverAgentMessage,
+        command,
+        serverReasoning,
+      ]);
+      expect(
+        result.timeline.where(
+          (entry) => entry.kind == TimelineKind.userMessage,
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('does not collapse two real identical commands in one turn', () {
+      const liveCommand = TimelineEntry(
+        id: 'live-command',
+        kind: TimelineKind.command,
+        command: 'pwd',
+        status: 'completed',
+        turnId: 'turn-2',
+      );
+      const firstServerCommand = TimelineEntry(
+        id: 'server-command-1',
+        kind: TimelineKind.command,
+        command: 'pwd',
+        status: 'completed',
+        turnId: 'turn-2',
+      );
+      const secondServerCommand = TimelineEntry(
+        id: 'server-command-2',
+        kind: TimelineKind.command,
+        command: 'pwd',
+        status: 'completed',
+        turnId: 'turn-2',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[liveCommand],
+        cachedNextCursor: null,
+        refreshedTimeline: const <TimelineEntry>[
+          firstServerCommand,
+          secondServerCommand,
+        ],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-2'],
+        cachedThreadUpdatedAt: 10,
+        refreshedThreadUpdatedAt: 11,
+      );
+
+      expect(result.timeline, const <TimelineEntry>[
+        firstServerCommand,
+        secondServerCommand,
+      ]);
+    });
+
+    test('collapses repeated formal user rows from a resumed snapshot', () {
+      const first = TimelineEntry(
+        id: 'server-user-1',
+        kind: TimelineKind.userMessage,
+        text: '再运行一个30秒的命令',
+        turnId: 'turn-2',
+      );
+      const second = TimelineEntry(
+        id: 'server-user-2',
+        kind: TimelineKind.userMessage,
+        text: '再运行一个30秒的命令',
+        turnId: 'turn-2',
+      );
+      const third = TimelineEntry(
+        id: 'server-user-3',
+        kind: TimelineKind.userMessage,
+        text: '再运行一个30秒的命令',
+        turnId: 'turn-2',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[],
+        cachedNextCursor: null,
+        refreshedTimeline: const <TimelineEntry>[first, second, third],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-2'],
+      );
+
+      expect(result.timeline, hasLength(1));
+      expect(result.timeline.single.id, 'server-user-3');
+      expect(result.timeline.single.text, first.text);
+    });
+
     test('summary replaces only matching timeline identities', () {
       final cached = <TimelineEntry>[
         const TimelineEntry(

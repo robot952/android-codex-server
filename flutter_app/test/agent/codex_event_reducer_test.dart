@@ -369,6 +369,74 @@ void main() {
     expect(next.timeline, hasLength(2));
   });
 
+  test('folds repeated formal user item events into one row', () {
+    var state = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'server-user-1',
+          kind: TimelineKind.userMessage,
+          text: '再运行一个30秒的命令',
+          turnId: 'turn-1',
+        ),
+      ],
+    );
+    for (final id in const [
+      'server-user-2',
+      'server-user-3',
+      'server-user-4',
+    ]) {
+      state = reduceCodexNotification(
+        state,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': <String, Object?>{
+            'id': id,
+            'type': 'userMessage',
+            'content': <Object?>[
+              <String, Object?>{'type': 'text', 'text': '再运行一个30秒的命令'},
+            ],
+          },
+        }),
+      );
+    }
+    expect(state.timeline, hasLength(1));
+    expect(state.timeline.single.id, 'server-user-4');
+  });
+
+  test('marks a command completed when the completion omits status', () {
+    var state = reduceCodexNotification(
+      _state(),
+      _notification('item/started', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'command-1',
+          'type': 'commandExecution',
+          'command': 'flutter test',
+          'status': 'inProgress',
+        },
+      }),
+    );
+
+    expect(state.timeline.single.status, 'inProgress');
+
+    state = reduceCodexNotification(
+      state,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'command-1',
+          'type': 'commandExecution',
+          'command': 'flutter test',
+        },
+      }),
+    );
+
+    expect(state.timeline.single.status, 'completed');
+  });
+
   test('keeps the same item id separate across turns and kinds', () {
     var state = _state().copyWith(
       timeline: const <TimelineEntry>[
@@ -504,5 +572,88 @@ void main() {
     expect(laterTurn.timeline, hasLength(2));
     expect(laterTurn.timeline[0].status, 'completed');
     expect(laterTurn.timeline[1].status, 'running');
+  });
+
+  test('completes active sub-agents when their parent turn completes', () {
+    final running = _state().copyWith(
+      running: true,
+      activeTurnId: 'turn-1',
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'agent-a',
+          kind: TimelineKind.subAgent,
+          status: 'running',
+          turnId: 'turn-1',
+          subAgentThreadId: 'child-a',
+        ),
+        TimelineEntry(
+          id: 'agent-b',
+          kind: TimelineKind.subAgent,
+          status: 'completed',
+          turnId: 'turn-1',
+          subAgentThreadId: 'child-b',
+        ),
+      ],
+    );
+
+    final completed = reduceCodexNotification(
+      running,
+      _notification('turn/completed', {
+        'threadId': 'thread-1',
+        'turn': <String, Object?>{
+          'id': 'turn-1',
+          'status': <String, Object?>{'type': 'completed'},
+        },
+      }),
+    );
+
+    expect(completed.timeline.map((entry) => entry.status), <String>[
+      'completed',
+      'completed',
+    ]);
+  });
+
+  test('applies collab agent states to all activities in the turn', () {
+    final running = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'agent-started',
+          kind: TimelineKind.subAgent,
+          status: 'running',
+          turnId: 'turn-1',
+          subAgentThreadId: 'child-a',
+        ),
+        TimelineEntry(
+          id: 'agent-updated',
+          kind: TimelineKind.subAgent,
+          status: 'running',
+          turnId: 'turn-1',
+          subAgentThreadId: 'child-a',
+        ),
+      ],
+    );
+
+    final completed = reduceCodexNotification(
+      running,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'collab-state',
+          'type': 'collabAgentToolCall',
+          'status': 'completed',
+          'agentsStates': <String, Object?>{
+            'child-a': <String, Object?>{'status': 'completed'},
+          },
+        },
+      }),
+    );
+
+    expect(
+      completed.timeline
+          .where((entry) => entry.kind == TimelineKind.subAgent)
+          .map((entry) => entry.status),
+      everyElement('completed'),
+    );
   });
 }

@@ -116,6 +116,57 @@ class ThreadSessionCache {
     _contextUsages.remove(threadId);
   }
 
+  /// Marks a completed child thread in every retained parent transcript.
+  ///
+  /// Child turns are delivered on their own thread, so their terminal event
+  /// would otherwise wait for the parent turn to end before its cached
+  /// collaborator rows are refreshed.
+  bool updateSubAgentStatus(String subAgentThreadId, String status) {
+    final childId = subAgentThreadId.trim();
+    final nextStatus = status.trim();
+    if (childId.isEmpty || nextStatus.isEmpty || _entries.isEmpty) return false;
+
+    var changed = false;
+    for (final entry in _entries.entries.toList(growable: false)) {
+      final snapshot = entry.value.snapshot;
+      var timelineChanged = false;
+      final timeline = snapshot.timeline
+          .map((item) {
+            if (item.kind != TimelineKind.subAgent ||
+                item.subAgentThreadId != childId ||
+                !_isActiveSubAgentStatus(item.status) ||
+                item.status == nextStatus) {
+              return item;
+            }
+            timelineChanged = true;
+            return item.copyWith(status: nextStatus);
+          })
+          .toList(growable: false);
+      if (!timelineChanged) continue;
+
+      final replacement = ThreadSessionSnapshot(
+        thread: snapshot.thread,
+        timeline: timeline,
+        savedAtEpochMillis: snapshot.savedAtEpochMillis,
+        nextTurnsCursor: snapshot.nextTurnsCursor,
+        tokenUsage: snapshot.tokenUsage,
+      );
+      final nextWeight = _snapshotWeight(
+        replacement.thread,
+        replacement.timeline,
+        replacement.nextTurnsCursor,
+      );
+      _entries[entry.key] = _WeightedSnapshot(replacement, nextWeight);
+      _currentWeightChars += nextWeight - entry.value.weightChars;
+      changed = true;
+    }
+    while (_entries.length > maxEntries ||
+        _currentWeightChars > maxWeightChars) {
+      _removeSnapshot(_entries.keys.first);
+    }
+    return changed;
+  }
+
   void clear() {
     _entries.clear();
     _contextUsages.clear();
@@ -169,6 +220,15 @@ V? _touch<V>(LinkedHashMap<String, V> values, String key) {
   if (value != null) values[key] = value;
   return value;
 }
+
+bool _isActiveSubAgentStatus(String status) => const <String>{
+  'pendingInit',
+  'running',
+  'inProgress',
+  'started',
+  'interacted',
+  'unknown',
+}.contains(status);
 
 int estimateTimelineWeightChars(List<TimelineEntry> timeline) {
   var result = 0;

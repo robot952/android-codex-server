@@ -39,7 +39,14 @@ class SubAgentPresentation {
   final String summary;
   final int timelineIndex;
 
+  /// An activity item is only a real collaborator after the server assigns it
+  /// a child-thread id. Before that, it represents a creation attempt.
+  bool get isConfirmed => threadId.isNotEmpty;
+
   bool get isOpenable => threadId.isNotEmpty;
+
+  /// Only an assigned collaborator may report actual work in progress.
+  bool get showsProgressIndicator => isConfirmed && status.isActive;
 
   /// Excludes status and timeline position so an agent retains its visual identity.
   String get avatarIdentityKey => threadId.isNotEmpty
@@ -158,11 +165,39 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
     return List.unmodifiable(result);
   }
 
+  /// Returns collaborators for the requested current turn. Without a turn id
+  /// on an idle transcript, the latest collaborator turn is used for older
+  /// callers that do not have turn timing information.
+  List<SubAgentPresentation> toBackgroundSubAgentPresentations({
+    required bool running,
+    String? activeTurnId,
+  }) {
+    final requestedTurnId = activeTurnId?.trim() ?? '';
+    // A running task without its turn id has not yet been associated with a
+    // transcript turn. Showing the latest historical collaborators here would
+    // make the composer report stale agents as active.
+    if (running && requestedTurnId.isEmpty) {
+      return const <SubAgentPresentation>[];
+    }
+    final turnId = requestedTurnId.isNotEmpty
+        ? requestedTurnId
+        : _latestSubAgentTurnId(this);
+    if (turnId.isEmpty) return const <SubAgentPresentation>[];
+    final agents = where(
+      (entry) => entry.kind == TimelineKind.subAgent && entry.turnId == turnId,
+    ).toList(growable: false).toSubAgentPresentations();
+    return List.unmodifiable(agents.where((agent) => agent.isConfirmed));
+  }
+
   SubAgentActivityGroupPresentation toSubAgentActivityGroupPresentation() {
     final agents = toSubAgentPresentations();
-    final statuses = agents.map((agent) => agent.status).toSet();
-    final isActive = agents.any((agent) => agent.status.isActive);
+    final confirmedAgents = agents
+        .where((agent) => agent.isConfirmed)
+        .toList(growable: false);
+    final statuses = confirmedAgents.map((agent) => agent.status).toSet();
+    final isActive = confirmedAgents.any((agent) => agent.status.isActive);
     final status = switch (statuses.length) {
+      0 when agents.isNotEmpty => SubAgentDisplayStatus.preparing,
       0 => SubAgentDisplayStatus.unavailable,
       1 => statuses.single,
       _ when isActive => SubAgentDisplayStatus.working,
@@ -187,6 +222,15 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
       isActive: isActive,
     );
   }
+}
+
+String _latestSubAgentTurnId(List<TimelineEntry> entries) {
+  for (final entry in entries.reversed) {
+    if (entry.kind == TimelineKind.subAgent && entry.turnId.isNotEmpty) {
+      return entry.turnId;
+    }
+  }
+  return '';
 }
 
 SubAgentPresentation _toSubAgentPresentation(TimelineEntry entry, int index) {
@@ -218,7 +262,7 @@ String _leafName(String path) {
 }
 
 SubAgentDisplayStatus _toDisplayStatus(TimelineEntry entry) {
-  return switch (entry.status) {
+  final status = switch (entry.status) {
     'completed' => SubAgentDisplayStatus.completed,
     'interrupted' => SubAgentDisplayStatus.interrupted,
     'errored' || 'failed' => SubAgentDisplayStatus.failed,
@@ -237,6 +281,11 @@ SubAgentDisplayStatus _toDisplayStatus(TimelineEntry entry) {
       _ => SubAgentDisplayStatus.working,
     },
   };
+  // Activity messages are emitted before collaboration creation has been
+  // acknowledged. They cannot represent a running child session yet.
+  return entry.subAgentThreadId.trim().isEmpty && status.isActive
+      ? SubAgentDisplayStatus.preparing
+      : status;
 }
 
 SubAgentDisplayStatus _activityStatus(String activity) {

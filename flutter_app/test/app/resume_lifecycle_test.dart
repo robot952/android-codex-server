@@ -552,6 +552,156 @@ void main() {
       nextResume.complete(const AgentSession(thread: _threadA, timeline: []));
     },
   );
+
+  test(
+    're-entering a revised thread keeps a command completed on the list',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
+      final harness = await _createHarness(agent);
+      final firstResume = agent.gateNextResume(_threadA.id);
+
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => harness.controller.state.loading);
+      firstResume.complete(
+        const AgentSession(
+          thread: _threadAActive,
+          timeline: <TimelineEntry>[
+            TimelineEntry(
+              id: 'command-1',
+              kind: TimelineKind.command,
+              command: 'flutter test',
+              status: 'inProgress',
+              turnId: 'turn-a',
+            ),
+          ],
+          turnIds: <String>['turn-a'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+
+      agent.emit(
+        _notificationWithParams('item/completed', <String, Object?>{
+          'threadId': _threadA.id,
+          'turnId': 'turn-a',
+          'item': <String, Object?>{
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'command': 'flutter test',
+            'status': 'completed',
+            'aggregatedOutput': 'All tests passed',
+          },
+        }),
+      );
+      agent.emit(
+        _notification(
+          'turn/completed',
+          threadId: _threadA.id,
+          turnId: 'turn-a',
+        ),
+      );
+      await _drainAsyncWork();
+
+      const refreshedThread = AgentThread(
+        id: 'thread-a',
+        title: 'Thread A',
+        source: 'appServer',
+        status: 'idle',
+        updatedAt: 11,
+      );
+      agent.threads = const <AgentThread>[refreshedThread, _threadB];
+      final secondResume = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(refreshedThread);
+      await _waitUntil(() => harness.controller.state.loading);
+      expect(
+        harness.controller.state.timeline.single.kind,
+        TimelineKind.command,
+      );
+
+      secondResume.complete(
+        const AgentSession(
+          thread: refreshedThread,
+          timeline: <TimelineEntry>[
+            TimelineEntry(
+              id: 'agent-1',
+              kind: TimelineKind.agentMessage,
+              text: '测试完成',
+              turnId: 'turn-a',
+            ),
+          ],
+          turnIds: <String>['turn-a'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+
+      final command = harness.controller.state.timeline.singleWhere(
+        (entry) => entry.kind == TimelineKind.command,
+      );
+      expect(command.command, 'flutter test');
+      expect(command.status, 'completed');
+      expect(command.output, 'All tests passed');
+    },
+  );
+
+  test('re-entering keeps an active command on the list', () async {
+    final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
+    final harness = await _createHarness(agent);
+    final firstResume = agent.gateNextResume(_threadA.id);
+
+    harness.controller.openThread(_threadAActive);
+    await _waitUntil(() => harness.controller.state.loading);
+    firstResume.complete(
+      const AgentSession(
+        thread: _threadAActive,
+        timeline: <TimelineEntry>[
+          TimelineEntry(
+            id: 'command-running',
+            kind: TimelineKind.command,
+            command: 'flutter build apk',
+            status: 'inProgress',
+            turnId: 'turn-a',
+          ),
+        ],
+        turnIds: <String>['turn-a'],
+      ),
+    );
+    await _waitUntil(() => !harness.controller.state.loading);
+    harness.controller.backToThreadList();
+
+    const refreshedActiveThread = AgentThread(
+      id: 'thread-a',
+      title: 'Thread A',
+      source: 'appServer',
+      status: 'active',
+      activeTurnId: 'turn-a',
+      updatedAt: 11,
+    );
+    final secondResume = agent.gateNextResume(_threadA.id);
+    harness.controller.openThread(refreshedActiveThread);
+    await _waitUntil(() => harness.controller.state.loading);
+    secondResume.complete(
+      const AgentSession(
+        thread: refreshedActiveThread,
+        timeline: <TimelineEntry>[
+          TimelineEntry(
+            id: 'agent-running',
+            kind: TimelineKind.agentMessage,
+            text: '正在构建',
+            turnId: 'turn-a',
+          ),
+        ],
+        turnIds: <String>['turn-a'],
+      ),
+    );
+    await _waitUntil(() => !harness.controller.state.loading);
+
+    final command = harness.controller.state.timeline.singleWhere(
+      (entry) => entry.kind == TimelineKind.command,
+    );
+    expect(command.status, 'inProgress');
+    expect(harness.controller.state.running, isTrue);
+    expect(harness.controller.state.activeTurnId, 'turn-a');
+  });
 }
 
 class _Harness {
