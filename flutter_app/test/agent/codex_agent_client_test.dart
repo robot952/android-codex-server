@@ -21,6 +21,7 @@ class _FakeCodexHost
   int connectCount = 0;
   int disconnectCount = 0;
   int closeCount = 0;
+  int runCount = 0;
   int keepAliveCount = 0;
 
   @override
@@ -67,6 +68,7 @@ class _FakeCodexHost
     Duration timeout = const Duration(seconds: 15),
     int maxOutputBytes = 1024 * 1024,
   }) {
+    runCount++;
     throw UnimplementedError();
   }
 
@@ -227,6 +229,23 @@ void main() {
       ),
       throwsStateError,
     );
+  });
+
+  test('keeps legacy stdio as the default Agent transport', () async {
+    final host = _FakeCodexHost();
+    final client = CodexAgentClient();
+    const profile = ServerProfile(
+      id: 'server',
+      host: 'example.com',
+      username: 'root',
+      hostFingerprint: 'SHA256:verified',
+      remoteCommand: 'codex app-server --listen stdio://',
+    );
+
+    expect(client.useDurableTransport, isFalse);
+    await expectLater(client.connect(profile, host), throwsA(anything));
+    expect(host.runCount, 0);
+    client.close();
   });
 
   test('builds a stable detached Unix-socket app-server command', () async {

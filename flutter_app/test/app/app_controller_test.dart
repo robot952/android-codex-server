@@ -1531,9 +1531,9 @@ void main() {
     },
   );
 
-  for (final missingField in const <String>['message', 'target']) {
-    test('recovers a running turn once when collaboration diagnostics report '
-        'missing $missingField', () async {
+  test(
+    'does not steer a running turn when collaboration diagnostics are emitted',
+    () async {
       final store = _MemoryProfileStore(
         const StoredProfiles(
           profiles: [_firstProfile],
@@ -1573,15 +1573,13 @@ void main() {
       await _drainAsyncWork();
       expect(agent.steerCallCount, 0);
 
-      final diagnostic = RemoteAgentDiagnostic(
-        'ERROR codex_core::tools::router: error=failed to parse function '
-        'arguments: missing field `$missingField` at line 1 column 2',
-        isStderr: true,
+      agent.emit(
+        const RemoteAgentDiagnostic(
+          'ERROR codex_core::tools::router: error=failed to parse function '
+          'arguments: missing field `message` at line 1 column 2',
+          isStderr: true,
+        ),
       );
-      agent.emit(diagnostic);
-      agent.emit(diagnostic);
-      expect(controller.state.running, isTrue);
-      agent.emit(diagnostic);
       await _drainAsyncWork();
 
       expect(agent.interruptedThreadId, isNull);
@@ -1590,13 +1588,7 @@ void main() {
       expect(controller.state.activeTurnId, 'turn-running');
       expect(controller.state.turnTiming?.stopped, isFalse);
       expect(controller.state.error, isNull);
-      expect(agent.steerCallCount, 1);
-      expect(agent.steeredThreadId, _SteeringAgent.activeThread.id);
-      expect(agent.steeredTurnId, 'turn-running');
-      expect(agent.steeredText, contains('spawn_agent'));
-      expect(agent.steeredText, contains('task_name'));
-      expect(agent.steeredText, contains('target'));
-      expect(agent.steeredAttachments, isEmpty);
+      expect(agent.steerCallCount, 0);
 
       agent.emit(
         RemoteAgentNotification(
@@ -1620,11 +1612,17 @@ void main() {
         ),
       );
       await _waitUntil(() => !controller.state.running);
-      agent.emit(diagnostic);
+      agent.emit(
+        const RemoteAgentDiagnostic(
+          'ERROR codex_core::tools::router: error=failed to parse function '
+          'arguments: missing field `target` at line 1 column 2',
+          isStderr: true,
+        ),
+      );
       await _drainAsyncWork();
-      expect(agent.steerCallCount, 1);
-    });
-  }
+      expect(agent.steerCallCount, 0);
+    },
+  );
 
   test(
     'marks a child agent completed while its parent turn remains active',

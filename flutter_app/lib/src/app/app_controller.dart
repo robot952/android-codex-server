@@ -158,8 +158,6 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, ThreadSessionCache> _threadCaches = {};
   final Map<AgentConnectionKey, ResumeNotificationBuffer>
   _resumeNotificationBuffers = {};
-  final Map<AgentConnectionKey, ({String threadId, String turnId})>
-  _collaborationRecoveryTurns = {};
   final Map<String, _ThreadOpenRequest> _threadOpenRequests = {};
   final ProfileScopedBackStack<_SubAgentNavigationFrame>
   _subAgentNavigationStacks = ProfileScopedBackStack();
@@ -5447,12 +5445,10 @@ class AppController extends StateNotifier<AppUiState> {
             'profile=${envelope.key.profileId} '
                 'agent=${envelope.key.agent.name} detail=$message',
           );
-          _recoverMalformedCollaborationTurn(envelope.key, message);
         } else if (active) {
           state = state.copyWith(diagnostic: message);
         }
       case RemoteAgentConnectionLost(:final message):
-        _collaborationRecoveryTurns.remove(envelope.key);
         _diagnostics.info(
           'Agent',
           'connection_lost profile=${envelope.key.profileId} '
@@ -5492,7 +5488,6 @@ class AppController extends StateNotifier<AppUiState> {
       case RemoteAgentNotification(:final message):
         final before = state;
         final routedMessage = _withResolvedNotificationThreadId(message);
-        _clearCollaborationRecoveryForCompletion(envelope.key, routedMessage);
         _rememberSubAgentReferences(
           envelope.key,
           before.agentThreadLists[envelope.key] ?? const <AgentThread>[],
@@ -5594,79 +5589,6 @@ class AppController extends StateNotifier<AppUiState> {
           _syncVisibleApprovals(envelope.key, threadId: state.activeThread?.id);
         }
     }
-  }
-
-  void _recoverMalformedCollaborationTurn(
-    AgentConnectionKey key,
-    String message,
-  ) {
-    if (!_isMalformedCollaborationToolDiagnostic(message) ||
-        key.agent != AgentKind.codex ||
-        !_isActiveKey(key) ||
-        !state.running ||
-        !state.activeAgentCapabilities.steerTurn) {
-      return;
-    }
-    final threadId = state.activeThread?.id.trim() ?? '';
-    final turnId = state.activeTurnId?.trim() ?? '';
-    if (threadId.isEmpty || turnId.isEmpty) return;
-
-    final recoveryTurn = (threadId: threadId, turnId: turnId);
-    if (_collaborationRecoveryTurns[key] == recoveryTurn) return;
-    _collaborationRecoveryTurns[key] = recoveryTurn;
-    _diagnostics.info(
-      'Agent',
-      'collaboration_recovery_requested profile=${key.profileId} '
-          'agent=${key.agent.name} thread=$threadId turn=$turnId',
-    );
-    unawaited(
-      _steerCollaborationRecovery(key, threadId: threadId, turnId: turnId),
-    );
-  }
-
-  Future<void> _steerCollaborationRecovery(
-    AgentConnectionKey key, {
-    required String threadId,
-    required String turnId,
-  }) async {
-    try {
-      await _agents.steerTurn(
-        key,
-        threadId: threadId,
-        turnId: turnId,
-        text: _collaborationRecoveryPrompt,
-      );
-      if (!mounted) return;
-      _diagnostics.info(
-        'Agent',
-        'collaboration_recovery_accepted profile=${key.profileId} '
-            'agent=${key.agent.name} thread=$threadId turn=$turnId',
-      );
-    } catch (error, stack) {
-      if (!mounted) return;
-      _diagnostics.warn(
-        'Agent',
-        'collaboration_recovery_failed profile=${key.profileId} '
-            'agent=${key.agent.name} thread=$threadId turn=$turnId',
-        error,
-        stack,
-      );
-    }
-  }
-
-  void _clearCollaborationRecoveryForCompletion(
-    AgentConnectionKey key,
-    CodexRpcNotification message,
-  ) {
-    if (!_isCompletionNotification(message)) return;
-    final recoveryTurn = _collaborationRecoveryTurns[key];
-    if (recoveryTurn == null) return;
-    final threadId = _notificationThreadId(message);
-    final turnId = _notificationTurnId(message);
-    if (threadId.isEmpty && turnId.isEmpty) return;
-    if (threadId.isNotEmpty && threadId != recoveryTurn.threadId) return;
-    if (turnId.isNotEmpty && turnId != recoveryTurn.turnId) return;
-    _collaborationRecoveryTurns.remove(key);
   }
 
   void _publishTurnCompletionIfNeeded(
@@ -6184,7 +6106,6 @@ class AppController extends StateNotifier<AppUiState> {
     }
     _customModelSyncTimers.clear();
     _resumeNotificationBuffers.clear();
-    _collaborationRecoveryTurns.clear();
     unawaited(_connectionSubscription.cancel());
     unawaited(_serverMetricsSubscription.cancel());
     unawaited(_agentConnectionSubscription.cancel());
@@ -6207,12 +6128,6 @@ const List<Duration> _defaultReconnectDelays = <Duration>[
 ];
 const int _maxSessionSnapshotEntries = 512;
 const int _maxSessionSnapshotWeightChars = 2 * 1024 * 1024;
-const String _collaborationRecoveryPrompt =
-    '协作工具参数校验失败。不要重复空参数调用：'
-    'spawn_agent 必须提供 task_name 和 message；'
-    'send_message/followup_task 必须提供 target 和 message；'
-    'interrupt_agent 必须提供 target。'
-    '请使用完整 JSON 参数重新执行刚才的协作步骤，然后继续当前任务。';
 const Duration _customModelSyncDebounce = Duration(milliseconds: 350);
 
 List<String> _noModelReasoningEfforts(String _) => const <String>[];
@@ -6543,13 +6458,6 @@ bool _isCompletionNotification(CodexRpcNotification message) {
   };
 }
 
-bool _isMalformedCollaborationToolDiagnostic(String message) {
-  return message.contains('codex_core::tools::router') &&
-      message.contains('failed to parse function arguments') &&
-      (message.contains('missing field `message`') ||
-          message.contains('missing field `target`'));
-}
-
 String? _subAgentTerminalStatusFromCompletion(CodexRpcNotification message) {
   final method = message.method;
   final params = message.params;
@@ -6642,15 +6550,6 @@ String _notificationThreadId(CodexRpcNotification message) {
           'thread_id',
         ]),
       );
-}
-
-String _notificationTurnId(CodexRpcNotification message) {
-  final params = message.params;
-  return _notificationString(_notificationMap(params['turn']), const [
-    'id',
-    'turnId',
-    'turn_id',
-  ]).ifEmpty(() => _notificationString(params, const ['turnId', 'turn_id']));
 }
 
 CodexRpcNotification _withResolvedNotificationThreadId(

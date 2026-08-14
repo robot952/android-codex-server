@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.70+197，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.71+198，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -340,7 +340,7 @@ DartSshServerClient 使用 dartssh2：
 
 AppController 当前把 SSH 主机通道用于指纹、登录、资源采样、远程图片读取、附件上传、终端 PTY 和远程
 文件管理；每个 Codex/OpenCode Agent lane 另建专用 `DartSshServerClient`。OpenCode 在该 transport 上打开
-无 PTY bridge exec；Codex 优先转发远端私有 Unix socket，无法使用时回退到无 PTY stdio exec。这个边界与
+无 PTY bridge exec；Codex 默认使用旧版无 PTY stdio exec，只有显式启用 durable transport 时才转发远端私有 Unix socket。这个边界与
 旧版 JSch 实现一致，Host 指标、SFTP、PTY 和心跳异常不能直接关闭正在工作的 Agent turn。Composer 通过系统 picker
 读取本地图片/文件，上传到当前 profile 的 SFTP 目录后形成待发项；控制器在每次结果写回前校验活动
 `profileId + AgentKind + threadId`。远程文件下载不把完整文件载入 Dart 内存，而是通过
@@ -540,18 +540,18 @@ Unix-socket forward（不支持时回退 exec），均不与 metrics/SFTP 共用
 
 ### 9.2 Codex JSON-RPC/JSONL（当前实现）
 
-Codex adapter 从 Profile 的 stdio `remoteCommand` 派生稳定 key，读取
-`$HOME/.codex/codex-remote.env`、可选切换 workspace，并通过 `nohup`/`setsid` 启动仅监听远端用户私有
-Unix socket 的 app-server。SSH 使用 `direct-streamlocal@openssh.com` 转发该 socket，客户端执行 RFC 6455
-握手，把 JSONL 行映射为带 mask 的 WebSocket text frame，并处理分片、ping/pong 和 close。若 CLI 或 SSH
-服务端不支持该路径，会清理已启动进程并回退 `buildCodexAppServerCommand` 的 stdio exec。连接顺序是
+Codex adapter 读取 Profile 的 stdio `remoteCommand`、加载 `$HOME/.codex/codex-remote.env` 并可切换
+workspace，默认直接通过独立 SSH exec channel 启动 app-server，保持旧版 Android 客户端的 JSONL stdio 行为。
+只有显式启用 durable transport 时，才通过 `nohup`/`setsid` 启动仅监听远端用户私有 Unix socket 的
+app-server，使用 `direct-streamlocal@openssh.com` 转发并执行 RFC 6455 握手，将 JSONL 行映射为带 mask
+的 WebSocket text frame。durable 路径不可用时会清理已启动进程并回退到 stdio exec。连接顺序是
 initialize -> initialized；普通请求默认 120 秒，会话请求默认 180 秒，单条消息最大 8 MiB，stderr
 单行最大 8 KiB。
 
-意外 SSH 断线只销毁 forward 和手机侧 transport，不执行远端 stop command；远端 app-server 与 turn 保留，
-重连后复用同一 socket 并 `thread/resume`。用户显式断开时，`AgentConnectionManager` 先调用 durable cleanup，
-再关闭 Agent 和 Host SSH。Unix socket、PID、启动锁和有界日志位于远端 `XDG_RUNTIME_DIR` 或用户专属 `/tmp`
-目录，PID 清理会核对 `/proc/<pid>/cmdline` 中的 socket 路径，避免误杀复用 PID。
+意外 SSH 断线在 stdio 模式下销毁手机侧 transport 并通过 `thread/resume` 恢复会话；显式 durable 模式只销毁
+forward，保留远端 app-server 与 turn 并在重连后复用同一 socket。用户显式断开时，`AgentConnectionManager`
+先调用 durable cleanup，再关闭 Agent 和 Host SSH。Unix socket、PID、启动锁和有界日志位于远端
+`XDG_RUNTIME_DIR` 或用户专属 `/tmp` 目录，PID 清理会核对 `/proc/<pid>/cmdline` 中的 socket 路径，避免误杀复用 PID。
 
 JSONL 写入只把完整行加入当前 SSH session 的 stdin，并由 `_writeTail` 串行化；不能在 channel 上传
 循环并发运行时调用 `SSHSession.flush()`，因为 dartssh2 会暂时绑定底层 Socket sink，迟到的 channel
@@ -1893,7 +1893,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 命令卡片继续显示运行、完成或失败状态，不采集或展示单条命令耗时。命令详情使用 `220ms` 高度
   过渡，箭头同步旋转；用户消息样式和命令展开动画均有回归测试覆盖。
 
-### 17.39 协作工具参数错误自动恢复（2026-08-14）
+### 17.39 协作工具参数错误自动恢复（2026-08-14，已撤回）
 
 - 应用版本：`1.8.69+196`。Codex 在运行中的父 turn 内反复产生缺少 `message` 或 `target`
   的协作工具参数时，客户端会对当前 thread/turn 发送一次有界纠错引导，要求模型用完整 JSON
@@ -1916,6 +1916,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   命令卡片不再采集或展示单条命令耗时。
 - 定向测试、Flutter 全量测试、`flutter analyze`、Release 构建和 Android 14 竖屏模拟器 smoke 已通过；
   `1.8.70+197` Release APK 使用稳定签名并完成内网/外网下载回验。
+
+### 17.41 协作传输回退与父回合保护（2026-08-14）
+
+- 应用版本：`1.8.71+198`。Codex 默认回到旧版 SSH stdio 通道；durable Unix socket 代码仅由显式
+  `useDurableTransport=true` 启用，避免远端无 bubblewrap、私有 socket 转发不可用时改变正常回合行为。
+- 收到 Codex 协作工具 `missing field message/target` 的 stderr 只进入有界诊断日志，不再自动对父回合发送
+  `turn/steer` 纠错文本，避免自动改写父回合、重复调用和连接恢复循环。用户仍可手动发送新的完整指令。
+- Flutter 定向 Agent/Controller 测试、全量测试、静态分析、Debug/Release APK、Release 模拟器 smoke 和
+  内外网下载回验均通过；真实多 Agent 端到端仍需已认证的 Codex Provider，当前测试账号的模型请求超时不计入通过。
 
 ## 18. 文档维护规则
 

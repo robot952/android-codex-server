@@ -73,7 +73,7 @@ Windows x64 EXE 还可直接使用本机原生 Codex，无需 WSL 或本机 SSH 
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.70+197`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.71+198`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |
@@ -244,7 +244,7 @@ CODEX_REMOTE_BIN="$HOME/.local/bin/codex-remote" node ./smoke-test.mjs
 - 已保存指纹必须严格匹配；主机或端口变化后重新确认。
 - 密码和私钥只存入系统安全存储，不写日志、通知、普通首选项或截图。
 - Codex/OpenCode 凭据留在远程服务器；App 不把它们打包进 APK。
-- Agent 协议只通过 SSH 通道传输；Codex 常驻 app-server 仅监听远端用户私有 Unix socket，不公开 TCP 端口。
+- Agent 协议只通过 SSH 通道传输；Codex 默认使用旧版 SSH stdio app-server 通道，durable Unix socket 仅在显式启用时使用，不公开 TCP 端口。
 - 生产环境推荐非 root 专用账户和每台设备独立 SSH key；界面默认用户为 `root` 只是产品默认值。
 
 ## 协作规则

@@ -398,6 +398,7 @@ class CodexAgentClient
     this.requestTimeout = const Duration(seconds: 120),
     this.threadRequestTimeout = const Duration(seconds: 180),
     this.maxLineChars = 8 * 1024 * 1024,
+    this.useDurableTransport = false,
     CodexSessionOpener? sessionOpener,
     this.dedicatedHostFactory,
     AgentKind processAgent = AgentKind.codex,
@@ -414,6 +415,11 @@ class CodexAgentClient
   final Duration requestTimeout;
   final Duration threadRequestTimeout;
   final int maxLineChars;
+
+  /// Keep the default on the legacy SSH stdio path. It is the transport used
+  /// by the old Android client and is required for reliable collaboration
+  /// turns on hosts where the detached socket path is unavailable.
+  final bool useDurableTransport;
   final CodexSessionOpener _sessionOpener;
   final bool _usesDefaultSessionOpener;
   final CodexDedicatedHostFactory? dedicatedHostFactory;
@@ -560,7 +566,8 @@ class CodexAgentClient
     final command = buildCodexAppServerCommand(profile);
     late CodexSession session;
     try {
-      if (_usesDefaultSessionOpener &&
+      if (useDurableTransport &&
+          _usesDefaultSessionOpener &&
           sessionHost is! LocalRemoteServerClient &&
           supportsDurableCodexAppServer(profile.remoteCommand)) {
         try {
