@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.72+199，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.73+200，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1938,6 +1938,16 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `6 个后台智能体`；在 `emulator-5554`、Android 14、`1220x2712` 模拟器上以同一父会话真实创建
   `t1`、`t2`、`t3`、`fourth`、`fifth2`、`child6` 六个 child thread，最终六个均显示“已完成”，并由
   UIAutomator 核对唯一 child thread ID 与展开面板数量。
+
+### 17.43 回合终态与停止状态收敛（2026-08-15）
+
+- 应用版本：`1.8.73+200`。Codex 先返回 `agentMessage` 的 `final_answer`、但因异常 custom tool
+  output 没有继续返回 `turn/completed` 时，客户端现在按明确的最终答案事件结束本地回合并持久化计时，
+  不再在回答已经显示后持续显示“处理中”。
+- 点击停止先立即结束本地运行态、清理当前审批和后台 Agent 活动；远端 `turn/interrupt` 失败或请求
+  generation 已失效时仍保持可继续发送，并给出可见的远端失败提示。重连或迟到的旧 `turn/started` 不会
+  重新点亮旧回合的 spinner。
+- 新增 reducer、控制器和恢复流程回归，覆盖缺失 `turn/completed`、停止请求失效、迟到事件和持久化计时。
 
 ## 18. 文档维护规则
 

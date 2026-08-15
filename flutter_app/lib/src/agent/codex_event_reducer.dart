@@ -1,6 +1,70 @@
 import '../domain/models.dart';
 import 'codex_protocol.dart';
 
+bool isTerminalAgentMessageNotification(CodexRpcNotification notification) {
+  if (notification.method != 'item/completed') return false;
+  final item = _map(notification.params['item']);
+  if (_string(item, const ['type']) != 'agentMessage') return false;
+  final phase = _string(item, const [
+    'phase',
+    'status',
+  ]).toLowerCase().replaceAll(RegExp(r'[^a-z]'), '');
+  return phase == 'finalanswer';
+}
+
+AppUiState settleActiveTurnLocally(
+  AppUiState state, {
+  required String threadId,
+  required String turnId,
+  required bool stopped,
+  int? nowMillis,
+}) {
+  final activeThreadId = state.activeThread?.id ?? '';
+  if (threadId.isEmpty || threadId != activeThreadId) return state;
+  final currentTurnId = state.activeTurnId?.trim() ?? '';
+  final expectedTurnId = turnId.trim();
+  if (currentTurnId.isNotEmpty &&
+      expectedTurnId.isNotEmpty &&
+      currentTurnId != expectedTurnId) {
+    return state;
+  }
+  final resolvedTurnId = expectedTurnId.isNotEmpty
+      ? expectedTurnId
+      : currentTurnId;
+  final now = nowMillis ?? DateTime.now().millisecondsSinceEpoch;
+  var next = _updateListedThread(
+    state,
+    threadId,
+    (thread) => thread.copyWith(status: 'idle', activeTurnId: null),
+  );
+  final activeThread = next.activeThread;
+  final timing = next.turnTiming;
+  final completedTiming =
+      timing != null &&
+          timing.threadId == threadId &&
+          timing.completedAtMillis == null
+      ? timing.copyWith(
+          turnId: resolvedTurnId.isEmpty ? timing.turnId : resolvedTurnId,
+          completedAtMillis: now,
+          stopped: timing.stopped || stopped,
+        )
+      : timing;
+  return next.copyWith(
+    activeThread: activeThread?.id == threadId
+        ? activeThread!.copyWith(status: 'idle', activeTurnId: null)
+        : activeThread,
+    activeTurnId: null,
+    running: false,
+    submitting: false,
+    timeline: _completeSubAgentsForTurn(
+      next.timeline,
+      resolvedTurnId,
+      stopped ? 'stopped' : 'completed',
+    ),
+    turnTiming: completedTiming,
+  );
+}
+
 /// Applies one Codex app-server notification to the Flutter domain state.
 ///
 /// Notifications can describe a background thread while another thread is
@@ -52,6 +116,14 @@ AppUiState reduceCodexNotification(
       final resolvedTurnId = turnId.isNotEmpty
           ? turnId
           : _string(params, const ['turnId', 'turn_id']);
+      if (appliesToActive &&
+          _isSettledTurn(
+            state.turnTiming,
+            activeThreadId ?? threadId,
+            resolvedTurnId,
+          )) {
+        return state;
+      }
       var next = updateRuntime(
         state,
         status: 'active',
@@ -104,30 +176,21 @@ AppUiState reduceCodexNotification(
       final error = _string(errorObject, const [
         'message',
       ]).ifEmpty(() => _string(turn, const ['error']));
-      final timing = next.turnTiming;
-      final timingThreadId = activeThreadId ?? threadId;
-      final completedTiming =
-          timing != null &&
-              timing.threadId == timingThreadId &&
-              timing.completedAtMillis == null
-          ? timing.copyWith(
-              turnId: resolvedTurnId.isEmpty ? timing.turnId : resolvedTurnId,
-              completedAtMillis: now,
-              stopped: timing.stopped || _isStoppedStatus(turnStatus),
-            )
-          : timing;
-      next = next.copyWith(
-        activeTurnId: null,
-        running: false,
+      next = settleActiveTurnLocally(
+        next,
+        threadId: activeThreadId ?? threadId,
+        turnId: resolvedTurnId,
+        stopped: _isStoppedStatus(turnStatus),
+        nowMillis: now,
+      );
+      return next.copyWith(
         timeline: _completeSubAgentsForTurn(
           next.timeline,
           resolvedTurnId,
           _subAgentStatusForTurn(turnStatus),
         ),
-        turnTiming: completedTiming,
         error: error.isEmpty ? next.error : error,
       );
-      return next;
 
     case 'thread/status/changed':
       if (threadId.isEmpty) return state;
@@ -140,6 +203,16 @@ AppUiState reduceCodexNotification(
         'turnId',
         'turn_id',
       ]);
+      if (status == 'active' &&
+          announcedTurnId.isNotEmpty &&
+          appliesToActive &&
+          _isSettledTurn(
+            state.turnTiming,
+            activeThreadId ?? threadId,
+            announcedTurnId,
+          )) {
+        return state;
+      }
       final turnId = status == 'active'
           ? (announcedTurnId.isNotEmpty
                 ? announcedTurnId
@@ -224,7 +297,15 @@ AppUiState reduceCodexNotification(
       if (itemType == 'collabAgentToolCall') {
         timeline = _applySubAgentStates(timeline, item, entry.turnId);
       }
-      return state.copyWith(timeline: timeline);
+      final next = state.copyWith(timeline: timeline);
+      if (!isTerminalAgentMessageNotification(notification)) return next;
+      return settleActiveTurnLocally(
+        next,
+        threadId: activeThreadId ?? threadId,
+        turnId: entry.turnId,
+        stopped: false,
+        nowMillis: now,
+      );
 
     case 'item/agentMessage/delta':
       if (!appliesToActive) return state;
@@ -836,6 +917,16 @@ bool _isStoppedStatus(String status) => switch (status.toLowerCase()) {
   'interrupted' || 'stopped' || 'aborted' || 'cancelled' || 'canceled' => true,
   _ => false,
 };
+
+bool _isSettledTurn(TurnTiming? timing, String threadId, String turnId) {
+  if (timing == null ||
+      timing.completedAtMillis == null ||
+      timing.threadId != threadId ||
+      turnId.isEmpty) {
+    return false;
+  }
+  return timing.turnId?.trim() == turnId.trim();
+}
 
 ThreadGoal _parseGoal(Map<String, Object?> value, String fallbackThreadId) =>
     ThreadGoal(

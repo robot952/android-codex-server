@@ -3139,21 +3139,82 @@ class AppController extends StateNotifier<AppUiState> {
       profileId: profileId,
       agent: state.activeAgent,
     );
+    _settleVisibleTurnLocally(key, thread.id, turnId, stopped: true);
     try {
       await _agents.interruptTurn(key, threadId: thread.id, turnId: turnId);
-      if (mounted && _isActiveThread(key, thread.id)) {
-        final timing = state.turnTiming;
-        if (timing != null &&
-            timing.threadId == thread.id &&
-            (timing.turnId == null || timing.turnId == turnId) &&
-            timing.completedAtMillis == null) {
-          state = state.copyWith(turnTiming: timing.copyWith(stopped: true));
-        }
+    } catch (error, stack) {
+      _diagnostics.warn(
+        'Message',
+        'interrupt_failed profile=$profileId agent=${key.agent.name} '
+            'thread=${thread.id} turn=$turnId',
+        error,
+        stack,
+      );
+      final timing = state.turnTiming;
+      if (mounted &&
+          _isActiveThread(key, thread.id) &&
+          !state.running &&
+          state.activeTurnId == null &&
+          timing?.threadId == thread.id &&
+          timing?.turnId == turnId &&
+          timing?.completedAtMillis != null) {
+        state = state.copyWith(
+          error: '已结束本地处理状态；远端停止失败：${_message(error, '请求失败')}',
+        );
       }
-    } catch (error) {
-      if (mounted && _isActiveThread(key, thread.id)) {
-        state = state.copyWith(error: _message(error, '停止消息失败'));
-      }
+    }
+  }
+
+  void _settleVisibleTurnLocally(
+    AgentConnectionKey key,
+    String threadId,
+    String turnId, {
+    required bool stopped,
+  }) {
+    if (!mounted || !_isActiveThread(key, threadId)) return;
+    final before = state;
+    final reduced = settleActiveTurnLocally(
+      before,
+      threadId: threadId,
+      turnId: turnId,
+      stopped: stopped,
+    );
+    if (identical(before, reduced)) return;
+    final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
+      before.agentThreadLists,
+    );
+    if (reduced.threads != before.threads) lists[key] = reduced.threads;
+    final pending = _pendingApprovalsByThread[key];
+    pending?.remove(threadId);
+    if (pending?.isEmpty == true) _pendingApprovalsByThread.remove(key);
+    state = reduced.copyWith(
+      agentThreadLists: Map.unmodifiable(lists),
+      approvalQueue: const <ApprovalPrompt>[],
+      approval: null,
+    );
+    final activeThread = state.activeThread;
+    if (activeThread != null) {
+      _threadCaches
+          .putIfAbsent(key, ThreadSessionCache.new)
+          .put(
+            activeThread,
+            state.timeline,
+            nextTurnsCursor: state.olderTurnsCursor,
+            tokenUsage: state.tokenUsage,
+          );
+    }
+    final timing = state.turnTiming;
+    if (timing != null) {
+      unawaited(
+        _persist(
+          (stored) => stored.copyWith(
+            completedTurnTimings: {
+              ...stored.completedTurnTimings,
+              threadPreferenceKey(key.profileId, key.agent, threadId): timing,
+            },
+          ),
+        ),
+      );
     }
   }
 
@@ -3884,8 +3945,7 @@ class AppController extends StateNotifier<AppUiState> {
         ? initialSnapshot.selectedEffort
         : resolvedModel.effort;
     final timelineTurnId = _activeTimelineTurnId(snapshot.timeline);
-    final activeTurnId = snapshot.thread.activeTurnId ?? timelineTurnId;
-    final running = _threadIsRunning(snapshot.thread) || activeTurnId != null;
+    final serverActiveTurnId = snapshot.thread.activeTurnId ?? timelineTurnId;
     final currentTiming = sameInitialThread
         ? initialSnapshot!.turnTiming
         : state.turnTiming?.threadId == snapshot.thread.id
@@ -3904,6 +3964,18 @@ class AppController extends StateNotifier<AppUiState> {
               storedTiming?.completedAtMillis != null
         ? storedTiming
         : null;
+    final locallySettled = _completedTimingMatchesTurn(
+      completedTiming,
+      snapshot.thread.id,
+      serverActiveTurnId,
+    );
+    final activeTurnId = locallySettled ? null : serverActiveTurnId;
+    final running =
+        !locallySettled &&
+        (_threadIsRunning(snapshot.thread) || activeTurnId != null);
+    final resolvedThread = locallySettled
+        ? snapshot.thread.copyWith(status: 'idle', activeTurnId: null)
+        : snapshot.thread;
     final reusableTiming =
         _canReuseTurnTiming(currentTiming, snapshot.thread.id, activeTurnId)
         ? currentTiming
@@ -3933,7 +4005,7 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(
       screen: targetScreen,
       subAgentBackNavigation: subAgentBackNavigation,
-      activeThread: snapshot.thread,
+      activeThread: resolvedThread,
       activeAgentName: activeAgentName,
       activeGoal: sameInitialThread ? initialSnapshot!.activeGoal : activeGoal,
       timeline: snapshot.timeline,
@@ -5554,7 +5626,8 @@ class AppController extends StateNotifier<AppUiState> {
         }
         if (routedMessage.method == 'turn/started' ||
             routedMessage.method == 'turn/completed' ||
-            routedMessage.method == 'thread/status/changed') {
+            routedMessage.method == 'thread/status/changed' ||
+            isTerminalAgentMessageNotification(routedMessage)) {
           final timing = state.turnTiming;
           if (timing != null) {
             unawaited(
@@ -6438,8 +6511,26 @@ bool _canReuseTurnTiming(
   return resumedTurnId.isNotEmpty && retainedTurnId == resumedTurnId;
 }
 
+bool _completedTimingMatchesTurn(
+  TurnTiming? timing,
+  String threadId,
+  String? activeTurnId,
+) {
+  if (timing == null ||
+      timing.completedAtMillis == null ||
+      timing.threadId != threadId) {
+    return false;
+  }
+  final completedTurnId = timing.turnId?.trim() ?? '';
+  final resumedTurnId = activeTurnId?.trim() ?? '';
+  return completedTurnId.isNotEmpty && completedTurnId == resumedTurnId;
+}
+
 bool _isCompletionNotification(CodexRpcNotification message) {
-  if (message.method == 'turn/completed') return true;
+  if (message.method == 'turn/completed' ||
+      isTerminalAgentMessageNotification(message)) {
+    return true;
+  }
   if (message.method != 'thread/status/changed') return false;
   final status = _notificationString(message.params, const [
     'status',

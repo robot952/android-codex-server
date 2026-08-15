@@ -571,6 +571,16 @@ class _SteeringAgent extends _FailingTurnAgent
   }
 }
 
+class _FailingInterruptAgent extends _SteeringAgent {
+  @override
+  Future<void> interruptTurn({
+    required String threadId,
+    required String turnId,
+  }) async {
+    throw StateError('Agent 停止请求已失效');
+  }
+}
+
 class _SubAgentNavigationAgent extends _FailingTurnAgent {
   _SubAgentNavigationAgent({this.agentKind = AgentKind.codex});
 
@@ -2438,7 +2448,7 @@ void main() {
     expect(controller.state.timeline.last.text, 'Continue with tests');
   });
 
-  test('marks the active turn as stopped after interrupt succeeds', () async {
+  test('stops the active turn locally after interrupt succeeds', () async {
     final store = _MemoryProfileStore(
       const StoredProfiles(
         profiles: [_firstProfile],
@@ -2473,9 +2483,56 @@ void main() {
 
     expect(agent.interruptedThreadId, _SteeringAgent.activeThread.id);
     expect(agent.interruptedTurnId, 'turn-running');
+    expect(controller.state.running, isFalse);
+    expect(controller.state.activeTurnId, isNull);
+    expect(controller.state.activeThread?.status, 'idle');
     expect(controller.state.turnTiming?.stopped, isTrue);
-    expect(controller.state.turnTiming?.completedAtMillis, isNull);
+    expect(controller.state.turnTiming?.completedAtMillis, isNotNull);
   });
+
+  test(
+    'keeps the local stop when the remote interrupt becomes invalid',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _AttachmentHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingInterruptAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(_firstProfile);
+      await controller.ensureActiveAgent();
+
+      controller.openThread(_SteeringAgent.activeThread);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id ==
+                _SteeringAgent.activeThread.id &&
+            controller.state.running,
+      );
+
+      await controller.stopMessage();
+
+      expect(controller.state.running, isFalse);
+      expect(controller.state.activeTurnId, isNull);
+      expect(controller.state.turnTiming?.stopped, isTrue);
+      expect(controller.state.turnTiming?.completedAtMillis, isNotNull);
+      expect(controller.state.error, contains('远端停止失败'));
+    },
+  );
 
   test(
     'shows the workspace picker once after connect and persists the prompt flag',

@@ -124,6 +124,71 @@ void main() {
     expect(next.turnTiming?.stopped, isTrue);
   });
 
+  test('settles a final answer when turn completion is missing', () {
+    final state = _state().copyWith(
+      running: true,
+      activeTurnId: 'turn-1',
+      activeThread: const AgentThread(
+        id: 'thread-1',
+        title: '任务',
+        status: 'active',
+        activeTurnId: 'turn-1',
+      ),
+      turnTiming: const TurnTiming(
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        startedAtMillis: 100,
+      ),
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'answer-1',
+          'type': 'agentMessage',
+          'phase': 'final_answer',
+          'text': '完成了',
+        },
+      }),
+      nowMillis: 200,
+    );
+
+    expect(next.running, isFalse);
+    expect(next.activeTurnId, isNull);
+    expect(next.activeThread?.status, 'idle');
+    expect(next.turnTiming?.completedAtMillis, 200);
+    expect(next.timeline.single.text, '完成了');
+  });
+
+  test('ignores a late start after a locally settled turn', () {
+    final state = _state().copyWith(
+      running: false,
+      activeTurnId: null,
+      turnTiming: const TurnTiming(
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        startedAtMillis: 100,
+        completedAtMillis: 200,
+        stopped: true,
+      ),
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('turn/started', {
+        'threadId': 'thread-1',
+        'turn': {'id': 'turn-1', 'status': 'inProgress'},
+      }),
+    );
+
+    expect(next.running, isFalse);
+    expect(next.activeTurnId, isNull);
+    expect(next.turnTiming?.stopped, isTrue);
+  });
+
   test('does not replace a known context window with incomplete usage', () {
     final state = _state();
     final next = reduceCodexNotification(
