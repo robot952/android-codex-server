@@ -86,6 +86,9 @@ class _FakeCodexHost
 }
 
 class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
+  _FakeCodexSession({this.threadListResult});
+
+  final Map<String, Object?>? threadListResult;
   final StreamController<Uint8List> _stdout = StreamController<Uint8List>(
     sync: true,
   );
@@ -113,12 +116,15 @@ class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
     final payload = jsonDecode(line) as Map<String, Object?>;
     final id = payload['id'];
     if (id == null) return;
+    final result = payload['method'] == 'thread/list'
+        ? (threadListResult ?? const <String, Object?>{})
+        : const <String, Object?>{};
     scheduleMicrotask(() {
       if (!_stdout.isClosed) {
         _stdout.add(
           Uint8List.fromList(
             utf8.encode(
-              '${jsonEncode(<String, Object?>{'id': id, 'result': {}})}\n',
+              '${jsonEncode(<String, Object?>{'id': id, 'result': result})}\n',
             ),
           ),
         );
@@ -333,6 +339,34 @@ void main() {
     expect(session.flushCount, 0);
     expect(session.terminated, isTrue);
   });
+
+  test(
+    'lists Codex threads across Providers without a Provider filter',
+    () async {
+      final session = _FakeCodexSession(
+        threadListResult: const <String, Object?>{'data': <Object?>[]},
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      const profile = ServerProfile(
+        id: 'server',
+        host: 'example.com',
+        username: 'root',
+        hostFingerprint: 'SHA256:verified',
+        remoteCommand: 'codex app-server --listen stdio://',
+      );
+
+      await client.connect(profile, _FakeCodexHost());
+      await client.listThreads();
+
+      final request = session.writes
+          .map((line) => jsonDecode(line) as Map<String, Object?>)
+          .firstWhere((payload) => payload['method'] == 'thread/list');
+      final params = request['params'] as Map<String, Object?>;
+      expect(params, isNot(contains('modelProviders')));
+
+      await client.disconnect();
+    },
+  );
 
   test('keeps the Agent on a dedicated SSH transport', () async {
     final session = _FakeCodexSession();
