@@ -4458,12 +4458,7 @@ class _Composer extends StatelessWidget {
         ? _workAmber
         : codexMuted;
     final backgroundAgents = state.activeAgentCapabilities.subAgents
-        ? state.timeline.toBackgroundSubAgentPresentations(
-            running: state.running,
-            activeTurnId: state.running
-                ? state.activeTurnId
-                : state.turnTiming?.turnId,
-          )
+        ? state.timeline.toBackgroundSubAgentPresentations()
         : const <SubAgentPresentation>[];
     final canOpenSubAgents =
         !state.loading && !state.submitting && state.approvalQueue.isEmpty;

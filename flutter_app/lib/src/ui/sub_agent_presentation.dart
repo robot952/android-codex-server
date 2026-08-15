@@ -165,27 +165,12 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
     return List.unmodifiable(result);
   }
 
-  /// Returns collaborators for the requested current turn. Without a turn id
-  /// on an idle transcript, the latest collaborator turn is used for older
-  /// callers that do not have turn timing information.
-  List<SubAgentPresentation> toBackgroundSubAgentPresentations({
-    required bool running,
-    String? activeTurnId,
-  }) {
-    final requestedTurnId = activeTurnId?.trim() ?? '';
-    // A running task without its turn id has not yet been associated with a
-    // transcript turn. Showing the latest historical collaborators here would
-    // make the composer report stale agents as active.
-    if (running && requestedTurnId.isEmpty) {
-      return const <SubAgentPresentation>[];
-    }
-    final turnId = requestedTurnId.isNotEmpty
-        ? requestedTurnId
-        : _latestSubAgentTurnId(this);
-    if (turnId.isEmpty) return const <SubAgentPresentation>[];
-    final agents = where(
-      (entry) => entry.kind == TimelineKind.subAgent && entry.turnId == turnId,
-    ).toList(growable: false).toSubAgentPresentations();
+  /// Returns every confirmed collaborator in the parent conversation.
+  ///
+  /// The composer panel is a session-level index: agents created by a later
+  /// parent turn are added to the existing list instead of replacing it.
+  List<SubAgentPresentation> toBackgroundSubAgentPresentations() {
+    final agents = toSubAgentPresentations();
     return List.unmodifiable(agents.where((agent) => agent.isConfirmed));
   }
 
@@ -222,15 +207,6 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
       isActive: isActive,
     );
   }
-}
-
-String _latestSubAgentTurnId(List<TimelineEntry> entries) {
-  for (final entry in entries.reversed) {
-    if (entry.kind == TimelineKind.subAgent && entry.turnId.isNotEmpty) {
-      return entry.turnId;
-    }
-  }
-  return '';
 }
 
 SubAgentPresentation _toSubAgentPresentation(TimelineEntry entry, int index) {

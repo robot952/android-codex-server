@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.71+198，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.72+199，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -489,6 +489,8 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   图标、名称和状态；运行状态转圈，
   完成/中断/失败等终态不会被同 turn 的迟到 activity 恢复。存在有效 thread ID 时点击进入 `AppScreen.agentWork`，
   使用真实 `thread/resume`，而没有 thread ID 的活动只显示不可点击状态；父子会话使用独立缓存和设置。
+  Composer 上方的后台 Agent 面板按整个父会话累计已确认的 child thread，并按 thread ID 去重；后续
+  父 turn 新建的 Agent 会追加到已有列表，未取得真实 child thread ID 的创建尝试不计入数量。
 - Composer 的附件菜单支持调用系统相机拍照，以及多选图片或文件；最多保留 8 项、一次选择总计不超过 40 MiB；单个普通附件
   不超过 20 MiB，内联文本不超过 512 KiB。上传时显示无百分比的进度条，成功项显示可移除 chip，
   发送时可只有附件而没有正文。离开会话会清空待发项；`turn/start` 失败会恢复草稿和待发附件，并移除
@@ -634,7 +636,7 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
 - 子 Agent 事件先由 `SubAgentPresentation` 合并为相邻同 turn 的渲染行，再以紧凑标签显示。标签状态按
   `pendingInit/running/completed/interrupted/failed/shutdown/notFound` 和 activity 映射；同 turn 终态具有
   单向保护，后续 turn 才允许重新激活。有效 thread ID 的标签调用 `openSubAgentThread`，无 ID 的活动不会
-  伪造会话入口。
+  伪造会话入口；Composer 面板以父会话为范围累计全部已确认 Agent，不按当前 turn 丢弃先前完成项。
 - `openSubAgentThread` 在按 `profileId + AgentKind` 隔离的 `ProfileScopedBackStack` 中保存有界
   `_SessionSnapshot`（时间线、草稿、模型/effort、上下文用量、附件和工作区状态），随后执行真实
   `thread/resume`。最多嵌套 8 层；返回先显示缓存父快照，再等 resume 成功后弹栈。重复返回在 pending 状态幂等，
@@ -1119,7 +1121,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 6. 会话重进优先显示缓存，较大历史允许更长的后台恢复，不长期白屏（当前缓存 + 180 秒 thread timeout）。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
 8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
-9. 子 Agent 使用稳定身份色图标和逐个状态，不显示多余“子agent”文字；点击有效 thread ID 进入真实独立会话，父子返回可安全重试（当前已接入；真机长时回归仍需执行）。
+9. 子 Agent 使用稳定身份色图标和逐个状态，不显示多余“子agent”文字；点击有效 thread ID 进入真实独立会话，父子返回可安全重试；Composer 上方按父会话累计全部已确认 Agent，连续两轮各创建 3 个时总数必须显示 6（当前已接入；真机长时回归仍需执行）。
 10. 目标和操作菜单使用原生 app-server 能力，不依赖复杂斜杠解析（当前 Codex 已接入）。
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
 12. Agent 图标连续点击 10 次开启 Debug；最多 100 个日志文件/约 10 MiB，单文件约 100 KiB；日志可多选系统分享且脱敏，
@@ -1925,6 +1927,17 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `turn/steer` 纠错文本，避免自动改写父回合、重复调用和连接恢复循环。用户仍可手动发送新的完整指令。
 - Flutter 定向 Agent/Controller 测试、全量测试、静态分析、Debug/Release APK、Release 模拟器 smoke 和
   内外网下载回验均通过；真实多 Agent 端到端仍需已认证的 Codex Provider，当前测试账号的模型请求超时不计入通过。
+
+### 17.42 父会话后台 Agent 累计展示（2026-08-15）
+
+- 应用版本：`1.8.72+199`。Composer 上方的后台 Agent 面板恢复旧版会话级语义，不再只保留当前或最近
+  一个父 turn 的子 Agent；所有已取得真实 child thread ID 的 Agent 按 thread ID 去重累计，后续 turn
+  创建的新 Agent 会追加到已完成列表。
+- 未确认的创建尝试仍不计入数量，同一 child thread 的迟到活动和跨 turn 状态继续复用既有终态保护与
+  稳定身份色。单元和 Widget 回归直接覆盖第一轮 3 个已完成、第二轮 3 个运行中时显示
+  `6 个后台智能体`；在 `emulator-5554`、Android 14、`1220x2712` 模拟器上以同一父会话真实创建
+  `t1`、`t2`、`t3`、`fourth`、`fifth2`、`child6` 六个 child thread，最终六个均显示“已完成”，并由
+  UIAutomator 核对唯一 child thread ID 与展开面板数量。
 
 ## 18. 文档维护规则
 

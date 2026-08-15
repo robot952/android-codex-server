@@ -1029,7 +1029,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('shows only current-turn background agents while running', (
+  testWidgets('shows six background agents after two parent turns', (
     tester,
   ) async {
     final manager = ServerConnectionManager();
@@ -1084,14 +1084,20 @@ void main() {
             turnId: 'turn-current',
             subAgentThreadId: 'current-b',
           ),
+          TimelineEntry(
+            id: 'current-c',
+            kind: TimelineKind.subAgent,
+            status: 'running',
+            turnId: 'turn-current',
+            subAgentThreadId: 'current-c',
+          ),
         ],
       ),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.text('2 个后台智能体'), findsOneWidget);
-    expect(find.text('5 个后台智能体'), findsNothing);
+    expect(find.text('6 个后台智能体'), findsOneWidget);
   });
 
   testWidgets(

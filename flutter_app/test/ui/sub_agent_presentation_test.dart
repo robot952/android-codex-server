@@ -64,80 +64,61 @@ void main() {
     expect(agent.turnId, 'turn-2');
   });
 
-  test('limits composer agents to the active turn while a task is running', () {
+  test('accumulates composer agents across parent turns', () {
     final entries = <TimelineEntry>[
       _agent('old-a', 'old-a', 'turn-old', 'completed'),
       _agent('old-b', 'old-b', 'turn-old', 'completed'),
       _agent('old-c', 'old-c', 'turn-old', 'completed'),
       _agent('current-a', 'current-a', 'turn-current', 'running'),
       _agent('current-b', 'current-b', 'turn-current', 'running'),
+      _agent('current-c', 'current-c', 'turn-current', 'running'),
     ];
 
-    final agents = entries.toBackgroundSubAgentPresentations(
-      running: true,
-      activeTurnId: 'turn-current',
-    );
+    final agents = entries.toBackgroundSubAgentPresentations();
 
-    expect(agents.map((agent) => agent.threadId), <String>[
-      'current-b',
+    expect(agents, hasLength(6));
+    expect(agents.map((agent) => agent.threadId).toSet(), <String>{
+      'old-a',
+      'old-b',
+      'old-c',
       'current-a',
-    ]);
+      'current-b',
+      'current-c',
+    });
   });
 
-  test('does not show historical agents before a running turn has an id', () {
+  test('keeps completed agents visible while the next turn starts', () {
     final agents = <TimelineEntry>[
       _agent('old-a', 'old-a', 'turn-old', 'completed'),
       _agent('old-b', 'old-b', 'turn-old', 'completed'),
-    ].toBackgroundSubAgentPresentations(running: true);
+    ].toBackgroundSubAgentPresentations();
 
-    expect(agents, isEmpty);
+    expect(agents.map((agent) => agent.threadId).toSet(), <String>{
+      'old-a',
+      'old-b',
+    });
   });
 
   test('does not count unconfirmed creation attempts as background agents', () {
-    final agents =
-        <TimelineEntry>[
-          _agent(
-            'attempt-a',
-            '',
-            'turn-current',
-            'running',
-            activity: 'started',
-          ),
-          _agent(
-            'attempt-b',
-            '',
-            'turn-current',
-            'running',
-            activity: 'started',
-          ),
-          _agent('confirmed', 'child-thread', 'turn-current', 'running'),
-        ].toBackgroundSubAgentPresentations(
-          running: true,
-          activeTurnId: 'turn-current',
-        );
+    final agents = <TimelineEntry>[
+      _agent('attempt-a', '', 'turn-current', 'running', activity: 'started'),
+      _agent('attempt-b', '', 'turn-current', 'running', activity: 'started'),
+      _agent('confirmed', 'child-thread', 'turn-current', 'running'),
+    ].toBackgroundSubAgentPresentations();
 
     expect(agents.map((agent) => agent.threadId), <String>['child-thread']);
   });
 
-  test('uses the latest sub-agent turn after the task has finished', () {
+  test('deduplicates the same child thread across parent turns', () {
     final agents = <TimelineEntry>[
-      _agent('old', 'old', 'turn-old', 'completed'),
-      _agent('latest', 'latest', 'turn-latest', 'completed'),
-    ].toBackgroundSubAgentPresentations(running: false);
+      _agent('old', 'shared', 'turn-old', 'completed'),
+      _agent('latest', 'shared', 'turn-latest', 'running'),
+    ].toBackgroundSubAgentPresentations();
 
-    expect(agents.single.threadId, 'latest');
-  });
-
-  test('does not fall back to an older turn after one without agents', () {
-    final agents =
-        <TimelineEntry>[
-          _agent('old', 'old', 'turn-old', 'completed'),
-        ].toBackgroundSubAgentPresentations(
-          running: false,
-          activeTurnId: 'turn-without-agents',
-        );
-
-    expect(agents, isEmpty);
+    expect(agents, hasLength(1));
+    expect(agents.single.threadId, 'shared');
+    expect(agents.single.turnId, 'turn-latest');
+    expect(agents.single.status, SubAgentDisplayStatus.working);
   });
 
   test(
