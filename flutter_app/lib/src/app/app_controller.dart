@@ -4583,6 +4583,7 @@ class AppController extends StateNotifier<AppUiState> {
     bool includeModels = false,
     bool runtimePrepared = false,
     bool silent = false,
+    bool preserveExistingThreads = false,
   }) {
     final pending = _agentLoadRequests[key];
     if (pending != null) return pending;
@@ -4596,6 +4597,7 @@ class AppController extends StateNotifier<AppUiState> {
           includeModels: includeModels,
           runtimePrepared: runtimePrepared,
           silent: silent,
+          preserveExistingThreads: preserveExistingThreads,
           loadRevision: loadRevision,
         ).whenComplete(() {
           if (identical(_agentLoadRequests[key], request)) {
@@ -4612,6 +4614,7 @@ class AppController extends StateNotifier<AppUiState> {
     required bool includeModels,
     required bool runtimePrepared,
     required bool silent,
+    required bool preserveExistingThreads,
     required int loadRevision,
   }) async {
     if (!_isAgentLoadCurrent(key, loadRevision)) return;
@@ -4662,7 +4665,12 @@ class AppController extends StateNotifier<AppUiState> {
         state.agentThreadLists,
       );
       if (threadPage != null) {
-        threadLists[key] = threadPage!.threads;
+        threadLists[key] = preserveExistingThreads
+            ? _mergeListedThreads(
+                threadPage!.threads,
+                threadLists[key] ?? const <AgentThread>[],
+              )
+            : threadPage!.threads;
         _agentThreadNextCursors[key] = threadPage!.nextCursor;
         _agentThreadCursorSearches[key] = _isActiveKey(key)
             ? state.threadSearch
@@ -5039,7 +5047,15 @@ class AppController extends StateNotifier<AppUiState> {
         _retainedAgentConnections.add(key);
       }
       await _agents.connect(profile, key.agent);
-      await _loadAgentData(key, profile, includeModels: true, silent: true);
+      // Reconnecting after a global settings update must not discard older
+      // pages already visible in the lane while the server is reloading.
+      await _loadAgentData(
+        key,
+        profile,
+        includeModels: true,
+        silent: true,
+        preserveExistingThreads: true,
+      );
     } finally {
       if (retained &&
           mounted &&

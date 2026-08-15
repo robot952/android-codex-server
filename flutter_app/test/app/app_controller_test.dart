@@ -864,6 +864,9 @@ class _HostBoundDisconnectAgent extends _FailingTurnAgent {
 
 class _SettingsAgent extends _FailingTurnAgent
     implements RemoteAgentGlobalSettingsClient, RemoteAgentApiModelClient {
+  List<AgentThread> listedThreads = const <AgentThread>[
+    _FailingTurnAgent.thread,
+  ];
   AgentGlobalSettings readValue = const AgentGlobalSettings(
     baseUrl: 'https://models.example/v1',
     model: 'gpt-test',
@@ -916,6 +919,10 @@ class _SettingsAgent extends _FailingTurnAgent
 
   @override
   Future<List<AgentModel>> listModels() async => modelList;
+
+  @override
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
+      AgentThreadPage(threads: listedThreads);
 
   @override
   Future<AgentGlobalSettings> readGlobalSettings(ServerProfile profile) {
@@ -3389,7 +3396,7 @@ void main() {
     );
   });
 
-  test('saves per-agent defaults and restarts only the active Agent', () async {
+  test('preserves threads when settings restart the Agent', () async {
     final profile = localLinuxProfile(
       _localLinuxInstance,
     ).copyWith(hostFingerprint: 'SHA256:local', workspacePromptShown: true);
@@ -3398,7 +3405,11 @@ void main() {
     );
     final host = _FingerprintClient();
     final connections = ServerConnectionManager(clientFactory: () => host);
-    final agent = _SettingsAgent();
+    final agent = _SettingsAgent()
+      ..listedThreads = const <AgentThread>[
+        _FailingTurnAgent.thread,
+        AgentThread(id: 'older-thread', title: 'Older conversation'),
+      ];
     final agents = AgentConnectionManager(
       connections,
       clientFactory: (kind) => agent,
@@ -3422,7 +3433,17 @@ void main() {
     await _waitUntilInitialized(controller);
     await controller.requestConnect(profile);
     await controller.ensureActiveAgent();
+    expect(
+      controller.state.threads.map((thread) => thread.id),
+      containsAll(<String>['attachment-thread', 'older-thread']),
+    );
     await controller.showAgentSettings();
+
+    // A reconnect may return only the newest page while older pages were
+    // already visible before the settings save.
+    agent.listedThreads = <AgentThread>[
+      _FailingTurnAgent.thread.copyWith(title: 'Newest after settings save'),
+    ];
 
     await controller.saveAgentSettings(
       baseUrl: 'https://models.example/v1',
@@ -3445,6 +3466,11 @@ void main() {
     expect(saved.testModel, 'gpt-test-saved');
     expect(controller.state.agentSettingsVisible, isFalse);
     expect(controller.state.screen, AppScreen.threads);
+    expect(
+      controller.state.threads.map((thread) => thread.id),
+      containsAll(<String>['attachment-thread', 'older-thread']),
+    );
+    expect(controller.state.threads.first.title, 'Newest after settings save');
     expect(host.connected, isTrue);
     expect(agent.connected, isTrue);
     expect(agent.disconnectCount, 1);
