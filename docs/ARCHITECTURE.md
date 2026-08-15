@@ -882,9 +882,9 @@ Debian、Codex、工作区和本机 Profile。
 | --- | --- | --- |
 | SSH 主机客户端、连接状态、metrics request | profileId | 当前 ServerConnectionManager |
 | Agent 客户端和连接状态 | profileId + AgentKind | 当前 AgentConnectionManager |
-| 会话/模型列表和 loading | profileId + AgentKind | 当前 AppUiState lane maps；Codex thread/list 保留当前用户的全部 Provider 历史 |
-| 活动时间线、运行态、目标 | profileId + AgentKind + threadId | 当前控制器用 active-key/thread guard；目标对象不长期持久化 |
-| transcript/TokenUsage cache | profileId + AgentKind，cache 内再按 threadId | 当前 ThreadSessionCache；Provider 是线程元数据，不作为可见性隔离键 |
+| 会话/模型列表和 loading | profileId + AgentKind + 当前 Provider | 当前 AppUiState lane maps；Codex thread/list 使用 modelProviders 过滤 |
+| 活动时间线、运行态、目标 | profileId + AgentKind + Provider + threadId | 当前控制器用 active-key/thread guard；目标对象不长期持久化 |
+| transcript/TokenUsage cache | profileId + AgentKind + Provider，cache 内再按 threadId | 当前 ThreadSessionCache；切换 Provider 时清空 lane cache |
 | 草稿、模型、思考强度、完成计时 | profileId + AgentKind + threadId | 当前 StoredProfiles 复合键 |
 | 审批队列 | profileId + AgentKind + threadId（请求 generation 由 Agent 客户端校验） | Flutter/Kotlin 控制器分桶；无 threadId 的旧协议使用 lane 兼容桶 |
 | 待发附件 | 当前活动 AppUiState；写回用 profileId + AgentKind + threadId guard | 不持久化；离开会话清空 |
@@ -1955,13 +1955,22 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `thread/list`；重连返回的第一页曾与当前 lane 已展示的会话快照合并，避免分页加载的旧会话或重连
   窗口期暂未返回的会话从列表消失。
 
-### 17.45 Codex 插件历史跨 Provider 保留（2026-08-15）
+### 17.45 Codex Provider 会话隔离（2026-08-15）
 
-- 当前实现：Codex `thread/list` 不再按当前 `model_provider` 发送 `modelProviders` 过滤；VS Code 插件、
-  CLI 和移动端创建的线程都回到同一个远程用户历史列表。
-- 分页、断线重连和保存全局配置时保留已有线程快照，并按线程 ID 用服务器新元数据覆盖旧条目。线程仍
-  保留 `modelProvider` 字段用于恢复和诊断，但 Provider 不再决定会话是否可见，避免切换配置后历史记录
-  看起来丢失。
+- 应用版本：`1.8.75+202`。Codex app-server 的 `Thread` 明确带有 `modelProvider`，`thread/list` 支持
+  `modelProviders` 过滤；连接时读取当前远端 Provider 并将过滤条件带入列表请求，避免新增或切换 Provider
+  后把不同命名空间的历史会话混入当前列表。
+- `AgentThread` 保留 Provider 身份，分页合并只允许同 Provider 的线程且以服务器新元数据覆盖旧快照；配置
+  保存如果切换 Provider，则完全采用新列表，不再合并旧 Provider 会话。相关回归覆盖 Provider 字段解析、
+  请求过滤、同 Provider 更新和切换 Provider 后旧会话不再显示。
+
+### 17.46 默认 Provider 保存配置保留会话（2026-08-15）
+
+- 应用版本：`1.8.76+203`。拆分配置写入的 Provider 保留标志与会话命名空间保留判定；当前已经是默认
+  `openai`（Codex）或 `custom-api`（OpenCode）时，保存新的模型 URL 仍属于同一 Provider，不再清空旧
+  对话的 transcript cache。
+- 只有保存后确实从自定义 Provider 切换到默认 Provider 时才隔离旧会话；默认 Provider 的旧会话与重连
+  返回的新列表按线程 ID 合并，并以服务器新元数据覆盖旧条目。
 
 ## 18. 文档维护规则
 

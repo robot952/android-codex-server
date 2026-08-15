@@ -3472,8 +3472,8 @@ void main() {
     );
     expect(controller.state.threads.first.title, 'Newest after settings save');
 
-    // Threads from the previous Provider remain visible so plugin history is
-    // not hidden when the global Provider changes.
+    // Switching away from the configured provider must not merge its old
+    // namespace back into the newly loaded list.
     await controller.showAgentSettings();
     agent.listedThreads = const <AgentThread>[
       AgentThread(id: 'openai-thread', modelProvider: 'openai'),
@@ -3487,14 +3487,9 @@ void main() {
       testModel: 'gpt-openai',
       preserveCurrentProvider: false,
     );
-    expect(
-      controller.state.threads.map((thread) => thread.id),
-      containsAll(<String>[
-        'attachment-thread',
-        'older-thread',
-        'openai-thread',
-      ]),
-    );
+    expect(controller.state.threads.map((thread) => thread.id), <String>[
+      'openai-thread',
+    ]);
     expect(host.connected, isTrue);
     expect(agent.connected, isTrue);
     expect(agent.disconnectCount, 2);
@@ -3522,15 +3517,10 @@ void main() {
       testModel: 'gpt-openai-new',
       preserveCurrentProvider: false,
     );
-    expect(
-      controller.state.threads.map((thread) => thread.id),
-      containsAll(<String>[
-        'attachment-thread',
-        'older-thread',
-        'openai-thread',
-        'openai-new-thread',
-      ]),
-    );
+    expect(controller.state.threads.map((thread) => thread.id), <String>[
+      'openai-thread',
+      'openai-new-thread',
+    ]);
     expect(
       diagnostics.records,
       contains(

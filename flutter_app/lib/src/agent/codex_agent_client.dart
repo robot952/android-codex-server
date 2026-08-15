@@ -449,6 +449,7 @@ class CodexAgentClient
   bool _discardStderrLine = false;
   String? _durableStopCommand;
   bool _connectedHostIsLocal = false;
+  String? _modelProvider;
 
   @override
   AgentKind get kind => AgentKind.codex;
@@ -630,6 +631,9 @@ class CodexAgentClient
       // dedicated connection is reserved for the long-lived Agent channel.
       _settingsHost = host;
       _connectedProfile = profile;
+      if (kind == AgentKind.codex) {
+        await _loadModelProviderBestEffort(profile);
+      }
     } catch (_) {
       await disconnect();
       rethrow;
@@ -682,7 +686,13 @@ class CodexAgentClient
   }) async {
     final scope = _requireScope();
     final response = await _request(
-      scope.threadList(searchTerm: searchTerm, cursor: cursor),
+      scope.threadList(
+        searchTerm: searchTerm,
+        cursor: cursor,
+        modelProviders: _modelProvider == null
+            ? null
+            : <String>[_modelProvider!],
+      ),
       timeout: threadRequestTimeout,
     );
     final result = response.resultOrThrow();
@@ -1069,6 +1079,7 @@ class CodexAgentClient
   Future<void> disconnect() async {
     _settingsHost = null;
     _connectedProfile = null;
+    _modelProvider = null;
     _protocol.invalidateGeneration();
     _connected = false;
     _scope = null;
@@ -1084,6 +1095,24 @@ class CodexAgentClient
     }
     await _disconnectDedicatedHost();
     await session?.done.catchError((_) {});
+  }
+
+  Future<void> _loadModelProviderBestEffort(ServerProfile profile) async {
+    try {
+      final settings = await readGlobalSettings(
+        profile,
+      ).timeout(const Duration(seconds: 8));
+      final provider = settings.modelProvider.trim();
+      _modelProvider = provider.isEmpty ? 'openai' : provider;
+    } catch (error) {
+      // Older wrappers and lightweight test hosts may not expose the settings
+      // script. Without a provider filter, the parser still retains the
+      // server-provided identity and the list remains usable.
+      _modelProvider = null;
+      _emitDiagnostic(
+        '${kind.label} provider_unavailable detail=${_short(error)}',
+      );
+    }
   }
 
   @override

@@ -1669,6 +1669,11 @@ class AppController extends StateNotifier<AppUiState> {
       );
       return;
     }
+    final preserveExistingThreads = _preserveThreadsAfterSettingsSave(
+      agent: agent,
+      currentSettings: state.agentSettings!,
+      preserveCurrentProvider: preserveCurrentProvider,
+    );
     final requestId = ++_agentSettingsRequestId;
     final generation = _agents.generation(key);
     _agentSettingsProfileId = profile.id;
@@ -1746,7 +1751,7 @@ class AppController extends StateNotifier<AppUiState> {
       await _restartAgentAfterSettingsSave(
         key,
         updatedProfile,
-        preserveExistingThreads: true,
+        preserveExistingThreads: preserveExistingThreads,
       );
       _diagnostics.info(
         'AgentSettings',
@@ -6438,9 +6443,18 @@ List<AgentThread> _mergeListedThreads(
   List<AgentThread> current,
   List<AgentThread> nextPage,
 ) {
+  final providers = nextPage
+      .map((thread) => thread.modelProvider.trim())
+      .where((provider) => provider.isNotEmpty)
+      .toSet();
+  final retainedCurrent = providers.isEmpty
+      ? current
+      : current.where(
+          (thread) => providers.contains(thread.modelProvider.trim()),
+        );
   final merged = <AgentThread>[];
   final indexes = <String, int>{};
-  for (final thread in current) {
+  for (final thread in retainedCurrent) {
     final id = thread.id.trim();
     final identity = id.isNotEmpty
         ? id
@@ -6464,6 +6478,26 @@ List<AgentThread> _mergeListedThreads(
     }
   }
   return List<AgentThread>.unmodifiable(merged);
+}
+
+String _defaultAgentProvider(AgentKind agent) => switch (agent) {
+  AgentKind.codex => 'openai',
+  AgentKind.openCode => openCodeManagedProviderId,
+};
+
+bool _preserveThreadsAfterSettingsSave({
+  required AgentKind agent,
+  required AgentGlobalSettings currentSettings,
+  required bool preserveCurrentProvider,
+}) {
+  final defaultProvider = _defaultAgentProvider(agent);
+  final currentProvider = currentSettings.modelProvider.trim().isEmpty
+      ? defaultProvider
+      : currentSettings.modelProvider.trim();
+  final nextProvider = preserveCurrentProvider
+      ? currentProvider
+      : defaultProvider;
+  return currentProvider == nextProvider;
 }
 
 Map<String, ServerMetrics> _withoutServerMetrics(
