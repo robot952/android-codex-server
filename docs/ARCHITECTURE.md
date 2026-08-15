@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.76+203，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.77+204，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1971,6 +1971,17 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   对话的 transcript cache。
 - 只有保存后确实从自定义 Provider 切换到默认 Provider 时才隔离旧会话；默认 Provider 的旧会话与重连
   返回的新列表按线程 ID 合并，并以服务器新元数据覆盖旧条目。
+
+### 17.47 Codex URL 与 Provider 解耦（2026-08-15）
+
+- 应用版本：`1.8.77+204`。Codex 全局设置保存必须始终保留服务器当前的 `model_provider`；修改模型 URL
+  只更新该 Provider 的地址，修改 API Key 只更新 Codex 认证，不得隐式切换到 `openai` 或创建另一个
+  Provider。
+- 当前 Provider 为 `openai` 时只更新根级 `openai_base_url`；当前为自定义 Provider 时只更新对应
+  `[model_providers.<Provider>]` 表内的 `base_url`。其他 Provider 表、`env_key`、功能开关和用户配置不得
+  因 URL 变化被删除或重置；SSH 服务器和 Windows 本机路径保持相同行为。
+- Codex 配置保存后的重连继续使用同一 Provider 会话命名空间并保留已有会话缓存。OpenCode 的 Provider
+  管理逻辑不在本约束范围内，仍由其托管 bridge 独立处理。
 
 ## 18. 文档维护规则
 

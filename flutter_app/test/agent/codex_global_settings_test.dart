@@ -73,7 +73,6 @@ void main() {
           proxyUrl: 'http://127.0.0.1:7890',
           defaultModel: 'gpt-5.4',
           defaultReasoningEffort: 'high',
-          preserveCurrentProvider: false,
         ),
         buildTestCodexGlobalSettingsScript(
           baseUrl: '',
@@ -162,7 +161,6 @@ printf '%s' "${HTTP_PROXY:-}" > "$HOME/login-proxy"
           proxyUrl: proxyUrl,
           defaultModel: model,
           defaultReasoningEffort: 'xhigh',
-          preserveCurrentProvider: false,
         ),
         home: home,
       );
@@ -182,7 +180,7 @@ printf '%s' "${HTTP_PROXY:-}" > "$HOME/login-proxy"
       final updatedConfig = await config.readAsString();
       expect(updatedConfig, contains('model = "$model"'));
       expect(updatedConfig, contains('model_reasoning_effort = "xhigh"'));
-      expect(updatedConfig, contains('model_provider = "openai"'));
+      expect(updatedConfig, isNot(contains('model_provider =')));
       expect(updatedConfig, contains('openai_base_url = "$baseUrl"'));
       expect(updatedConfig, isNot(contains('https://old.example.com/v1')));
       expect(updatedConfig, contains('[features]\nweb_search = true'));
@@ -198,7 +196,7 @@ printf '%s' "${HTTP_PROXY:-}" > "$HOME/login-proxy"
     });
 
     test(
-      'preserves custom provider tables and clears model defaults',
+      'updates a custom provider URL without changing other settings',
       () async {
         final home = await _temporaryHome('codex-settings-clear-');
         final codexDir = Directory('${home.path}/.codex');
@@ -211,6 +209,10 @@ model_provider = "relay"
 
 [model_providers.relay]
 base_url = "https://relay.example.com/v1"
+env_key = "OPENAI_API_KEY"
+
+[model_providers.backup]
+base_url = "https://backup.example.com/v1"
 
 [features]
 web_search = true
@@ -218,12 +220,11 @@ web_search = true
 
         final result = await _runShell(
           buildWriteCodexGlobalSettingsScript(
-            baseUrl: 'https://relay.example.com/v1',
+            baseUrl: 'https://relay-new.example.com/v1',
             apiKey: '',
             proxyUrl: '',
-            defaultModel: '',
-            defaultReasoningEffort: '',
-            preserveCurrentProvider: true,
+            defaultModel: 'gpt-5.4',
+            defaultReasoningEffort: 'low',
           ),
           home: home,
         );
@@ -233,14 +234,21 @@ web_search = true
             .split('\n')
             .map((line) => line.trim())
             .toList();
-        expect(lines.where((line) => line.startsWith('model =')), isEmpty);
-        expect(
-          lines.where((line) => line.startsWith('model_reasoning_effort =')),
-          isEmpty,
-        );
+        expect(lines, contains('model = "gpt-5.4"'));
+        expect(lines, contains('model_reasoning_effort = "low"'));
         expect(lines, contains('model_provider = "relay"'));
         expect(lines, contains('[model_providers.relay]'));
-        expect(lines, contains('base_url = "https://relay.example.com/v1"'));
+        expect(
+          lines,
+          contains('base_url = "https://relay-new.example.com/v1"'),
+        );
+        expect(lines, contains('env_key = "OPENAI_API_KEY"'));
+        expect(lines, contains('[model_providers.backup]'));
+        expect(lines, contains('base_url = "https://backup.example.com/v1"'));
+        expect(
+          lines,
+          isNot(contains('base_url = "https://relay.example.com/v1"')),
+        );
         expect(lines, contains('[features]'));
         expect(lines, contains('web_search = true'));
         expect(
@@ -250,6 +258,56 @@ web_search = true
         expect(await _permissionBits(config.path), '600');
       },
     );
+
+    test('updates only the active provider URL in native TOML', () {
+      const customConfig = '''
+model_provider = "relay"
+model = "gpt-existing"
+
+[model_providers.relay]
+base_url = "https://relay-old.example.com/v1"
+env_key = "OPENAI_API_KEY"
+
+[model_providers.backup]
+base_url = "https://backup.example.com/v1"
+''';
+
+      final customUpdated = updateCodexProviderBaseUrl(
+        customConfig,
+        'https://relay-new.example.com/v1',
+      );
+      expect(customUpdated, contains('model_provider = "relay"'));
+      expect(customUpdated, contains('model = "gpt-existing"'));
+      expect(
+        customUpdated,
+        contains('base_url = "https://relay-new.example.com/v1"'),
+      );
+      expect(customUpdated, contains('env_key = "OPENAI_API_KEY"'));
+      expect(
+        customUpdated,
+        contains('base_url = "https://backup.example.com/v1"'),
+      );
+      expect(customUpdated, isNot(contains('model_provider = "openai"')));
+
+      const defaultConfig = '''
+model = "gpt-existing"
+openai_base_url = "https://openai-old.example.com/v1"
+
+[features]
+web_search = true
+''';
+      final defaultUpdated = updateCodexProviderBaseUrl(
+        defaultConfig,
+        'https://openai-new.example.com/v1',
+      );
+      expect(defaultUpdated, isNot(contains('model_provider =')));
+      expect(
+        defaultUpdated,
+        contains('openai_base_url = "https://openai-new.example.com/v1"'),
+      );
+      expect(defaultUpdated, contains('model = "gpt-existing"'));
+      expect(defaultUpdated, contains('[features]\nweb_search = true'));
+    });
   });
 
   group('Codex connection test script', () {

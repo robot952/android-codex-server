@@ -120,6 +120,24 @@ AgentGlobalSettings parseCodexGlobalSettings(String output) {
   );
 }
 
+String updateCodexProviderBaseUrl(String configText, String baseUrl) {
+  final normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl);
+  final configuredProvider = _codexTomlStringValue(
+    configText,
+    table: null,
+    key: 'model_provider',
+  );
+  final provider = configuredProvider?.trim().isNotEmpty == true
+      ? configuredProvider!.trim()
+      : 'openai';
+  return _replaceCodexTomlStringValue(
+    configText,
+    table: provider == 'openai' ? null : 'model_providers.$provider',
+    key: provider == 'openai' ? 'openai_base_url' : 'base_url',
+    value: normalizedBaseUrl.isEmpty ? null : normalizedBaseUrl,
+  );
+}
+
 /// Fetches an OpenAI-compatible `/models` response from the remote server.
 /// The API key is kept in a mode-0600 header file and is never printed.
 String buildFetchCodexApiModelsScript({
@@ -374,7 +392,6 @@ String buildWriteCodexGlobalSettingsScript({
   required String proxyUrl,
   required String defaultModel,
   required String defaultReasoningEffort,
-  required bool preserveCurrentProvider,
 }) {
   final normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl);
   final normalizedApiKey = normalizeCodexApiKey(apiKey);
@@ -383,12 +400,6 @@ String buildWriteCodexGlobalSettingsScript({
   final normalizedEffort = normalizeCodexReasoningEffort(
     defaultReasoningEffort,
   );
-  final providerLine = preserveCurrentProvider
-      ? ''
-      : 'model_provider = "openai"';
-  final baseLine = preserveCurrentProvider || normalizedBaseUrl.isEmpty
-      ? ''
-      : 'openai_base_url = "$normalizedBaseUrl"';
   final modelLine = normalizedModel.isEmpty ? '' : 'model = "$normalizedModel"';
   final effortLine = normalizedEffort.isEmpty
       ? ''
@@ -403,11 +414,9 @@ ENV_FILE="$CONFIG_DIR/codex-remote.env"
 WRAPPER="$HOME/.local/bin/codex-remote"
 API_KEY=@@API_KEY@@
 PROXY_URL=@@PROXY_URL@@
-BASE_LINE=@@BASE_LINE@@
-PROVIDER_LINE=@@PROVIDER_LINE@@
+BASE_URL=@@BASE_URL@@
 DEFAULT_MODEL_LINE=@@MODEL_LINE@@
 DEFAULT_REASONING_EFFORT_LINE=@@EFFORT_LINE@@
-PRESERVE_CURRENT_PROVIDER=@@PRESERVE_PROVIDER@@
 umask 077
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
@@ -419,28 +428,76 @@ cleanup() { rm -f "$CONFIG_TMP" "$ENV_TMP" "$WRAPPER_TMP"; }
 trap cleanup EXIT HUP INT TERM
 
 if [ -f "$CONFIG_FILE" ]; then CONFIG_SOURCE="$CONFIG_FILE"; else CONFIG_SOURCE=/dev/null; fi
-awk -v provider_line="$PROVIDER_LINE" -v base_line="$BASE_LINE" \
+CURRENT_PROVIDER="$(awk '
+  /^[[:space:]]*\[/ { exit }
+  {
+    value = $0
+    sub(/^[[:space:]]*/, "", value)
+    if (value ~ /^model_provider[[:space:]]*=/) {
+      sub(/^model_provider[[:space:]]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      sub(/^"/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  }
+' "$CONFIG_SOURCE")"
+if [ -z "$CURRENT_PROVIDER" ]; then CURRENT_PROVIDER=openai; fi
+
+awk -v base_url="$BASE_URL" -v current_provider="$CURRENT_PROVIDER" \
     -v default_model_line="$DEFAULT_MODEL_LINE" \
     -v default_reasoning_effort_line="$DEFAULT_REASONING_EFFORT_LINE" \
-    -v preserve_current_provider="$PRESERVE_CURRENT_PROVIDER" '
+    '
   function inject_root_keys() {
-    if (!injected) {
-      if (preserve_current_provider == "0") {
-        print provider_line
-        if (base_line != "") print base_line
+    if (!root_injected) {
+      if (current_provider == "openai" && base_url != "") {
+        print "openai_base_url = \"" base_url "\""
       }
       if (default_model_line != "") print default_model_line
       if (default_reasoning_effort_line != "") print default_reasoning_effort_line
-      injected = 1
+      root_injected = 1
     }
   }
-  /^[[:space:]]*\[/ { inject_root_keys(); in_table = 1 }
-  !in_table && preserve_current_provider == "0" && \
-    /^[[:space:]]*(model_provider|openai_base_url)[[:space:]]*=/ { next }
+  function inject_provider_base_url() {
+    if (in_target_provider && !provider_base_injected) {
+      if (base_url != "") print "base_url = \"" base_url "\""
+      provider_base_injected = 1
+    }
+  }
+  /^[[:space:]]*\[/ {
+    inject_root_keys()
+    inject_provider_base_url()
+    section = $0
+    sub(/^[[:space:]]*\[/, "", section)
+    sub(/\][[:space:]]*(#.*)?$/, "", section)
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "", section)
+    in_table = 1
+    in_target_provider = \
+      (current_provider != "openai" && section == "model_providers." current_provider)
+    if (in_target_provider) {
+      target_provider_seen = 1
+      provider_base_injected = 0
+    }
+    print
+    next
+  }
+  !in_table && current_provider == "openai" && \
+    /^[[:space:]]*openai_base_url[[:space:]]*=/ { next }
   !in_table && /^[[:space:]]*model[[:space:]]*=/ { next }
   !in_table && /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ { next }
+  in_target_provider && /^[[:space:]]*base_url[[:space:]]*=/ { next }
   { print }
-  END { inject_root_keys() }
+  END {
+    inject_root_keys()
+    inject_provider_base_url()
+    if (current_provider != "openai" && !target_provider_seen && base_url != "") {
+      if (NR > 0) print ""
+      print "[model_providers." current_provider "]"
+      print "base_url = \"" base_url "\""
+    }
+  }
 ' "$CONFIG_SOURCE" > "$CONFIG_TMP"
 chmod 600 "$CONFIG_TMP"
 mv -f "$CONFIG_TMP" "$CONFIG_FILE"
@@ -494,11 +551,9 @@ printf '__CODEX_GLOBAL_UPDATED=1\n'
     {
       'API_KEY': _shellQuote(normalizedApiKey),
       'PROXY_URL': _shellQuote(normalizedProxy),
-      'BASE_LINE': _shellQuote(baseLine),
-      'PROVIDER_LINE': _shellQuote(providerLine),
+      'BASE_URL': _shellQuote(normalizedBaseUrl),
       'MODEL_LINE': _shellQuote(modelLine),
       'EFFORT_LINE': _shellQuote(effortLine),
-      'PRESERVE_PROVIDER': preserveCurrentProvider ? '1' : '0',
     },
   );
 }
@@ -756,6 +811,80 @@ String normalizeCodexReasoningEffort(String value) {
   }
   return result;
 }
+
+String? _codexTomlStringValue(
+  String text, {
+  required String? table,
+  required String key,
+}) {
+  String? currentTable;
+  for (final raw in const LineSplitter().convert(text)) {
+    final line = raw.trim();
+    final header = RegExp(r'^\[([^]]+)\]').firstMatch(line);
+    if (header != null) {
+      currentTable = header.group(1)!.trim();
+      continue;
+    }
+    if (currentTable != table) continue;
+    final match = RegExp(
+      '^${RegExp.escape(key)}\\s*=\\s*"((?:\\\\.|[^"])*)"',
+    ).firstMatch(line);
+    if (match != null) return _unescapeCodexTomlString(match.group(1)!);
+  }
+  return null;
+}
+
+String _replaceCodexTomlStringValue(
+  String text, {
+  required String? table,
+  required String key,
+  required String? value,
+}) {
+  final output = <String>[];
+  final lines = const LineSplitter().convert(text);
+  String? currentTable;
+  var targetSeen = table == null;
+  var inserted = false;
+
+  void insertValue() {
+    if (inserted) return;
+    if (value != null) {
+      output.add('$key = "${_escapeCodexTomlString(value)}"');
+    }
+    inserted = true;
+  }
+
+  for (final raw in lines) {
+    final header = RegExp(r'^\s*\[([^]]+)\]').firstMatch(raw);
+    if (header != null) {
+      if (currentTable == table) insertValue();
+      currentTable = header.group(1)!.trim();
+      if (currentTable == table) targetSeen = true;
+      output.add(raw);
+      continue;
+    }
+    final existingKey = currentTable == table
+        ? RegExp(r'^\s*([A-Za-z0-9_]+)\s*=').firstMatch(raw)?.group(1)
+        : null;
+    if (existingKey == key) continue;
+    output.add(raw);
+  }
+
+  if (currentTable == table || table == null) insertValue();
+  if (table != null && !targetSeen && value != null) {
+    if (output.isNotEmpty && output.last.trim().isNotEmpty) output.add('');
+    output
+      ..add('[$table]')
+      ..add('$key = "${_escapeCodexTomlString(value)}"');
+  }
+  return '${output.join('\n').replaceFirst(RegExp(r'\n+$'), '')}\n';
+}
+
+String _escapeCodexTomlString(String value) =>
+    value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+
+String _unescapeCodexTomlString(String value) =>
+    value.replaceAll('\\"', '"').replaceAll('\\\\', '\\');
 
 Map<String, String> _prefixedValues(String output, String prefix) {
   final values = <String, String>{};

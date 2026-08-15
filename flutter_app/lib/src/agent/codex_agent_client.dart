@@ -1227,7 +1227,6 @@ class CodexAgentClient
         proxyUrl: proxyUrl,
         defaultModel: defaultModel,
         defaultReasoningEffort: defaultReasoningEffort,
-        preserveCurrentProvider: preserveCurrentProvider,
       ),
       timeout: const Duration(seconds: 30),
       maxOutputBytes: 64 * 1024,

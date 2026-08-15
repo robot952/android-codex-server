@@ -46,7 +46,7 @@ void main() {
       expect(find.text('默认模型：gpt-default'), findsOneWidget);
       expect(find.text('默认思考强度：高'), findsOneWidget);
       expect(
-        find.text('当前使用自定义 Provider；保持模型 URL 不变会继续使用该 Provider。'),
+        find.text('修改模型 URL 只会更新当前 Provider；Provider 名称保持不变。'),
         findsOneWidget,
       );
       expect(find.text('支持 HTTP/HTTPS；留空会清除 Codex 代理'), findsOneWidget);
@@ -293,7 +293,7 @@ void main() {
 
     expect(saves, hasLength(2));
     expect(saves.last.apiKey, 'sk-replacement');
-    expect(saves.last.preserveCurrentProvider, isFalse);
+    expect(saves.last.preserveCurrentProvider, isTrue);
     expect(saves.last.baseUrl, 'https://other.example.com/v1');
   });
 

@@ -3406,9 +3406,13 @@ void main() {
     final host = _FingerprintClient();
     final connections = ServerConnectionManager(clientFactory: () => host);
     final agent = _SettingsAgent()
-      ..listedThreads = const <AgentThread>[
-        _FailingTurnAgent.thread,
-        AgentThread(id: 'older-thread', title: 'Older conversation'),
+      ..listedThreads = <AgentThread>[
+        _FailingTurnAgent.thread.copyWith(modelProvider: 'custom-provider'),
+        const AgentThread(
+          id: 'older-thread',
+          title: 'Older conversation',
+          modelProvider: 'custom-provider',
+        ),
       ];
     final agents = AgentConnectionManager(
       connections,
@@ -3442,7 +3446,10 @@ void main() {
     // A reconnect may return only the newest page while older pages were
     // already visible before the settings save.
     agent.listedThreads = <AgentThread>[
-      _FailingTurnAgent.thread.copyWith(title: 'Newest after settings save'),
+      _FailingTurnAgent.thread.copyWith(
+        title: 'Newest after settings save',
+        modelProvider: 'custom-provider',
+      ),
     ];
 
     await controller.saveAgentSettings(
@@ -3472,55 +3479,35 @@ void main() {
     );
     expect(controller.state.threads.first.title, 'Newest after settings save');
 
-    // Switching away from the configured provider must not merge its old
-    // namespace back into the newly loaded list.
+    // A Codex URL update must keep the configured Provider even if an older UI
+    // caller sends preserveCurrentProvider=false.
     await controller.showAgentSettings();
     agent.listedThreads = const <AgentThread>[
-      AgentThread(id: 'openai-thread', modelProvider: 'openai'),
+      AgentThread(id: 'new-relay-thread', modelProvider: 'custom-provider'),
     ];
     await controller.saveAgentSettings(
-      baseUrl: 'https://api.openai.com/v1',
+      baseUrl: 'https://models-new.example/v1',
       apiKey: '',
       proxyUrl: '',
-      defaultModel: 'gpt-openai',
+      defaultModel: 'gpt-relay-new',
       defaultReasoningEffort: 'high',
-      testModel: 'gpt-openai',
+      testModel: 'gpt-relay-new',
       preserveCurrentProvider: false,
     );
-    expect(controller.state.threads.map((thread) => thread.id), <String>[
-      'openai-thread',
-    ]);
+    expect(agent.writtenPreserveProvider, isTrue);
+    expect(
+      controller.state.threads.map((thread) => thread.id),
+      containsAll(<String>[
+        'attachment-thread',
+        'older-thread',
+        'new-relay-thread',
+      ]),
+    );
     expect(host.connected, isTrue);
     expect(agent.connected, isTrue);
     expect(agent.disconnectCount, 2);
     expect(agent.connectCount, 3);
     expect(runtime.stopCalls, 0);
-    // Writing a new URL while already using the default Provider must keep
-    // the same session namespace even though the settings writer receives
-    // preserveCurrentProvider=false.
-    agent.readValue = const AgentGlobalSettings(
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-openai',
-      reasoningEffort: 'high',
-      modelProvider: 'openai',
-    );
-    agent.listedThreads = const <AgentThread>[
-      AgentThread(id: 'openai-new-thread', modelProvider: 'openai'),
-    ];
-    await controller.showAgentSettings();
-    await controller.saveAgentSettings(
-      baseUrl: 'https://models.example/v2',
-      apiKey: '',
-      proxyUrl: '',
-      defaultModel: 'gpt-openai-new',
-      defaultReasoningEffort: 'high',
-      testModel: 'gpt-openai-new',
-      preserveCurrentProvider: false,
-    );
-    expect(controller.state.threads.map((thread) => thread.id), <String>[
-      'openai-thread',
-      'openai-new-thread',
-    ]);
     expect(
       diagnostics.records,
       contains(

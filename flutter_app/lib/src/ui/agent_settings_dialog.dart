@@ -127,10 +127,11 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
         settings != null &&
         configuredProvider != null &&
         configuredProvider != defaultProviderId;
-    final preserveCurrentProvider =
-        customProviderInUse &&
-        _normalizedUrl(_baseUrlController.text) ==
-            _normalizedUrl(settings.baseUrl);
+    final preserveCurrentProvider = agent == AgentKind.codex
+        ? settingsReady
+        : customProviderInUse &&
+              _normalizedUrl(_baseUrlController.text) ==
+                  _normalizedUrl(settings.baseUrl);
 
     return Positioned.fill(
       key: const ValueKey('agent-settings-overlay'),
@@ -670,10 +671,10 @@ class _CurrentSettingsPanel extends StatelessWidget {
           if (customProviderInUse) ...[
             const SizedBox(height: 4),
             Text(
-              preserveCurrentProvider
+              agent == AgentKind.codex
+                  ? '修改模型 URL 只会更新当前 Provider；Provider 名称保持不变。'
+                  : preserveCurrentProvider
                   ? '当前使用自定义 Provider；保持模型 URL 不变会继续使用该 Provider。'
-                  : agent == AgentKind.codex
-                  ? '修改模型 URL 后会切换到内置 OpenAI Provider。'
                   : '修改模型 URL 后会切换到 Codex Remote 管理的 OpenCode Provider。',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.error,

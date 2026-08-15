@@ -1669,10 +1669,12 @@ class AppController extends StateNotifier<AppUiState> {
       );
       return;
     }
+    final effectivePreserveCurrentProvider =
+        agent == AgentKind.codex || preserveCurrentProvider;
     final preserveExistingThreads = _preserveThreadsAfterSettingsSave(
       agent: agent,
       currentSettings: state.agentSettings!,
-      preserveCurrentProvider: preserveCurrentProvider,
+      preserveCurrentProvider: effectivePreserveCurrentProvider,
     );
     final requestId = ++_agentSettingsRequestId;
     final generation = _agents.generation(key);
@@ -1704,7 +1706,7 @@ class AppController extends StateNotifier<AppUiState> {
         proxyUrl: proxyUrl,
         defaultModel: normalizedDefaultModel,
         defaultReasoningEffort: normalizedDefaultEffort,
-        preserveCurrentProvider: preserveCurrentProvider,
+        preserveCurrentProvider: effectivePreserveCurrentProvider,
       );
       stage = 'profile_persist';
       await _updateProfileAgentDefaults(

@@ -634,10 +634,11 @@ class WindowsLocalServerClient
     );
     await Directory(_codexHome).create(recursive: true);
     final existing = await _readTextIfExists(_configFile);
+    final providerUpdated = updateCodexProviderBaseUrl(
+      existing,
+      normalizedBase,
+    );
     final replacements = <String, String?>{
-      if (!preserveCurrentProvider) 'model_provider': 'openai',
-      if (!preserveCurrentProvider)
-        'openai_base_url': normalizedBase.isEmpty ? null : normalizedBase,
       'model': normalizedModel.isEmpty ? null : normalizedModel,
       'model_reasoning_effort': normalizedEffort.isEmpty
           ? null
@@ -645,7 +646,7 @@ class WindowsLocalServerClient
     };
     await _writeAtomicText(
       _configFile,
-      _replaceTomlRoot(existing, replacements),
+      _replaceTomlRoot(providerUpdated, replacements),
     );
     if (normalizedProxy.isEmpty) {
       final envFile = File(_environmentFile);
