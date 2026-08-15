@@ -3153,7 +3153,7 @@ as int,
 /// @nodoc
 mixin _$AgentThread {
 
- String get id; String get title; String get preview; String get cwd; String get source; String get status; int get createdAt; int get updatedAt; String get cliVersion; String? get activeTurnId;
+ String get id; String get title; String get preview; String get cwd; String get source; String get modelProvider; String get status; int get createdAt; int get updatedAt; String get cliVersion; String? get activeTurnId;
 /// Create a copy of AgentThread
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -3164,16 +3164,16 @@ $AgentThreadCopyWith<AgentThread> get copyWith => _$AgentThreadCopyWithImpl<Agen
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentThread&&(identical(other.id, id) || other.id == id)&&(identical(other.title, title) || other.title == title)&&(identical(other.preview, preview) || other.preview == preview)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.source, source) || other.source == source)&&(identical(other.status, status) || other.status == status)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.cliVersion, cliVersion) || other.cliVersion == cliVersion)&&(identical(other.activeTurnId, activeTurnId) || other.activeTurnId == activeTurnId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentThread&&(identical(other.id, id) || other.id == id)&&(identical(other.title, title) || other.title == title)&&(identical(other.preview, preview) || other.preview == preview)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.source, source) || other.source == source)&&(identical(other.modelProvider, modelProvider) || other.modelProvider == modelProvider)&&(identical(other.status, status) || other.status == status)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.cliVersion, cliVersion) || other.cliVersion == cliVersion)&&(identical(other.activeTurnId, activeTurnId) || other.activeTurnId == activeTurnId));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id,title,preview,cwd,source,status,createdAt,updatedAt,cliVersion,activeTurnId);
+int get hashCode => Object.hash(runtimeType,id,title,preview,cwd,source,modelProvider,status,createdAt,updatedAt,cliVersion,activeTurnId);
 
 @override
 String toString() {
-  return 'AgentThread(id: $id, title: $title, preview: $preview, cwd: $cwd, source: $source, status: $status, createdAt: $createdAt, updatedAt: $updatedAt, cliVersion: $cliVersion, activeTurnId: $activeTurnId)';
+  return 'AgentThread(id: $id, title: $title, preview: $preview, cwd: $cwd, source: $source, modelProvider: $modelProvider, status: $status, createdAt: $createdAt, updatedAt: $updatedAt, cliVersion: $cliVersion, activeTurnId: $activeTurnId)';
 }
 
 
@@ -3184,7 +3184,7 @@ abstract mixin class $AgentThreadCopyWith<$Res>  {
   factory $AgentThreadCopyWith(AgentThread value, $Res Function(AgentThread) _then) = _$AgentThreadCopyWithImpl;
 @useResult
 $Res call({
- String id, String title, String preview, String cwd, String source, String status, int createdAt, int updatedAt, String cliVersion, String? activeTurnId
+ String id, String title, String preview, String cwd, String source, String modelProvider, String status, int createdAt, int updatedAt, String cliVersion, String? activeTurnId
 });
 
 
@@ -3201,13 +3201,14 @@ class _$AgentThreadCopyWithImpl<$Res>
 
 /// Create a copy of AgentThread
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? title = null,Object? preview = null,Object? cwd = null,Object? source = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,Object? cliVersion = null,Object? activeTurnId = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? title = null,Object? preview = null,Object? cwd = null,Object? source = null,Object? modelProvider = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,Object? cliVersion = null,Object? activeTurnId = freezed,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,title: null == title ? _self.title : title // ignore: cast_nullable_to_non_nullable
 as String,preview: null == preview ? _self.preview : preview // ignore: cast_nullable_to_non_nullable
 as String,cwd: null == cwd ? _self.cwd : cwd // ignore: cast_nullable_to_non_nullable
 as String,source: null == source ? _self.source : source // ignore: cast_nullable_to_non_nullable
+as String,modelProvider: null == modelProvider ? _self.modelProvider : modelProvider // ignore: cast_nullable_to_non_nullable
 as String,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as String,createdAt: null == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
 as int,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
@@ -3298,10 +3299,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String title,  String preview,  String cwd,  String source,  String status,  int createdAt,  int updatedAt,  String cliVersion,  String? activeTurnId)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String title,  String preview,  String cwd,  String source,  String modelProvider,  String status,  int createdAt,  int updatedAt,  String cliVersion,  String? activeTurnId)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AgentThread() when $default != null:
-return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.status,_that.createdAt,_that.updatedAt,_that.cliVersion,_that.activeTurnId);case _:
+return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.modelProvider,_that.status,_that.createdAt,_that.updatedAt,_that.cliVersion,_that.activeTurnId);case _:
   return orElse();
 
 }
@@ -3319,10 +3320,10 @@ return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String title,  String preview,  String cwd,  String source,  String status,  int createdAt,  int updatedAt,  String cliVersion,  String? activeTurnId)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String title,  String preview,  String cwd,  String source,  String modelProvider,  String status,  int createdAt,  int updatedAt,  String cliVersion,  String? activeTurnId)  $default,) {final _that = this;
 switch (_that) {
 case _AgentThread():
-return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.status,_that.createdAt,_that.updatedAt,_that.cliVersion,_that.activeTurnId);case _:
+return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.modelProvider,_that.status,_that.createdAt,_that.updatedAt,_that.cliVersion,_that.activeTurnId);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -3339,10 +3340,10 @@ return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String title,  String preview,  String cwd,  String source,  String status,  int createdAt,  int updatedAt,  String cliVersion,  String? activeTurnId)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String title,  String preview,  String cwd,  String source,  String modelProvider,  String status,  int createdAt,  int updatedAt,  String cliVersion,  String? activeTurnId)?  $default,) {final _that = this;
 switch (_that) {
 case _AgentThread() when $default != null:
-return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.status,_that.createdAt,_that.updatedAt,_that.cliVersion,_that.activeTurnId);case _:
+return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.modelProvider,_that.status,_that.createdAt,_that.updatedAt,_that.cliVersion,_that.activeTurnId);case _:
   return null;
 
 }
@@ -3354,7 +3355,7 @@ return $default(_that.id,_that.title,_that.preview,_that.cwd,_that.source,_that.
 
 
 class _AgentThread implements AgentThread {
-  const _AgentThread({required this.id, this.title = '', this.preview = '', this.cwd = '', this.source = '', this.status = 'idle', this.createdAt = 0, this.updatedAt = 0, this.cliVersion = '', this.activeTurnId});
+  const _AgentThread({required this.id, this.title = '', this.preview = '', this.cwd = '', this.source = '', this.modelProvider = '', this.status = 'idle', this.createdAt = 0, this.updatedAt = 0, this.cliVersion = '', this.activeTurnId});
   
 
 @override final  String id;
@@ -3362,6 +3363,7 @@ class _AgentThread implements AgentThread {
 @override@JsonKey() final  String preview;
 @override@JsonKey() final  String cwd;
 @override@JsonKey() final  String source;
+@override@JsonKey() final  String modelProvider;
 @override@JsonKey() final  String status;
 @override@JsonKey() final  int createdAt;
 @override@JsonKey() final  int updatedAt;
@@ -3378,16 +3380,16 @@ _$AgentThreadCopyWith<_AgentThread> get copyWith => __$AgentThreadCopyWithImpl<_
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentThread&&(identical(other.id, id) || other.id == id)&&(identical(other.title, title) || other.title == title)&&(identical(other.preview, preview) || other.preview == preview)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.source, source) || other.source == source)&&(identical(other.status, status) || other.status == status)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.cliVersion, cliVersion) || other.cliVersion == cliVersion)&&(identical(other.activeTurnId, activeTurnId) || other.activeTurnId == activeTurnId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentThread&&(identical(other.id, id) || other.id == id)&&(identical(other.title, title) || other.title == title)&&(identical(other.preview, preview) || other.preview == preview)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.source, source) || other.source == source)&&(identical(other.modelProvider, modelProvider) || other.modelProvider == modelProvider)&&(identical(other.status, status) || other.status == status)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.cliVersion, cliVersion) || other.cliVersion == cliVersion)&&(identical(other.activeTurnId, activeTurnId) || other.activeTurnId == activeTurnId));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id,title,preview,cwd,source,status,createdAt,updatedAt,cliVersion,activeTurnId);
+int get hashCode => Object.hash(runtimeType,id,title,preview,cwd,source,modelProvider,status,createdAt,updatedAt,cliVersion,activeTurnId);
 
 @override
 String toString() {
-  return 'AgentThread(id: $id, title: $title, preview: $preview, cwd: $cwd, source: $source, status: $status, createdAt: $createdAt, updatedAt: $updatedAt, cliVersion: $cliVersion, activeTurnId: $activeTurnId)';
+  return 'AgentThread(id: $id, title: $title, preview: $preview, cwd: $cwd, source: $source, modelProvider: $modelProvider, status: $status, createdAt: $createdAt, updatedAt: $updatedAt, cliVersion: $cliVersion, activeTurnId: $activeTurnId)';
 }
 
 
@@ -3398,7 +3400,7 @@ abstract mixin class _$AgentThreadCopyWith<$Res> implements $AgentThreadCopyWith
   factory _$AgentThreadCopyWith(_AgentThread value, $Res Function(_AgentThread) _then) = __$AgentThreadCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String title, String preview, String cwd, String source, String status, int createdAt, int updatedAt, String cliVersion, String? activeTurnId
+ String id, String title, String preview, String cwd, String source, String modelProvider, String status, int createdAt, int updatedAt, String cliVersion, String? activeTurnId
 });
 
 
@@ -3415,13 +3417,14 @@ class __$AgentThreadCopyWithImpl<$Res>
 
 /// Create a copy of AgentThread
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? title = null,Object? preview = null,Object? cwd = null,Object? source = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,Object? cliVersion = null,Object? activeTurnId = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? title = null,Object? preview = null,Object? cwd = null,Object? source = null,Object? modelProvider = null,Object? status = null,Object? createdAt = null,Object? updatedAt = null,Object? cliVersion = null,Object? activeTurnId = freezed,}) {
   return _then(_AgentThread(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,title: null == title ? _self.title : title // ignore: cast_nullable_to_non_nullable
 as String,preview: null == preview ? _self.preview : preview // ignore: cast_nullable_to_non_nullable
 as String,cwd: null == cwd ? _self.cwd : cwd // ignore: cast_nullable_to_non_nullable
 as String,source: null == source ? _self.source : source // ignore: cast_nullable_to_non_nullable
+as String,modelProvider: null == modelProvider ? _self.modelProvider : modelProvider // ignore: cast_nullable_to_non_nullable
 as String,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as String,createdAt: null == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
 as int,updatedAt: null == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable

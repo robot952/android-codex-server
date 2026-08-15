@@ -553,6 +553,7 @@ final class CodexProtocolGeneration {
     String sortDirection = 'desc',
     String? searchTerm,
     String? cursor,
+    List<String>? modelProviders,
   }) {
     if (limit <= 0) {
       throw ArgumentError.value(limit, 'limit', 'must be greater than zero');
@@ -567,6 +568,11 @@ final class CodexProtocolGeneration {
         if (searchTerm?.trim().isNotEmpty ?? false)
           'searchTerm': searchTerm!.trim(),
         if (cursor?.isNotEmpty ?? false) 'cursor': cursor,
+        if (modelProviders != null && modelProviders.isNotEmpty)
+          'modelProviders': modelProviders
+              .map((provider) => provider.trim())
+              .where((provider) => provider.isNotEmpty)
+              .toList(growable: false),
       },
     );
   }
@@ -917,6 +923,10 @@ abstract final class CodexPayloadParser {
         ? explicitActiveTurn
         : _activeTurnId(value['turns']);
     final source = _sourceLabel(value['source']);
+    final modelProvider = _firstString(value, const <String>[
+      'modelProvider',
+      'model_provider',
+    ]);
     final status = _wireType(value['status']);
     return AgentThread(
       id: id,
@@ -931,6 +941,7 @@ abstract final class CodexPayloadParser {
               'threadSource',
               'thread_source',
             ]),
+      modelProvider: modelProvider,
       status: status.isNotEmpty ? status : 'idle',
       createdAt: _firstInt(value, const <String>['createdAt', 'created_at']),
       updatedAt: _firstInt(value, const <String>['updatedAt', 'updated_at']),

@@ -3471,10 +3471,29 @@ void main() {
       containsAll(<String>['attachment-thread', 'older-thread']),
     );
     expect(controller.state.threads.first.title, 'Newest after settings save');
+
+    // Switching away from the configured provider must not merge its old
+    // namespace back into the newly loaded list.
+    await controller.showAgentSettings();
+    agent.listedThreads = const <AgentThread>[
+      AgentThread(id: 'openai-thread', modelProvider: 'openai'),
+    ];
+    await controller.saveAgentSettings(
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '',
+      proxyUrl: '',
+      defaultModel: 'gpt-openai',
+      defaultReasoningEffort: 'high',
+      testModel: 'gpt-openai',
+      preserveCurrentProvider: false,
+    );
+    expect(controller.state.threads.map((thread) => thread.id), <String>[
+      'openai-thread',
+    ]);
     expect(host.connected, isTrue);
     expect(agent.connected, isTrue);
-    expect(agent.disconnectCount, 1);
-    expect(agent.connectCount, 2);
+    expect(agent.disconnectCount, 2);
+    expect(agent.connectCount, 3);
     expect(runtime.stopCalls, 0);
     expect(
       diagnostics.records,

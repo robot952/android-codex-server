@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.74+201，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.75+202，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -882,9 +882,9 @@ Debian、Codex、工作区和本机 Profile。
 | --- | --- | --- |
 | SSH 主机客户端、连接状态、metrics request | profileId | 当前 ServerConnectionManager |
 | Agent 客户端和连接状态 | profileId + AgentKind | 当前 AgentConnectionManager |
-| 会话/模型列表和 loading | profileId + AgentKind | 当前 AppUiState lane maps |
-| 活动时间线、运行态、目标 | profileId + AgentKind + threadId | 当前控制器用 active-key/thread guard；目标对象不长期持久化 |
-| transcript/TokenUsage cache | profileId + AgentKind，cache 内再按 threadId | 当前 ThreadSessionCache |
+| 会话/模型列表和 loading | profileId + AgentKind + 当前 Provider | 当前 AppUiState lane maps；Codex thread/list 使用 modelProviders 过滤 |
+| 活动时间线、运行态、目标 | profileId + AgentKind + Provider + threadId | 当前控制器用 active-key/thread guard；目标对象不长期持久化 |
+| transcript/TokenUsage cache | profileId + AgentKind + Provider，cache 内再按 threadId | 当前 ThreadSessionCache；切换 Provider 时清空 lane cache |
 | 草稿、模型、思考强度、完成计时 | profileId + AgentKind + threadId | 当前 StoredProfiles 复合键 |
 | 审批队列 | profileId + AgentKind + threadId（请求 generation 由 Agent 客户端校验） | Flutter/Kotlin 控制器分桶；无 threadId 的旧协议使用 lane 兼容桶 |
 | 待发附件 | 当前活动 AppUiState；写回用 profileId + AgentKind + threadId guard | 不持久化；离开会话清空 |
@@ -1952,10 +1952,17 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 ### 17.44 全局配置重连保留会话列表（2026-08-15）
 
 - 应用版本：`1.8.74+201`。保存 Codex 全局模型 URL、Provider 或代理后，Agent 必须重连并重新读取
-  `thread/list`；重连返回的第一页现在会与当前 lane 已展示的会话快照合并，避免分页加载的旧会话或重连
-  窗口期暂未返回的会话从列表消失。服务器新页的排序和元数据优先，旧快照只补齐缺失项；正常手动刷新
-  仍使用服务器返回结果，不改变删除/搜索语义。
-- 新增 AppController 回归，覆盖保存配置后远端只返回最新会话时旧会话继续显示，并采用新页元数据。
+  `thread/list`；重连返回的第一页曾与当前 lane 已展示的会话快照合并，避免分页加载的旧会话或重连
+  窗口期暂未返回的会话从列表消失。
+
+### 17.45 Codex Provider 会话隔离（2026-08-15）
+
+- 应用版本：`1.8.75+202`。Codex app-server 的 `Thread` 明确带有 `modelProvider`，`thread/list` 支持
+  `modelProviders` 过滤；连接时读取当前远端 Provider 并将过滤条件带入列表请求，避免新增或切换 Provider
+  后把不同命名空间的历史会话混入当前列表。
+- `AgentThread` 保留 Provider 身份，分页合并只允许同 Provider 的线程且以服务器新元数据覆盖旧快照；配置
+  保存如果切换 Provider，则完全采用新列表，不再合并旧 Provider 会话。相关回归覆盖 Provider 字段解析、
+  请求过滤、同 Provider 更新和切换 Provider 后旧会话不再显示。
 
 ## 18. 文档维护规则
 

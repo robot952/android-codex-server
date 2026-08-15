@@ -1743,7 +1743,11 @@ class AppController extends StateNotifier<AppUiState> {
     );
     if (updatedProfile == null) return;
     try {
-      await _restartAgentAfterSettingsSave(key, updatedProfile);
+      await _restartAgentAfterSettingsSave(
+        key,
+        updatedProfile,
+        preserveExistingThreads: preserveCurrentProvider,
+      );
       _diagnostics.info(
         'AgentSettings',
         'save_completed profile=${profile.id} agent=${agent.name} '
@@ -4667,8 +4671,8 @@ class AppController extends StateNotifier<AppUiState> {
       if (threadPage != null) {
         threadLists[key] = preserveExistingThreads
             ? _mergeListedThreads(
-                threadPage!.threads,
                 threadLists[key] ?? const <AgentThread>[],
+                threadPage!.threads,
               )
             : threadPage!.threads;
         _agentThreadNextCursors[key] = threadPage!.nextCursor;
@@ -5027,14 +5031,20 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> _restartAgentAfterSettingsSave(
     AgentConnectionKey key,
-    ServerProfile profile,
-  ) async {
+    ServerProfile profile, {
+    required bool preserveExistingThreads,
+  }) async {
     _diagnostics.info(
       'AgentSettings',
       'restart_requested profile=${key.profileId} agent=${key.agent.name}',
     );
     _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
     _agentLoadRequests.remove(key);
+    if (!preserveExistingThreads) {
+      // A Provider switch changes the server's thread namespace. Do not let a
+      // stale transcript be used when the new Provider reuses a thread ID.
+      _threadCaches[key]?.clear();
+    }
     final retained = _retainedAgentConnections.remove(key);
     try {
       await _agents.disconnect(key.profileId, agent: key.agent);
@@ -5054,7 +5064,7 @@ class AppController extends StateNotifier<AppUiState> {
         profile,
         includeModels: true,
         silent: true,
-        preserveExistingThreads: true,
+        preserveExistingThreads: preserveExistingThreads,
       );
     } finally {
       if (retained &&
@@ -6428,14 +6438,39 @@ List<AgentThread> _mergeListedThreads(
   List<AgentThread> current,
   List<AgentThread> nextPage,
 ) {
+  final providers = nextPage
+      .map((thread) => thread.modelProvider.trim())
+      .where((provider) => provider.isNotEmpty)
+      .toSet();
+  final retainedCurrent = providers.isEmpty
+      ? current
+      : current.where(
+          (thread) => providers.contains(thread.modelProvider.trim()),
+        );
   final merged = <AgentThread>[];
-  final seen = <String>{};
-  for (final thread in <AgentThread>[...current, ...nextPage]) {
+  final indexes = <String, int>{};
+  for (final thread in retainedCurrent) {
     final id = thread.id.trim();
     final identity = id.isNotEmpty
         ? id
         : '${thread.title}\u0000${thread.cwd}\u0000${thread.createdAt}';
-    if (seen.add(identity)) merged.add(thread);
+    if (indexes.containsKey(identity)) continue;
+    indexes[identity] = merged.length;
+    merged.add(thread);
+  }
+  for (final thread in nextPage) {
+    final id = thread.id.trim();
+    final identity = id.isNotEmpty
+        ? id
+        : '${thread.title}\u0000${thread.cwd}\u0000${thread.createdAt}';
+    final existingIndex = indexes[identity];
+    if (existingIndex == null) {
+      indexes[identity] = merged.length;
+      merged.add(thread);
+    } else {
+      // Keep the existing page's position while preferring fresh metadata.
+      merged[existingIndex] = thread;
+    }
   }
   return List<AgentThread>.unmodifiable(merged);
 }

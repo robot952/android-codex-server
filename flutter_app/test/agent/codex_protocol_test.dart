@@ -57,6 +57,16 @@ void main() {
       expect(initialized.encodeLine(), endsWith('\n'));
     });
 
+    test('encodes a provider filter for thread listings', () {
+      final generation = CodexProtocolSession().beginGeneration();
+      final request = generation.threadList(modelProviders: const ['relay']);
+
+      expect(
+        jsonDecode(request.encode())['params'],
+        containsPair('modelProviders', const ['relay']),
+      );
+    });
+
     test(
       'encodes thread and turn lifecycle methods like the Kotlin client',
       () {
@@ -404,6 +414,7 @@ void main() {
             'preview': 'Preview',
             'cwd': '/srv/standard',
             'source': <String, Object?>{'custom': 'vscode'},
+            'modelProvider': 'relay',
             'status': <String, Object?>{'type': 'active'},
             'createdAt': 10,
             'updatedAt': 20,
@@ -435,6 +446,7 @@ void main() {
 
       expect(standard.single.title, 'Standard title');
       expect(standard.single.source, 'vscode');
+      expect(standard.single.modelProvider, 'relay');
       expect(standard.single.status, 'active');
       expect(standard.single.activeTurnId, 'turn-running');
       expect(standardPage.nextCursor, 'next-page');
@@ -619,6 +631,7 @@ void main() {
         'preview': oversizedMetadata,
         'cwd': oversizedMetadata,
         'source': <String, Object?>{'provider': oversizedMetadata},
+        'modelProvider': oversizedMetadata,
         'status': oversizedMetadata,
         'cliVersion': oversizedMetadata,
       });
@@ -635,6 +648,7 @@ void main() {
       expect(thread.source.length, lessThanOrEqualTo(codexMaxThreadFieldChars));
       expect(thread.status.length, codexMaxThreadFieldChars);
       expect(thread.cliVersion.length, codexMaxThreadFieldChars);
+      expect(thread.modelProvider.length, codexMaxThreadFieldChars);
       expect(thread.preview, endsWith(codexTextTruncationMarker));
       expect(entry?.text.length, codexMaxTimelineTextChars);
       expect(entry?.text, endsWith(codexTextTruncationMarker));

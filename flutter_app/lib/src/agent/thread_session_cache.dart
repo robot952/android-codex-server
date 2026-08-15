@@ -200,6 +200,7 @@ class ThreadSessionCache {
         thread.preview.length +
         thread.cwd.length +
         thread.source.length +
+        thread.modelProvider.length +
         thread.status.length +
         thread.cliVersion.length +
         (nextTurnsCursor?.length ?? 0);
