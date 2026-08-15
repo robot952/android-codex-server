@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.75+202，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.76+203，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1963,6 +1963,14 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - `AgentThread` 保留 Provider 身份，分页合并只允许同 Provider 的线程且以服务器新元数据覆盖旧快照；配置
   保存如果切换 Provider，则完全采用新列表，不再合并旧 Provider 会话。相关回归覆盖 Provider 字段解析、
   请求过滤、同 Provider 更新和切换 Provider 后旧会话不再显示。
+
+### 17.46 默认 Provider 保存配置保留会话（2026-08-15）
+
+- 应用版本：`1.8.76+203`。拆分配置写入的 Provider 保留标志与会话命名空间保留判定；当前已经是默认
+  `openai`（Codex）或 `custom-api`（OpenCode）时，保存新的模型 URL 仍属于同一 Provider，不再清空旧
+  对话的 transcript cache。
+- 只有保存后确实从自定义 Provider 切换到默认 Provider 时才隔离旧会话；默认 Provider 的旧会话与重连
+  返回的新列表按线程 ID 合并，并以服务器新元数据覆盖旧条目。
 
 ## 18. 文档维护规则
 

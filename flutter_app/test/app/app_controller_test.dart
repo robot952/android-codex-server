@@ -3495,6 +3495,32 @@ void main() {
     expect(agent.disconnectCount, 2);
     expect(agent.connectCount, 3);
     expect(runtime.stopCalls, 0);
+    // Writing a new URL while already using the default Provider must keep
+    // the same session namespace even though the settings writer receives
+    // preserveCurrentProvider=false.
+    agent.readValue = const AgentGlobalSettings(
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-openai',
+      reasoningEffort: 'high',
+      modelProvider: 'openai',
+    );
+    agent.listedThreads = const <AgentThread>[
+      AgentThread(id: 'openai-new-thread', modelProvider: 'openai'),
+    ];
+    await controller.showAgentSettings();
+    await controller.saveAgentSettings(
+      baseUrl: 'https://models.example/v2',
+      apiKey: '',
+      proxyUrl: '',
+      defaultModel: 'gpt-openai-new',
+      defaultReasoningEffort: 'high',
+      testModel: 'gpt-openai-new',
+      preserveCurrentProvider: false,
+    );
+    expect(controller.state.threads.map((thread) => thread.id), <String>[
+      'openai-thread',
+      'openai-new-thread',
+    ]);
     expect(
       diagnostics.records,
       contains(
