@@ -38,6 +38,8 @@ const _workBorder = Color(0xFF373737);
 const _workGreen = Color(0xFF68C77B);
 const _workLink = Color(0xFF64B5F6);
 const _workAmber = Color(0xFFE5B567);
+const double imageAttachmentMaxDimension = 2048;
+const int imageAttachmentQuality = 82;
 
 /// The active Codex transcript. The screen deliberately consumes domain
 /// objects only; JSON-RPC parsing and connection lifetime stay in the agent
@@ -606,10 +608,14 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         ref.read(appControllerProvider).attachmentUploading) {
       return;
     }
+    if (imagesOnly) {
+      await _pickImageAttachments();
+      return;
+    }
     try {
       final result = await FilePicker.pickFiles(
-        dialogTitle: imagesOnly ? '选择图片' : '选择文件',
-        type: imagesOnly ? FileType.image : FileType.any,
+        dialogTitle: '选择文件',
+        type: FileType.any,
         allowMultiple: true,
         withReadStream: true,
         readSequential: true,
@@ -627,10 +633,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       var selectedBytes = 0;
       for (final file in result.files) {
         try {
-          final mimeType = attachmentMimeType(
-            file.name,
-            forceImage: imagesOnly,
-          );
+          final mimeType = attachmentMimeType(file.name);
           final text = isTextAttachment(file.name, mimeType);
           final limit = text
               ? maxInlineTextAttachmentBytes
@@ -671,6 +674,47 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     }
   }
 
+  Future<void> _pickImageAttachments() async {
+    final state = ref.read(appControllerProvider);
+    final availableSlots = maxPendingAttachmentCount - state.attachments.length;
+    if (availableSlots <= 0) {
+      _showNotice(context, '输入框最多保留 $maxPendingAttachmentCount 个附件');
+      return;
+    }
+    try {
+      setState(() => _preparingAttachments = true);
+      final images = await pickCompressedGalleryImages(
+        ImagePicker(),
+        limit: availableSlots,
+      );
+      if (images.isEmpty || !mounted) return;
+      if (images.length > availableSlots) {
+        throw StateError('每次最多保留 $maxPendingAttachmentCount 个待发送附件');
+      }
+      final uploads = <LocalAttachmentUpload>[];
+      var selectedBytes = 0;
+      for (final image in images) {
+        final upload = await imagePickerAttachment(image);
+        selectedBytes += upload.bytes.length;
+        if (selectedBytes > maxPendingAttachmentTotalBytes) {
+          throw StateError('压缩后的图片总大小不能超过 40 MB');
+        }
+        uploads.add(upload);
+      }
+      if (uploads.isNotEmpty && mounted) {
+        await ref
+            .read(appControllerProvider.notifier)
+            .uploadAttachments(uploads);
+      }
+    } catch (error) {
+      if (mounted) {
+        _showNotice(context, _displayError(error, '选择图片失败'));
+      }
+    } finally {
+      if (mounted) setState(() => _preparingAttachments = false);
+    }
+  }
+
   Future<void> _takePhoto() async {
     if (_preparingAttachments ||
         ref.read(appControllerProvider).attachmentUploading) {
@@ -683,9 +727,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     }
     try {
       setState(() => _preparingAttachments = true);
-      final photo = await ImagePicker().pickImage(source: ImageSource.camera);
+      final photo = await takeCompressedPhoto(ImagePicker());
       if (photo == null || !mounted) return;
-      final upload = await cameraPhotoAttachment(photo);
+      final upload = await imagePickerAttachment(photo);
       await ref.read(appControllerProvider.notifier).uploadAttachments(
         <LocalAttachmentUpload>[upload],
       );
@@ -1065,20 +1109,42 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   }
 }
 
-Future<LocalAttachmentUpload> cameraPhotoAttachment(XFile photo) async {
-  final length = await photo.length();
-  if (length <= 0) throw StateError('照片为空');
+Future<List<XFile>> pickCompressedGalleryImages(
+  ImagePicker picker, {
+  required int limit,
+}) => picker.pickMultiImage(
+  maxWidth: imageAttachmentMaxDimension,
+  maxHeight: imageAttachmentMaxDimension,
+  imageQuality: imageAttachmentQuality,
+  limit: limit,
+  requestFullMetadata: false,
+);
+
+Future<XFile?> takeCompressedPhoto(ImagePicker picker) => picker.pickImage(
+  source: ImageSource.camera,
+  maxWidth: imageAttachmentMaxDimension,
+  maxHeight: imageAttachmentMaxDimension,
+  imageQuality: imageAttachmentQuality,
+  requestFullMetadata: false,
+);
+
+Future<LocalAttachmentUpload> imagePickerAttachment(XFile image) async {
+  final length = await image.length();
+  if (length <= 0) throw StateError('图片为空');
   if (length > maxLocalAttachmentBytes) {
-    throw StateError('照片不能超过 20 MB');
+    throw StateError('压缩后的图片不能超过 20 MB');
   }
-  final bytes = await photo.readAsBytes();
-  if (bytes.isEmpty) throw StateError('照片为空');
+  final bytes = await image.readAsBytes();
+  if (bytes.isEmpty) throw StateError('图片为空');
   return LocalAttachmentUpload(
-    name: photo.name,
+    name: image.name,
     bytes: bytes,
-    mimeType: attachmentMimeType(photo.name, forceImage: true),
+    mimeType: attachmentMimeType(image.name, forceImage: true),
   );
 }
+
+Future<LocalAttachmentUpload> cameraPhotoAttachment(XFile photo) =>
+    imagePickerAttachment(photo);
 
 bool shouldDismissWorkKeyboard(AppLifecycleState state) =>
     state != AppLifecycleState.resumed;

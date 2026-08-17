@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.81+208，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.82+209，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2008,6 +2008,13 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   手势开始时距离顶部的剩余滚动量必须从指针位移中扣除，不能把普通的向上浏览误判成顶部 overscroll。
 - 允许用户从接近顶部的位置开始一次连续手势，但只有越过剩余距离并达到刷新阈值后才能触发。Widget 回归
   同时覆盖“尚未到顶不触发”和“同一手势到顶后继续下拉可触发”。
+
+### 17.51 图片附件上传压缩（2026-08-17）
+
+- 应用版本：`1.8.82+209`。对话页通过“选择图片”或“拍照”添加的图片必须在上传前由系统图片选择器缩放
+  到最长边不超过 `2048` 像素，并以 `82` 的图片质量重新编码；不得直接上传手机原图。
+- 压缩结果仍受单张 `20 MB`、单批 `40 MB` 和待发送附件数量限制。普通“选择文件”保持无损上传语义，
+  避免用户明确传输二进制文件时被应用有损修改。测试需固定相册多选和相机入口使用同一组压缩参数。
 
 ## 18. 文档维护规则
 

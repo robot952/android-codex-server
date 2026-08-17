@@ -62,6 +62,52 @@ class _TrackingFileExporter implements LocalFileExporter {
   }
 }
 
+class _RecordingImagePicker extends ImagePicker {
+  double? galleryMaxWidth;
+  double? galleryMaxHeight;
+  int? galleryQuality;
+  int? galleryLimit;
+  bool? galleryMetadata;
+  ImageSource? cameraSource;
+  double? cameraMaxWidth;
+  double? cameraMaxHeight;
+  int? cameraQuality;
+  bool? cameraMetadata;
+
+  @override
+  Future<List<XFile>> pickMultiImage({
+    double? maxWidth,
+    double? maxHeight,
+    int? imageQuality,
+    int? limit,
+    bool requestFullMetadata = true,
+  }) async {
+    galleryMaxWidth = maxWidth;
+    galleryMaxHeight = maxHeight;
+    galleryQuality = imageQuality;
+    galleryLimit = limit;
+    galleryMetadata = requestFullMetadata;
+    return const <XFile>[];
+  }
+
+  @override
+  Future<XFile?> pickImage({
+    required ImageSource source,
+    double? maxWidth,
+    double? maxHeight,
+    int? imageQuality,
+    CameraDevice preferredCameraDevice = CameraDevice.rear,
+    bool requestFullMetadata = true,
+  }) async {
+    cameraSource = source;
+    cameraMaxWidth = maxWidth;
+    cameraMaxHeight = maxHeight;
+    cameraQuality = imageQuality;
+    cameraMetadata = requestFullMetadata;
+    return null;
+  }
+}
+
 TapGestureRecognizer _linkRecognizer(WidgetTester tester, String text) {
   final recognizer = _maybeLinkRecognizer(tester, text);
   if (recognizer != null) return recognizer;
@@ -1117,6 +1163,24 @@ void main() {
     expect(upload.name, 'camera-photo.jpg');
     expect(upload.mimeType, 'image/jpeg');
     expect(upload.bytes, photoBytes);
+  });
+
+  test('image picker requests bounded compressed output', () async {
+    final picker = _RecordingImagePicker();
+
+    await pickCompressedGalleryImages(picker, limit: 3);
+    await takeCompressedPhoto(picker);
+
+    expect(picker.galleryMaxWidth, imageAttachmentMaxDimension);
+    expect(picker.galleryMaxHeight, imageAttachmentMaxDimension);
+    expect(picker.galleryQuality, imageAttachmentQuality);
+    expect(picker.galleryLimit, 3);
+    expect(picker.galleryMetadata, isFalse);
+    expect(picker.cameraSource, ImageSource.camera);
+    expect(picker.cameraMaxWidth, imageAttachmentMaxDimension);
+    expect(picker.cameraMaxHeight, imageAttachmentMaxDimension);
+    expect(picker.cameraQuality, imageAttachmentQuality);
+    expect(picker.cameraMetadata, isFalse);
   });
 
   testWidgets('shows completed background agents above the composer', (
