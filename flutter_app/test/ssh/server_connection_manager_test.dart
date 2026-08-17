@@ -87,14 +87,17 @@ class _FakeImageClient extends _FakeClient implements RemoteServerImageClient {
   final Future<Uint8List> imageResult;
   String? requestedPath;
   int? requestedLimit;
+  void Function(int receivedBytes, int totalBytes)? progressCallback;
 
   @override
   Future<Uint8List> readRemoteImage(
     String path, {
     int maxBytes = maxRemoteImageBytes,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) {
     requestedPath = path;
     requestedLimit = maxBytes;
+    progressCallback = onProgress;
     return imageResult;
   }
 }
@@ -291,15 +294,27 @@ void main() {
 
   test('reads a bounded image through the connected host lane', () async {
     final bytes = Uint8List.fromList(<int>[1, 2, 3]);
-    final client = _FakeImageClient(Future<Uint8List>.value(bytes));
+    final pending = Completer<Uint8List>();
+    final client = _FakeImageClient(pending.future);
     final manager = ServerConnectionManager(clientFactory: () => client);
     await manager.connect(first);
 
-    final result = await manager.readRemoteImage(first.id, '/tmp/screen.png');
+    final progress = <(int, int)>[];
+    final request = manager.readRemoteImage(
+      first.id,
+      '/tmp/screen.png',
+      onProgress: (receivedBytes, totalBytes) {
+        progress.add((receivedBytes, totalBytes));
+      },
+    );
+    client.progressCallback?.call(2, 3);
+    pending.complete(bytes);
+    final result = await request;
 
     expect(result, bytes);
     expect(client.requestedPath, '/tmp/screen.png');
     expect(client.requestedLimit, maxRemoteImageBytes);
+    expect(progress, <(int, int)>[(2, 3)]);
     await manager.close();
   });
 

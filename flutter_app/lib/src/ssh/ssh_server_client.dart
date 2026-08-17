@@ -60,6 +60,7 @@ abstract interface class RemoteServerImageClient {
   Future<Uint8List> readRemoteImage(
     String path, {
     int maxBytes = maxRemoteImageBytes,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   });
 }
 
@@ -843,6 +844,7 @@ class DartSshServerClient
   Future<Uint8List> readRemoteImage(
     String path, {
     int maxBytes = maxRemoteImageBytes,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     final remotePath = path.trim();
     if (!remotePath.startsWith('/')) {
@@ -864,8 +866,19 @@ class DartSshServerClient
       }
       final file = await sftp.open(remotePath, mode: SftpFileOpenMode.read);
       try {
-        final bytes = await file.readBytes(length: size);
+        onProgress?.call(0, size);
+        final builder = BytesBuilder(copy: false);
+        await for (final chunk in file.read(
+          length: size,
+          onProgress: (receivedBytes) {
+            onProgress?.call(receivedBytes, size);
+          },
+        )) {
+          builder.add(chunk);
+        }
+        final bytes = builder.takeBytes();
         if (bytes.length != size) throw StateError('图片读取不完整');
+        onProgress?.call(size, size);
         return bytes;
       } finally {
         await file.close();

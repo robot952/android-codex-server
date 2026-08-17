@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
@@ -1412,7 +1414,7 @@ void main() {
           theme: buildCodexTheme(),
           home: WorkScreen(
             fileExporter: exporter,
-            onLoadRemoteImage: (path) async {
+            onLoadRemoteImage: (path, {onProgress}) async {
               loadedImagePath = path;
               return base64Decode(
                 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
@@ -1454,7 +1456,8 @@ void main() {
     await tester.pumpAndSettle();
 
     _linkRecognizer(tester, '竖屏验收截图').onTap!();
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(loadedImagePath, imagePath);
     expect(find.byType(InteractiveViewer), findsOneWidget);
     expect(find.text('latest-release.png'), findsOneWidget);
@@ -1467,6 +1470,194 @@ void main() {
     expect(exporter.beginCalls, 0);
     await tester.tap(find.byTooltip('关闭图片'));
     await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shows remote image byte progress for a linked preview', (
+    tester,
+  ) async {
+    const imagePath = '/home/yan/screenshots/large-preview.png';
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    final pending = Completer<Uint8List>();
+    void Function(int receivedBytes, int totalBytes)? reportProgress;
+    addTearDown(() async {
+      if (!pending.isCompleted) {
+        pending.completeError(StateError('test disposed'));
+      }
+      await manager.close();
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: WorkScreen(
+            onLoadRemoteImage: (path, {onProgress}) {
+              expect(path, imagePath);
+              reportProgress = onProgress;
+              return pending.future;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'thread-image-load', title: '图片加载'),
+        timeline: [
+          TimelineEntry(
+            id: 'image-link',
+            kind: TimelineKind.agentMessage,
+            text: '[查看大图]($imagePath)',
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    _linkRecognizer(tester, '查看大图').onTap!();
+    await tester.pump();
+    expect(
+      find.byKey(const Key('remote-image-loading-overlay')),
+      findsOneWidget,
+    );
+    expect(find.text('正在加载图片…'), findsOneWidget);
+    expect(find.text('large-preview.png'), findsOneWidget);
+    final indeterminate = tester.widget<LinearProgressIndicator>(
+      find.byKey(const Key('remote-image-loading-progress')),
+    );
+    expect(indeterminate.value, isNull);
+
+    reportProgress?.call(512, 1024);
+    await tester.pump();
+    expect(find.text('正在加载图片 50%'), findsOneWidget);
+    expect(find.text('512 B / 1.0 KB'), findsOneWidget);
+    final determinate = tester.widget<LinearProgressIndicator>(
+      find.byKey(const Key('remote-image-loading-progress')),
+    );
+    expect(determinate.value, 0.5);
+
+    pending.complete(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
+        'QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('remote-image-loading-overlay')), findsNothing);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭图片'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shows the image loading overlay for cards and attachments', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+    const cardPath = '/home/yan/screenshots/tool-preview.png';
+    const attachmentPath = '/home/yan/uploads/message-photo.jpg';
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    final pendingLoads = <Completer<Uint8List>>[];
+    final loadedPaths = <String>[];
+    addTearDown(() async {
+      for (final pending in pendingLoads) {
+        if (!pending.isCompleted) {
+          pending.completeError(StateError('test disposed'));
+        }
+      }
+      await manager.close();
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: WorkScreen(
+            onLoadRemoteImage: (path, {onProgress}) {
+              loadedPaths.add(path);
+              final pending = Completer<Uint8List>();
+              pendingLoads.add(pending);
+              return pending.future;
+            },
+          ),
+        ),
+      ),
+    );
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'thread-image-entry-points'),
+        timeline: [
+          TimelineEntry(
+            id: 'tool-image',
+            kind: TimelineKind.tool,
+            title: '查看了图片',
+            text: cardPath,
+          ),
+          TimelineEntry(
+            id: 'user-image',
+            kind: TimelineKind.userMessage,
+            text: '图片附件',
+            attachments: [
+              MessageAttachment(
+                name: 'message-photo.jpg',
+                remotePath: attachmentPath,
+                mimeType: 'image/jpeg',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final cardButton = find.byTooltip('查看图片');
+    await tester.ensureVisible(cardButton);
+    await tester.tap(cardButton);
+    await tester.pump();
+    expect(loadedPaths, [cardPath]);
+    expect(
+      find.byKey(const Key('remote-image-loading-overlay')),
+      findsOneWidget,
+    );
+    expect(find.text('tool-preview.png'), findsOneWidget);
+    pendingLoads.first.completeError(StateError('expected card failure'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('remote-image-loading-overlay')), findsNothing);
+    await tester.pump(const Duration(seconds: 4));
+
+    final attachmentLabel = find.text('message-photo.jpg');
+    await tester.ensureVisible(attachmentLabel);
+    await tester.tap(attachmentLabel);
+    await tester.pump();
+    expect(loadedPaths, [cardPath, attachmentPath]);
+    expect(
+      find.byKey(const Key('remote-image-loading-overlay')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('remote-image-loading-overlay')),
+        matching: find.text('message-photo.jpg'),
+      ),
+      findsOneWidget,
+    );
+    pendingLoads.last.completeError(StateError('expected attachment failure'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('remote-image-loading-overlay')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

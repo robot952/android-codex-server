@@ -24,6 +24,11 @@ import 'work_content.dart';
 
 typedef _OpenRemoteImage =
     Future<void> Function(String path, {String? fileName});
+typedef RemoteImageLoader =
+    Future<Uint8List> Function(
+      String path, {
+      void Function(int receivedBytes, int totalBytes)? onProgress,
+    });
 
 // Keep the Work page visually aligned with the original Compose screen
 // without changing the palette used by the newer server and settings pages.
@@ -44,7 +49,7 @@ class WorkScreen extends ConsumerStatefulWidget {
     this.fileExporter = const AndroidLocalFileExporter(),
   });
 
-  final Future<Uint8List> Function(String path)? onLoadRemoteImage;
+  final RemoteImageLoader? onLoadRemoteImage;
   final LocalFileExporter fileExporter;
 
   @override
@@ -62,6 +67,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   bool _refreshing = false;
   bool _preparingAttachments = false;
   String? _imageLoadingPath;
+  int _imageReceivedBytes = 0;
+  int? _imageTotalBytes;
   String? _fileDownloadPath;
   bool _savingImage = false;
   String? _syncedThreadId;
@@ -233,70 +240,81 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            child: _Transcript(
-              state: state,
-              controller: _scrollController,
-              onOpenImage: (path, {fileName}) =>
-                  _openRemoteImage(path, fileName: fileName),
-              imageLoadingPath: _imageLoadingPath,
-              onOpenRemoteFile: _downloadRemoteFile,
-              onOpenDiff: _openDiff,
-              onOpenSubAgent: controller.openSubAgentThread,
-              onRefresh:
-                  state.olderTurnsCursor == null ||
-                      state.loading ||
-                      state.olderTurnsLoading ||
-                      _refreshing
-                  ? null
-                  : () => _loadOlder(controller),
-              onScrollNotification: _onTranscriptScroll,
-              onTextSelectionChanged: _pauseFollowOutputForSelection,
-              initialBottomPending: _initialBottomPending,
-              paginationViewportKey: _paginationViewportKey,
-              transcriptItemsSliverKey: _transcriptItemsSliverKey,
-              bottomGap: _transcriptBottomGap,
-              onRefreshStart: _preparePagination,
-              showJumpToBottom:
-                  state.timeline.isNotEmpty &&
-                  !_followOutput &&
-                  _canScrollForward,
-              onJumpToBottom: _jumpToBottom,
-              onReview: controller.reviewChanges,
-              onRollback: () => _confirmRollback(controller),
-            ),
+          Column(
+            children: [
+              Expanded(
+                child: _Transcript(
+                  state: state,
+                  controller: _scrollController,
+                  onOpenImage: (path, {fileName}) =>
+                      _openRemoteImage(path, fileName: fileName),
+                  imageLoadingPath: _imageLoadingPath,
+                  onOpenRemoteFile: _downloadRemoteFile,
+                  onOpenDiff: _openDiff,
+                  onOpenSubAgent: controller.openSubAgentThread,
+                  onRefresh:
+                      state.olderTurnsCursor == null ||
+                          state.loading ||
+                          state.olderTurnsLoading ||
+                          _refreshing
+                      ? null
+                      : () => _loadOlder(controller),
+                  onScrollNotification: _onTranscriptScroll,
+                  onTextSelectionChanged: _pauseFollowOutputForSelection,
+                  initialBottomPending: _initialBottomPending,
+                  paginationViewportKey: _paginationViewportKey,
+                  transcriptItemsSliverKey: _transcriptItemsSliverKey,
+                  bottomGap: _transcriptBottomGap,
+                  onRefreshStart: _preparePagination,
+                  showJumpToBottom:
+                      state.timeline.isNotEmpty &&
+                      !_followOutput &&
+                      _canScrollForward,
+                  onJumpToBottom: _jumpToBottom,
+                  onReview: controller.reviewChanges,
+                  onRollback: () => _confirmRollback(controller),
+                ),
+              ),
+              if (state.approval case final prompt?)
+                _ApprovalPanel(
+                  key: ValueKey(prompt.requestId),
+                  prompt: prompt,
+                  submitting: state.submitting,
+                  onAnswer: controller.answerApproval,
+                ),
+              _Composer(
+                state: state,
+                controller: _composerController,
+                focusNode: _composerFocus,
+                attachmentBusy:
+                    _preparingAttachments || state.attachmentUploading,
+                onChanged: controller.setComposerDraft,
+                onTakePhoto: _takePhoto,
+                onAttachImage: () => _pickAttachments(imagesOnly: true),
+                onAttachFile: () => _pickAttachments(imagesOnly: false),
+                onRemoveAttachment: controller.removeAttachment,
+                onSend: () => controller.sendMessage(),
+                onStop: () => _confirmStop(controller),
+                onModelTap: () => unawaited(_showModelSheet(context, state)),
+                onPermissionTap: () =>
+                    _showPermissionSheet(context, state, controller),
+                onAction: (value) =>
+                    _handleComposerAction(value, state, controller),
+                onEditGoal: () => _showGoalDialog(state, controller),
+                onToggleGoal: () => _toggleGoal(state, controller),
+                onClearGoal: () => _confirmClearGoal(controller),
+                onOpenSubAgent: controller.openSubAgentThread,
+              ),
+            ],
           ),
-          if (state.approval case final prompt?)
-            _ApprovalPanel(
-              key: ValueKey(prompt.requestId),
-              prompt: prompt,
-              submitting: state.submitting,
-              onAnswer: controller.answerApproval,
+          if (_imageLoadingPath case final path?)
+            _RemoteImageLoadingOverlay(
+              path: path,
+              receivedBytes: _imageReceivedBytes,
+              totalBytes: _imageTotalBytes,
             ),
-          _Composer(
-            state: state,
-            controller: _composerController,
-            focusNode: _composerFocus,
-            attachmentBusy: _preparingAttachments || state.attachmentUploading,
-            onChanged: controller.setComposerDraft,
-            onTakePhoto: _takePhoto,
-            onAttachImage: () => _pickAttachments(imagesOnly: true),
-            onAttachFile: () => _pickAttachments(imagesOnly: false),
-            onRemoveAttachment: controller.removeAttachment,
-            onSend: () => controller.sendMessage(),
-            onStop: () => _confirmStop(controller),
-            onModelTap: () => unawaited(_showModelSheet(context, state)),
-            onPermissionTap: () =>
-                _showPermissionSheet(context, state, controller),
-            onAction: (value) =>
-                _handleComposerAction(value, state, controller),
-            onEditGoal: () => _showGoalDialog(state, controller),
-            onToggleGoal: () => _toggleGoal(state, controller),
-            onClearGoal: () => _confirmClearGoal(controller),
-            onOpenSubAgent: controller.openSubAgentThread,
-          ),
         ],
       ),
     );
@@ -721,10 +739,40 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       _showNotice(context, '图片预览需要已连接的 SSH 文件通道');
       return;
     }
-    setState(() => _imageLoadingPath = normalized);
+    setState(() {
+      _imageLoadingPath = normalized;
+      _imageReceivedBytes = 0;
+      _imageTotalBytes = null;
+    });
     try {
-      final bytes = await loader(normalized);
+      final bytes = await loader(
+        normalized,
+        onProgress: (receivedBytes, totalBytes) {
+          if (!mounted || _imageLoadingPath != normalized) return;
+          final normalizedTotal = totalBytes > 0 ? totalBytes : null;
+          final received = receivedBytes < 0
+              ? 0
+              : normalizedTotal != null && receivedBytes > normalizedTotal
+              ? normalizedTotal
+              : receivedBytes;
+          if (_imageReceivedBytes == received &&
+              _imageTotalBytes == normalizedTotal) {
+            return;
+          }
+          setState(() {
+            _imageReceivedBytes = received;
+            _imageTotalBytes = normalizedTotal;
+          });
+        },
+      );
       if (!mounted) return;
+      setState(() {
+        _imageReceivedBytes = bytes.length;
+        _imageTotalBytes = bytes.length;
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      setState(() => _imageLoadingPath = null);
       await showDialog<void>(
         context: context,
         barrierColor: Colors.black87,
@@ -741,7 +789,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         _showNotice(context, _displayError(error, '无法加载图片'));
       }
     } finally {
-      if (mounted) setState(() => _imageLoadingPath = null);
+      if (mounted && _imageLoadingPath == normalized) {
+        setState(() => _imageLoadingPath = null);
+      }
     }
   }
 
@@ -4330,6 +4380,105 @@ class _RemoteImageDialog extends StatefulWidget {
   State<_RemoteImageDialog> createState() => _RemoteImageDialogState();
 }
 
+class _RemoteImageLoadingOverlay extends StatelessWidget {
+  const _RemoteImageLoadingOverlay({
+    required this.path,
+    required this.receivedBytes,
+    required this.totalBytes,
+  });
+
+  final String path;
+  final int receivedBytes;
+  final int? totalBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = totalBytes;
+    final progress = total == null || total <= 0
+        ? null
+        : (receivedBytes / total).clamp(0.0, 1.0);
+    final status = progress == null
+        ? '正在加载图片…'
+        : '正在加载图片 ${(progress * 100).round()}%';
+    final details = total == null
+        ? imageFileName(path)
+        : '${_formatImageBytes(receivedBytes)} / ${_formatImageBytes(total)}';
+    return Positioned.fill(
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          const ModalBarrier(dismissible: false, color: Color(0x8A000000)),
+          Semantics(
+            liveRegion: true,
+            label: status,
+            value: details,
+            child: Material(
+              key: const Key('remote-image-loading-overlay'),
+              color: _workRaised,
+              borderRadius: BorderRadius.circular(7),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 220, maxWidth: 300),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 15, 16, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.image_outlined,
+                            size: 19,
+                            color: _workGreen,
+                          ),
+                          const SizedBox(width: 9),
+                          Expanded(
+                            child: Text(
+                              status,
+                              key: const Key('remote-image-loading-status'),
+                              style: Theme.of(context).textTheme.labelLarge,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      LinearProgressIndicator(
+                        key: const Key('remote-image-loading-progress'),
+                        value: progress,
+                        minHeight: 4,
+                        borderRadius: BorderRadius.circular(2),
+                        color: _workGreen,
+                        backgroundColor: _workBorder,
+                      ),
+                      const SizedBox(height: 9),
+                      Text(
+                        details,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodySmall?.copyWith(color: codexMuted),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatImageBytes(int bytes) {
+  if (bytes >= 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '$bytes B';
+}
+
 class _RemoteImageDialogState extends State<_RemoteImageDialog> {
   bool _saving = false;
 
@@ -4384,6 +4533,17 @@ class _RemoteImageDialogState extends State<_RemoteImageDialog> {
                           ),
                           fit: BoxFit.contain,
                           gaplessPlayback: true,
+                          frameBuilder: (context, child, frame, synchronous) {
+                            if (synchronous || frame != null) return child;
+                            return const Center(
+                              child: SizedBox.square(
+                                dimension: 28,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                ),
+                              ),
+                            );
+                          },
                           errorBuilder: (_, _, _) => const Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [

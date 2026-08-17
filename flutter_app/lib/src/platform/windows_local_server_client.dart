@@ -547,12 +547,23 @@ class WindowsLocalServerClient
   Future<Uint8List> readRemoteImage(
     String imagePath, {
     int maxBytes = maxRemoteImageBytes,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     _requireConnectedProfile();
     final file = File(imagePath);
     final size = await file.length();
     if (size > maxBytes) throw StateError('图片超过预览大小限制');
-    return file.readAsBytes();
+    onProgress?.call(0, size);
+    final builder = BytesBuilder(copy: false);
+    var receivedBytes = 0;
+    await for (final chunk in file.openRead()) {
+      builder.add(chunk);
+      receivedBytes += chunk.length;
+      onProgress?.call(receivedBytes, size);
+    }
+    final bytes = builder.takeBytes();
+    if (bytes.length != size) throw StateError('图片读取不完整');
+    return bytes;
   }
 
   @override

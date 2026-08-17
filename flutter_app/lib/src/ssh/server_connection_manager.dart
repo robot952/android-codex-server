@@ -277,6 +277,7 @@ class ServerConnectionManager {
     String profileId,
     String path, {
     int maxBytes = maxRemoteImageBytes,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     _ensureOpen();
     final entry = _entries[profileId];
@@ -289,7 +290,17 @@ class ServerConnectionManager {
     }
     final imageClient = client as RemoteServerImageClient;
     final generation = entry.generation;
-    final bytes = await imageClient.readRemoteImage(path, maxBytes: maxBytes);
+    final bytes = await imageClient.readRemoteImage(
+      path,
+      maxBytes: maxBytes,
+      onProgress: onProgress == null
+          ? null
+          : (receivedBytes, totalBytes) {
+              if (_isConnectedRequest(profileId, entry, client, generation)) {
+                onProgress(receivedBytes, totalBytes);
+              }
+            },
+    );
     if (!_isConnectedRequest(profileId, entry, client, generation)) {
       throw StateError('图片读取请求已失效');
     }

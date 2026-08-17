@@ -1776,11 +1776,18 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
-  Future<Uint8List> loadImagePreview(String path) async {
+  Future<Uint8List> loadImagePreview(
+    String path, {
+    void Function(int receivedBytes, int totalBytes)? onProgress,
+  }) async {
     await _ensureInitialized();
     final profileId = state.selectedProfileId;
     if (profileId == null) throw StateError('未选择服务器');
-    return _connections.readRemoteImage(profileId, path);
+    return _connections.readRemoteImage(
+      profileId,
+      path,
+      onProgress: onProgress,
+    );
   }
 
   Future<void> showWorkspacePicker() async {
