@@ -253,6 +253,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   ? null
                   : () => _loadOlder(controller),
               onScrollNotification: _onTranscriptScroll,
+              onTextSelectionChanged: _pauseFollowOutputForSelection,
               initialBottomPending: _initialBottomPending,
               paginationViewportKey: _paginationViewportKey,
               transcriptItemsSliverKey: _transcriptItemsSliverKey,
@@ -930,6 +931,14 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     } else {
       applyScrollState();
     }
+  }
+
+  void _pauseFollowOutputForSelection() {
+    if (!_followOutput || _initialBottomPending) return;
+    setState(() {
+      _followOutput = false;
+      _userDraggingTimeline = false;
+    });
   }
 
   Future<void> _loadOlder(AppController controller) async {
@@ -2076,6 +2085,7 @@ class _Transcript extends StatelessWidget {
     required this.onRefresh,
     required this.onRefreshStart,
     required this.onScrollNotification,
+    required this.onTextSelectionChanged,
     required this.initialBottomPending,
     required this.paginationViewportKey,
     required this.transcriptItemsSliverKey,
@@ -2096,6 +2106,7 @@ class _Transcript extends StatelessWidget {
   final Future<void> Function()? onRefresh;
   final VoidCallback onRefreshStart;
   final ValueChanged<ScrollNotification> onScrollNotification;
+  final VoidCallback onTextSelectionChanged;
   final bool initialBottomPending;
   final GlobalKey paginationViewportKey;
   final GlobalKey transcriptItemsSliverKey;
@@ -2147,6 +2158,7 @@ class _Transcript extends StatelessWidget {
               !state.running,
           onReview: onReview,
           onRollback: onRollback,
+          onTextSelectionChanged: onTextSelectionChanged,
         ),
         SubAgentTimelineRenderRow(:final entries) =>
           _SubAgentActivityGroupBlock(
@@ -2870,6 +2882,7 @@ class _TimelineCard extends StatelessWidget {
     required this.canRollback,
     required this.onReview,
     required this.onRollback,
+    required this.onTextSelectionChanged,
   });
 
   final TimelineEntry entry;
@@ -2881,6 +2894,7 @@ class _TimelineCard extends StatelessWidget {
   final bool canRollback;
   final Future<void> Function() onReview;
   final Future<void> Function() onRollback;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -2889,6 +2903,7 @@ class _TimelineCard extends StatelessWidget {
         entry: entry,
         onOpenImage: onOpenImage,
         imageLoadingPath: imageLoadingPath,
+        onTextSelectionChanged: onTextSelectionChanged,
       );
     }
     if (entry.kind == TimelineKind.agentMessage) {
@@ -2896,14 +2911,21 @@ class _TimelineCard extends StatelessWidget {
         entry.text,
         onOpenRemoteFile: onOpenRemoteFile,
         onOpenRemoteImage: onOpenImage,
+        onSelectionChanged: onTextSelectionChanged,
       );
     }
     if (entry.kind == TimelineKind.reasoning ||
         entry.kind == TimelineKind.plan) {
-      return _CollapsibleTimelineRow(entry: entry);
+      return _CollapsibleTimelineRow(
+        entry: entry,
+        onTextSelectionChanged: onTextSelectionChanged,
+      );
     }
     if (entry.kind == TimelineKind.command) {
-      return _CommandTimelineCard(entry: entry);
+      return _CommandTimelineCard(
+        entry: entry,
+        onTextSelectionChanged: onTextSelectionChanged,
+      );
     }
     final imagePath = imagePreviewPath(entry);
     if (imagePath != null) {
@@ -2912,6 +2934,7 @@ class _TimelineCard extends StatelessWidget {
         path: imagePath,
         loading: imagePath == imageLoadingPath,
         onOpenImage: onOpenImage,
+        onTextSelectionChanged: onTextSelectionChanged,
       );
     }
     return switch (entry.kind) {
@@ -2923,11 +2946,15 @@ class _TimelineCard extends StatelessWidget {
         onReview: onReview,
         onRollback: onRollback,
       ),
-      TimelineKind.tool => _ToolTimelineCard(entry: entry),
+      TimelineKind.tool => _ToolTimelineCard(
+        entry: entry,
+        onTextSelectionChanged: onTextSelectionChanged,
+      ),
       TimelineKind.review => _ReviewTimelineCard(
         entry: entry,
         onOpenRemoteImage: onOpenImage,
         onOpenRemoteFile: onOpenRemoteFile,
+        onTextSelectionChanged: onTextSelectionChanged,
       ),
       TimelineKind.notice || TimelineKind.subAgent => Text(
         entry.text.trim().isEmpty ? entry.title : entry.text,
@@ -2945,11 +2972,13 @@ class _UserMessageTimelineCard extends StatelessWidget {
     required this.entry,
     required this.onOpenImage,
     required this.imageLoadingPath,
+    required this.onTextSelectionChanged,
   });
 
   final TimelineEntry entry;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -2971,7 +3000,11 @@ class _UserMessageTimelineCard extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (entry.text.isNotEmpty) SelectableText(entry.text),
+                if (entry.text.isNotEmpty)
+                  _SelectablePlainText(
+                    entry.text,
+                    onSelectionChanged: onTextSelectionChanged,
+                  ),
                 if (entry.attachments.isNotEmpty) ...[
                   if (entry.text.isNotEmpty) const SizedBox(height: 8),
                   Wrap(
@@ -3266,9 +3299,13 @@ class _AggregateDiffTimelineCard extends StatelessWidget {
 }
 
 class _ToolTimelineCard extends StatelessWidget {
-  const _ToolTimelineCard({required this.entry});
+  const _ToolTimelineCard({
+    required this.entry,
+    required this.onTextSelectionChanged,
+  });
 
   final TimelineEntry entry;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -3302,7 +3339,10 @@ class _ToolTimelineCard extends StatelessWidget {
             ),
             if (entry.text.trim().isNotEmpty) ...[
               const SizedBox(height: 7),
-              _BoundedSelectableText(entry.text),
+              _BoundedSelectableText(
+                entry.text,
+                onSelectionChanged: onTextSelectionChanged,
+              ),
             ],
           ],
         ),
@@ -3316,11 +3356,13 @@ class _ReviewTimelineCard extends StatelessWidget {
     required this.entry,
     required this.onOpenRemoteImage,
     required this.onOpenRemoteFile,
+    required this.onTextSelectionChanged,
   });
 
   final TimelineEntry entry;
   final _OpenRemoteImage onOpenRemoteImage;
   final Future<void> Function(String path) onOpenRemoteFile;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -3349,6 +3391,7 @@ class _ReviewTimelineCard extends StatelessWidget {
               entry.text,
               onOpenRemoteFile: onOpenRemoteFile,
               onOpenRemoteImage: onOpenRemoteImage,
+              onSelectionChanged: onTextSelectionChanged,
             ),
           ],
         ],
@@ -3552,9 +3595,13 @@ int? _normalizeEpochMillis(int timestamp) {
 }
 
 class _CollapsibleTimelineRow extends StatefulWidget {
-  const _CollapsibleTimelineRow({required this.entry});
+  const _CollapsibleTimelineRow({
+    required this.entry,
+    required this.onTextSelectionChanged,
+  });
 
   final TimelineEntry entry;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   State<_CollapsibleTimelineRow> createState() =>
@@ -3611,11 +3658,12 @@ class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
         if (_expanded && text.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(left: 25, top: 4),
-            child: SelectableText(
+            child: _SelectablePlainText(
               text,
               style: Theme.of(
                 context,
               ).textTheme.bodySmall?.copyWith(color: codexMuted),
+              onSelectionChanged: widget.onTextSelectionChanged,
             ),
           ),
       ],
@@ -3624,9 +3672,13 @@ class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
 }
 
 class _CommandTimelineCard extends StatefulWidget {
-  const _CommandTimelineCard({required this.entry});
+  const _CommandTimelineCard({
+    required this.entry,
+    required this.onTextSelectionChanged,
+  });
 
   final TimelineEntry entry;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   State<_CommandTimelineCard> createState() => _CommandTimelineCardState();
@@ -3690,11 +3742,17 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
                 ? Column(
                     children: [
                       if (entry.command.isNotEmpty)
-                        _CommandOutputBlock(entry.command),
+                        _CommandOutputBlock(
+                          entry.command,
+                          onSelectionChanged: widget.onTextSelectionChanged,
+                        ),
                       if (entry.output.isNotEmpty) ...[
                         if (entry.command.isNotEmpty)
                           const Divider(height: 1, color: _workBorder),
-                        _CommandOutputBlock(entry.output),
+                        _CommandOutputBlock(
+                          entry.output,
+                          onSelectionChanged: widget.onTextSelectionChanged,
+                        ),
                       ],
                       if (entry.command.isEmpty && entry.output.isEmpty)
                         const Padding(
@@ -3718,9 +3776,10 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
 }
 
 class _CommandOutputBlock extends StatelessWidget {
-  const _CommandOutputBlock(this.text);
+  const _CommandOutputBlock(this.text, {required this.onSelectionChanged});
 
   final String text;
+  final VoidCallback onSelectionChanged;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -3730,7 +3789,7 @@ class _CommandOutputBlock extends StatelessWidget {
     padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
     child: SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: SelectableText(
+      child: _SelectablePlainText(
         text,
         style: const TextStyle(
           fontFamily: 'monospace',
@@ -3738,6 +3797,7 @@ class _CommandOutputBlock extends StatelessWidget {
           color: codexText,
           letterSpacing: 0,
         ),
+        onSelectionChanged: onSelectionChanged,
       ),
     ),
   );
@@ -3749,12 +3809,14 @@ class _ImageTimelineCard extends StatelessWidget {
     required this.path,
     required this.loading,
     required this.onOpenImage,
+    required this.onTextSelectionChanged,
   });
 
   final TimelineEntry entry;
   final String path;
   final bool loading;
   final _OpenRemoteImage onOpenImage;
+  final VoidCallback onTextSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -3796,7 +3858,7 @@ class _ImageTimelineCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 7),
-              SelectableText(
+              _SelectablePlainText(
                 path,
                 maxLines: 1,
                 style: const TextStyle(
@@ -3805,6 +3867,7 @@ class _ImageTimelineCard extends StatelessWidget {
                   color: codexMuted,
                   letterSpacing: 0,
                 ),
+                onSelectionChanged: onTextSelectionChanged,
               ),
               if (entry.attachments.isNotEmpty) ...[
                 const SizedBox(height: 7),
@@ -3856,11 +3919,13 @@ class _MarkdownMessage extends StatelessWidget {
     this.text, {
     required this.onOpenRemoteFile,
     required this.onOpenRemoteImage,
+    required this.onSelectionChanged,
   });
 
   final String text;
   final Future<void> Function(String path) onOpenRemoteFile;
   final _OpenRemoteImage onOpenRemoteImage;
+  final VoidCallback onSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -3870,6 +3935,9 @@ class _MarkdownMessage extends StatelessWidget {
       data: markdownWithVisibleLinkDestinations(text),
       inlineSyntaxes: workMarkdownInlineSyntaxes,
       selectable: true,
+      onSelectionChanged: (_, selection, cause) {
+        if (!selection.isCollapsed && cause != null) onSelectionChanged();
+      },
       softLineBreak: true,
       styleSheet: base.copyWith(
         a: const TextStyle(
@@ -3924,10 +3992,35 @@ class _MarkdownMessage extends StatelessWidget {
   }
 }
 
-class _BoundedSelectableText extends StatelessWidget {
-  const _BoundedSelectableText(this.text);
+class _SelectablePlainText extends StatelessWidget {
+  const _SelectablePlainText(
+    this.text, {
+    this.style,
+    this.maxLines,
+    this.onSelectionChanged,
+  });
 
   final String text;
+  final TextStyle? style;
+  final int? maxLines;
+  final VoidCallback? onSelectionChanged;
+
+  @override
+  Widget build(BuildContext context) => SelectableText(
+    text,
+    style: style,
+    maxLines: maxLines,
+    onSelectionChanged: (selection, cause) {
+      if (!selection.isCollapsed && cause != null) onSelectionChanged?.call();
+    },
+  );
+}
+
+class _BoundedSelectableText extends StatelessWidget {
+  const _BoundedSelectableText(this.text, {this.onSelectionChanged});
+
+  final String text;
+  final VoidCallback? onSelectionChanged;
 
   @override
   Widget build(BuildContext context) => ConstrainedBox(
@@ -3935,7 +4028,7 @@ class _BoundedSelectableText extends StatelessWidget {
     child: SingleChildScrollView(
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        child: SelectableText(
+        child: _SelectablePlainText(
           text,
           style: const TextStyle(
             fontFamily: 'monospace',
@@ -3943,6 +4036,7 @@ class _BoundedSelectableText extends StatelessWidget {
             color: codexMuted,
             letterSpacing: 0,
           ),
+          onSelectionChanged: onSelectionChanged,
         ),
       ),
     ),
@@ -4304,7 +4398,7 @@ Future<void> _confirmAndOpenLink(BuildContext context, String value) async {
     context: context,
     builder: (context) => AlertDialog(
       title: const Text('打开链接'),
-      content: SelectableText(uri.toString()),
+      content: SelectionArea(child: _SelectablePlainText(uri.toString())),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
@@ -4387,7 +4481,7 @@ class _CodeBlock extends StatelessWidget {
     ),
     child: SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: SelectableText(
+      child: _SelectablePlainText(
         text,
         style: const TextStyle(
           fontFamily: 'monospace',

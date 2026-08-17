@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.77+204，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.78+205，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1974,7 +1974,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.47 Codex URL 与 Provider 解耦（2026-08-15）
 
-- 应用版本：`1.8.77+204`。Codex 全局设置保存必须始终保留服务器当前的 `model_provider`；修改模型 URL
+- 应用版本：`1.8.78+205`。Codex 全局设置保存必须始终保留服务器当前的 `model_provider`；修改模型 URL
   只更新该 Provider 的地址，修改 API Key 只更新 Codex 认证，不得隐式切换到 `openai` 或创建另一个
   Provider。
 - 当前 Provider 为 `openai` 时只更新根级 `openai_base_url`；当前为自定义 Provider 时只更新对应

@@ -12,6 +12,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -70,6 +71,10 @@ TapGestureRecognizer? _maybeLinkRecognizer(WidgetTester tester, String text) {
     find.byType(SelectableText),
   )) {
     final recognizer = _findLinkRecognizer(selectable.textSpan, text);
+    if (recognizer != null) return recognizer;
+  }
+  for (final richText in tester.widgetList<Text>(find.byType(Text))) {
+    final recognizer = _findLinkRecognizer(richText.textSpan, text);
     if (recognizer != null) return recognizer;
   }
   return null;
@@ -472,6 +477,39 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
     expect(controller.loadOlderCalls, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('pauses follow output when timeline text is selected', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(timelineState(timeline: entries(0, 40)));
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollView = tester.widget<CustomScrollView>(
+      find.byType(CustomScrollView),
+    );
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    expect(find.byTooltip('回到底部'), findsNothing);
+
+    await tester.longPress(find.text('消息 0'));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('回到底部'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1344,6 +1382,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    expect(markdown.selectable, isTrue);
     expect(_maybeLinkRecognizer(tester, '内网下载'), isNull);
     final visibleUrlRecognizer = _linkRecognizer(tester, url);
     visibleUrlRecognizer.onTap!();

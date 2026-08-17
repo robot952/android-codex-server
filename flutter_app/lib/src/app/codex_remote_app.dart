@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/models.dart';
@@ -27,6 +28,9 @@ class CodexRemoteApp extends ConsumerWidget {
     return MaterialApp(
       title: 'Agent',
       debugShowCheckedModeBanner: false,
+      locale: const Locale('zh', 'CN'),
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      supportedLocales: const [Locale('zh', 'CN')],
       theme: buildCodexTheme(),
       home: const _AppRoot(),
     );

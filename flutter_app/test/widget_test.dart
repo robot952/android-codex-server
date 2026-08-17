@@ -106,6 +106,13 @@ void main() {
     expect(find.text('实验'), findsOneWidget);
     expect(find.text('还没有服务器'), findsOneWidget);
     expect(find.text('Flutter Demo'), findsNothing);
+    final materialLocalizations = MaterialLocalizations.of(
+      tester.element(find.text('服务器列表')),
+    );
+    expect(materialLocalizations.copyButtonLabel, '复制');
+    expect(materialLocalizations.cutButtonLabel, '剪切');
+    expect(materialLocalizations.pasteButtonLabel, '粘贴');
+    expect(materialLocalizations.selectAllButtonLabel, '全选');
   });
 
   testWidgets('local Linux profile is not duplicated as a normal server', (
