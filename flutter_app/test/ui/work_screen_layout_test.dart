@@ -574,7 +574,58 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('can start a history pull before the list reaches the top', (
+  testWidgets('does not arm history loading before reaching the top', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _PaginationController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(timeline: entries(0, 40), olderTurnsCursor: 'page-2'),
+      );
+    addTearDown(() async => manager.close());
+    controller.onLoadOlder = () async {};
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    await _jumpToTranscriptStart(tester, scrollView.controller!);
+    final position = scrollView.controller!.position;
+    scrollView.controller!.jumpTo(
+      (position.minScrollExtent + 240).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      ),
+    );
+    await tester.pump();
+    expect(position.pixels, greaterThan(position.minScrollExtent + 120));
+
+    final rect = tester.getRect(scrollViewFinder);
+    final gesture = await tester.startGesture(
+      Offset(rect.center.dx, rect.top + 160),
+    );
+    await gesture.moveBy(const Offset(0, 100));
+    await tester.pump();
+
+    expect(position.pixels, greaterThan(position.minScrollExtent));
+    expect(find.text('松开加载更多'), findsNothing);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(controller.loadOlderCalls, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('continues a history pull that starts before the top', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;

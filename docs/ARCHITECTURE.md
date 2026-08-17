@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.79+206，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.81+208，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2001,6 +2001,13 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   总长度暂不可用时显示不定进度动画；文件下载结束后，内存图片尚未完成解码时继续显示解码转圈。
 - 连接代次变化后产生的旧进度回调必须被丢弃，图片仍沿用现有路径、大小和解码尺寸限制。Widget 回归覆盖
   正文链接、图片工具卡片、图片附件以及确定/不确定进度状态。
+
+### 17.50 顶部历史加载触发边界（2026-08-17）
+
+- 应用版本：`1.8.81+208`。对话历史刷新只能在当前手势真实到达列表顶部并继续下拉后进入准备或加载状态；
+  手势开始时距离顶部的剩余滚动量必须从指针位移中扣除，不能把普通的向上浏览误判成顶部 overscroll。
+- 允许用户从接近顶部的位置开始一次连续手势，但只有越过剩余距离并达到刷新阈值后才能触发。Widget 回归
+  同时覆盖“尚未到顶不触发”和“同一手势到顶后继续下拉可触发”。
 
 ## 18. 文档维护规则
 

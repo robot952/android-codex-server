@@ -2492,9 +2492,12 @@ class _LegacyOlderHistoryRefreshState
         (notification.metrics.minScrollExtent - notification.metrics.pixels)
             .clamp(0.0, double.infinity)
             .toDouble();
-    final pointerExtent = ((_pointerCurrentDy ?? 0) - (_pointerStartDy ?? 0))
-        .clamp(0.0, double.infinity)
-        .toDouble();
+    final pointerExtent =
+        ((_pointerCurrentDy ?? 0) -
+                (_pointerStartDy ?? 0) -
+                _pointerDistanceToStart)
+            .clamp(0.0, double.infinity)
+            .toDouble();
     final extent = _pointerIsScrollGesture
         ? scrollExtent > pointerExtent
               ? scrollExtent
