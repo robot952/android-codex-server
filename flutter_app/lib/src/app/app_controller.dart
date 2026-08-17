@@ -3168,6 +3168,9 @@ class AppController extends StateNotifier<AppUiState> {
         error,
         stack,
       );
+      // A completed turn can race the stop request. The server has already
+      // done the requested work, so the local settlement is final.
+      if (_isNoActiveTurnInterruptError(error)) return;
       final timing = state.turnTiming;
       if (mounted &&
           _isActiveThread(key, thread.id) &&
@@ -3962,8 +3965,17 @@ class AppController extends StateNotifier<AppUiState> {
         sameInitialThread && initialSnapshot!.selectedEffort != null
         ? initialSnapshot.selectedEffort
         : resolvedModel.effort;
-    final timelineTurnId = _activeTimelineTurnId(snapshot.timeline);
-    final serverActiveTurnId = snapshot.thread.activeTurnId ?? timelineTurnId;
+    final threadHasActiveTurn =
+        snapshot.thread.activeTurnId?.trim().isNotEmpty == true;
+    final threadStatusRunning = _threadStatusIndicatesRunning(
+      snapshot.thread.status,
+    );
+    final timelineTurnId = threadHasActiveTurn || threadStatusRunning
+        ? _activeTimelineTurnId(snapshot.timeline)
+        : null;
+    final serverActiveTurnId = threadHasActiveTurn
+        ? snapshot.thread.activeTurnId
+        : timelineTurnId;
     final currentTiming = sameInitialThread
         ? initialSnapshot!.turnTiming
         : state.turnTiming?.threadId == snapshot.thread.id
@@ -6564,11 +6576,20 @@ String? _agentLoadDiagnostic(Object? threadError, Object? modelError) {
 }
 
 bool _threadIsRunning(AgentThread thread) {
-  if (thread.activeTurnId?.isNotEmpty ?? false) return true;
-  return switch (thread.status.toLowerCase()) {
+  if (thread.activeTurnId?.trim().isNotEmpty ?? false) return true;
+  return _threadStatusIndicatesRunning(thread.status);
+}
+
+bool _threadStatusIndicatesRunning(String status) {
+  return switch (status.trim().toLowerCase()) {
     'active' || 'running' || 'working' || 'inprogress' || 'in_progress' => true,
     _ => false,
   };
+}
+
+bool _isNoActiveTurnInterruptError(Object error) {
+  final message = error is CodexRpcException ? error.message : error.toString();
+  return message.toLowerCase().contains('no active turn to interrupt');
 }
 
 String? _activeTimelineTurnId(List<TimelineEntry> timeline) {

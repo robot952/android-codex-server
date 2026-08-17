@@ -203,16 +203,6 @@ AppUiState reduceCodexNotification(
         'turnId',
         'turn_id',
       ]);
-      if (status == 'active' &&
-          announcedTurnId.isNotEmpty &&
-          appliesToActive &&
-          _isSettledTurn(
-            state.turnTiming,
-            activeThreadId ?? threadId,
-            announcedTurnId,
-          )) {
-        return state;
-      }
       final turnId = status == 'active'
           ? (announcedTurnId.isNotEmpty
                 ? announcedTurnId
@@ -220,6 +210,24 @@ AppUiState reduceCodexNotification(
                       ? (state.activeTurnId ?? listedTurnId)
                       : listedTurnId))
           : null;
+      final resolvedTurnId = turnId ?? '';
+      final settledActiveWithoutTurnId =
+          status == 'active' &&
+          appliesToActive &&
+          resolvedTurnId.isEmpty &&
+          state.activeTurnId == null &&
+          state.turnTiming?.threadId == (activeThreadId ?? threadId) &&
+          state.turnTiming?.completedAtMillis != null;
+      if (status == 'active' &&
+          appliesToActive &&
+          (settledActiveWithoutTurnId ||
+              _isSettledTurn(
+                state.turnTiming,
+                activeThreadId ?? threadId,
+                resolvedTurnId,
+              ))) {
+        return state;
+      }
       final previousActiveTurnId = state.activeTurnId;
       var next = updateRuntime(state, status: status, activeTurnId: turnId);
       if (!appliesToActive) return next;

@@ -189,6 +189,42 @@ void main() {
     expect(next.turnTiming?.stopped, isTrue);
   });
 
+  test('ignores a stale active status after a locally settled turn', () {
+    final state = _state().copyWith(
+      activeThread: const AgentThread(
+        id: 'thread-1',
+        title: '任务',
+        status: 'idle',
+      ),
+      threads: const [
+        AgentThread(id: 'thread-1', title: '任务', status: 'idle'),
+        AgentThread(id: 'thread-2', title: '后台任务'),
+      ],
+      running: false,
+      activeTurnId: null,
+      turnTiming: const TurnTiming(
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        startedAtMillis: 100,
+        completedAtMillis: 200,
+        stopped: true,
+      ),
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('thread/status/changed', {
+        'threadId': 'thread-1',
+        'status': {'type': 'active'},
+      }),
+      nowMillis: 300,
+    );
+
+    expect(identical(next, state), isTrue);
+    expect(next.running, isFalse);
+    expect(next.activeTurnId, isNull);
+  });
+
   test('does not replace a known context window with incomplete usage', () {
     final state = _state();
     final next = reduceCodexNotification(

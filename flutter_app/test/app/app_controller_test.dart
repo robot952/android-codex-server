@@ -581,6 +581,53 @@ class _FailingInterruptAgent extends _SteeringAgent {
   }
 }
 
+class _NoActiveInterruptAgent extends _SteeringAgent {
+  @override
+  Future<void> interruptTurn({
+    required String threadId,
+    required String turnId,
+  }) async {
+    throw const CodexRpcException(
+      id: CodexRequestId.number(1),
+      generation: 1,
+      error: CodexRpcError(
+        code: -32600,
+        message: 'no active turn to interrupt',
+      ),
+    );
+  }
+}
+
+class _StaleTimelineAgent extends _FailingTurnAgent {
+  static const settledThread = AgentThread(
+    id: 'settled-thread',
+    title: 'Settled',
+    cwd: '/workspace/project',
+    status: 'idle',
+  );
+  static const staleTimeline = <TimelineEntry>[
+    TimelineEntry(
+      id: 'stale-in-progress',
+      kind: TimelineKind.command,
+      title: '运行命令',
+      command: 'echo done',
+      status: 'inProgress',
+      turnId: 'turn-old',
+    ),
+  ];
+
+  @override
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
+      const AgentThreadPage(threads: <AgentThread>[settledThread]);
+
+  @override
+  Future<AgentSession> resumeThread(
+    String threadId, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async =>
+      const AgentSession(thread: settledThread, timeline: staleTimeline);
+}
+
 class _SubAgentNavigationAgent extends _FailingTurnAgent {
   _SubAgentNavigationAgent({this.agentKind = AgentKind.codex});
 
@@ -2540,6 +2587,85 @@ void main() {
       expect(controller.state.error, contains('远端停止失败'));
     },
   );
+
+  test(
+    'treats an already completed remote turn as a successful stop',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _AttachmentHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _NoActiveInterruptAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(_firstProfile);
+      await controller.ensureActiveAgent();
+
+      controller.openThread(_SteeringAgent.activeThread);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id ==
+                _SteeringAgent.activeThread.id &&
+            controller.state.running,
+      );
+
+      await controller.stopMessage();
+
+      expect(controller.state.running, isFalse);
+      expect(controller.state.activeTurnId, isNull);
+      expect(controller.state.turnTiming?.stopped, isTrue);
+      expect(controller.state.error, isNull);
+    },
+  );
+
+  test('does not restore a spinner from stale in-progress timeline', () async {
+    final store = _MemoryProfileStore(
+      const StoredProfiles(
+        profiles: [_firstProfile],
+        selectedProfileId: 'first',
+      ),
+    );
+    final host = _AttachmentHost();
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agent = _StaleTimelineAgent();
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => agent,
+    );
+    final controller = AppController(store, connections, agents);
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    await controller.requestConnect(_firstProfile);
+    await controller.ensureActiveAgent();
+
+    controller.openThread(_StaleTimelineAgent.settledThread);
+    await _waitUntil(
+      () =>
+          controller.state.activeThread?.id ==
+              _StaleTimelineAgent.settledThread.id &&
+          !controller.state.loading,
+    );
+
+    expect(controller.state.running, isFalse);
+    expect(controller.state.activeTurnId, isNull);
+  });
 
   test(
     'shows the workspace picker once after connect and persists the prompt flag',
