@@ -77,6 +77,10 @@ TapGestureRecognizer? _maybeLinkRecognizer(WidgetTester tester, String text) {
     final recognizer = _findLinkRecognizer(richText.textSpan, text);
     if (recognizer != null) return recognizer;
   }
+  for (final richText in tester.widgetList<RichText>(find.byType(RichText))) {
+    final recognizer = _findLinkRecognizer(richText.text, text);
+    if (recognizer != null) return recognizer;
+  }
   return null;
 }
 
@@ -510,6 +514,61 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byTooltip('回到底部'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps the selection toolbar near a middle long press', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(
+          timeline: <TimelineEntry>[
+            TimelineEntry(
+              id: 'long-selection-message',
+              kind: TimelineKind.agentMessage,
+              text: List.generate(
+                120,
+                (index) => '这是用于验证长按选择位置的长回复第 $index 行。',
+              ).join('\n'),
+            ),
+          ],
+        ),
+      );
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollViewFinder = find.byType(CustomScrollView);
+    final scrollView = tester.widget<CustomScrollView>(scrollViewFinder);
+    final position = scrollView.controller!.position;
+    scrollView.controller!.jumpTo(
+      (position.minScrollExtent + position.maxScrollExtent) / 2,
+    );
+    await tester.pumpAndSettle();
+
+    final viewport = tester.getRect(scrollViewFinder);
+    final pressPosition = Offset(viewport.center.dx, viewport.center.dy);
+    await tester.longPressAt(pressPosition);
+    await tester.pumpAndSettle();
+
+    final copyButton = find.text('Copy');
+    expect(copyButton, findsOneWidget);
+    expect(
+      (tester.getCenter(copyButton).dy - pressPosition.dy).abs(),
+      lessThan(180),
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -1383,7 +1442,8 @@ void main() {
     await tester.pumpAndSettle();
 
     final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
-    expect(markdown.selectable, isTrue);
+    expect(markdown.selectable, isFalse);
+    expect(find.byType(SelectionArea), findsWidgets);
     expect(_maybeLinkRecognizer(tester, '内网下载'), isNull);
     final visibleUrlRecognizer = _linkRecognizer(tester, url);
     visibleUrlRecognizer.onTap!();

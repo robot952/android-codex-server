@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.78+205，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.79+206，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1982,6 +1982,16 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   因 URL 变化被删除或重置；SSH 服务器和 Windows 本机路径保持相同行为。
 - Codex 配置保存后的重连继续使用同一 Provider 会话命名空间并保留已有会话缓存。OpenCode 的 Provider
   管理逻辑不在本约束范围内，仍由其托管 bridge 独立处理。
+
+### 17.48 正文长按选区坐标与顶部历史手势（2026-08-17）
+
+- 应用版本：`1.8.79+206`。对话正文和普通文本统一使用 Flutter `SelectionArea`，不再使用嵌在
+  `CustomScrollView(center + anchor: 1)` 中的 `SelectableText` 选区浮层；这样系统选区手柄和复制菜单
+  会基于实际正文渲染对象定位，不会从屏幕中间跳到 Composer 上方。
+- 时间线保留底部跟随、长按后暂停跟随和中文系统菜单；顶部“下拉加载更多”同时参考快速垂直指针位移与
+  ScrollView 的真实顶部 overscroll，并排除长按超过 500ms 后的文本选区拖动，避免选文字误触历史刷新。
+- Widget 回归覆盖中段长按菜单定位、普通文本选区、历史下拉取消/触发、非顶部起始拖动、旧消息锚定和链接
+  图片预览；Release 模拟器验收需保持 `emulator-5554` 运行。
 
 ## 18. 文档维护规则
 

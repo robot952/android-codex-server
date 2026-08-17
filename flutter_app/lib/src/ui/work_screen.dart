@@ -2279,6 +2279,7 @@ class _Transcript extends StatelessWidget {
                   return false;
                 },
                 child: _LegacyOlderHistoryRefresh(
+                  controller: controller,
                   onRefresh: onRefresh,
                   onRefreshStart: onRefreshStart,
                   refreshing: state.olderTurnsLoading,
@@ -2330,12 +2331,14 @@ typedef _OlderHistoryBuilder =
 
 class _LegacyOlderHistoryRefresh extends StatefulWidget {
   const _LegacyOlderHistoryRefresh({
+    required this.controller,
     required this.onRefresh,
     required this.onRefreshStart,
     required this.refreshing,
     required this.builder,
   });
 
+  final ScrollController controller;
   final Future<void> Function()? onRefresh;
   final VoidCallback onRefreshStart;
   final bool refreshing;
@@ -2349,6 +2352,11 @@ class _LegacyOlderHistoryRefresh extends StatefulWidget {
 class _LegacyOlderHistoryRefreshState
     extends State<_LegacyOlderHistoryRefresh> {
   int? _pointer;
+  double? _pointerStartDy;
+  double? _pointerCurrentDy;
+  Duration? _pointerDownTime;
+  double _pointerDistanceToStart = 0;
+  bool _pointerIsScrollGesture = false;
   double _pulledExtent = 0;
   bool _armed = false;
   bool _refreshing = false;
@@ -2359,12 +2367,46 @@ class _LegacyOlderHistoryRefreshState
   void _handlePointerDown(PointerDownEvent event) {
     if (_pointer == null && !_refreshVisible && !_retracting) {
       _pointer = event.pointer;
+      _pointerStartDy = event.position.dy;
+      _pointerCurrentDy = event.position.dy;
+      _pointerDownTime = event.timeStamp;
+      _pointerIsScrollGesture = false;
+      final position = widget.controller.hasClients
+          ? widget.controller.position
+          : null;
+      _pointerDistanceToStart = position == null
+          ? 0
+          : (position.pixels - position.minScrollExtent)
+                .clamp(0.0, double.infinity)
+                .toDouble();
     }
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (_pointer != event.pointer) return;
+    _pointerCurrentDy = event.position.dy;
+    final startDy = _pointerStartDy;
+    final downTime = _pointerDownTime;
+    if (startDy == null || downTime == null) return;
+    final delta = event.position.dy - startDy;
+    if (!_pointerIsScrollGesture &&
+        delta.abs() >= 18 &&
+        event.timeStamp - downTime < const Duration(milliseconds: 500)) {
+      _pointerIsScrollGesture = true;
+    }
+    if (!_pointerIsScrollGesture) return;
+    _updatePullExtent(
+      (delta - _pointerDistanceToStart).clamp(0.0, double.infinity).toDouble(),
+    );
   }
 
   void _handlePointerUp(PointerUpEvent event) {
     if (_pointer != event.pointer) return;
     _pointer = null;
+    _pointerStartDy = null;
+    _pointerCurrentDy = null;
+    _pointerDownTime = null;
+    _pointerIsScrollGesture = false;
     final refresh = widget.onRefresh;
     if (_armed && refresh != null) {
       widget.onRefreshStart();
@@ -2382,6 +2424,10 @@ class _LegacyOlderHistoryRefreshState
   void _handlePointerCancel(PointerCancelEvent event) {
     if (_pointer != event.pointer) return;
     _pointer = null;
+    _pointerStartDy = null;
+    _pointerCurrentDy = null;
+    _pointerDownTime = null;
+    _pointerIsScrollGesture = false;
     _resetPull();
   }
 
@@ -2392,17 +2438,29 @@ class _LegacyOlderHistoryRefreshState
         _retracting) {
       return false;
     }
-    final extent =
+    final scrollExtent =
         (notification.metrics.minScrollExtent - notification.metrics.pixels)
             .clamp(0.0, double.infinity)
             .toDouble();
+    final pointerExtent = ((_pointerCurrentDy ?? 0) - (_pointerStartDy ?? 0))
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    final extent = _pointerIsScrollGesture
+        ? scrollExtent > pointerExtent
+              ? scrollExtent
+              : pointerExtent
+        : scrollExtent;
+    _updatePullExtent(extent);
+    return false;
+  }
+
+  void _updatePullExtent(double extent) {
     final armed = extent >= _olderHistoryTriggerExtent;
-    if ((extent - _pulledExtent).abs() < 0.5 && armed == _armed) return false;
+    if ((extent - _pulledExtent).abs() < 0.5 && armed == _armed) return;
     setState(() {
       _pulledExtent = extent;
       _armed = armed;
     });
-    return false;
   }
 
   void _resetPull() {
@@ -2442,6 +2500,7 @@ class _LegacyOlderHistoryRefreshState
         .toDouble();
     return Listener(
       onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
       onPointerUp: _handlePointerUp,
       onPointerCancel: _handlePointerCancel,
       child: Stack(
@@ -3931,63 +3990,68 @@ class _MarkdownMessage extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final base = MarkdownStyleSheet.fromTheme(theme);
-    return MarkdownBody(
-      data: markdownWithVisibleLinkDestinations(text),
-      inlineSyntaxes: workMarkdownInlineSyntaxes,
-      selectable: true,
-      onSelectionChanged: (_, selection, cause) {
-        if (!selection.isCollapsed && cause != null) onSelectionChanged();
-      },
-      softLineBreak: true,
-      styleSheet: base.copyWith(
-        a: const TextStyle(
-          color: _workLink,
-          decoration: TextDecoration.underline,
-          decorationColor: _workLink,
-          letterSpacing: 0,
-        ),
-        p: theme.textTheme.bodyMedium?.copyWith(fontSize: 15, height: 1.2),
-        code: theme.textTheme.bodySmall?.copyWith(
-          fontFamily: 'monospace',
-          color: codexText,
-          backgroundColor: codexBackground,
-          letterSpacing: 0,
-        ),
-        codeblockPadding: const EdgeInsets.all(9),
-        codeblockDecoration: BoxDecoration(
-          color: codexBackground,
-          border: Border.all(color: codexBorder),
-          borderRadius: BorderRadius.circular(5),
-        ),
-        blockquotePadding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
-        blockquoteDecoration: const BoxDecoration(
-          border: Border(left: BorderSide(color: codexAmber, width: 3)),
-        ),
-        tableBorder: TableBorder.all(color: codexBorder),
-      ),
-      imageBuilder: (uri, title, alt) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.image_outlined, size: 17, color: codexMuted),
-          const SizedBox(width: 5),
-          Flexible(
-            child: Text(alt?.trim().isNotEmpty == true ? alt! : uri.toString()),
-          ),
-        ],
-      ),
-      onTapLink: (_, href, _) {
-        if (href == null) return;
-        final remotePath = remoteFilePathFromLink(href);
-        if (remotePath != null) {
-          if (isPreviewableImagePath(remotePath)) {
-            unawaited(onOpenRemoteImage(remotePath));
-          } else {
-            unawaited(onOpenRemoteFile(remotePath));
-          }
-        } else {
-          unawaited(_confirmAndOpenLink(context, href));
+    return SelectionArea(
+      onSelectionChanged: (selection) {
+        if (selection != null && selection.plainText.isNotEmpty) {
+          onSelectionChanged();
         }
       },
+      child: MarkdownBody(
+        data: markdownWithVisibleLinkDestinations(text),
+        inlineSyntaxes: workMarkdownInlineSyntaxes,
+        softLineBreak: true,
+        styleSheet: base.copyWith(
+          a: const TextStyle(
+            color: _workLink,
+            decoration: TextDecoration.underline,
+            decorationColor: _workLink,
+            letterSpacing: 0,
+          ),
+          p: theme.textTheme.bodyMedium?.copyWith(fontSize: 15, height: 1.2),
+          code: theme.textTheme.bodySmall?.copyWith(
+            fontFamily: 'monospace',
+            color: codexText,
+            backgroundColor: codexBackground,
+            letterSpacing: 0,
+          ),
+          codeblockPadding: const EdgeInsets.all(9),
+          codeblockDecoration: BoxDecoration(
+            color: codexBackground,
+            border: Border.all(color: codexBorder),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          blockquotePadding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+          blockquoteDecoration: const BoxDecoration(
+            border: Border(left: BorderSide(color: codexAmber, width: 3)),
+          ),
+          tableBorder: TableBorder.all(color: codexBorder),
+        ),
+        imageBuilder: (uri, title, alt) => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.image_outlined, size: 17, color: codexMuted),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(
+                alt?.trim().isNotEmpty == true ? alt! : uri.toString(),
+              ),
+            ),
+          ],
+        ),
+        onTapLink: (_, href, _) {
+          if (href == null) return;
+          final remotePath = remoteFilePathFromLink(href);
+          if (remotePath != null) {
+            if (isPreviewableImagePath(remotePath)) {
+              unawaited(onOpenRemoteImage(remotePath));
+            } else {
+              unawaited(onOpenRemoteFile(remotePath));
+            }
+          } else {
+            unawaited(_confirmAndOpenLink(context, href));
+          }
+        },
+      ),
     );
   }
 }
@@ -4006,13 +4070,13 @@ class _SelectablePlainText extends StatelessWidget {
   final VoidCallback? onSelectionChanged;
 
   @override
-  Widget build(BuildContext context) => SelectableText(
-    text,
-    style: style,
-    maxLines: maxLines,
-    onSelectionChanged: (selection, cause) {
-      if (!selection.isCollapsed && cause != null) onSelectionChanged?.call();
+  Widget build(BuildContext context) => SelectionArea(
+    onSelectionChanged: (selection) {
+      if (selection != null && selection.plainText.isNotEmpty) {
+        onSelectionChanged?.call();
+      }
     },
+    child: Text(text, style: style, maxLines: maxLines),
   );
 }
 
