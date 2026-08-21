@@ -1,9 +1,9 @@
 version: "1.0"
-name: Flutter Refactor 编译
-displayName: Flutter Refactor 编译
+name: Flutter Refactor 发布
+displayName: Flutter Refactor 发布
 stages:
 - name: flutter_refactor_build
-  displayName: Flutter Refactor Android 编译
+  displayName: Flutter Refactor Android 发布
   strategy: naturally
   trigger: auto
   steps:
@@ -67,27 +67,11 @@ stages:
         "ndk;28.2.13676358"
       "$CODEX_FLUTTER_BIN" precache --android
 
-      # This is a compile-only pipeline. It deliberately does not call the
-      # release publisher, create tags, or require CODEX_RELEASE_TOKEN.
-      ./scripts/build-android.sh release --force
-
-      version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' flutter_app/pubspec.yaml | head -n 1)"
-      release_apk="flutter_app/build/app/outputs/flutter-apk/app-release.apk"
-      if [ -z "$version" ] || [ ! -f "$release_apk" ]; then
-        echo "Flutter Release APK was not produced" >&2
-        exit 1
-      fi
-
-      mkdir -p dist
-      artifact="dist/Agent-flutter-refactor-${version%%+*}.apk"
-      install -m 0644 "$release_apk" "$artifact"
-      apk_sha256="$(sha256sum "$artifact" | awk '{print $1}')"
-      {
-        printf 'sourceBranch=flutter-refactor\n'
-        printf 'gitCommit=%s\n' "$(git rev-parse HEAD)"
-        printf 'version=%s\n' "$version"
-        printf 'apkSha256=%s\n' "$apk_sha256"
-      } > dist/flutter-refactor-build-metadata.txt
+      # Build the signed Flutter APK and publish it as a stable Gitee Release.
+      # The publisher verifies this checkout is the current remote branch head
+      # and never moves an existing version tag.
+      export CODEX_RELEASE_BRANCH="flutter-refactor"
+      ./scripts/publish-gitee-release.sh
       ls -lh dist
     artifacts:
     - name: FLUTTER_REFACTOR_BUILD_ARTIFACT
@@ -115,3 +99,6 @@ triggers:
 notify: []
 strategy:
   blocking: true
+variables:
+  global:
+  - CODEX_RELEASE_TOKEN

@@ -1,9 +1,14 @@
-# Gitee Go Release 分支自动发布
+# Gitee Go Flutter Android 自动发布
 
-推送 `release` 分支会触发 Gitee Go。流水线构建并验签 APK，随后自动创建与
-`versionName` 对应的不可移动 Git 标签、Gitee Release 和
-`Agent-<version>.apk` 附件。Tag 推送不会触发 Android 构建，因此不同版本的
-发布不会因 Tag 触发而重新建立一套 Gradle 缓存。
+推送 `flutter-refactor` 分支会触发 `.workflow/流水线-flutter-refactor-编译.yml`。
+流水线使用 Flutter `3.44.8` 构建并验证稳定签名 APK，随后自动创建与
+`versionName` 对应的不可移动 `v<versionName>` Git 标签、Gitee Release 和
+`Agent-<version>.apk` 附件。流水线页面同时保留 `dist/` 构件。
+
+历史 `release` 分支仍可触发 `.workflow/流水线-202608021802.yml`，两条流水线共用
+`scripts/publish-gitee-release.sh`。日常 Flutter 重构发布只使用 `flutter-refactor` 流水线，
+不要在同一版本再推送 `release` 分支。Tag 推送本身不触发 Android 构建，避免发布
+脚本创建标签后重复跑流水线。
 
 ## One-Time Variable Setup
 
@@ -26,30 +31,29 @@ optional protected variables `CODEX_RELEASE_OWNER` and `CODEX_RELEASE_REPOSITORY
 
 ## Trigger Rule
 
-In the code source's automatic trigger settings, choose **Push** and an exact branch match for
-`release`. This is the workflow configuration tracked in the repository:
+Flutter 流水线的代码源自动触发器使用 **Push** 和精确分支 `flutter-refactor`：
 
 ```yaml
 branches:
   precise:
-    - release
+    - flutter-refactor
 ```
 
-The script verifies that the checked-out commit is the current remote `release` head. Once its
-build and signature verification pass, it creates `v<versionName>`. An existing tag is reused
-only when it already points to the same commit; the script never moves a tag. A failed build
-therefore cannot create a release tag.
+流水线显式设置 `CODEX_RELEASE_BRANCH=flutter-refactor`。脚本会验证当前检出提交就是
+远端 `flutter-refactor` 分支头。只有构建和稳定签名验证通过后才创建
+`v<versionName>`；已存在标签只能在指向同一提交时复用，脚本永不移动标签。
 
 ## Release Sequence
 
-1. Increase `versionCode` and `versionName`, then commit and push the source changes to `main`.
-2. When the commit is ready to publish, run `git push origin main:release`.
-3. Gitee Go builds the Release APK, creates `v<versionName>`, and attaches it to the Gitee
-   Release page.
+1. Increase `versionCode` and `versionName`, then commit the source changes on `flutter-refactor`.
+2. Push `flutter-refactor` to Gitee `origin`; separately push the same commit to GitHub `github`.
+3. Gitee Go builds the Flutter Release APK, verifies its stable certificate, creates
+   `v<versionName>`, and attaches `Agent-<version>.apk` to the Gitee Release page.
 
-The single `main:release` push is the only manual publishing action. Re-running the same
-pipeline is safe: it reuses the matching tag and Release, and only uploads the APK when the
-attachment is missing.
+The `flutter-refactor` push is the only Gitee publishing action. Re-running the same pipeline is
+safe: it reuses the matching tag and Release, and only uploads the APK when the attachment is
+missing. The tracked workflow must bind the masked `CODEX_RELEASE_TOKEN` common variable; a
+missing variable intentionally fails before building or publishing.
 
 The release body contains up to the latest 12 Git commit subjects and the APK SHA-256 checksum.
 The Android client checks the public Gitee Release list on startup, verifies that the expected APK

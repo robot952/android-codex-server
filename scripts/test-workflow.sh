@@ -88,6 +88,10 @@ assert_android_plan all 0 1 1 1 1 1 1 0
 rg -q 'http://192\.168\.8\.107/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q '^publish_name agent\.apk$' "$ROOT_DIR/scripts/publish-local-apk.sh"
+flutter_gitee_workflow="$ROOT_DIR/.workflow/流水线-flutter-refactor-编译.yml"
+rg -Fq 'export CODEX_RELEASE_BRANCH="flutter-refactor"' "$flutter_gitee_workflow"
+rg -Fq './scripts/publish-gitee-release.sh' "$flutter_gitee_workflow"
+rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
 runtime_path="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 expected_runtime_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/opencode-version.txt")"
 [[ "$(workflow_opencode_version "$runtime_path")" == "$expected_runtime_version" ]]

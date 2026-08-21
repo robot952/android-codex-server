@@ -916,6 +916,14 @@ flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ~~~
 
+Gitee Go 的 `flutter-refactor` 分支流水线使用固定 Flutter `3.44.8`、JDK 17、Android
+Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
+`scripts/publish-gitee-release.sh` 验证稳定证书，创建不可移动的 `v<versionName>`
+标签与 Gitee Release，并上传 `Agent-<version>.apk`；`CODEX_RELEASE_TOKEN` 只从 Gitee Go
+受保护通用变量注入。流水线仍归档 `dist/` 供构建页直接下载，且不由新创建的
+标签再次触发，避免重复出包。历史 `release` 分支流水线保留为受保护的兼容入口，
+同一版本不应同时触发两条发布流水线。
+
 构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
 `extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用
 `scripts/test-local-linux-runtime.sh <release-apk>` 检查，不得仅依据 APK 文件大小判断 ABI 是否完整。
