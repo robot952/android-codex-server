@@ -100,6 +100,8 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
         enabled: !busy,
         onSelected: (action) {
           switch (action) {
+            case _FileToolbarAction.createFolder:
+              unawaited(_createFolder());
             case _FileToolbarAction.upload:
               unawaited(_pickAndUploadFiles());
             case _FileToolbarAction.download:
@@ -112,6 +114,15 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
           }
         },
         itemBuilder: (context) => [
+          const PopupMenuItem(
+            value: _FileToolbarAction.createFolder,
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.create_new_folder_outlined),
+              title: Text('新建文件夹'),
+            ),
+          ),
           const PopupMenuItem(
             value: _FileToolbarAction.upload,
             child: ListTile(
@@ -276,6 +287,20 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
     }
   }
 
+  Future<void> _createFolder() async {
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => const _RemoteNameDialog(
+        title: '新建文件夹',
+        label: '文件夹名称',
+        confirmLabel: '创建',
+        invalidNameFallback: '文件夹名称无效',
+      ),
+    );
+    if (value == null || !mounted) return;
+    await ref.read(appControllerProvider.notifier).createRemoteDirectory(value);
+  }
+
   Future<void> _pickAndUploadFiles() async {
     if (_pickingFiles) return;
     setState(() => _pickingFiles = true);
@@ -348,42 +373,21 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
   }
 
   Future<void> _rename(RemoteFileEntry entry) async {
-    final textController = TextEditingController(text: entry.name);
-    try {
-      final value = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('重命名'),
-          content: SingleChildScrollView(
-            child: TextField(
-              controller: textController,
-              autofocus: true,
-              maxLength: maxRemoteFileNameChars,
-              textInputAction: TextInputAction.done,
-              decoration: const InputDecoration(labelText: '新名称'),
-              onSubmitted: (value) => Navigator.pop(context, value),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, textController.text),
-              child: const Text('重命名'),
-            ),
-          ],
-        ),
-      );
-      if (value == null || !mounted) return;
-      await ref
-          .read(appControllerProvider.notifier)
-          .renameRemoteFile(entry, value);
-      if (mounted) setState(_selectedPaths.clear);
-    } finally {
-      textController.dispose();
-    }
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => _RemoteNameDialog(
+        title: '重命名',
+        label: '新名称',
+        confirmLabel: '重命名',
+        invalidNameFallback: '名称无效',
+        initialValue: entry.name,
+      ),
+    );
+    if (value == null || !mounted) return;
+    await ref
+        .read(appControllerProvider.notifier)
+        .renameRemoteFile(entry, value);
+    if (mounted) setState(_selectedPaths.clear);
   }
 
   Future<void> _confirmDelete(List<RemoteFileEntry> entries) async {
@@ -418,6 +422,77 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }
+}
+
+class _RemoteNameDialog extends StatefulWidget {
+  const _RemoteNameDialog({
+    required this.title,
+    required this.label,
+    required this.confirmLabel,
+    required this.invalidNameFallback,
+    this.initialValue = '',
+  });
+
+  final String title;
+  final String label;
+  final String confirmLabel;
+  final String invalidNameFallback;
+  final String initialValue;
+
+  @override
+  State<_RemoteNameDialog> createState() => _RemoteNameDialogState();
+}
+
+class _RemoteNameDialogState extends State<_RemoteNameDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialValue,
+  );
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    try {
+      final name = validateRemoteFileManagerName(_controller.text);
+      Navigator.pop(context, name);
+    } catch (error) {
+      setState(
+        () => _errorText = _displayError(error, widget.invalidNameFallback),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.title),
+    content: SingleChildScrollView(
+      child: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: maxRemoteFileNameChars,
+        textInputAction: TextInputAction.done,
+        decoration: InputDecoration(
+          labelText: widget.label,
+          errorText: _errorText,
+        ),
+        onChanged: (_) {
+          if (_errorText != null) setState(() => _errorText = null);
+        },
+        onSubmitted: (_) => _submit(),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _submit, child: Text(widget.confirmLabel)),
+    ],
+  );
 }
 
 class _FileList extends StatelessWidget {
@@ -535,7 +610,7 @@ class _ClipboardBanner extends StatelessWidget {
   );
 }
 
-enum _FileToolbarAction { upload, download, paste }
+enum _FileToolbarAction { createFolder, upload, download, paste }
 
 enum _EntryAction { download, rename, copy, cut, delete }
 

@@ -2085,6 +2085,13 @@ class AppController extends StateNotifier<AppUiState> {
             _connections.renameRemoteFile(profile, entry.path, newName),
       );
 
+  Future<void> createRemoteDirectory(String name) => _runFileManagerOperation(
+    label: '正在新建文件夹',
+    successMessage: '已新建文件夹',
+    action: (profile, directory) =>
+        _connections.createRemoteDirectory(profile, directory, name),
+  );
+
   Future<void> deleteRemoteFiles(Iterable<RemoteFileEntry> entries) {
     final paths = entries.map((entry) => entry.path).toSet().toList();
     if (paths.isEmpty) return Future<void>.value();

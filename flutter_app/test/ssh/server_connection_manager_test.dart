@@ -165,6 +165,8 @@ class _FakeFileManagerClient extends _FakeClient
   String? uploadedName;
   int? uploadedDeclaredSize;
   int? uploadedMaxBytes;
+  String? createdDirectory;
+  String? createdName;
   String? renamedPath;
   String? renamedName;
   List<String>? deletedPaths;
@@ -196,6 +198,12 @@ class _FakeFileManagerClient extends _FakeClient
       uploadedBytes.addAll(chunk);
       await afterUploadChunk?.call(index++);
     }
+  }
+
+  @override
+  Future<void> createRemoteDirectory(String directory, String name) async {
+    createdDirectory = directory;
+    createdName = name;
   }
 
   @override
@@ -505,6 +513,7 @@ void main() {
         declaredSize: 3,
         maxBytes: 128,
       );
+      await manager.createRemoteDirectory(first, '/srv', 'reports');
       await manager.renameRemoteFile(first, '/srv/notes.txt', 'renamed.txt');
       await manager.deleteRemoteFiles(first, const <String>['/srv/old.txt']);
       await manager.transferRemoteFiles(
@@ -520,6 +529,8 @@ void main() {
       expect(client.uploadedBytes, <int>[1, 2, 3]);
       expect(client.uploadedDeclaredSize, 3);
       expect(client.uploadedMaxBytes, 128);
+      expect(client.createdDirectory, '/srv');
+      expect(client.createdName, 'reports');
       expect(client.renamedPath, '/srv/notes.txt');
       expect(client.renamedName, 'renamed.txt');
       expect(client.deletedPaths, <String>['/srv/old.txt']);

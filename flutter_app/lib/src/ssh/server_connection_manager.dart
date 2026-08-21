@@ -457,6 +457,16 @@ class ServerConnectionManager {
     _ensureFileManagerRequestCurrent(profile, request, '文件重命名请求已失效');
   }
 
+  Future<void> createRemoteDirectory(
+    ServerProfile profile,
+    String directory,
+    String name,
+  ) async {
+    final request = _fileManagerRequest(profile);
+    await request.fileClient.createRemoteDirectory(directory, name);
+    _ensureFileManagerRequestCurrent(profile, request, '新建文件夹请求已失效');
+  }
+
   Future<void> deleteRemoteFiles(
     ServerProfile profile,
     List<String> paths,

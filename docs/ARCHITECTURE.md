@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.85+213，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.86+214，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -375,8 +375,8 @@ SFTP stdout 混用。
 
 ### 7.6 SFTP 文件管理（当前实现）
 
-`FileManagerScreen` 通过当前 SSH profile 的 SFTP 能力浏览目录和文件，并支持多选、上级目录、上传、下载、
-重命名、删除确认、复制/剪切/粘贴（服务端复制/移动）。路径、文件名、大小和条目数量均有边界，目录/文件/
+`FileManagerScreen` 通过当前 SSH profile 的 SFTP 能力浏览目录和文件，并支持多选、上级目录、新建文件夹、
+上传、下载、重命名、删除确认、复制/剪切/粘贴（服务端复制/移动）。路径、文件名、大小和条目数量均有边界，目录/文件/
 符号链接/特殊文件按类型处理；所有异步列表和操作按 profile、连接身份与 request id 校验，切换服务器或断开
 不会把旧结果写回当前页面。下载经 Android `ACTION_CREATE_DOCUMENT` 和 `file_export` MethodChannel 分块
 写入，失败/取消会清理半成品；文件管理是独立页面，不是 `ThreadListScreen` 的占位回退。
@@ -501,7 +501,8 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 ### 8.4 FileManagerScreen（远程文件）
 
 文件管理从会话列表设置菜单进入，仅使用当前已连接 SSH profile。页面显示当前路径、目录条目、权限/大小/修改
-时间，并支持上级目录、刷新、多选、上传、下载、重命名、删除确认和复制/剪切/粘贴。上传使用系统文件 picker
+时间，并支持上级目录、刷新、多选、新建文件夹、上传、下载、重命名、删除确认和复制/剪切/粘贴。新建文件夹
+复用文件名边界和 SFTP 连接代次校验，创建成功后刷新当前目录；上传使用系统文件 picker
 并顺序流式发送；下载使用 Android SAF 保存位置选择器和分块导出。操作期间显示进度并阻止冲突操作，切换服务器、
 断开或返回会使进行中的请求失效。
 
@@ -2035,6 +2036,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `#181818` 对话背景形成稳定层级。Widget 回归直接约束两个弹层的宽度、底色、描边和阴影。
 - 服务器列表左上角产品标题统一显示 `Agent`；`Codex`/`OpenCode` 仅用于具体 Agent 类型和配置项，
   不再作为页面品牌标题。
+
+### 17.53 文件管理新建文件夹（2026-08-21）
+
+- 应用版本：`1.8.86+214`。文件管理页的更多操作菜单新增“新建文件夹”，名称输入即时校验空值、长度、
+  路径分隔符和控制字符；无效名称保留对话框并显示原因。
+- 创建通过当前 SSH profile 的 SFTP `mkdir` 完成，目标目录先解析并确认仍为目录，目标名称必须不存在；
+  连接管理器继续按 profile、连接身份和 generation 拒绝迟到结果。成功后沿用统一文件操作状态刷新当前目录。
+- 新建和重命名对话框均由其 StatefulWidget 持有输入控制器，路由关闭动画完成后才释放，避免控制器提前销毁。
+  回归覆盖 Flutter 菜单与名称校验、控制器创建后刷新，以及连接管理器向当前 SFTP lane 的参数转发。
 
 ## 18. 文档维护规则
 

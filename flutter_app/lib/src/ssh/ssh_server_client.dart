@@ -97,6 +97,8 @@ abstract interface class RemoteServerFileManagerClient {
     int maxBytes = maxRemoteFileBytes,
   });
 
+  Future<void> createRemoteDirectory(String directory, String name);
+
   Future<void> renameRemoteFile(String path, String newName);
 
   Future<void> deleteRemoteFiles(List<String> paths);
@@ -736,6 +738,25 @@ class DartSshServerClient
       } finally {
         await sftp.close();
       }
+    }
+  }
+
+  @override
+  Future<void> createRemoteDirectory(String directory, String name) async {
+    final requestedDirectory = validateRemoteFileManagerPath(directory, '目标目录');
+    final directoryName = validateRemoteFileManagerName(name);
+    final sftp = await requireSshClient().sftp();
+    try {
+      final resolvedDirectory = _normalizedResolvedRemoteDirectoryPath(
+        await sftp.absolute(requestedDirectory),
+      );
+      final directoryAttributes = await sftp.stat(resolvedDirectory);
+      if (!directoryAttributes.isDirectory) throw StateError('目标不是目录');
+      final target = _remoteChildPath(resolvedDirectory, directoryName);
+      await _requireRemotePathMissing(sftp, target);
+      await sftp.mkdir(target);
+    } finally {
+      await sftp.close();
     }
   }
 

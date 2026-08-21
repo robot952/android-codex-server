@@ -277,6 +277,8 @@ class _FileManagerHost extends _FingerprintClient
   final List<int> uploadedBytes = <int>[];
   String? uploadedDirectory;
   String? uploadedName;
+  String? createdDirectory;
+  String? createdName;
   String? renamedPath;
   String? renamedName;
   List<String>? deletedPaths;
@@ -319,6 +321,12 @@ class _FileManagerHost extends _FingerprintClient
       total += chunk.length;
     }
     return total;
+  }
+
+  @override
+  Future<void> createRemoteDirectory(String directory, String name) async {
+    createdDirectory = directory;
+    createdName = name;
   }
 
   @override
@@ -3215,6 +3223,58 @@ void main() {
     expect(controller.state.fileManagerEntries, isEmpty);
     expect(controller.state.fileManagerCurrentPath, isEmpty);
   });
+
+  test(
+    'creates a folder and refreshes the current file-manager directory',
+    () async {
+      final profile = _firstProfile.copyWith(
+        workspace: '/srv',
+        workspacePromptShown: true,
+      );
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FileManagerHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final controller = AppController(store, connections);
+      addTearDown(() async {
+        controller.dispose();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      controller.showFileManager();
+      await _waitUntil(() => host.listRequests.length == 1);
+      host.listRequests[0].result.complete(
+        const RemoteFileListing(currentPath: '/srv', parentPath: '/'),
+      );
+      await _waitUntil(() => !controller.state.fileManagerLoading);
+
+      final create = controller.createRemoteDirectory('reports');
+      await _waitUntil(() => host.listRequests.length == 2);
+      expect(host.createdDirectory, '/srv');
+      expect(host.createdName, 'reports');
+      expect(controller.state.fileManagerOperation, '正在新建文件夹');
+      host.listRequests[1].result.complete(
+        const RemoteFileListing(
+          currentPath: '/srv',
+          parentPath: '/',
+          entries: <RemoteFileEntry>[
+            RemoteFileEntry(
+              name: 'reports',
+              path: '/srv/reports',
+              kind: RemoteFileKind.directory,
+            ),
+          ],
+        ),
+      );
+      await create;
+
+      expect(controller.state.fileManagerOperation, isNull);
+      expect(controller.state.fileManagerEntries.single.name, 'reports');
+      expect(controller.state.diagnostic, '已新建文件夹');
+    },
+  );
 
   test(
     'uploads, copies, moves and downloads through file-manager state',
