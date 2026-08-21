@@ -1407,6 +1407,8 @@ void main() {
     expect(find.byIcon(Icons.archive), findsOneWidget);
     expect(find.byIcon(Icons.track_changes), findsOneWidget);
     expect(find.byType(PopupMenuDivider), findsNothing);
+    final compactMenuWidth = tester.getRect(_popupItemForText('设置目标')).width;
+    expect(compactMenuWidth, closeTo(168, 1));
     await tester.tapAt(const Offset(8, 8));
     await tester.pumpAndSettle();
 
@@ -1417,6 +1419,11 @@ void main() {
     expect(find.text('添加崩溃 / Debug 日志'), findsOneWidget);
     expect(find.byIcon(Icons.bug_report), findsOneWidget);
     expect(find.byType(PopupMenuDivider), findsOneWidget);
+    final debugMenuWidth = tester
+        .getRect(_popupItemForText('添加崩溃 / Debug 日志'))
+        .width;
+    expect(debugMenuWidth, greaterThan(compactMenuWidth));
+    expect(debugMenuWidth, lessThanOrEqualTo(232));
     expect(tester.takeException(), isNull);
   });
 
@@ -1455,7 +1462,7 @@ void main() {
     expect(topButtonWidget.popUpAnimationStyle, AnimationStyle.noAnimation);
     expect(
       topButtonWidget.constraints,
-      const BoxConstraints.tightFor(width: 232),
+      const BoxConstraints(minWidth: 112, maxWidth: 232),
     );
     expect(topButtonWidget.color, const Color(0xFF303030));
     expect(topButtonWidget.shadowColor, Colors.black87);
@@ -1472,7 +1479,7 @@ void main() {
       greaterThanOrEqualTo(topButtonRect.bottom + 8),
     );
     expect((topFirstItemRect.right - topButtonRect.right).abs(), lessThan(9));
-    expect(topFirstItemRect.width, closeTo(232, 1));
+    expect(topFirstItemRect.width, closeTo(168, 1));
     await tester.tapAt(const Offset(8, 400));
     await tester.pumpAndSettle();
 
@@ -1482,7 +1489,7 @@ void main() {
     );
     expect(
       attachmentButtonWidget.constraints,
-      const BoxConstraints.tightFor(width: 184),
+      const BoxConstraints(minWidth: 112, maxWidth: 184),
     );
     expect(attachmentButtonWidget.color, const Color(0xFF303030));
     expect(attachmentButtonWidget.shadowColor, Colors.black87);
@@ -1493,7 +1500,7 @@ void main() {
     await tester.tap(attachmentButton);
     await tester.pump();
     expect(find.text('拍照'), findsOneWidget);
-    expect(tester.getRect(_popupItemForText('拍照')).width, closeTo(184, 1));
+    expect(tester.getRect(_popupItemForText('拍照')).width, closeTo(168, 1));
     await tester.tapAt(const Offset(410, 300));
     await tester.pumpAndSettle();
 

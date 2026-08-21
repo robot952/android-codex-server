@@ -190,7 +190,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
             surfaceTintColor: Colors.transparent,
             shadowColor: Colors.black87,
             elevation: 12,
-            constraints: const BoxConstraints.tightFor(width: 232),
+            constraints: const BoxConstraints(minWidth: 112, maxWidth: 232),
             menuPadding: const EdgeInsets.symmetric(vertical: 8),
             position: PopupMenuPosition.under,
             offset: const Offset(0, 8),
@@ -4985,8 +4985,9 @@ class _Composer extends StatelessWidget {
                               surfaceTintColor: Colors.transparent,
                               shadowColor: Colors.black87,
                               elevation: 12,
-                              constraints: const BoxConstraints.tightFor(
-                                width: 184,
+                              constraints: const BoxConstraints(
+                                minWidth: 112,
+                                maxWidth: 184,
                               ),
                               menuPadding: const EdgeInsets.symmetric(
                                 vertical: 6,
