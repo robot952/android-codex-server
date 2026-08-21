@@ -35,6 +35,12 @@ typedef RemoteImageLoader =
 const _workSurface = Color(0xFF1F1F1F);
 const _workRaised = Color(0xFF272727);
 const _workBorder = Color(0xFF373737);
+const _workPopupSurface = Color(0xFF303030);
+const _workPopupBorder = Color(0xFF505050);
+const _workPopupShape = RoundedRectangleBorder(
+  borderRadius: BorderRadius.all(Radius.circular(6)),
+  side: BorderSide(color: _workPopupBorder),
+);
 const _workGreen = Color(0xFF68C77B);
 const _workLink = Color(0xFF64B5F6);
 const _workAmber = Color(0xFFE5B567);
@@ -180,16 +186,16 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
             key: const Key('work-action-menu'),
             tooltip: '会话操作',
             enabled: !state.loading && !state.attachmentUploading,
-            color: _workSurface,
+            color: _workPopupSurface,
             surfaceTintColor: Colors.transparent,
-            constraints: const BoxConstraints(minWidth: 196, maxWidth: 280),
+            shadowColor: Colors.black87,
+            elevation: 12,
+            constraints: const BoxConstraints.tightFor(width: 232),
             menuPadding: const EdgeInsets.symmetric(vertical: 8),
             position: PopupMenuPosition.under,
             offset: const Offset(0, 8),
             popUpAnimationStyle: AnimationStyle.noAnimation,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(4),
-            ),
+            shape: _workPopupShape,
             onSelected: (value) =>
                 unawaited(_handleWorkAction(value, state, controller)),
             itemBuilder: (context) => [
@@ -4975,6 +4981,17 @@ class _Composer extends StatelessWidget {
                                   !attachmentBusy,
                               padding: EdgeInsets.zero,
                               iconSize: 20,
+                              color: _workPopupSurface,
+                              surfaceTintColor: Colors.transparent,
+                              shadowColor: Colors.black87,
+                              elevation: 12,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 184,
+                              ),
+                              menuPadding: const EdgeInsets.symmetric(
+                                vertical: 6,
+                              ),
+                              shape: _workPopupShape,
                               onSelected: (value) {
                                 if (value == 'camera') {
                                   onTakePhoto();

@@ -100,6 +100,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('Agent'), findsOneWidget);
     expect(find.text('服务器列表'), findsOneWidget);
     expect(find.text('服务器会话'), findsOneWidget);
     expect(find.text('本机 Linux'), findsOneWidget);
