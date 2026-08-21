@@ -1204,6 +1204,7 @@ class CodexAgentClient
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     final connectedHost = _requireConnectedSettingsHost(profile);
@@ -1216,6 +1217,7 @@ class CodexAgentClient
             proxyUrl: proxyUrl,
             defaultModel: defaultModel,
             defaultReasoningEffort: defaultReasoningEffort,
+            websocketPolicy: websocketPolicy,
             preserveCurrentProvider: preserveCurrentProvider,
           );
     }
@@ -1227,6 +1229,7 @@ class CodexAgentClient
         proxyUrl: proxyUrl,
         defaultModel: defaultModel,
         defaultReasoningEffort: defaultReasoningEffort,
+        websocketPolicy: websocketPolicy,
       ),
       timeout: const Duration(seconds: 30),
       maxOutputBytes: 64 * 1024,

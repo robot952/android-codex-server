@@ -602,6 +602,13 @@ class WindowsLocalServerClient
           )['base_url'] ??
           baseUrl;
     }
+    final websocketPolicy = provider == 'openai'
+        ? null
+        : _tomlBooleanValue(
+            configText,
+            'model_providers.$provider',
+            'supports_websockets',
+          );
     final auth = await _readJsonMap(_authFile);
     final envText = await _readTextIfExists(_environmentFile);
     final proxy =
@@ -618,6 +625,11 @@ class WindowsLocalServerClient
       model: root['model'] ?? '',
       reasoningEffort: root['model_reasoning_effort'] ?? '',
       modelProvider: provider,
+      websocketPolicy: websocketPolicy == null
+          ? null
+          : websocketPolicy
+          ? codexWebSocketPolicyEnabled
+          : codexWebSocketPolicyDisabled,
       hasStoredAuthentication:
           apiKey.isNotEmpty || await File(_authFile).exists(),
       apiKey: apiKey,
@@ -633,6 +645,7 @@ class WindowsLocalServerClient
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     _requireConnectedProfile(profile);
@@ -643,11 +656,18 @@ class WindowsLocalServerClient
     final normalizedEffort = normalizeCodexReasoningEffort(
       defaultReasoningEffort,
     );
+    final normalizedWebSocketPolicy = normalizeCodexWebSocketPolicy(
+      websocketPolicy,
+    );
     await Directory(_codexHome).create(recursive: true);
     final existing = await _readTextIfExists(_configFile);
     final providerUpdated = updateCodexProviderBaseUrl(
       existing,
       normalizedBase,
+    );
+    final settingsUpdated = updateCodexProviderWebSocketPolicy(
+      providerUpdated,
+      normalizedWebSocketPolicy,
     );
     final replacements = <String, String?>{
       'model': normalizedModel.isEmpty ? null : normalizedModel,
@@ -657,7 +677,7 @@ class WindowsLocalServerClient
     };
     await _writeAtomicText(
       _configFile,
-      _replaceTomlRoot(providerUpdated, replacements),
+      _replaceTomlRoot(settingsUpdated, replacements),
     );
     if (normalizedProxy.isEmpty) {
       final envFile = File(_environmentFile);
@@ -1485,6 +1505,24 @@ Future<void> _writeAtomicText(String filePath, String contents) async {
 Map<String, String> _tomlRootValues(String text) => _tomlValues(text, null);
 Map<String, String> _tomlTableValues(String text, String table) =>
     _tomlValues(text, table);
+
+bool? _tomlBooleanValue(String text, String table, String key) {
+  String? currentTable;
+  for (final raw in const LineSplitter().convert(text)) {
+    final line = raw.trim();
+    final header = RegExp(r'^\[([^\]]+)\]').firstMatch(line);
+    if (header != null) {
+      currentTable = header.group(1)!.trim();
+      continue;
+    }
+    if (currentTable != table) continue;
+    final match = RegExp(
+      '^${RegExp.escape(key)}\\s*=\\s*(true|false)(?:\\s*#.*)?\\u0024',
+    ).firstMatch(line);
+    if (match != null) return match.group(1) == 'true';
+  }
+  return null;
+}
 
 Map<String, String> _tomlValues(String text, String? table) {
   final values = <String, String>{};

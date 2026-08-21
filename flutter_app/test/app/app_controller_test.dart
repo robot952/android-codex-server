@@ -1009,6 +1009,7 @@ class _SettingsAgent extends _FailingTurnAgent
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     writeCalls++;
@@ -3645,6 +3646,7 @@ void main() {
       defaultModel: '  gpt-saved  ',
       defaultReasoningEffort: 'HIGH',
       testModel: '  gpt-test-saved  ',
+      websocketPolicy: 'auto',
       preserveCurrentProvider: true,
     );
 
@@ -3678,6 +3680,7 @@ void main() {
       defaultModel: 'gpt-relay-new',
       defaultReasoningEffort: 'high',
       testModel: 'gpt-relay-new',
+      websocketPolicy: 'auto',
       preserveCurrentProvider: false,
     );
     expect(agent.writtenPreserveProvider, isTrue);
@@ -3751,6 +3754,7 @@ void main() {
       defaultModel: 'gpt-saved',
       defaultReasoningEffort: 'high',
       testModel: 'gpt-test-saved',
+      websocketPolicy: 'auto',
       preserveCurrentProvider: true,
     );
     await _waitUntil(

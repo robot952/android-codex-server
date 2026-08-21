@@ -45,6 +45,11 @@ void main() {
       expect(find.text('Provider：relay'), findsOneWidget);
       expect(find.text('默认模型：gpt-default'), findsOneWidget);
       expect(find.text('默认思考强度：高'), findsOneWidget);
+      expect(find.text('模型 API 传输'), findsOneWidget);
+      expect(
+        find.text('仅影响当前自定义 Provider；中转站不支持 WebSocket 时选择“仅 HTTPS”。'),
+        findsOneWidget,
+      );
       expect(
         find.text('修改模型 URL 只会更新当前 Provider；Provider 名称保持不变。'),
         findsOneWidget,
@@ -66,6 +71,7 @@ void main() {
       final orderedKeys = [
         'agent-settings-default-model',
         'agent-settings-reasoning-effort',
+        'agent-settings-websocket-policy',
         'agent-settings-base-url',
         'agent-settings-api-key',
         'agent-settings-proxy-url',
@@ -243,6 +249,7 @@ void main() {
               required defaultModel,
               required defaultReasoningEffort,
               required testModel,
+              required websocketPolicy,
               required preserveCurrentProvider,
             }) {
               saves.add(
@@ -253,6 +260,7 @@ void main() {
                   defaultModel: defaultModel,
                   defaultReasoningEffort: defaultReasoningEffort,
                   testModel: testModel,
+                  websocketPolicy: websocketPolicy,
                   preserveCurrentProvider: preserveCurrentProvider,
                 ),
               );
@@ -278,6 +286,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(saves, hasLength(1));
     expect(saves.single.apiKey, isEmpty);
+    expect(saves.single.websocketPolicy, 'auto');
     expect(saves.single.preserveCurrentProvider, isTrue);
 
     await _enterText(
@@ -480,6 +489,7 @@ class AgentSettingsSaveValues {
     required this.defaultModel,
     required this.defaultReasoningEffort,
     required this.testModel,
+    required this.websocketPolicy,
     required this.preserveCurrentProvider,
   });
 
@@ -489,6 +499,7 @@ class AgentSettingsSaveValues {
   final String defaultModel;
   final String defaultReasoningEffort;
   final String testModel;
+  final String websocketPolicy;
   final bool preserveCurrentProvider;
 }
 
@@ -518,5 +529,6 @@ void _noopSave({
   required String defaultModel,
   required String defaultReasoningEffort,
   required String testModel,
+  required String websocketPolicy,
   required bool preserveCurrentProvider,
 }) {}

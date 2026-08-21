@@ -10,6 +10,10 @@ const _defaultOpenAiBaseUrl = 'https://api.openai.com/v1';
 const _maxModelListResponseBytes = 256 * 1024;
 const _modelListChunkWidth = 4096;
 
+const codexWebSocketPolicyAuto = 'auto';
+const codexWebSocketPolicyEnabled = 'enabled';
+const codexWebSocketPolicyDisabled = 'disabled';
+
 /// Reads the same per-user files shared by Codex CLI and the IDE extension.
 const readCodexGlobalSettingsScript = r'''
 set -eu
@@ -60,10 +64,35 @@ toml_provider_base_url() {
     }
   ' "$CONFIG_FILE"
 }
+toml_provider_websocket_policy() {
+  awk -v provider="$1" '
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*(#.*)?$/, "", section)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", section)
+      in_provider = (section == "model_providers." provider)
+      next
+    }
+    in_provider {
+      value = $0
+      sub(/^[[:space:]]*/, "", value)
+      if (value ~ /^supports_websockets[[:space:]]*=/) {
+        sub(/^supports_websockets[[:space:]]*=[[:space:]]*/, "", value)
+        sub(/[[:space:]]*#.*/, "", value)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        if (value == "true") print "enabled"
+        if (value == "false") print "disabled"
+        exit
+      }
+    }
+  ' "$CONFIG_FILE"
+}
 BASE_URL=
 MODEL=
 MODEL_REASONING_EFFORT=
 MODEL_PROVIDER=openai
+WEBSOCKET_POLICY=
 if [ -r "$CONFIG_FILE" ]; then
   MODEL="$(toml_root_value model)"
   MODEL_REASONING_EFFORT="$(toml_root_value model_reasoning_effort)"
@@ -73,6 +102,7 @@ if [ -r "$CONFIG_FILE" ]; then
   if [ "$MODEL_PROVIDER" != openai ]; then
     CUSTOM_BASE_URL="$(toml_provider_base_url "$MODEL_PROVIDER")"
     if [ -n "$CUSTOM_BASE_URL" ]; then BASE_URL="$CUSTOM_BASE_URL"; fi
+    WEBSOCKET_POLICY="$(toml_provider_websocket_policy "$MODEL_PROVIDER")"
   fi
 fi
 PROXY_URL=
@@ -102,6 +132,7 @@ printf '__CODEX_GLOBAL_BASE_URL=%s\n' "$BASE_URL"
 printf '__CODEX_GLOBAL_MODEL=%s\n' "$MODEL"
 printf '__CODEX_GLOBAL_MODEL_REASONING_EFFORT=%s\n' "$MODEL_REASONING_EFFORT"
 printf '__CODEX_GLOBAL_MODEL_PROVIDER=%s\n' "$MODEL_PROVIDER"
+printf '__CODEX_GLOBAL_WEBSOCKET_POLICY=%s\n' "$WEBSOCKET_POLICY"
 printf '__CODEX_GLOBAL_PROXY_URL=%s\n' "$PROXY_URL"
 printf '__CODEX_GLOBAL_AUTH_PRESENT=%s\n' "$AUTH_PRESENT"
 printf '__CODEX_GLOBAL_API_KEY=%s\n' "$AUTH_API_KEY"
@@ -114,6 +145,7 @@ AgentGlobalSettings parseCodexGlobalSettings(String output) {
     model: values['MODEL'] ?? '',
     reasoningEffort: values['MODEL_REASONING_EFFORT'] ?? '',
     modelProvider: _nonEmpty(values['MODEL_PROVIDER']) ?? 'openai',
+    websocketPolicy: _nonEmpty(values['WEBSOCKET_POLICY']),
     hasStoredAuthentication: values['AUTH_PRESENT'] == '1',
     apiKey: values['API_KEY'] ?? '',
     proxyUrl: values['PROXY_URL'] ?? '',
@@ -135,6 +167,28 @@ String updateCodexProviderBaseUrl(String configText, String baseUrl) {
     table: provider == 'openai' ? null : 'model_providers.$provider',
     key: provider == 'openai' ? 'openai_base_url' : 'base_url',
     value: normalizedBaseUrl.isEmpty ? null : normalizedBaseUrl,
+  );
+}
+
+String updateCodexProviderWebSocketPolicy(
+  String configText,
+  String? websocketPolicy,
+) {
+  final configuredProvider = _codexTomlStringValue(
+    configText,
+    table: null,
+    key: 'model_provider',
+  );
+  final provider = configuredProvider?.trim().isNotEmpty == true
+      ? configuredProvider!.trim()
+      : 'openai';
+  if (provider == 'openai') return configText;
+  final normalizedPolicy = normalizeCodexWebSocketPolicy(websocketPolicy);
+  return _replaceCodexTomlBooleanValue(
+    configText,
+    table: 'model_providers.$provider',
+    key: 'supports_websockets',
+    value: normalizedPolicy,
   );
 }
 
@@ -392,6 +446,7 @@ String buildWriteCodexGlobalSettingsScript({
   required String proxyUrl,
   required String defaultModel,
   required String defaultReasoningEffort,
+  String? websocketPolicy,
 }) {
   final normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl);
   final normalizedApiKey = normalizeCodexApiKey(apiKey);
@@ -399,6 +454,9 @@ String buildWriteCodexGlobalSettingsScript({
   final normalizedModel = normalizeCodexModel(defaultModel, '默认模型');
   final normalizedEffort = normalizeCodexReasoningEffort(
     defaultReasoningEffort,
+  );
+  final normalizedWebSocketPolicy = normalizeCodexWebSocketPolicy(
+    websocketPolicy,
   );
   final modelLine = normalizedModel.isEmpty ? '' : 'model = "$normalizedModel"';
   final effortLine = normalizedEffort.isEmpty
@@ -417,6 +475,7 @@ PROXY_URL=@@PROXY_URL@@
 BASE_URL=@@BASE_URL@@
 DEFAULT_MODEL_LINE=@@MODEL_LINE@@
 DEFAULT_REASONING_EFFORT_LINE=@@EFFORT_LINE@@
+WEBSOCKET_POLICY=@@WEBSOCKET_POLICY@@
 umask 077
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
@@ -447,6 +506,7 @@ CURRENT_PROVIDER="$(awk '
 if [ -z "$CURRENT_PROVIDER" ]; then CURRENT_PROVIDER=openai; fi
 
 awk -v base_url="$BASE_URL" -v current_provider="$CURRENT_PROVIDER" \
+    -v websocket_policy="$WEBSOCKET_POLICY" \
     -v default_model_line="$DEFAULT_MODEL_LINE" \
     -v default_reasoning_effort_line="$DEFAULT_REASONING_EFFORT_LINE" \
     '
@@ -466,9 +526,16 @@ awk -v base_url="$BASE_URL" -v current_provider="$CURRENT_PROVIDER" \
       provider_base_injected = 1
     }
   }
+  function inject_provider_websocket_policy() {
+    if (in_target_provider && !provider_websocket_injected && websocket_policy != "") {
+      print "supports_websockets = " websocket_policy
+      provider_websocket_injected = 1
+    }
+  }
   /^[[:space:]]*\[/ {
     inject_root_keys()
     inject_provider_base_url()
+    inject_provider_websocket_policy()
     section = $0
     sub(/^[[:space:]]*\[/, "", section)
     sub(/\][[:space:]]*(#.*)?$/, "", section)
@@ -479,6 +546,7 @@ awk -v base_url="$BASE_URL" -v current_provider="$CURRENT_PROVIDER" \
     if (in_target_provider) {
       target_provider_seen = 1
       provider_base_injected = 0
+      provider_websocket_injected = 0
     }
     print
     next
@@ -487,15 +555,27 @@ awk -v base_url="$BASE_URL" -v current_provider="$CURRENT_PROVIDER" \
     /^[[:space:]]*openai_base_url[[:space:]]*=/ { next }
   !in_table && /^[[:space:]]*model[[:space:]]*=/ { next }
   !in_table && /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ { next }
-  in_target_provider && /^[[:space:]]*base_url[[:space:]]*=/ { next }
+  in_target_provider && /^[[:space:]]*base_url[[:space:]]*=/ {
+    if (base_url != "") print "base_url = \"" base_url "\""
+    provider_base_injected = 1
+    next
+  }
+  in_target_provider && /^[[:space:]]*supports_websockets[[:space:]]*=/ {
+    if (websocket_policy != "") print "supports_websockets = " websocket_policy
+    provider_websocket_injected = 1
+    next
+  }
   { print }
   END {
     inject_root_keys()
     inject_provider_base_url()
-    if (current_provider != "openai" && !target_provider_seen && base_url != "") {
+    inject_provider_websocket_policy()
+    if (current_provider != "openai" && !target_provider_seen && \
+        (base_url != "" || websocket_policy != "")) {
       if (NR > 0) print ""
       print "[model_providers." current_provider "]"
-      print "base_url = \"" base_url "\""
+      if (base_url != "") print "base_url = \"" base_url "\""
+      if (websocket_policy != "") print "supports_websockets = " websocket_policy
     }
   }
 ' "$CONFIG_SOURCE" > "$CONFIG_TMP"
@@ -554,6 +634,7 @@ printf '__CODEX_GLOBAL_UPDATED=1\n'
       'BASE_URL': _shellQuote(normalizedBaseUrl),
       'MODEL_LINE': _shellQuote(modelLine),
       'EFFORT_LINE': _shellQuote(effortLine),
+      'WEBSOCKET_POLICY': _shellQuote(normalizedWebSocketPolicy ?? ''),
     },
   );
 }
@@ -786,6 +867,15 @@ String normalizeCodexProxyUrl(String value) {
   return result;
 }
 
+String? normalizeCodexWebSocketPolicy(String? value) {
+  final normalized = value?.trim().toLowerCase() ?? '';
+  if (normalized.isEmpty || normalized == codexWebSocketPolicyAuto) return null;
+  if (normalized == codexWebSocketPolicyEnabled) return 'true';
+  if (normalized == codexWebSocketPolicyDisabled) return 'false';
+  if (normalized == 'true' || normalized == 'false') return normalized;
+  throw ArgumentError('WebSocket 传输设置无效');
+}
+
 String normalizeCodexApiKey(String value) {
   final result = value.trim();
   if (result.isNotEmpty) _requireVisibleWithoutWhitespace(result, 'API 密钥');
@@ -876,6 +966,58 @@ String _replaceCodexTomlStringValue(
     output
       ..add('[$table]')
       ..add('$key = "${_escapeCodexTomlString(value)}"');
+  }
+  return '${output.join('\n').replaceFirst(RegExp(r'\n+$'), '')}\n';
+}
+
+String _replaceCodexTomlBooleanValue(
+  String text, {
+  required String table,
+  required String key,
+  required String? value,
+}) {
+  final output = <String>[];
+  final lines = const LineSplitter().convert(text);
+  final targetTable = table.trim();
+
+  String? currentTable;
+  var targetSeen = false;
+  var valueWritten = false;
+
+  for (final raw in lines) {
+    final header = RegExp(r'^\[([^\]]+)\]').firstMatch(raw.trim());
+    if (header != null) {
+      if (currentTable == targetTable && value != null && !valueWritten) {
+        output.add('$key = $value');
+        valueWritten = true;
+      }
+      currentTable = header.group(1)!.trim();
+      if (currentTable == targetTable) targetSeen = true;
+      output.add(raw);
+      continue;
+    }
+    if (currentTable == targetTable) {
+      final existingKey = RegExp(
+        r'^\s*([A-Za-z0-9_]+)\s*=',
+      ).firstMatch(raw)?.group(1);
+      if (existingKey == key) {
+        if (value != null && !valueWritten) {
+          output.add('$key = $value');
+          valueWritten = true;
+        }
+        continue;
+      }
+    }
+    output.add(raw);
+  }
+  if (currentTable == targetTable && value != null && !valueWritten) {
+    output.add('$key = $value');
+  }
+  if (!targetSeen && value != null) {
+    if (output.isNotEmpty && output.last.trim().isNotEmpty) output.add('');
+    output
+      ..add('[$targetTable]')
+      ..add('$key = $value');
   }
   return '${output.join('\n').replaceFirst(RegExp(r'\n+$'), '')}\n';
 }

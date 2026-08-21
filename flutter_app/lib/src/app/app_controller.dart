@@ -1626,6 +1626,7 @@ class AppController extends StateNotifier<AppUiState> {
     required String defaultModel,
     required String defaultReasoningEffort,
     required String testModel,
+    required String websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     await _ensureInitialized();
@@ -1655,6 +1656,9 @@ class AppController extends StateNotifier<AppUiState> {
           ? normalizeCodexReasoningEffort(defaultReasoningEffort)
           : '';
       normalizedTestModel = normalizeAgentModelId(agent, testModel);
+      if (agent == AgentKind.codex) {
+        normalizeCodexWebSocketPolicy(websocketPolicy);
+      }
     } catch (error) {
       state = state.copyWith(
         agentSettingsError: _message(error, '${agent.label} 配置格式错误'),
@@ -1706,6 +1710,7 @@ class AppController extends StateNotifier<AppUiState> {
         proxyUrl: proxyUrl,
         defaultModel: normalizedDefaultModel,
         defaultReasoningEffort: normalizedDefaultEffort,
+        websocketPolicy: agent == AgentKind.codex ? websocketPolicy : null,
         preserveCurrentProvider: effectivePreserveCurrentProvider,
       );
       stage = 'profile_persist';

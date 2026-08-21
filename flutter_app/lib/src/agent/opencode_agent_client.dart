@@ -192,6 +192,7 @@ class OpenCodeAgentClient extends CodexAgentClient
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     final normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl);

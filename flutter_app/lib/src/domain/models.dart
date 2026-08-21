@@ -711,6 +711,7 @@ abstract class AgentGlobalSettings with _$AgentGlobalSettings {
     @Default('') String model,
     @Default('') String reasoningEffort,
     @Default('openai') String modelProvider,
+    String? websocketPolicy,
     @Default(false) bool hasStoredAuthentication,
     @Default('') String apiKey,
     @Default('') String proxyUrl,

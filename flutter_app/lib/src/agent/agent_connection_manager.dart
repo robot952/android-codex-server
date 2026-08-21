@@ -630,6 +630,7 @@ class AgentConnectionManager {
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     final entry = _requireConnected(key);
@@ -642,6 +643,7 @@ class AgentConnectionManager {
       proxyUrl: proxyUrl,
       defaultModel: defaultModel,
       defaultReasoningEffort: defaultReasoningEffort,
+      websocketPolicy: websocketPolicy,
       preserveCurrentProvider: preserveCurrentProvider,
     );
     _requireCurrentRequest(key, entry, generation, 'Agent 全局配置保存请求已失效');

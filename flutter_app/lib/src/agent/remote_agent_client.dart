@@ -248,6 +248,7 @@ abstract interface class RemoteAgentGlobalSettingsClient {
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   });
 

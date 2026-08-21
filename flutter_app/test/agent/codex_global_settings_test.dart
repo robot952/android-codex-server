@@ -44,6 +44,18 @@ void main() {
       );
     });
 
+    test('normalizes the optional WebSocket transport policy', () {
+      expect(normalizeCodexWebSocketPolicy(null), isNull);
+      expect(normalizeCodexWebSocketPolicy('auto'), isNull);
+      expect(normalizeCodexWebSocketPolicy('enabled'), 'true');
+      expect(normalizeCodexWebSocketPolicy('disabled'), 'false');
+      expect(normalizeCodexWebSocketPolicy(' TRUE '), 'true');
+      expect(
+        () => normalizeCodexWebSocketPolicy('sometimes'),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
     test('parses native and SSH model responses through one decoder', () {
       final options = parseCodexApiModelsJson(
         utf8.encode(
@@ -105,6 +117,7 @@ model_provider = "relay"
 [model_providers.relay]
 base_url = "https://relay.example.com/v1"
 env_key = "OPENAI_API_KEY"
+supports_websockets = false
 
 [features]
 web_search = true
@@ -127,6 +140,7 @@ web_search = true
       expect(settings.proxyUrl, 'http://127.0.0.1:7890');
       expect(settings.hasStoredAuthentication, isTrue);
       expect(settings.apiKey, 'sk-visible-test-key');
+      expect(settings.websocketPolicy, codexWebSocketPolicyDisabled);
     });
 
     test('writes private files without re-rendering user values', () async {
@@ -210,6 +224,7 @@ model_provider = "relay"
 [model_providers.relay]
 base_url = "https://relay.example.com/v1"
 env_key = "OPENAI_API_KEY"
+supports_websockets = true
 
 [model_providers.backup]
 base_url = "https://backup.example.com/v1"
@@ -225,6 +240,7 @@ web_search = true
             proxyUrl: '',
             defaultModel: 'gpt-5.4',
             defaultReasoningEffort: 'low',
+            websocketPolicy: codexWebSocketPolicyDisabled,
           ),
           home: home,
         );
@@ -243,6 +259,14 @@ web_search = true
           contains('base_url = "https://relay-new.example.com/v1"'),
         );
         expect(lines, contains('env_key = "OPENAI_API_KEY"'));
+        expect(lines, contains('supports_websockets = false'));
+        expect(
+          RegExp(
+            r'^supports_websockets = ',
+            multiLine: true,
+          ).allMatches(await config.readAsString()).length,
+          1,
+        );
         expect(lines, contains('[model_providers.backup]'));
         expect(lines, contains('base_url = "https://backup.example.com/v1"'));
         expect(
@@ -308,6 +332,50 @@ web_search = true
       expect(defaultUpdated, contains('model = "gpt-existing"'));
       expect(defaultUpdated, contains('[features]\nweb_search = true'));
     });
+
+    test(
+      'updates only the active provider WebSocket policy in native TOML',
+      () {
+        const config = '''
+model_provider = "relay"
+
+[model_providers.relay]
+base_url = "https://relay.example.com/v1"
+supports_websockets = true
+
+[model_providers.backup]
+base_url = "https://backup.example.com/v1"
+supports_websockets = false
+''';
+
+        final disabled = updateCodexProviderWebSocketPolicy(
+          config,
+          codexWebSocketPolicyDisabled,
+        );
+        expect(disabled, contains('supports_websockets = false'));
+        expect(disabled, contains('[model_providers.backup]\nbase_url'));
+
+        final automatic = updateCodexProviderWebSocketPolicy(
+          disabled,
+          codexWebSocketPolicyAuto,
+        );
+        final relaySection = RegExp(
+          r'\[model_providers\.relay\](.*?)(?=\n\[|$)',
+          dotAll: true,
+        ).firstMatch(automatic)?.group(0);
+        expect(relaySection, isNotNull);
+        expect(relaySection, isNot(contains('supports_websockets')));
+        expect(automatic, contains('[model_providers.backup]'));
+
+        const withoutProviderTable = 'model_provider = "relay"\n';
+        final enabled = updateCodexProviderWebSocketPolicy(
+          withoutProviderTable,
+          codexWebSocketPolicyEnabled,
+        );
+        expect(enabled, contains('[model_providers.relay]'));
+        expect(enabled, contains('supports_websockets = true'));
+      },
+    );
   });
 
   group('Codex connection test script', () {

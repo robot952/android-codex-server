@@ -112,7 +112,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/agent/remote_agent_client.dart | Agent 中立连接、事件、列表、回合、会话变更、全局设置和可选运行时契约 | 当前运行；Codex/OpenCode 共用 |
 | flutter_app/lib/src/agent/remote_bootstrap.dart | Codex/Node 固定版本、Linux 探测、安装/卸载脚本、代理校验和进度解析 | 当前运行；仅管理当前 SSH 用户目录 |
 | flutter_app/lib/src/agent/codex_agent_client.dart | Codex JSONL、pending RPC、独立 SSH exec channel、回合/审批/会话变更、运行时、全局配置和远端 API 模型列表 | 当前运行；脚本经 SSH stdin 执行 |
-| flutter_app/lib/src/agent/codex_global_settings.dart | Codex `config.toml`/认证/代理脚本、解析、校验、真实 API 测试与兼容 `/models` 请求脚本 | 当前运行；仅修改远程用户全局文件 |
+| flutter_app/lib/src/agent/codex_global_settings.dart | Codex `config.toml`/认证/代理脚本、Provider URL 与 `supports_websockets` 传输策略、解析、校验、真实 API 测试与兼容 `/models` 请求脚本 | 当前运行；仅修改远程用户全局文件 |
 | flutter_app/lib/src/agent/opencode_agent_client.dart | OpenCode adapter；托管 bridge 命令、运行时、全局设置、Provider 模型映射和自定义模型同步 | 当前运行；复用 Codex JSONL 传输、reducer 和共享状态机 |
 | flutter_app/lib/src/agent/open_code_bootstrap.dart | 固定 OpenCode/共享 Node 探测、两阶段安装、bridge hash 校验和范围受限的卸载 | 当前运行；仅管理当前 SSH 用户目录下的 OpenCode 内容 |
 | flutter_app/lib/src/agent/open_code_bridge_asset.dart | 将打包的 OpenCode bridge 作为受校验安装输入加载 | 当前运行 |
@@ -123,7 +123,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/ssh/server_metrics.dart | Linux CPU、内存、磁盘和网络采样脚本及有界结果解析 | 当前运行 |
 | flutter_app/lib/src/ui/server_screen.dart | 服务器列表、设置编辑、私钥导入、连接遮罩和外链 | 当前运行 |
 | flutter_app/lib/src/ui/thread_list_screen.dart | Codex/OpenCode lane 切换、搜索/刷新、真实会话列表、新建入口、运行状态、工作目录、Agent 配置、终端和文件管理入口 | 当前运行；两种 Agent 均由真实 adapter 驱动 |
-| flutter_app/lib/src/ui/agent_settings_dialog.dart | 服务器实际配置、模型/effort/URL/Key/HTTP(S) 代理、真实测试、回显和保存确认 | 当前运行；Codex/OpenCode 后端均已接入 |
+| flutter_app/lib/src/ui/agent_settings_dialog.dart | 服务器实际配置、模型/effort/URL/Key/HTTP(S) 代理、Codex 自定义 Provider 的 WebSocket/HTTPS 传输选择、真实测试、回显和保存确认 | 当前运行；Codex/OpenCode 后端均已接入 |
 | flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化；代理聚焦时收起运行时信息 | 当前运行；IME 安全，与旧 Compose 聚焦行为一致 |
 | flutter_app/lib/src/ui/workspace_picker_dialog.dart | 当前远端路径、父/子目录浏览、加载/错误显示和目录确认 | 当前运行 |
 | flutter_app/lib/src/ui/work_screen.dart | 当前线程时间线、Composer、附件选择/上传、审批、模型/自定义模型管理/权限、会话操作、图片预览/保存、远程文件保存、上下文环和子 Agent 子会话入口 | 当前运行 |
@@ -1001,7 +1001,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ssh/server_metrics_test.dart | 采样协议解析、兼容短格式、非法/哨兵值和大小边界 |
 | test/agent/codex_protocol_test.dart | JSONL 编解码、generation、模型/会话/时间线/回合/附件兼容解析和字段边界 |
 | test/agent/codex_agent_client_test.dart | app-server 命令的环境加载/workspace shell quoting，以及空 `remoteCommand` 拒绝 |
-| test/agent/codex_global_settings_test.dart | Shell 语法、临时 HOME 配置读写、Provider/Key 保留、权限、`/models` 解析/去重、0600 header 文件和密钥不泄漏、自动 Responses/Chat 回退、显式 API 协议严格不回退和 HTTP/网络错误映射 |
+| test/agent/codex_global_settings_test.dart | Shell 语法、临时 HOME 配置读写、Provider/Key/`supports_websockets` 保留与更新、权限、`/models` 解析/去重、0600 header 文件和密钥不泄漏、自动 Responses/Chat 回退、显式 API 协议严格不回退和 HTTP/网络错误映射 |
 | test/agent/opencode_agent_client_test.dart | capability、workspace quoting、运行时生命周期、全局设置、真实 Key、Provider 前缀、模型同步/tombstone/缓存和显式 API 协议 |
 | test/agent/open_code_bootstrap_test.dart | 打包 bridge hash、固定版本探测、安装/卸载脚本语法、HTTP/HTTPS 代理防注入和托管卸载边界 |
 | test/ssh/ssh_server_client_test.dart | `sh -s`/长任务脚本只走 stdin、EOF、非零退出、输出上限、超时，以及跨 chunk UTF-8/CRLF/末行进度回调 |
@@ -1082,7 +1082,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | Codex 卸载 | 删除整个 Codex Remote 托管 root、wrapper 和附件暂存；运行中的托管 app-server 被关闭；若曾安装 OpenCode 则需重新安装；系统 Codex、VS Code、~/.codex 和工作区保留 |
 | OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表正确；固定 1.18.11 与打包 bridge 同时匹配才复用 |
 | OpenCode 卸载 | 只删除 OpenCode 托管子目录和 wrapper；共享 Node、Codex、附件暂存、~/.codex、VS Code 和工作区保留 |
-| Agent 全局配置 | Codex/OpenCode 都从服务器读取实际 URL/Provider/模型/effort/代理/Key；保存后二次确认和断线；测试按显式协议发真实最小请求且不保存 |
+| Agent 全局配置 | Codex/OpenCode 都从服务器读取实际 URL/Provider/模型/effort/代理/Key；Codex 自定义 Provider 额外读取并保存 `supports_websockets`（自动/启用/仅 HTTPS）；保存后二次确认和断线；测试按显式协议发真实最小请求且不保存 |
 | 工作目录 | 纯 SSH 不弹；当前 Agent 首次成功只弹一次并立即记忆；浏览/上一级/错误/稍后/确认正确；连续请求、切服务器/Agent和断线不串结果 |
 | 会话 | 新建、搜索、刷新、重进缓存、180 秒恢复、历史下拉分页和运行转圈不串服务器/Agent |
 | Work | 发送/流式输出/停止、审批和 user-input、权限切换、模型/草稿恢复、上下文缓存、压缩/回退/归档/重命名/审查/目标 |
@@ -1115,7 +1115,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | Debug | 十次点击开启；100 KiB/100 文件/10 MiB 轮转、FATAL/Java/ANR 线索、二次脱敏、多选分享、清空临时副本、日志附件待发送 | 真机崩溃复现、Native 信号和分享目标兼容 |
 | 应用内更新 | Gitee 稳定 Release 自动/手动检查、两种 APK 资源名兼容、忽略版本、DownloadManager 进度、后台继续、任务持久化/重绑、未知来源授权、取消后重试、包名/版本/证书校验和系统安装 | 真机弱网/断网、权限拒绝、下载失败、覆盖升级、真实安装器行为和进程重建回归 |
 | 终端/文件 | 每 profile 独立 SSH PTY；SFTP 浏览/上传/下载/重命名/删除/复制移动；SAF 分块导出 | 真机键盘、超大文件、断线和厂商文件选择器回归 |
-| 全局配置 | Codex/OpenCode 远程用户全局 Provider、认证、代理读取/保存和真实 API 测试；OpenCode 自定义模型同步/tombstone、Provider 前缀和显式协议已接入 | 真实服务器 Provider 差异、权限/登录/协议和模型缓存刷新回归；不得把 API key 放入命令参数或手机持久化 |
+| 全局配置 | Codex/OpenCode 远程用户全局 Provider、认证、代理读取/保存和真实 API 测试；Codex 自定义 Provider 的 WebSocket/HTTPS 传输策略；OpenCode 自定义模型同步/tombstone、Provider 前缀和显式协议已接入 | 真实服务器 Provider 差异、权限/登录/协议和模型缓存刷新回归；不得把 API key 放入命令参数或手机持久化 |
 
 ## 14. 产品长期约束
 
@@ -1154,7 +1154,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     只有用户明确要求暂缓时才不推送。
 20. “低价中转站优选”必须由系统浏览器打开 https://lowapi.asdb.top，不可内嵌 WebView。
 21. 非致命远端 stderr 去除 ANSI/控制字符后写入有界 Debug 日志，不覆盖会话页状态；真正断线、认证失败和不可恢复错误仍明确显示。
-22. Codex 配置修改当前远程 Unix 用户的全局模型 URL、密钥和 HTTP/HTTPS 代理，不改项目工作区（当前 Codex 已接入）。
+22. Codex 配置修改当前远程 Unix 用户的全局模型 URL、密钥、HTTP/HTTPS 代理和自定义 Provider 的 `supports_websockets`，不改项目工作区（当前 Codex 已接入）。
 23. 配置页先读取服务器实际 Provider、默认模型、URL、代理、登录状态和 Key；自定义 Provider 不得误报未配置（当前 Codex 已接入）。
 24. HTTP/HTTPS Markdown 链接和裸 URL 必须完整、可点击、可长按复制（当前均已接入并有回归测试）。
 25. Agent 接入必须通过 RemoteAgentClient/AgentCapabilities，所有异步结果、缓存和审批队列按 profile + Agent + thread 隔离。

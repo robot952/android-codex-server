@@ -40,6 +40,7 @@ abstract interface class RemoteServerCodexSettingsClient {
     required String proxyUrl,
     required String defaultModel,
     required String defaultReasoningEffort,
+    String? websocketPolicy,
     required bool preserveCurrentProvider,
   });
 

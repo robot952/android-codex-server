@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../agent/codex_global_settings.dart';
 import '../domain/models.dart';
 import 'theme.dart';
 
@@ -19,6 +20,7 @@ typedef AgentSettingsSaveCallback =
       required String defaultModel,
       required String defaultReasoningEffort,
       required String testModel,
+      required String websocketPolicy,
       required bool preserveCurrentProvider,
     });
 
@@ -49,6 +51,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   late final TextEditingController _testModelController;
 
   String _defaultReasoningEffort = '';
+  String _websocketPolicy = codexWebSocketPolicyAuto;
   bool _apiKeyVisible = false;
   bool _testResultStale = false;
 
@@ -196,6 +199,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       testModelController: _testModelController,
                                       defaultReasoningEffort:
                                           _defaultReasoningEffort,
+                                      websocketPolicy: _websocketPolicy,
                                       apiKeyVisible: _apiKeyVisible,
                                       testFeedback: _testFeedback,
                                       testSuccessful:
@@ -211,6 +215,12 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       onDefaultReasoningEffortChanged: (value) {
                                         setState(() {
                                           _defaultReasoningEffort = value;
+                                        });
+                                      },
+                                      onWebSocketPolicyChanged: (value) {
+                                        setState(() {
+                                          _websocketPolicy = value;
+                                          _testResultStale = true;
                                         });
                                       },
                                       onApiKeyVisibilityChanged: () {
@@ -273,6 +283,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     _apiKeyController.text = settings?.apiKey ?? '';
     _proxyUrlController.text = settings?.proxyUrl ?? '';
     _defaultReasoningEffort = settings?.reasoningEffort ?? '';
+    _websocketPolicy = settings?.websocketPolicy ?? codexWebSocketPolicyAuto;
     _testModelController.text = _initialTestModel(widget.state);
   }
 
@@ -335,6 +346,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
       defaultModel: _defaultModelController.text,
       defaultReasoningEffort: _defaultReasoningEffort,
       testModel: _testModelController.text,
+      websocketPolicy: _websocketPolicy,
       preserveCurrentProvider: preserveCurrentProvider,
     );
   }
@@ -412,12 +424,14 @@ class _SettingsForm extends StatelessWidget {
     required this.proxyUrlController,
     required this.testModelController,
     required this.defaultReasoningEffort,
+    required this.websocketPolicy,
     required this.apiKeyVisible,
     required this.testFeedback,
     required this.testSuccessful,
     required this.testing,
     required this.reasoningSettingsAvailable,
     required this.onDefaultReasoningEffortChanged,
+    required this.onWebSocketPolicyChanged,
     required this.onApiKeyVisibilityChanged,
     required this.onTestRelevantValueChanged,
     required this.onTest,
@@ -435,12 +449,14 @@ class _SettingsForm extends StatelessWidget {
   final TextEditingController proxyUrlController;
   final TextEditingController testModelController;
   final String defaultReasoningEffort;
+  final String websocketPolicy;
   final bool apiKeyVisible;
   final String? testFeedback;
   final bool testSuccessful;
   final bool testing;
   final bool reasoningSettingsAvailable;
   final ValueChanged<String> onDefaultReasoningEffortChanged;
+  final ValueChanged<String> onWebSocketPolicyChanged;
   final VoidCallback onApiKeyVisibilityChanged;
   final VoidCallback onTestRelevantValueChanged;
   final VoidCallback onTest;
@@ -495,6 +511,38 @@ class _SettingsForm extends StatelessWidget {
           const SizedBox(height: 5),
           Text(
             '留空使用当前 Agent 的默认思考强度。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+        if (agent == AgentKind.codex && customProviderInUse) ...[
+          const SizedBox(height: 11),
+          Text('模型 API 传输', style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 7),
+          SegmentedButton<String>(
+            key: const ValueKey('agent-settings-websocket-policy'),
+            segments: const [
+              ButtonSegment<String>(
+                value: codexWebSocketPolicyAuto,
+                label: Text('自动'),
+              ),
+              ButtonSegment<String>(
+                value: codexWebSocketPolicyEnabled,
+                label: Text('启用 WebSocket'),
+              ),
+              ButtonSegment<String>(
+                value: codexWebSocketPolicyDisabled,
+                label: Text('仅 HTTPS'),
+              ),
+            ],
+            selected: {websocketPolicy},
+            onSelectionChanged: enabled
+                ? (selection) => onWebSocketPolicyChanged(selection.first)
+                : null,
+            showSelectedIcon: false,
+          ),
+          const SizedBox(height: 5),
+          Text(
+            '仅影响当前自定义 Provider；中转站不支持 WebSocket 时选择“仅 HTTPS”。',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
