@@ -155,7 +155,7 @@ import top.asdb.codexremote.ui.theme.CodexSurfaceRaised
 import java.io.ByteArrayOutputStream
 
 private val FieldShape = RoundedCornerShape(7.dp)
-private const val PROMOTION_URL = "https://lowapi.asdb.top"
+private const val PROMOTION_URL = "https://lowapi.button1.cn"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -946,7 +946,7 @@ private fun PromotionLink(
         modifier = modifier
             .width(148.dp)
             .height(42.dp)
-            .semantics { contentDescription = "打开低价中转站优选：lowapi.asdb.top" }
+            .semantics { contentDescription = "打开低价中转站优选：lowapi.button1.cn" }
             .clickable(onClick = onClick),
     ) {
         Row(
@@ -968,7 +968,7 @@ private fun PromotionLink(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "lowapi.asdb.top",
+                    "lowapi.button1.cn",
                     style = MaterialTheme.typography.labelSmall,
                     color = CodexMuted,
                     maxLines = 1,
