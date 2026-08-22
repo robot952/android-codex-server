@@ -3,6 +3,18 @@ import 'package:codex_remote/src/ui/work_content.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('hides the backend context-compaction guidance only', () {
+    expect(
+      isContextCompactionSummary(
+        'Head off long conversations before they cause the model to be less accurate. '
+        'Start a new thread when possible to keep threads small and targeted.',
+      ),
+      isTrue,
+    );
+    expect(isContextCompactionSummary('上下文已压缩'), isFalse);
+    expect(isContextCompactionSummary('正常的英文回复'), isFalse);
+  });
+
   test('recognizes image-view tool paths from text and output', () {
     expect(
       imagePreviewPath(

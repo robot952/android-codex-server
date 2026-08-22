@@ -1,5 +1,14 @@
 import '../domain/models.dart';
 
+/// Codex may emit this English guidance as a separate assistant item after
+/// context compaction. The timeline already shows the localized compaction
+/// status, so the duplicate backend guidance should stay out of the UI.
+bool isContextCompactionSummary(String text) {
+  final normalized = text.trim().toLowerCase();
+  return normalized.contains('model to be less accurate') &&
+      normalized.contains('start a new thread');
+}
+
 const Set<String> _imageExtensions = <String>{
   '.png',
   '.jpg',

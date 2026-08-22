@@ -404,6 +404,102 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'does not re-anchor a manually positioned transcript while running',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(420, 840);
+      addTearDown(tester.view.reset);
+
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager)
+        ..showState(timelineState(timeline: entries(0, 60)));
+      addTearDown(() async => manager.close());
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final scrollView = tester.widget<CustomScrollView>(
+        find.byType(CustomScrollView),
+      );
+      final position = scrollView.controller!.position;
+      position.jumpTo(
+        (position.minScrollExtent + position.maxScrollExtent) / 2,
+      );
+      await tester.pump();
+      final before = position.pixels;
+
+      controller.showState(
+        controller.state.copyWith(
+          running: true,
+          timeline: [
+            ...controller.state.timeline,
+            const TimelineEntry(
+              id: 'streaming-entry',
+              kind: TimelineKind.agentMessage,
+              text: '后台继续输出的新内容',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(position.pixels, closeTo(before, 1));
+      expect(find.byTooltip('回到底部'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('hides the English compaction guidance from the transcript', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(
+          timeline: const [
+            TimelineEntry(
+              id: 'compaction-notice',
+              kind: TimelineKind.notice,
+              text: '上下文已压缩',
+            ),
+            TimelineEntry(
+              id: 'compaction-guidance',
+              kind: TimelineKind.agentMessage,
+              text:
+                  'Head off long conversations before they cause the model to be less accurate. '
+                  'Start a new thread when possible to keep threads small and targeted.',
+            ),
+          ],
+        ),
+      );
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('上下文已压缩'), findsOneWidget);
+    expect(find.textContaining('model to be less accurate'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('keeps cached history visible with a centered loading state', (
     tester,
   ) async {

@@ -966,6 +966,22 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
           return;
         }
       }
+      // The scroll position is the final guard against stale follow state.
+      // A scrollbar drag can bypass the gesture details reported by the
+      // scrollable, so never re-anchor a non-initial viewport that is already
+      // away from the transcript bottom.
+      final atTranscriptBottom =
+          (position.pixels - _transcriptBottomOffset).abs() <= 0.5;
+      if (!_initialBottomPending && !atTranscriptBottom) {
+        if (_followOutput) {
+          setState(() {
+            _followOutput = false;
+            _userDraggingTimeline = false;
+            _canScrollForward = position.extentAfter > 0.5;
+          });
+        }
+        return;
+      }
       if (!_followOutput && !_initialBottomPending) return;
       if ((position.pixels - _transcriptBottomOffset).abs() > 0.5) {
         position.jumpTo(_transcriptBottomOffset);
@@ -2240,7 +2256,9 @@ class _Transcript extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = state.timeline;
+    final entries = state.timeline
+        .where((entry) => !isContextCompactionSummary(entry.text))
+        .toList(growable: false);
     final rows = entries.toTimelineRenderRows();
     final canOpenSubAgents =
         state.activeAgentCapabilities.subAgents &&
