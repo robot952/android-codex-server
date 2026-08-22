@@ -320,6 +320,8 @@ AppUiState reduceCodexNotification(
       final id = _string(params, const ['itemId', 'item_id']);
       if (id.isEmpty) return state;
       final turn = _turnId(params);
+      final delta = _string(params, const ['delta']);
+      if (isCodexRawWebSearchPayload(delta)) return state;
       return state.copyWith(
         timeline: _updateTimelineEntry(
           state.timeline,
@@ -336,7 +338,7 @@ AppUiState reduceCodexNotification(
                   .copyWith(
                     text: _appendBounded(
                       existing?.text ?? '',
-                      _string(params, const ['delta']),
+                      delta,
                       codexMaxTimelineTextChars,
                       codexTextTruncationMarker,
                     ),
@@ -851,6 +853,7 @@ List<TimelineEntry> _reduceReasoningDelta(
   final summaryIndex = _int(params, const ['summaryIndex', 'summary_index']);
   final contentIndex = _int(params, const ['contentIndex', 'content_index']);
   final delta = _string(params, const ['delta', 'text']);
+  if (isCodexRawWebSearchPayload(delta)) return timeline;
   if (params.containsKey('summaryIndex') ||
       params.containsKey('summary_index')) {
     _appendIndexed(summary, summaryIndex, delta);

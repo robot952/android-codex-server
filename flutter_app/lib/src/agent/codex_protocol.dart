@@ -28,6 +28,32 @@ const String codexTextTruncationMarker = '\n\n[内容过长，后续已截断]';
 const String codexOutputTruncationMarker = '\n\n[命令输出过长，后续已截断]';
 const String codexDiffTruncationMarker = '\n\n[差异内容过长，后续已截断]';
 
+/// Detects the raw object preview emitted by a web-search tool.
+///
+/// Search results are protocol metadata, not assistant prose. Keeping this
+/// check at the protocol boundary prevents an unsupported search payload from
+/// being rendered as a huge reasoning paragraph when a provider sends an
+/// older or provider-specific item shape.
+bool isCodexRawWebSearchPayload(String text) {
+  final normalized = text.trim();
+  if (normalized.length < 20) return false;
+  final lower = normalized.toLowerCase();
+  final hasSearchType =
+      lower.contains('websearch') || lower.contains('web_search');
+  final hasResultShape =
+      lower.contains('text_result') ||
+      (lower.contains('ref_id') &&
+          (lower.contains('snippet') ||
+              lower.contains('domain') ||
+              lower.contains('url')));
+  if (!hasSearchType && !hasResultShape) return false;
+  return normalized.startsWith('{') ||
+      normalized.startsWith('[') ||
+      (hasResultShape &&
+          (normalized.contains('{') || normalized.contains('['))) ||
+      (hasSearchType && (lower.contains('query') || lower.contains('results')));
+}
+
 /// Request identifiers are deliberately type-sensitive: JSON `1` and `"1"`
 /// identify different requests.
 sealed class CodexRequestId {
@@ -1271,9 +1297,11 @@ abstract final class CodexPayloadParser {
       'agentMessage' => TimelineEntry(
         id: id,
         kind: TimelineKind.agentMessage,
-        text: _firstString(item, const <String>[
-          'text',
-        ], maxChars: codexMaxTimelineTextChars),
+        text: _sanitizedAgentText(
+          _firstString(item, const <String>[
+            'text',
+          ], maxChars: codexMaxTimelineTextChars),
+        ),
         status: _firstString(item, const <String>['phase', 'status']),
         turnId: boundedTurnId,
       ),
@@ -1347,6 +1375,8 @@ abstract final class CodexPayloadParser {
         text: '上下文已压缩',
         turnId: boundedTurnId,
       ),
+      'webSearch' || 'web_search' || 'webSearchCall' || 'web_search_call' =>
+        _parseToolItem(item: item, id: id, turnId: boundedTurnId),
       'imageView' || 'imageGeneration' || 'sleep' => TimelineEntry(
         id: id,
         kind: TimelineKind.tool,
@@ -1362,27 +1392,149 @@ abstract final class CodexPayloadParser {
         status: _firstString(item, const <String>['status']),
         turnId: boundedTurnId,
       ),
-      'mcpToolCall' ||
-      'dynamicToolCall' ||
-      'collabAgentToolCall' => TimelineEntry(
-        id: id,
-        kind: TimelineKind.tool,
-        title: _firstString(item, const <String>['tool']).isNotEmpty
-            ? _firstString(item, const <String>['tool'])
-            : '工具调用',
-        text: _jsonPreview(item['result'], maxChars: codexMaxTimelineTextChars),
-        status: _firstString(item, const <String>['status']),
-        turnId: boundedTurnId,
-      ),
-      _ => TimelineEntry(
-        id: id,
-        kind: TimelineKind.notice,
-        title: type,
-        text: _jsonPreview(item, maxChars: codexMaxMetadataPreviewChars),
-        turnId: boundedTurnId,
-      ),
+      'mcpToolCall' || 'dynamicToolCall' || 'collabAgentToolCall' =>
+        _parseToolItem(item: item, id: id, turnId: boundedTurnId),
+      _ =>
+        _isWebSearchItem(item)
+            ? _parseToolItem(item: item, id: id, turnId: boundedTurnId)
+            : TimelineEntry(
+                id: id,
+                kind: TimelineKind.notice,
+                title: type,
+                text: _jsonPreview(
+                  item,
+                  maxChars: codexMaxMetadataPreviewChars,
+                ),
+                turnId: boundedTurnId,
+              ),
     };
   }
+}
+
+TimelineEntry _parseToolItem({
+  required Map<String, Object?> item,
+  required String id,
+  required String turnId,
+}) {
+  final isWebSearch = _isWebSearchItem(item);
+  final tool = _firstString(item, const <String>['tool', 'name'], marker: '');
+  final status = _firstString(item, const <String>['status'], marker: '');
+  return TimelineEntry(
+    id: id,
+    kind: TimelineKind.tool,
+    title: isWebSearch ? '网页搜索' : (tool.isNotEmpty ? tool : '工具调用'),
+    text: isWebSearch
+        ? _webSearchQuery(item)
+        : _jsonPreview(item['result'], maxChars: codexMaxTimelineTextChars),
+    status: status.isNotEmpty ? status : (isWebSearch ? 'completed' : ''),
+    turnId: turnId,
+  );
+}
+
+bool _isWebSearchItem(Map<String, Object?> item) {
+  final type = _normalizedSearchName(
+    _firstString(item, const <String>['type'], marker: ''),
+  );
+  if (type == 'websearch' ||
+      type == 'web_search' ||
+      type == 'websearchcall' ||
+      type == 'web_search_call') {
+    return true;
+  }
+  if (type.contains('websearch') || type.contains('web_search')) return true;
+  final tool = _normalizedSearchName(
+    _firstString(item, const <String>['tool', 'name'], marker: ''),
+  );
+  if (tool.contains('websearch') || tool.contains('web_search')) return true;
+  for (final key in const <String>['result', 'results', 'output', 'content']) {
+    if (_looksLikeWebSearchResult(item[key])) return true;
+  }
+  return false;
+}
+
+String _normalizedSearchName(String value) =>
+    value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+
+bool _looksLikeWebSearchResult(Object? value, [int depth = 0]) {
+  if (depth > 3) return false;
+  if (value is List) {
+    for (final entry in value.take(16)) {
+      if (_looksLikeWebSearchResult(entry, depth + 1)) return true;
+    }
+    return false;
+  }
+  final object = _asObjectMap(value);
+  if (object == null) return false;
+  final keys = object.keys.map((key) => key.toLowerCase()).toSet();
+  final type = _normalizedSearchName(
+    _firstString(object, const <String>['type'], marker: ''),
+  );
+  if (type == 'text_result' ||
+      type == 'websearch' ||
+      type == 'web_search_call') {
+    return true;
+  }
+  if (keys.contains('ref_id') &&
+      (keys.contains('snippet') ||
+          keys.contains('url') ||
+          keys.contains('domain'))) {
+    return true;
+  }
+  for (final key in const <String>[
+    'result',
+    'results',
+    'output',
+    'content',
+    'data',
+  ]) {
+    if (object.containsKey(key) &&
+        _looksLikeWebSearchResult(object[key], depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+String _webSearchQuery(Map<String, Object?> item) {
+  final direct = _firstString(
+    item,
+    const <String>['query', 'searchQuery', 'search_query'],
+    maxChars: codexMaxTimelineTextChars,
+    marker: '',
+  );
+  if (direct.isNotEmpty) return direct;
+  final action = _asObjectMap(item['action']);
+  final nested = action == null
+      ? ''
+      : _firstString(
+          action,
+          const <String>['query', 'q'],
+          maxChars: codexMaxTimelineTextChars,
+          marker: '',
+        );
+  if (nested.isNotEmpty) return nested;
+  final queries =
+      item['queries'] ?? (action == null ? null : action['queries']);
+  for (final entry in _asList(queries, maxItems: 4)) {
+    if (entry is String && entry.trim().isNotEmpty) {
+      return _bounded(
+        entry.trim(),
+        codexMaxTimelineTextChars,
+        codexTextTruncationMarker,
+      );
+    }
+    final object = _asObjectMap(entry);
+    final query = object == null
+        ? ''
+        : _firstString(
+            object,
+            const <String>['query', 'q'],
+            maxChars: codexMaxTimelineTextChars,
+            marker: '',
+          );
+    if (query.isNotEmpty) return query;
+  }
+  return '已完成网页搜索';
 }
 
 final class CodexThreadSnapshot {
@@ -1805,7 +1957,9 @@ List<String> _reasoningParts(Object? value) {
         : _firstString(object, const <String>[
             'text',
           ], maxChars: codexMaxTimelineTextChars);
-    if (raw.isEmpty || remaining <= 0) continue;
+    if (raw.isEmpty || remaining <= 0 || isCodexRawWebSearchPayload(raw)) {
+      continue;
+    }
     final part = _bounded(raw, remaining, codexTextTruncationMarker);
     result.add(part);
     remaining -= part.length;
@@ -1813,6 +1967,9 @@ List<String> _reasoningParts(Object? value) {
   }
   return List<String>.unmodifiable(result);
 }
+
+String _sanitizedAgentText(String text) =>
+    isCodexRawWebSearchPayload(text) ? '' : text;
 
 List<FileChange> _parseChanges(Object? value) {
   var remainingDiffChars = codexMaxDiffChars;

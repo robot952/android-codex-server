@@ -749,6 +749,57 @@ void main() {
       expect(timeline.length, lessThan(5000));
     });
 
+    test('normalizes web search items without exposing result metadata', () {
+      final formal = CodexPayloadParser.parseItem(<String, Object?>{
+        'id': 'search-1',
+        'type': 'webSearch',
+        'query': '查找 SSH 文档',
+      }, turnId: 'turn-1');
+      final tool = CodexPayloadParser.parseItem(<String, Object?>{
+        'id': 'tool-1',
+        'type': 'mcpToolCall',
+        'tool': 'web_search_preview',
+        'result': <Object?>[
+          <String, Object?>{
+            'type': 'text_result',
+            'domain': 'github.com',
+            'ref_id': 'turn0search1',
+            'snippet': 'internal result',
+            'url': 'https://example.com',
+          },
+        ],
+      }, turnId: 'turn-1');
+
+      expect(formal?.kind, TimelineKind.tool);
+      expect(formal?.title, '网页搜索');
+      expect(formal?.text, '查找 SSH 文档');
+      expect(formal?.status, 'completed');
+      expect(tool?.kind, TimelineKind.tool);
+      expect(tool?.title, '网页搜索');
+      expect(tool?.text, '已完成网页搜索');
+      expect(tool?.text, isNot(contains('ref_id')));
+      expect(tool?.text, isNot(contains('snippet')));
+    });
+
+    test('filters raw web search JSON from reasoning and agent text', () {
+      const raw =
+          '{"type":"webSearch","id":"exec-1","query":"","results":[{"type":"text_result","ref_id":"turn0search1","snippet":"x"}]}';
+      final reasoning = CodexPayloadParser.parseItem(<String, Object?>{
+        'id': 'reasoning-1',
+        'type': 'reasoning',
+        'summary': <Object?>[raw, '正常思考'],
+      }, turnId: 'turn-1');
+      final agent = CodexPayloadParser.parseItem(<String, Object?>{
+        'id': 'agent-1',
+        'type': 'agentMessage',
+        'text': raw,
+      }, turnId: 'turn-1');
+
+      expect(isCodexRawWebSearchPayload(raw), isTrue);
+      expect(reasoning?.reasoningSummary, <String>['正常思考']);
+      expect(agent?.text, isEmpty);
+    });
+
     test('keeps inherited parent turns out of resumed sub-agent history', () {
       final snapshot = CodexPayloadParser.parseResumedThread(<String, Object?>{
         'thread': <String, Object?>{

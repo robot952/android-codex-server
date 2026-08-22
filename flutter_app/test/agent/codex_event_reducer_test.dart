@@ -76,6 +76,42 @@ void main() {
     expect(state.activeThread?.status, 'idle');
   });
 
+  test('ignores raw web search JSON in streamed text', () {
+    const raw =
+        '{"type":"webSearch","id":"exec-1","query":"","results":[{"type":"text_result","ref_id":"turn0search1","snippet":"x"}]}';
+    var state = _state().copyWith(
+      running: true,
+      activeTurnId: 'turn-1',
+      activeThread: const AgentThread(
+        id: 'thread-1',
+        title: '任务',
+        status: 'active',
+        activeTurnId: 'turn-1',
+      ),
+    );
+    state = reduceCodexNotification(
+      state,
+      _notification('item/reasoning/summaryTextDelta', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'itemId': 'reasoning-1',
+        'delta': raw,
+      }),
+    );
+    expect(state.timeline, isEmpty);
+
+    state = reduceCodexNotification(
+      state,
+      _notification('item/agentMessage/delta', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'itemId': 'agent-1',
+        'delta': raw,
+      }),
+    );
+    expect(state.timeline, isEmpty);
+  });
+
   test('updates a background thread without changing active timeline', () {
     final state = _state();
     final next = reduceCodexNotification(
