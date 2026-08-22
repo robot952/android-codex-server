@@ -12,6 +12,13 @@ typedef AgentSettingsTestCallback =
       required String testModel,
     });
 
+typedef AgentSettingsFetchModelsCallback =
+    Future<List<ApiModelOption>> Function({
+      required String baseUrl,
+      required String apiKey,
+      required String proxyUrl,
+    });
+
 typedef AgentSettingsSaveCallback =
     void Function({
       required String baseUrl,
@@ -27,6 +34,7 @@ typedef AgentSettingsSaveCallback =
 class AgentSettingsDialog extends StatefulWidget {
   const AgentSettingsDialog({
     required this.state,
+    required this.onFetchModels,
     required this.onTest,
     required this.onSave,
     required this.onDismiss,
@@ -34,6 +42,7 @@ class AgentSettingsDialog extends StatefulWidget {
   });
 
   final AppUiState state;
+  final AgentSettingsFetchModelsCallback onFetchModels;
   final AgentSettingsTestCallback onTest;
   final AgentSettingsSaveCallback onSave;
   final VoidCallback onDismiss;
@@ -54,6 +63,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   String _websocketPolicy = codexWebSocketPolicyAuto;
   bool _apiKeyVisible = false;
   bool _testResultStale = false;
+  String? _modelFetchTarget;
 
   @override
   void initState() {
@@ -209,6 +219,8 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                                   ?.successful ==
                                               true,
                                       testing: state.agentSettingsTesting,
+                                      modelsLoading:
+                                          state.apiModelOptionsLoading,
                                       reasoningSettingsAvailable: state
                                           .activeAgentCapabilities
                                           .reasoningEffort,
@@ -230,6 +242,22 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       },
                                       onTestRelevantValueChanged:
                                           _markTestResultStale,
+                                      onFetchDefaultModels: (anchorContext) =>
+                                          _fetchModels(
+                                            anchorContext: anchorContext,
+                                            controller: _defaultModelController,
+                                            target: 'default',
+                                          ),
+                                      onFetchTestModels: (anchorContext) =>
+                                          _fetchModels(
+                                            anchorContext: anchorContext,
+                                            controller: _testModelController,
+                                            target: 'test',
+                                          ),
+                                      defaultModelsLoading:
+                                          _modelFetchTarget == 'default',
+                                      testModelsLoading:
+                                          _modelFetchTarget == 'test',
                                       onTest: _testSettings,
                                     ),
                             ),
@@ -304,6 +332,74 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
       proxyUrl: _proxyUrlController.text,
       testModel: _testModelController.text,
     );
+  }
+
+  Future<void> _fetchModels({
+    required BuildContext anchorContext,
+    required TextEditingController controller,
+    required String target,
+  }) async {
+    if (_busy ||
+        widget.state.agentSettings == null ||
+        widget.state.apiModelOptionsLoading ||
+        _modelFetchTarget != null) {
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    final buttonBox = anchorContext.findRenderObject() as RenderBox?;
+    final overlayBox =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (buttonBox == null || overlayBox == null) return;
+    final menuAnchor = Rect.fromLTWH(
+      buttonBox.localToGlobal(Offset.zero, ancestor: overlayBox).dx,
+      buttonBox.localToGlobal(Offset.zero, ancestor: overlayBox).dy +
+          buttonBox.size.height,
+      buttonBox.size.width,
+      0,
+    );
+    final overlaySize = overlayBox.size;
+    setState(() => _modelFetchTarget = target);
+    final options = await widget.onFetchModels(
+      baseUrl: _baseUrlController.text,
+      apiKey: _apiKeyController.text,
+      proxyUrl: _proxyUrlController.text,
+    );
+    if (!mounted) return;
+    setState(() => _modelFetchTarget = null);
+    if (options.isEmpty) {
+      final message = widget.state.apiModelOptionsError?.trim();
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              message?.isNotEmpty == true ? message! : 'API 未返回可用模型',
+            ),
+          ),
+        );
+      return;
+    }
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(menuAnchor, Offset.zero & overlaySize),
+      constraints: const BoxConstraints(maxHeight: 420, maxWidth: 360),
+      items: options
+          .map(
+            (option) => PopupMenuItem<String>(
+              key: ValueKey('agent-settings-model-option-${option.modelId}'),
+              value: option.modelId,
+              child: _ApiModelMenuItem(option: option),
+            ),
+          )
+          .toList(),
+    );
+    if (!mounted || selected == null) return;
+    setState(() {
+      controller.text = selected;
+      controller.selection = TextSelection.collapsed(offset: selected.length);
+      if (target == 'test') _testResultStale = true;
+    });
   }
 
   Future<void> _confirmSave({required bool preserveCurrentProvider}) async {
@@ -429,11 +525,16 @@ class _SettingsForm extends StatelessWidget {
     required this.testFeedback,
     required this.testSuccessful,
     required this.testing,
+    required this.modelsLoading,
     required this.reasoningSettingsAvailable,
     required this.onDefaultReasoningEffortChanged,
     required this.onWebSocketPolicyChanged,
     required this.onApiKeyVisibilityChanged,
     required this.onTestRelevantValueChanged,
+    required this.onFetchDefaultModels,
+    required this.onFetchTestModels,
+    required this.defaultModelsLoading,
+    required this.testModelsLoading,
     required this.onTest,
   });
 
@@ -454,11 +555,16 @@ class _SettingsForm extends StatelessWidget {
   final String? testFeedback;
   final bool testSuccessful;
   final bool testing;
+  final bool modelsLoading;
   final bool reasoningSettingsAvailable;
   final ValueChanged<String> onDefaultReasoningEffortChanged;
   final ValueChanged<String> onWebSocketPolicyChanged;
   final VoidCallback onApiKeyVisibilityChanged;
   final VoidCallback onTestRelevantValueChanged;
+  final ValueChanged<BuildContext> onFetchDefaultModels;
+  final ValueChanged<BuildContext> onFetchTestModels;
+  final bool defaultModelsLoading;
+  final bool testModelsLoading;
   final VoidCallback onTest;
 
   @override
@@ -497,6 +603,16 @@ class _SettingsForm extends StatelessWidget {
                 : 'custom-api/model-id',
             helperText: '留空使用 $agentName 默认模型；保存后对新会话生效',
             helperMaxLines: 3,
+            suffixIcon: _FetchModelsButton(
+              key: const ValueKey('agent-settings-fetch-default-models'),
+              enabled: enabled && !modelsLoading,
+              loading: defaultModelsLoading,
+              onPressed: onFetchDefaultModels,
+            ),
+            suffixIconConstraints: const BoxConstraints(
+              minHeight: 56,
+              minWidth: 126,
+            ),
           ),
         ),
         if (reasoningSettingsAvailable) ...[
@@ -623,6 +739,16 @@ class _SettingsForm extends StatelessWidget {
                 : 'custom-api/model-id',
             helperText: '保存后按当前服务器记住',
             helperMaxLines: 2,
+            suffixIcon: _FetchModelsButton(
+              key: const ValueKey('agent-settings-fetch-test-models'),
+              enabled: enabled && !modelsLoading,
+              loading: testModelsLoading,
+              onPressed: onFetchTestModels,
+            ),
+            suffixIconConstraints: const BoxConstraints(
+              minHeight: 56,
+              minWidth: 126,
+            ),
           ),
         ),
         const SizedBox(height: 11),
@@ -634,12 +760,7 @@ class _SettingsForm extends StatelessWidget {
             icon: testing
                 ? const SizedBox.square(
                     dimension: 17,
-                    // A determinate ring keeps this compact button visually
-                    // busy without an unbounded ticker while the RPC runs.
-                    child: CircularProgressIndicator(
-                      value: 0.32,
-                      strokeWidth: 2,
-                    ),
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.network_check, size: 18),
             label: Text(testing ? '正在测试' : '测试连接'),
@@ -663,6 +784,72 @@ class _SettingsForm extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _FetchModelsButton extends StatelessWidget {
+  const _FetchModelsButton({
+    required this.enabled,
+    required this.loading,
+    required this.onPressed,
+    super.key,
+  });
+
+  final bool enabled;
+  final bool loading;
+  final ValueChanged<BuildContext> onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Builder(
+        builder: (buttonContext) => TextButton.icon(
+          onPressed: enabled && !loading
+              ? () => onPressed(buttonContext)
+              : null,
+          icon: loading
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh, size: 18),
+          label: Text(loading ? '获取中' : '获取模型'),
+        ),
+      ),
+    );
+  }
+}
+
+class _ApiModelMenuItem extends StatelessWidget {
+  const _ApiModelMenuItem({required this.option});
+
+  final ApiModelOption option;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayName = option.displayName.trim();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 220, maxWidth: 320),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            displayName.isEmpty ? option.modelId : displayName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (displayName.isNotEmpty && displayName != option.modelId)
+            Text(
+              option.modelId,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+        ],
+      ),
     );
   }
 }

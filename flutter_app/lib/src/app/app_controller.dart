@@ -3657,18 +3657,24 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
-  Future<void> fetchApiModelOptions() async {
+  Future<List<ApiModelOption>> fetchApiModelOptions({
+    String? baseUrl,
+    String? apiKey,
+    String? proxyUrl,
+  }) async {
     await _ensureInitialized();
     if (!state.activeAgentCapabilities.globalSettings ||
         state.apiModelOptionsLoading) {
-      return;
+      return const <ApiModelOption>[];
     }
     final profileId = state.selectedProfileId;
     final agent = state.activeAgent;
     final profile = state.profiles.firstWhereOrNull(
       (candidate) => candidate.id == profileId,
     );
-    if (profileId == null || profile == null) return;
+    if (profileId == null || profile == null) {
+      return const <ApiModelOption>[];
+    }
     final key = AgentConnectionKey(profileId: profileId, agent: agent);
     if (_agents.states[key]?.phase != ConnectionPhase.connected) {
       state = state.copyWith(
@@ -3677,7 +3683,7 @@ class AppController extends StateNotifier<AppUiState> {
         apiModelOptionsLoading: false,
         apiModelOptionsError: '服务器未连接，无法获取模型列表',
       );
-      return;
+      return const <ApiModelOption>[];
     }
 
     final requestId = ++_apiModelOptionsRequestId;
@@ -3689,7 +3695,16 @@ class AppController extends StateNotifier<AppUiState> {
       apiModelOptionsError: null,
     );
     try {
-      final settings = await _agents.readGlobalSettings(key, profile);
+      final useDraftSettings =
+          baseUrl != null || apiKey != null || proxyUrl != null;
+      final settings = useDraftSettings
+          ? AgentGlobalSettings(
+              baseUrl: baseUrl ?? '',
+              apiKey: apiKey ?? '',
+              proxyUrl: proxyUrl ?? '',
+              modelProvider: state.agentSettings?.modelProvider ?? '',
+            )
+          : await _agents.readGlobalSettings(key, profile);
       _diagnostics.info(
         'ApiModels',
         'fetch_start profile=$profileId agent=${agent.label} '
@@ -3706,7 +3721,7 @@ class AppController extends StateNotifier<AppUiState> {
         proxyUrl: settings.proxyUrl,
       );
       if (!_isApiModelOptionsRequestCurrent(requestId, key, generation)) {
-        return;
+        return const <ApiModelOption>[];
       }
       _diagnostics.info(
         'ApiModels',
@@ -3719,6 +3734,7 @@ class AppController extends StateNotifier<AppUiState> {
         apiModelOptionsLoading: false,
         apiModelOptionsError: null,
       );
+      return models;
     } catch (error, stack) {
       _diagnostics.warn(
         'ApiModels',
@@ -3727,7 +3743,7 @@ class AppController extends StateNotifier<AppUiState> {
         stack,
       );
       if (!_isApiModelOptionsRequestCurrent(requestId, key, generation)) {
-        return;
+        return const <ApiModelOption>[];
       }
       state = state.copyWith(
         apiModelOptions: const <ApiModelOption>[],
@@ -3735,6 +3751,7 @@ class AppController extends StateNotifier<AppUiState> {
         apiModelOptionsLoading: false,
         apiModelOptionsError: _message(error, '无法获取 API 模型列表'),
       );
+      return const <ApiModelOption>[];
     }
   }
 

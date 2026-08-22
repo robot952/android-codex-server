@@ -280,6 +280,9 @@ class _AppRootState extends ConsumerState<_AppRoot>
           if (state.agentSettingsVisible)
             AgentSettingsDialog(
               state: state,
+              onFetchModels: ref
+                  .read(appControllerProvider.notifier)
+                  .fetchApiModelOptions,
               onTest: ref
                   .read(appControllerProvider.notifier)
                   .testAgentSettings,

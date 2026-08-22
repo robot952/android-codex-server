@@ -185,6 +185,74 @@ void main() {
     );
   });
 
+  testWidgets('fetches draft API models and fills both model fields', (
+    tester,
+  ) async {
+    final fetches = <AgentSettingsFetchValues>[];
+    await tester.pumpWidget(
+      _DialogHarness(
+        state: const AppUiState(
+          selectedProfileId: 'server-one',
+          profiles: [ServerProfile(id: 'server-one')],
+          activeAgent: AgentKind.codex,
+          activeAgentCapabilities: AgentCapabilities.codex,
+          agentSettingsVisible: true,
+          agentSettings: AgentGlobalSettings(
+            baseUrl: 'https://relay.example.com/v1',
+            apiKey: 'sk-draft',
+            proxyUrl: 'http://127.0.0.1:7890',
+          ),
+        ),
+        onFetchModels:
+            ({required baseUrl, required apiKey, required proxyUrl}) async {
+              fetches.add(
+                AgentSettingsFetchValues(
+                  baseUrl: baseUrl,
+                  apiKey: apiKey,
+                  proxyUrl: proxyUrl,
+                ),
+              );
+              return const [
+                ApiModelOption(
+                  modelId: 'deepseek-v4',
+                  displayName: 'DeepSeek V4',
+                ),
+                ApiModelOption(modelId: 'gpt-5.6-sol'),
+              ];
+            },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('agent-settings-fetch-default-models')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('DeepSeek V4'), findsOneWidget);
+    expect(find.text('deepseek-v4'), findsOneWidget);
+    await tester.tap(find.text('DeepSeek V4'));
+    await tester.pumpAndSettle();
+    expect(_text(tester, 'agent-settings-default-model'), 'deepseek-v4');
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('agent-settings-fetch-test-models')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('agent-settings-fetch-test-models')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('agent-settings-model-option-gpt-5.6-sol')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(_text(tester, 'agent-settings-test-model'), 'gpt-5.6-sol');
+    expect(fetches, hasLength(2));
+    expect(fetches.first.baseUrl, 'https://relay.example.com/v1');
+    expect(fetches.first.apiKey, 'sk-draft');
+    expect(fetches.first.proxyUrl, 'http://127.0.0.1:7890');
+  });
+
   testWidgets('failed tests keep their icon and message readable', (
     tester,
   ) async {
@@ -354,9 +422,17 @@ void main() {
         onDismiss: () => dismissed = true,
       ),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
 
     expect(find.text('正在测试'), findsOneWidget);
+    final progress = tester.widget<CircularProgressIndicator>(
+      find.descendant(
+        of: find.byKey(const ValueKey('agent-settings-test')),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+    );
+    expect(progress.value, isNull);
     expect(
       tester
           .widget<OutlinedButton>(
@@ -422,12 +498,14 @@ void main() {
 class _DialogHarness extends StatelessWidget {
   const _DialogHarness({
     required this.state,
+    this.onFetchModels = _noopFetchModels,
     this.onTest = _noopTest,
     this.onSave = _noopSave,
     this.onDismiss = _noop,
   });
 
   final AppUiState state;
+  final AgentSettingsFetchModelsCallback onFetchModels;
   final AgentSettingsTestCallback onTest;
   final AgentSettingsSaveCallback onSave;
   final VoidCallback onDismiss;
@@ -443,6 +521,7 @@ class _DialogHarness extends StatelessWidget {
             const SizedBox.expand(),
             AgentSettingsDialog(
               state: state,
+              onFetchModels: onFetchModels,
               onTest: onTest,
               onSave: onSave,
               onDismiss: onDismiss,
@@ -452,6 +531,19 @@ class _DialogHarness extends StatelessWidget {
       ),
     );
   }
+}
+
+@immutable
+class AgentSettingsFetchValues {
+  const AgentSettingsFetchValues({
+    required this.baseUrl,
+    required this.apiKey,
+    required this.proxyUrl,
+  });
+
+  final String baseUrl;
+  final String apiKey;
+  final String proxyUrl;
 }
 
 @immutable
@@ -514,6 +606,12 @@ Future<void> _enterText(WidgetTester tester, String key, String value) async {
 }
 
 void _noop() {}
+
+Future<List<ApiModelOption>> _noopFetchModels({
+  required String baseUrl,
+  required String apiKey,
+  required String proxyUrl,
+}) async => const <ApiModelOption>[];
 
 void _noopTest({
   required String baseUrl,

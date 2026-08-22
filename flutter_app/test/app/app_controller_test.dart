@@ -3426,6 +3426,41 @@ void main() {
     expect(controller.state.apiModelOptionsError, isNull);
   });
 
+  test('fetches API models with unsaved settings drafts', () async {
+    final profile = _firstProfile.copyWith(workspacePromptShown: true);
+    final store = _MemoryProfileStore(
+      StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+    );
+    final host = _FingerprintClient();
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agent = _SettingsAgent();
+    final agents = AgentConnectionManager(
+      connections,
+      clientFactory: (kind) => agent,
+    );
+    final controller = AppController(store, connections, agents);
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    await controller.requestConnect(profile);
+    await controller.ensureActiveAgent();
+
+    final models = await controller.fetchApiModelOptions(
+      baseUrl: 'https://draft.example/v1',
+      apiKey: 'sk-draft',
+      proxyUrl: 'http://draft-proxy:7890',
+    );
+
+    expect(models.single.modelId, 'gpt-api-model');
+    expect(agent.readCalls, 0);
+    expect(agent.fetchedBaseUrl, 'https://draft.example/v1');
+    expect(agent.fetchedApiKey, 'sk-draft');
+    expect(agent.fetchedProxyUrl, 'http://draft-proxy:7890');
+  });
+
   test('persists custom models and rebuilds the visible catalog', () async {
     final profile = _firstProfile.copyWith(workspacePromptShown: true);
     final store = _MemoryProfileStore(
