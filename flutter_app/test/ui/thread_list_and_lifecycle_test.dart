@@ -35,12 +35,18 @@ class _ThreadListController extends AppController {
   bool? lastRefreshSilent;
   Completer<void>? refreshGate;
   AgentKind? selectedAgent;
+  bool fileManagerOpened = false;
 
   void showState(AppUiState value) => state = value;
 
   @override
   void selectAgent(AgentKind agent) {
     selectedAgent = agent;
+  }
+
+  @override
+  void showFileManager() {
+    fileManagerOpened = true;
   }
 
   @override
@@ -414,6 +420,65 @@ void main() {
       find.descendant(of: button, matching: find.byIcon(Icons.terminal)),
     );
     expect(icon.color, codexGreen);
+  });
+
+  testWidgets('places file management beside settings on the thread list', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    const profile = ServerProfile(
+      id: 'server',
+      name: '测试服务器',
+      host: 'example.test',
+      username: 'root',
+      authMode: AuthMode.password,
+    );
+    const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: const ThreadListScreen(),
+        ),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        profiles: const [profile],
+        selectedProfileId: profile.id,
+        connectionStates: {
+          profile.id: const domain.ConnectionState(
+            phase: ConnectionPhase.connected,
+          ),
+        },
+        agentConnectionStates: {
+          key: const domain.ConnectionState(phase: ConnectionPhase.connected),
+        },
+      ),
+    );
+    await tester.pump();
+
+    final settingsButton = find.byTooltip('设置');
+    final fileManagerButton = find.byKey(
+      const ValueKey('thread-list-file-manager'),
+    );
+    expect(settingsButton, findsOneWidget);
+    expect(fileManagerButton, findsOneWidget);
+    expect(
+      tester.getTopLeft(fileManagerButton).dx,
+      greaterThan(tester.getTopLeft(settingsButton).dx),
+    );
+
+    await tester.tap(fileManagerButton);
+    expect(controller.fileManagerOpened, isTrue);
+
+    await tester.tap(settingsButton);
+    await tester.pumpAndSettle();
+    expect(find.text('文件管理'), findsNothing);
   });
 
   testWidgets('pulling the thread panel reveals refresh states below search', (

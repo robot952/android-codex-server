@@ -165,6 +165,14 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
             icon: const Icon(Icons.settings),
           ),
           IconButton(
+            key: const ValueKey('thread-list-file-manager'),
+            tooltip: '文件管理',
+            onPressed: hostConnected && !localWindows
+                ? controller.showFileManager
+                : null,
+            icon: const Icon(Icons.folder_open),
+          ),
+          IconButton(
             tooltip: '切换服务器',
             onPressed: () => _showServerSwitcher(context, state, controller),
             icon: const Icon(Icons.dns),
@@ -353,9 +361,6 @@ void _showThreadSettings(
   AppUiState state,
   AppController controller,
 ) {
-  final profile = state.profiles
-      .where((candidate) => candidate.id == state.selectedProfileId)
-      .firstOrNull;
   showDialog<void>(
     context: context,
     builder: (_) => _ThreadSettingsDialog(
@@ -369,11 +374,6 @@ void _showThreadSettings(
               ?.phase ==
           ConnectionPhase.connected,
       canConfigureAgent: state.activeAgentCapabilities.globalSettings,
-      canManageFiles: profile != null && !isLocalWindowsProfile(profile),
-      hostConnected:
-          state.selectedProfileId != null &&
-          state.connectionStates[state.selectedProfileId]?.phase ==
-              ConnectionPhase.connected,
       onSelectWorkspace: () {
         Navigator.of(context).pop();
         controller.showWorkspacePicker();
@@ -381,10 +381,6 @@ void _showThreadSettings(
       onConfigureAgent: () {
         Navigator.of(context).pop();
         controller.showAgentSettings();
-      },
-      onOpenFileManager: () {
-        Navigator.of(context).pop();
-        controller.showFileManager();
       },
     ),
   );
@@ -416,21 +412,15 @@ class _ThreadSettingsDialog extends StatelessWidget {
     required this.agent,
     required this.agentConnected,
     required this.canConfigureAgent,
-    required this.canManageFiles,
-    required this.hostConnected,
     required this.onSelectWorkspace,
     required this.onConfigureAgent,
-    required this.onOpenFileManager,
   });
 
   final AgentKind agent;
   final bool agentConnected;
   final bool canConfigureAgent;
-  final bool canManageFiles;
-  final bool hostConnected;
   final VoidCallback onSelectWorkspace;
   final VoidCallback onConfigureAgent;
-  final VoidCallback onOpenFileManager;
 
   @override
   Widget build(BuildContext context) {
@@ -465,13 +455,6 @@ class _ThreadSettingsDialog extends StatelessWidget {
                 detail: '模型地址、API 密钥和代理',
                 enabled: agentConnected && canConfigureAgent,
                 onTap: onConfigureAgent,
-              ),
-              _SettingsActionRow(
-                icon: Icons.folder_open,
-                title: '文件管理',
-                detail: '浏览和管理服务器文件',
-                enabled: hostConnected && canManageFiles,
-                onTap: onOpenFileManager,
               ),
             ],
           ),
