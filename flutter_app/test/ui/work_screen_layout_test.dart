@@ -500,6 +500,61 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('hides provider thinking tags from assistant timeline rows', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(
+        timelineState(
+          timeline: const [
+            TimelineEntry(
+              id: 'tagged-agent',
+              kind: TimelineKind.agentMessage,
+              text: '<thinking>内部草稿</thinking>\n最终回复',
+            ),
+            TimelineEntry(
+              id: 'streaming-agent',
+              kind: TimelineKind.agentMessage,
+              text: '<thinking>尚未闭合的内部草稿',
+            ),
+            TimelineEntry(
+              id: 'tagged-reasoning',
+              kind: TimelineKind.reasoning,
+              title: '思考过程',
+              text: '<thinking>检查布局</thinking>',
+            ),
+          ],
+        ),
+      );
+    addTearDown(() async => manager.close());
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('最终回复'), findsOneWidget);
+    expect(find.text('思考过程'), findsOneWidget);
+    expect(find.textContaining('<thinking>'), findsNothing);
+    expect(find.textContaining('内部草稿'), findsNothing);
+    expect(find.textContaining('尚未闭合'), findsNothing);
+
+    await tester.tap(find.text('思考过程'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('检查布局'), findsOneWidget);
+    expect(find.textContaining('<thinking>'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('keeps cached history visible with a centered loading state', (
     tester,
   ) async {

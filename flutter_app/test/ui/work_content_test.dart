@@ -15,6 +15,57 @@ void main() {
     expect(isContextCompactionSummary('正常的英文回复'), isFalse);
   });
 
+  test('normalizes provider thinking tags across timeline entry kinds', () {
+    final entries = normalizeTimelineEntriesForDisplay(const <TimelineEntry>[
+      TimelineEntry(
+        id: 'agent-complete',
+        kind: TimelineKind.agentMessage,
+        text: '<thinking>内部草稿</thinking>\n最终回复',
+      ),
+      TimelineEntry(
+        id: 'agent-streaming',
+        kind: TimelineKind.agentMessage,
+        text: '<think>尚未闭合的内部草稿',
+      ),
+      TimelineEntry(
+        id: 'reasoning',
+        kind: TimelineKind.reasoning,
+        title: '思考过程',
+        text: '<thinking>检查布局</thinking>',
+        reasoningSummary: <String>['<thinking>检查布局</thinking>'],
+      ),
+      TimelineEntry(
+        id: 'empty-reasoning',
+        kind: TimelineKind.reasoning,
+        title: '思考过程',
+        text: '<thinking></thinking>',
+      ),
+    ]);
+
+    expect(entries.map((entry) => entry.id), <String>[
+      'agent-complete',
+      'reasoning',
+    ]);
+    expect(entries.first.text, '最终回复');
+    expect(entries.last.text, '检查布局');
+    expect(entries.last.reasoningSummary, <String>['检查布局']);
+    expect(entries.every((entry) => !entry.text.contains('<think')), isTrue);
+  });
+
+  test('removes several thinking drafts while preserving visible prose', () {
+    final entries = normalizeTimelineEntriesForDisplay(const <TimelineEntry>[
+      TimelineEntry(
+        id: 'agent',
+        kind: TimelineKind.agentMessage,
+        text:
+            '开头\n<think>草稿一</think>\n中间\n'
+            '<THINKING>草稿二</THINKING>\n结尾',
+      ),
+    ]);
+
+    expect(entries.single.text, '开头\n\n中间\n\n结尾');
+  });
+
   test('recognizes image-view tool paths from text and output', () {
     expect(
       imagePreviewPath(

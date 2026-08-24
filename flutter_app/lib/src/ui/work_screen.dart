@@ -2256,9 +2256,7 @@ class _Transcript extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = state.timeline
-        .where((entry) => !isContextCompactionSummary(entry.text))
-        .toList(growable: false);
+    final entries = normalizeTimelineEntriesForDisplay(state.timeline);
     final rows = entries.toTimelineRenderRows();
     final canOpenSubAgents =
         state.activeAgentCapabilities.subAgents &&

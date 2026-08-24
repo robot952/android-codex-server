@@ -9,6 +9,84 @@ bool isContextCompactionSummary(String text) {
       normalized.contains('start a new thread');
 }
 
+final RegExp _thinkingTagPattern = RegExp(
+  r'<\s*(/?)\s*think(?:ing)?\s*>',
+  caseSensitive: false,
+);
+
+/// Normalizes provider-specific thinking markup before timeline rows are built.
+///
+/// Some OpenAI-compatible providers include literal `<think>` or `<thinking>`
+/// blocks in assistant text even when the protocol already emits reasoning
+/// items. Assistant blocks are internal drafts and stay hidden; reasoning rows
+/// retain their content but do not expose the raw tags.
+List<TimelineEntry> normalizeTimelineEntriesForDisplay(
+  Iterable<TimelineEntry> entries,
+) {
+  final result = <TimelineEntry>[];
+  for (final entry in entries) {
+    if (isContextCompactionSummary(entry.text)) continue;
+    final normalized = switch (entry.kind) {
+      TimelineKind.agentMessage => _normalizeAgentMessage(entry),
+      TimelineKind.reasoning => _normalizeReasoning(entry),
+      _ => entry,
+    };
+    if (normalized != null) result.add(normalized);
+  }
+  return List<TimelineEntry>.unmodifiable(result);
+}
+
+TimelineEntry? _normalizeAgentMessage(TimelineEntry entry) {
+  final text = _removeThinkingDrafts(entry.text);
+  if (text.isEmpty && entry.attachments.isEmpty) return null;
+  return text == entry.text ? entry : entry.copyWith(text: text);
+}
+
+TimelineEntry? _normalizeReasoning(TimelineEntry entry) {
+  final summary = entry.reasoningSummary
+      .map(_removeThinkingMarkers)
+      .where((part) => part.isNotEmpty)
+      .toList(growable: false);
+  final content = entry.reasoningContent
+      .map(_removeThinkingMarkers)
+      .where((part) => part.isNotEmpty)
+      .toList(growable: false);
+  var text = _removeThinkingMarkers(entry.text);
+  if (text.isEmpty) {
+    text = <String>[...summary, ...content].join('\n').trim();
+  }
+  if (text.isEmpty) return null;
+  return entry.copyWith(
+    text: text,
+    reasoningSummary: List<String>.unmodifiable(summary),
+    reasoningContent: List<String>.unmodifiable(content),
+  );
+}
+
+String _removeThinkingMarkers(String text) =>
+    text.replaceAll(_thinkingTagPattern, '').trim();
+
+String _removeThinkingDrafts(String text) {
+  final matches = _thinkingTagPattern.allMatches(text).toList(growable: false);
+  if (matches.isEmpty) return text;
+
+  final visible = StringBuffer();
+  var cursor = 0;
+  var depth = 0;
+  for (final match in matches) {
+    if (depth == 0) visible.write(text.substring(cursor, match.start));
+    final closing = (match.group(1) ?? '').isNotEmpty;
+    if (closing) {
+      if (depth > 0) depth -= 1;
+    } else {
+      depth += 1;
+    }
+    cursor = match.end;
+  }
+  if (depth == 0) visible.write(text.substring(cursor));
+  return visible.toString().trim();
+}
+
 const Set<String> _imageExtensions = <String>{
   '.png',
   '.jpg',

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.91+220，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.92+221，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2045,6 +2045,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   连接管理器继续按 profile、连接身份和 generation 拒绝迟到结果。成功后沿用统一文件操作状态刷新当前目录。
 - 新建和重命名对话框均由其 StatefulWidget 持有输入控制器，路由关闭动画完成后才释放，避免控制器提前销毁。
   回归覆盖 Flutter 菜单与名称校验、控制器创建后刷新，以及连接管理器向当前 SFTP lane 的参数转发。
+
+### 17.54 Provider 思考标签归一化（2026-08-24）
+
+- 应用版本：`1.8.92+221`。部分 OpenAI 兼容 Provider 会在正式 `reasoning` 事件之外，把字面
+  `<think>` 或 `<thinking>` 块混入普通助手消息；Work 时间线现在在统一展示入口归一化历史快照和实时流式
+  内容，普通回复隐藏内部草稿，正式思考条目保留正文但不再显示原始标签。
+- 未闭合的流式思考块在闭合及最终回复到达前保持隐藏；只含空标签的助手或思考条目不再生成空白行和多余
+  “思考过程”标题。归一化不改变原始时间线身份、缓存、恢复顺序或命令/文件卡片位置。
+- 纯 Dart 回归覆盖完整标签、跨流未闭合标签、大小写变体、多个思考块、空思考条目和可见正文保留。
 
 ## 18. 文档维护规则
 
