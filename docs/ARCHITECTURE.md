@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.93+222，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.94+223，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2065,6 +2065,14 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 用户选择“更新并连接”后才替换该 Profile 的持久化指纹，并使用新指纹自动重试；取消时旧指纹和
   服务器配置保持不变。首次连接仍沿用原有探测、确认和固定流程。
 - 该能力不是静默接受未知 host key。控制器回归覆盖取消不保存、确认替换和替换后严格连接成功。
+
+### 17.56 文本选区高对比底色（2026-08-26）
+
+- 应用版本：`1.8.94+223`。全局文本选区显式使用半透明亮蓝底色，与对话背景和
+  Markdown 代码块的 `#181818` 表面保持明显层级；光标和拖拽手柄继续使用琥珀色。
+- 该选区样式从 `ThemeData.textSelectionTheme` 统一下发，覆盖 Work 正文、代码块、命令输出、
+  差异和其他可选文本，不改动现有长按定位、选区菜单和滚动跟随逻辑。Widget 回归固定选区底色
+  与手柄颜色，防止深色主题默认值再次导致选中内容不明显。
 
 ## 18. 文档维护规则
 

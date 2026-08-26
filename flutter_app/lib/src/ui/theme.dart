@@ -9,6 +9,7 @@ const codexMuted = Color(0xFFA6A6A6);
 const codexAmber = Color(0xFFD6A84B);
 const codexGreen = Color(0xFF58C88C);
 const codexBlue = Color(0xFF54A6F8);
+const codexSelection = Color(0x8054A6F8);
 const codexRed = Color(0xFFF07178);
 
 ThemeData buildCodexTheme() {
@@ -72,6 +73,11 @@ ThemeData buildCodexTheme() {
     scaffoldBackgroundColor: codexBackground,
     canvasColor: codexBackground,
     textTheme: textTheme,
+    textSelectionTheme: const TextSelectionThemeData(
+      cursorColor: codexAmber,
+      selectionColor: codexSelection,
+      selectionHandleColor: codexAmber,
+    ),
     appBarTheme: const AppBarTheme(
       backgroundColor: codexBackground,
       foregroundColor: codexText,

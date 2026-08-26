@@ -709,6 +709,12 @@ void main() {
     await _jumpToTranscriptStart(tester, scrollView.controller!);
     expect(find.byTooltip('回到底部'), findsNothing);
 
+    final selectionTheme = Theme.of(
+      tester.element(find.text('消息 0')),
+    ).textSelectionTheme;
+    expect(selectionTheme.selectionColor, codexSelection);
+    expect(selectionTheme.selectionHandleColor, codexAmber);
+
     await tester.longPress(find.text('消息 0'));
     await tester.pumpAndSettle();
 
