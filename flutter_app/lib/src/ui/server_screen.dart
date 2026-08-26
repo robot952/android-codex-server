@@ -15,6 +15,7 @@ import '../platform/app_update_manager.dart';
 import '../platform/diagnostic_logger.dart';
 import '../platform/local_linux_manager.dart';
 import '../platform/windows_local_server_client.dart';
+import '../ssh/ssh_server_client.dart';
 import 'app_update_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'server_metrics_strip.dart';
@@ -46,7 +47,13 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     final state = ref.watch(appControllerProvider);
     final localLinux = ref.watch(localLinuxControllerProvider);
     ref.listen<AppUpdateState>(appUpdateProvider, _scheduleUpdatePrompt);
-    _scheduleFingerprintDialog(state.pendingFingerprint);
+    final pendingFingerprintProfile = state.profiles.firstWhereOrNull(
+      (profile) => profile.id == state.selectedProfileId,
+    );
+    _scheduleFingerprintDialog(
+      state.pendingFingerprint,
+      pendingFingerprintProfile?.hostFingerprint,
+    );
     final blocking = _blockingConnection(state);
 
     return PopScope(
@@ -370,9 +377,17 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
         false;
   }
 
-  void _scheduleFingerprintDialog(String? fingerprint) {
+  void _scheduleFingerprintDialog(
+    String? fingerprint,
+    String? savedFingerprint,
+  ) {
     if (fingerprint == null || fingerprint == _shownFingerprint) return;
     _shownFingerprint = fingerprint;
+    final previous = savedFingerprint?.trim() ?? '';
+    final fingerprintChanged =
+        previous.isNotEmpty &&
+        normalizeSshFingerprint(previous) !=
+            normalizeSshFingerprint(fingerprint);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final approved = await showDialog<bool>(
@@ -380,15 +395,30 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
         barrierDismissible: false,
         builder: (context) => AlertDialog(
           icon: const Icon(Icons.fingerprint, color: codexAmber),
-          title: const Text('核对 SSH 主机指纹'),
+          title: Text(fingerprintChanged ? '服务器指纹已变化' : '核对 SSH 主机指纹'),
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 440),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('请与服务器管理员提供的 SHA-256 指纹核对。信任后会固定保存。'),
+                Text(
+                  fingerprintChanged
+                      ? '服务器返回的 SSH 指纹与已保存记录不同。请先确认服务器已重装或密钥已更换；来源不明时请取消连接。'
+                      : '请与服务器管理员提供的 SHA-256 指纹核对。信任后会固定保存。',
+                ),
                 const SizedBox(height: 12),
+                if (fingerprintChanged) ...[
+                  const Text('已保存指纹'),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    previous,
+                    style: const TextStyle(fontFamily: 'monospace'),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('服务器当前指纹'),
+                  const SizedBox(height: 4),
+                ],
                 SelectableText(
                   fingerprint,
                   style: const TextStyle(
@@ -406,7 +436,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('信任并连接'),
+              child: Text(fingerprintChanged ? '更新并连接' : '信任并连接'),
             ),
           ],
         ),

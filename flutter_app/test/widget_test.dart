@@ -76,6 +76,59 @@ class _BlockingClient implements RemoteServerClient {
   }
 }
 
+class _ChangedFingerprintClient implements RemoteServerClient {
+  _ChangedFingerprintClient(this.actualFingerprint);
+
+  final String actualFingerprint;
+  final Completer<void> closed = Completer<void>();
+  bool connected = false;
+
+  @override
+  Future<void> connect(ServerProfile profile) async {
+    final expected = normalizeSshFingerprint(profile.hostFingerprint);
+    if (expected != normalizeSshFingerprint(actualFingerprint)) {
+      throw HostKeyMismatchException(expected, actualFingerprint);
+    }
+    connected = true;
+  }
+
+  @override
+  Future<void> disconnect() async {
+    connected = false;
+    if (!closed.isCompleted) closed.complete();
+  }
+
+  @override
+  Future<void> get done => closed.future;
+
+  @override
+  bool get isConnected => connected;
+
+  @override
+  Future<String> probeFingerprint(ServerProfile profile) async =>
+      actualFingerprint;
+
+  @override
+  Future<ServerMetrics> readServerMetrics(ServerProfile profile) async =>
+      const ServerMetrics();
+
+  @override
+  SSHClient requireSshClient() => throw UnimplementedError();
+
+  @override
+  Future<String> run(
+    String command, {
+    Duration timeout = const Duration(seconds: 15),
+    int maxOutputBytes = 1024 * 1024,
+  }) async => '';
+
+  @override
+  void close() {
+    connected = false;
+    if (!closed.isCompleted) closed.complete();
+  }
+}
+
 const _profile = ServerProfile(
   id: 'server-one',
   name: '测试服务器',
@@ -185,6 +238,43 @@ void main() {
       expect(overlay, findsNothing);
     },
   );
+
+  testWidgets('changed SSH fingerprint shows old and new values', (
+    tester,
+  ) async {
+    const actualFingerprint = 'SHA256:replacement';
+    final store = _MemoryStore(const StoredProfiles(profiles: [_profile]));
+    final manager = ServerConnectionManager(
+      clientFactory: () => _ChangedFingerprintClient(actualFingerprint),
+    );
+    addTearDown(manager.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          profileStoreProvider.overrideWithValue(store),
+          serverConnectionManagerProvider.overrideWithValue(manager),
+        ],
+        child: const CodexRemoteApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('测试服务器'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '连接'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('服务器指纹已变化'), findsOneWidget);
+    expect(find.text('已保存指纹'), findsOneWidget);
+    expect(find.text('SHA256:test'), findsOneWidget);
+    expect(find.text('服务器当前指纹'), findsOneWidget);
+    expect(find.text(actualFingerprint), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '更新并连接'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    await tester.pumpAndSettle();
+    expect(store.value.profiles.single.hostFingerprint, 'SHA256:test');
+  });
 
   testWidgets('server editor survives 1.5K portrait and enlarged text', (
     tester,

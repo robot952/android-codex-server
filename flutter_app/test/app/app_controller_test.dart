@@ -199,6 +199,23 @@ class _ReconnectableHost extends _FingerprintClient {
   }
 }
 
+class _ChangedFingerprintClient extends _FingerprintClient {
+  _ChangedFingerprintClient(this.actualFingerprint, this.connectFingerprints);
+
+  final String actualFingerprint;
+  final List<String> connectFingerprints;
+
+  @override
+  Future<void> connect(ServerProfile profile) async {
+    connectFingerprints.add(profile.hostFingerprint);
+    final expected = normalizeSshFingerprint(profile.hostFingerprint);
+    if (expected != normalizeSshFingerprint(actualFingerprint)) {
+      throw HostKeyMismatchException(expected, actualFingerprint);
+    }
+    await super.connect(profile);
+  }
+}
+
 class _AttachmentHost extends _FingerprintClient
     implements RemoteServerAttachmentClient {
   static const remotePath = '/tmp/codex-remote/uploads/notes.txt';
@@ -1995,6 +2012,49 @@ void main() {
     expect(store.value.profiles.single.name, 'Renamed');
     expect(store.value.profiles.single.hostFingerprint, 'SHA256:verified');
     expect(controller.state.connection.phase, ConnectionPhase.connected);
+  });
+
+  test('changed host fingerprint can be confirmed and replaced', () async {
+    const actualFingerprint = 'SHA256:replacement';
+    final store = _MemoryProfileStore(
+      const StoredProfiles(
+        profiles: [_firstProfile],
+        selectedProfileId: 'first',
+      ),
+    );
+    final connectFingerprints = <String>[];
+    final connections = ServerConnectionManager(
+      clientFactory: () =>
+          _ChangedFingerprintClient(actualFingerprint, connectFingerprints),
+    );
+    final controller = AppController(store, connections);
+    addTearDown(() async {
+      controller.dispose();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+
+    await controller.requestConnect(_firstProfile);
+
+    expect(controller.state.pendingFingerprint, actualFingerprint);
+    expect(controller.state.error, isNull);
+    expect(store.value.profiles.single.hostFingerprint, 'SHA256:first');
+
+    controller.cancelFingerprint();
+    expect(controller.state.pendingFingerprint, isNull);
+    expect(store.value.profiles.single.hostFingerprint, 'SHA256:first');
+
+    await controller.requestConnect(_firstProfile);
+    await controller.confirmFingerprint();
+
+    expect(store.value.profiles.single.hostFingerprint, actualFingerprint);
+    expect(controller.state.pendingFingerprint, isNull);
+    expect(controller.state.connection.phase, ConnectionPhase.connected);
+    expect(connectFingerprints, [
+      'SHA256:first',
+      'SHA256:first',
+      actualFingerprint,
+    ]);
   });
 
   test('reflects server metrics and clears them after disconnect', () async {

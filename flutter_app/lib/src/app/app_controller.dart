@@ -721,21 +721,33 @@ class AppController extends StateNotifier<AppUiState> {
     if (profile.hostFingerprint.trim().isEmpty) {
       try {
         final fingerprint = await _connections.probeFingerprint(profile);
-        if (!mounted || state.selectedProfileId != profile.id) return;
-        final current = state.profiles.firstWhereOrNull(
-          (candidate) => candidate.id == profile.id,
-        );
-        if (current == null || !current.hasSameConnectionIdentity(profile)) {
-          return;
-        }
-        _pendingFingerprintProfile = current;
-        state = state.copyWith(pendingFingerprint: fingerprint);
+        _stageFingerprintConfirmation(profile, fingerprint);
       } catch (error) {
         _setError(error, '读取 SSH 指纹失败');
       }
       return;
     }
     await _connectVerified(profile, localLinuxPrepared: localLinuxPrepared);
+  }
+
+  bool _stageFingerprintConfirmation(
+    ServerProfile profile,
+    String fingerprint,
+  ) {
+    if (!mounted || state.selectedProfileId != profile.id) return false;
+    final current = state.profiles.firstWhereOrNull(
+      (candidate) => candidate.id == profile.id,
+    );
+    if (current == null || !current.hasSameConnectionIdentity(profile)) {
+      return false;
+    }
+    _pendingFingerprintProfile = current;
+    state = state.copyWith(
+      pendingFingerprint: normalizeSshFingerprint(fingerprint),
+      loading: false,
+      error: null,
+    );
+    return true;
   }
 
   Future<void> confirmFingerprint() async {
@@ -818,6 +830,16 @@ class AppController extends StateNotifier<AppUiState> {
         error: null,
       );
       unawaited(ensureActiveAgent());
+    } on HostKeyMismatchException catch (error, stack) {
+      _diagnostics.warn(
+        connectionKind,
+        'host_key_changed profile=${profile.id}',
+        error,
+        stack,
+      );
+      if (!_stageFingerprintConfirmation(profile, error.actual) && mounted) {
+        state = state.copyWith(loading: false);
+      }
     } catch (error, stack) {
       _diagnostics.warn(
         connectionKind,
