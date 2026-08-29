@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/app/app_controller.dart';
@@ -143,6 +144,21 @@ TapGestureRecognizer? _findLinkRecognizer(InlineSpan? span, String text) {
     if (recognizer != null) return recognizer;
   }
   return null;
+}
+
+RichText _richTextContaining(WidgetTester tester, String text) {
+  return tester
+      .widgetList<RichText>(find.byType(RichText))
+      .firstWhere((widget) => widget.text.toPlainText().contains(text));
+}
+
+double _contrastRatio(Color first, Color second) {
+  final brighter = math.max(
+    first.computeLuminance(),
+    second.computeLuminance(),
+  );
+  final darker = math.min(first.computeLuminance(), second.computeLuminance());
+  return (brighter + 0.05) / (darker + 0.05);
 }
 
 Finder _popupItemForText(String text) => find.ancestor(
@@ -1745,6 +1761,7 @@ void main() {
             id: 'links-1',
             kind: TimelineKind.agentMessage,
             text:
+                '已部署至 v2.18.3，测试 232/232 通过。\n\n'
                 '[内网下载]($url)\n\n'
                 '[竖屏验收截图]($imagePath)',
           ),
@@ -1756,6 +1773,18 @@ void main() {
     final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
     expect(markdown.selectable, isFalse);
     expect(find.byType(SelectionArea), findsWidgets);
+    final versionText = _richTextContaining(tester, 'v2.18.3');
+    final numberText = _richTextContaining(tester, '232/232');
+    final linkText = _richTextContaining(tester, url);
+    expect(versionText.selectionColor, codexSelection);
+    expect(numberText.selectionColor, codexSelection);
+    expect(linkText.selectionColor, codexSelection);
+    expect(_contrastRatio(codexSelection, codexBackground), greaterThan(2));
+    expect(_contrastRatio(codexSelection, codexText), greaterThan(4.5));
+    expect(
+      _contrastRatio(codexSelection, const Color(0xFF64B5F6)),
+      greaterThan(3),
+    );
     expect(_maybeLinkRecognizer(tester, '内网下载'), isNull);
     final visibleUrlRecognizer = _linkRecognizer(tester, url);
     visibleUrlRecognizer.onTap!();

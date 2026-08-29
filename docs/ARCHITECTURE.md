@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.94+223，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.95+224，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2073,6 +2073,14 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 该选区样式从 `ThemeData.textSelectionTheme` 统一下发，覆盖 Work 正文、代码块、命令输出、
   差异和其他可选文本，不改动现有长按定位、选区菜单和滚动跟随逻辑。Widget 回归固定选区底色
   与手柄颜色，防止深色主题默认值再次导致选中内容不明显。
+
+### 17.57 链接与数字选区对比度（2026-08-29）
+
+- 应用版本：`1.8.95+224`。选区底色由与 Markdown 链接同色系的半透明蓝色改为
+  不透明中性灰 `#525252`，避免蓝色 URL、版本号和短数字选中后与底色混在一起。
+- 光标和拖拽手柄继续使用琥珀色；本轮只调整选区绘制，不修改长按定位、复制菜单或
+  对话滚动。Widget 回归直接验证 Markdown 链接、版本号和数字所在 `RichText` 的实际
+  `selectionColor`，并约束它与背景、正文和链接前景的对比度。
 
 ## 18. 文档维护规则
 
