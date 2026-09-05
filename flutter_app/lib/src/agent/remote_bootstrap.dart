@@ -1,4 +1,6 @@
-const pinnedCodexVersion = '0.146.0';
+import '../domain/models.dart';
+
+const pinnedCodexVersion = defaultCodexVersion;
 const pinnedNodeVersion = '22.17.0';
 const managedCodexRemoteCommand =
     '~/.local/bin/codex-remote app-server --listen stdio://';
@@ -25,6 +27,7 @@ class AgentRuntimeInspection {
     this.systemPath,
     this.downloader,
     this.fallbackCommand,
+    this.expectedVersion = pinnedCodexVersion,
   });
 
   const AgentRuntimeInspection.bypass(String command)
@@ -56,9 +59,10 @@ class AgentRuntimeInspection {
   final bool hasSetsidWait;
   final String? downloader;
   final String? fallbackCommand;
+  final String expectedVersion;
 
   String? get compatibleCommand {
-    final expected = 'codex-cli $pinnedCodexVersion';
+    final expected = 'codex-cli $expectedVersion';
     if (managedVersion == expected && _notEmpty(managedPath)) {
       return '${shellQuote(managedPath!)} app-server --listen stdio://';
     }
@@ -163,7 +167,10 @@ else
 fi
 ''';
 
-  static AgentRuntimeInspection parseProbe(String output) {
+  static AgentRuntimeInspection parseProbe(
+    String output, {
+    String expectedVersion = pinnedCodexVersion,
+  }) {
     final values = <String, String>{};
     for (final line in output.split(RegExp(r'\r?\n'))) {
       if (!line.startsWith(_probePrefix)) continue;
@@ -195,6 +202,7 @@ fi
         null || 'none' => null,
         final value => value,
       },
+      expectedVersion: expectedVersion,
     );
   }
 
@@ -203,11 +211,22 @@ fi
     String nodeVersion = pinnedNodeVersion,
     String proxyUrl = '',
   }) {
+    final version = codexVersion == 'node-runtime-only'
+        ? codexVersion
+        : validateCodexVersion(codexVersion);
     final proxy = validateProxyUrl(proxyUrl);
     return _installTemplate
-        .replaceAll('__CODEX_VERSION__', codexVersion)
+        .replaceAll('__CODEX_VERSION__', version)
         .replaceAll('__NODE_VERSION__', nodeVersion)
         .replaceAll('__PROXY_SHELL__', shellQuote(proxy));
+  }
+
+  static String validateCodexVersion(String value) {
+    final version = value.trim();
+    if (!RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version)) {
+      throw ArgumentError('Codex 版本格式无效');
+    }
+    return version;
   }
 
   static String installNodeRuntimeScript({

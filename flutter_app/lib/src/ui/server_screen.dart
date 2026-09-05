@@ -114,6 +114,17 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       advanced: _advanced,
                       passwordVisible: _passwordVisible,
                       isExisting: _existingDraft(state),
+                      codexVersions: state.codexVersions,
+                      codexVersionsLoading: state.codexVersionsLoading,
+                      codexVersionsError: state.codexVersionsError,
+                      onRefreshCodexVersions: () {
+                        final profileId = _draft?.id;
+                        if (profileId != null && profileId.isNotEmpty) {
+                          ref
+                              .read(appControllerProvider.notifier)
+                              .refreshCodexVersions(profileId);
+                        }
+                      },
                       onChanged: (value) => setState(() => _draft = value),
                       onToggleAdvanced: () =>
                           setState(() => _advanced = !_advanced),
@@ -1434,6 +1445,10 @@ class _ServerEditor extends StatelessWidget {
     required this.advanced,
     required this.passwordVisible,
     required this.isExisting,
+    required this.codexVersions,
+    required this.codexVersionsLoading,
+    required this.codexVersionsError,
+    required this.onRefreshCodexVersions,
     required this.onChanged,
     required this.onToggleAdvanced,
     required this.onTogglePassword,
@@ -1447,6 +1462,10 @@ class _ServerEditor extends StatelessWidget {
   final bool advanced;
   final bool passwordVisible;
   final bool isExisting;
+  final List<String> codexVersions;
+  final bool codexVersionsLoading;
+  final String? codexVersionsError;
+  final VoidCallback onRefreshCodexVersions;
   final ValueChanged<ServerProfile> onChanged;
   final VoidCallback onToggleAdvanced;
   final VoidCallback onTogglePassword;
@@ -1673,6 +1692,55 @@ class _ServerEditor extends StatelessWidget {
                                     onChanged: (value) => onChanged(
                                       profile.copyWith(proxyUrl: value),
                                     ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  DropdownButtonFormField<String>(
+                                    key: const ValueKey('server-codex-version'),
+                                    initialValue: profile.codexVersion,
+                                    decoration: InputDecoration(
+                                      labelText: 'Codex 版本',
+                                      helperText:
+                                          codexVersionsError ??
+                                          '连接时会自动获取官方稳定版本；可升级或降级，切换后仅重装该服务器的 Codex。',
+                                      helperMaxLines: 3,
+                                      suffixIcon: IconButton(
+                                        tooltip: '刷新 Codex 版本列表',
+                                        onPressed: codexVersionsLoading
+                                            ? null
+                                            : onRefreshCodexVersions,
+                                        icon: codexVersionsLoading
+                                            ? const SizedBox.square(
+                                                dimension: 18,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.refresh),
+                                      ),
+                                    ),
+                                    items:
+                                        {profile.codexVersion, ...codexVersions}
+                                            .where(
+                                              (version) => version.isNotEmpty,
+                                            )
+                                            .map(
+                                              (version) =>
+                                                  DropdownMenuItem<String>(
+                                                    value: version,
+                                                    child: Text(
+                                                      'Codex $version',
+                                                    ),
+                                                  ),
+                                            )
+                                            .toList(growable: false),
+                                    onChanged: (value) {
+                                      if (value != null) {
+                                        onChanged(
+                                          profile.copyWith(codexVersion: value),
+                                        );
+                                      }
+                                    },
                                   ),
                                   const SizedBox(height: 12),
                                   _field(

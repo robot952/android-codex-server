@@ -1,6 +1,7 @@
 # Pinned Codex app-server contract
 
-The Android client targets `codex-cli 0.146.0` and the pinned app-server API. Its optional remote
+The Android client targets `codex-cli 0.153.3` by default and the pinned app-server API. Each server profile
+can select another official stable Codex CLI release. Its optional remote
 bootstrap also pins the private Node.js runtime in `node-version.txt`.
 The client performs the following JSON-RPC flow over newline-delimited JSON:
 
@@ -19,7 +20,7 @@ codex app-server generate-json-schema --out server/generated-schema
 ```
 
 The client opts into `experimentalApi` because the VS Code-style approval/input surface uses the
-experimental `request_user_input` request. Codex 0.146.0 keeps the corresponding
+experimental `request_user_input` request. Codex 0.153.3 keeps the corresponding
 `default_mode_request_user_input` feature disabled by default; enable it explicitly on the server
 only when that workflow is wanted. Unknown notifications are ignored, while unsupported
 server-initiated requests receive a JSON-RPC `-32601` response so a turn cannot wait forever. A

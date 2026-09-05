@@ -145,6 +145,25 @@ __CODEX_REMOTE_DOWNLOADER=wget
       expect(incompatible.installationProblem, isNull);
     });
 
+    test('matches the selected Codex runtime version', () {
+      final inspection = RemoteBootstrap.parseProbe('''
+__CODEX_REMOTE_OS=Linux
+__CODEX_REMOTE_ARCH=x86_64
+__CODEX_REMOTE_HOME=/home/dev
+__CODEX_REMOTE_LIBC=glibc
+__CODEX_REMOTE_SYSTEM_PATH=/usr/local/bin/codex
+__CODEX_REMOTE_SYSTEM_VERSION=codex-cli 0.152.0
+__CODEX_REMOTE_HAS_SHELL=1
+__CODEX_REMOTE_HAS_TAR=1
+__CODEX_REMOTE_HAS_SHA256=1
+__CODEX_REMOTE_HAS_FLOCK=1
+__CODEX_REMOTE_HAS_SETSID_WAIT=1
+__CODEX_REMOTE_DOWNLOADER=curl
+''', expectedVersion: '0.152.0');
+
+      expect(inspection.compatibleCommand, contains('/usr/local/bin/codex'));
+    });
+
     test('reports unsupported hosts and each required dependency', () {
       final cases = <(AgentRuntimeInspection, String)>[
         (_supportedInspection(os: 'Darwin'), 'Darwin'),

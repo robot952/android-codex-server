@@ -491,7 +491,12 @@ class CodexAgentClient
       timeout: const Duration(seconds: 30),
       maxOutputBytes: 64 * 1024,
     );
-    return RemoteBootstrap.parseProbe(output);
+    return RemoteBootstrap.parseProbe(
+      output,
+      expectedVersion: profile.codexVersion.trim().isEmpty
+          ? pinnedCodexVersion
+          : profile.codexVersion.trim(),
+    );
   }
 
   @override
@@ -510,7 +515,12 @@ class CodexAgentClient
         ? host as RemoteServerStreamingScriptClient
         : throw UnsupportedError('当前 SSH 客户端不支持流式执行安装脚本');
     await scriptHost.runStreamingShellScript(
-      RemoteBootstrap.installScript(proxyUrl: profile.proxyUrl),
+      RemoteBootstrap.installScript(
+        codexVersion: profile.codexVersion.trim().isEmpty
+            ? pinnedCodexVersion
+            : profile.codexVersion.trim(),
+        proxyUrl: profile.proxyUrl,
+      ),
       command: remoteInstallCommand,
       timeout: const Duration(minutes: 30),
       maxOutputBytes: 8 * 1024 * 1024,

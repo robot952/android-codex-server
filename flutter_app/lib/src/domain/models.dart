@@ -6,6 +6,8 @@ import 'package:uuid/uuid.dart';
 part 'models.freezed.dart';
 part 'models.g.dart';
 
+const defaultCodexVersion = '0.153.3';
+
 @JsonEnum(alwaysCreate: true)
 enum AuthMode {
   @JsonValue('Password')
@@ -112,6 +114,7 @@ abstract class ServerProfile with _$ServerProfile {
     @Default(ApprovalMode.requestApproval) ApprovalMode approvalMode,
     @Default('~/.local/bin/codex-remote app-server --listen stdio://')
     String remoteCommand,
+    @Default(defaultCodexVersion) String codexVersion,
     @Default(false) bool workspacePromptShown,
     @Default('') String preferredModel,
     @Default('') String preferredEffort,
@@ -816,6 +819,9 @@ abstract class AppUiState with _$AppUiState {
     TokenUsage? tokenUsage,
     String? error,
     String? diagnostic,
+    @Default(<String>[]) List<String> codexVersions,
+    @Default(false) bool codexVersionsLoading,
+    String? codexVersionsError,
   }) = _AppUiState;
 }
 

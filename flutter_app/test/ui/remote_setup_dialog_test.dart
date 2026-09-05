@@ -34,7 +34,10 @@ void main() {
     expect(find.text('安装远程 Codex'), findsOneWidget);
     expect(find.text('服务器上没有兼容的 Codex 运行时。'), findsOneWidget);
     expect(find.text('Linux · x86_64'), findsOneWidget);
-    expect(find.text('Codex 0.146.0 · Node 22.17.0'), findsOneWidget);
+    expect(
+      find.text('Codex $defaultCodexVersion · Node 22.17.0'),
+      findsOneWidget,
+    );
     expect(find.text('0.130.0'), findsOneWidget);
     expect(find.text('/home/tester/.local/share/codex-remote'), findsOneWidget);
     expect(_fieldText(tester, 'remote-setup-proxy'), 'http://127.0.0.1:7890');

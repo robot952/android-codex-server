@@ -8,6 +8,7 @@ import 'package:synchronized/synchronized.dart';
 
 import '../agent/agent_connection_manager.dart';
 import '../agent/codex_global_settings.dart';
+import '../agent/codex_version_catalog.dart';
 import '../agent/codex_event_reducer.dart';
 import '../agent/codex_protocol.dart';
 import '../agent/remote_agent_client.dart';
@@ -91,6 +92,7 @@ class AppController extends StateNotifier<AppUiState> {
     List<Duration>? reconnectDelays,
     BackgroundConnectionIntent? backgroundRestoreIntent,
     LocalLinuxRuntime? localLinuxRuntime,
+    CodexVersionCatalog? codexVersionCatalog,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
        _reconnectDelays = List<Duration>.unmodifiable(
@@ -100,6 +102,8 @@ class AppController extends StateNotifier<AppUiState> {
            backgroundRestoreIntent ?? const BackgroundConnectionIntent(),
        _localLinuxRuntime =
            localLinuxRuntime ?? const UnsupportedLocalLinuxRuntime(),
+       _codexVersionCatalog =
+           codexVersionCatalog ?? const CodexVersionCatalog(),
        _ownsAgentConnections = agentConnections == null,
        super(const AppUiState(loading: true)) {
     _connectionSubscription = _connections.stateChanges.listen(
@@ -124,6 +128,7 @@ class AppController extends StateNotifier<AppUiState> {
   final List<Duration> _reconnectDelays;
   final BackgroundConnectionIntent _backgroundRestoreIntent;
   final LocalLinuxRuntime _localLinuxRuntime;
+  final CodexVersionCatalog _codexVersionCatalog;
   final bool _ownsAgentConnections;
   late final StreamSubscription<Map<String, ConnectionState>>
   _connectionSubscription;
@@ -382,7 +387,8 @@ class AppController extends StateNotifier<AppUiState> {
     final agentLaunchIdentityChanged =
         existing != null &&
         (existing.remoteCommand.trim() != normalized.remoteCommand.trim() ||
-            existing.workspace.trim() != normalized.workspace.trim());
+            existing.workspace.trim() != normalized.workspace.trim() ||
+            existing.codexVersion.trim() != normalized.codexVersion.trim());
     if (connectionIdentityChanged) {
       _forgetRetainedConnection(normalized.id);
       _clearSetupStates(normalized.id);
@@ -678,6 +684,7 @@ class AppController extends StateNotifier<AppUiState> {
     await _persist((stored) => stored.copyWith(selectedProfileId: profileId));
     if (connection.phase == ConnectionPhase.connected) {
       unawaited(ensureActiveAgent());
+      unawaited(refreshCodexVersions(profile.id));
     }
   }
 
@@ -934,6 +941,34 @@ class AppController extends StateNotifier<AppUiState> {
       return;
     }
     await _connections.refreshServerMetrics(profileId);
+  }
+
+  /// Loads the official stable Codex CLI releases for the server settings UI.
+  /// This is deliberately non-fatal: a catalog outage must not interrupt SSH
+  /// or an already running Agent lane.
+  Future<void> refreshCodexVersions(String profileId) async {
+    if (!mounted || !state.profiles.any((profile) => profile.id == profileId)) {
+      return;
+    }
+    state = state.copyWith(
+      codexVersionsLoading: true,
+      codexVersionsError: null,
+    );
+    try {
+      final versions = await _codexVersionCatalog.fetch();
+      if (!mounted) return;
+      state = state.copyWith(
+        codexVersions: versions,
+        codexVersionsLoading: false,
+        codexVersionsError: null,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      state = state.copyWith(
+        codexVersionsLoading: false,
+        codexVersionsError: _message(error, '无法读取官方 Codex 版本列表'),
+      );
+    }
   }
 
   /// Called by the Android foreground service while the Activity is paused.
@@ -6255,7 +6290,18 @@ class AppController extends StateNotifier<AppUiState> {
       username: profile.username.trim().isEmpty
           ? 'root'
           : profile.username.trim(),
+      codexVersion: _normalizedCodexVersion(profile.codexVersion),
     );
+  }
+
+  String _normalizedCodexVersion(String value) {
+    final version = value.trim();
+    if (version.isEmpty) return defaultCodexVersion;
+    try {
+      return RemoteBootstrap.validateCodexVersion(version);
+    } on ArgumentError {
+      return defaultCodexVersion;
+    }
   }
 
   void _setError(Object error, String fallback) {
