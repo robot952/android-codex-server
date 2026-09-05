@@ -66,6 +66,7 @@ class _AppRootState extends ConsumerState<_AppRoot>
   StreamSubscription<CompletedThreadNavigation>? _navigationSubscription;
   String? _backgroundProtectionSignature;
   bool _notificationPermissionRequested = false;
+  bool _backgroundShutdownRequested = false;
   String? _setupProxyKey;
   String _setupProxyDraft = '';
 
@@ -86,41 +87,50 @@ class _AppRootState extends ConsumerState<_AppRoot>
     _navigationSubscription = turnCompletionNotifier.navigationEvents.listen(
       _handleCompletedThreadNavigation,
     );
-    backgroundConnectionBridge.registerHeartbeat((heartbeat) async {
-      // The native service is the single scheduler for transport heartbeats.
-      // Run it while visible as well: having one scheduler avoids a built-in
-      // dartssh2 ping racing this callback on the same SSH socket, and keeps
-      // lifecycle transitions on the same transport path.
-      final receivedAt = DateTime.now();
-      final deliveryDelayMs = heartbeat.deliveryDelayMillis(receivedAt);
-      final detail =
-          'sequence=${heartbeat.sequence} '
-          'lifecycle=${_lifecycleState.name} deliveryDelayMs=$deliveryDelayMs '
-          'skippedBefore=${heartbeat.skippedBefore}';
-      if (deliveryDelayMs > 15 * 1000) {
-        controller.diagnosticLogger.warn('Heartbeat', 'received_late $detail');
-      }
-      final startedAt = Stopwatch()..start();
-      try {
-        await controller.keepAliveRetainedConnections(
-          heartbeatSequence: heartbeat.sequence,
-        );
-        if (startedAt.elapsed > const Duration(seconds: 5)) {
+    backgroundConnectionBridge.registerHeartbeat(
+      (heartbeat) async {
+        // The native service is the single scheduler for transport heartbeats.
+        // Run it while visible as well: having one scheduler avoids a built-in
+        // dartssh2 ping racing this callback on the same SSH socket, and keeps
+        // lifecycle transitions on the same transport path.
+        final receivedAt = DateTime.now();
+        final deliveryDelayMs = heartbeat.deliveryDelayMillis(receivedAt);
+        final detail =
+            'sequence=${heartbeat.sequence} '
+            'lifecycle=${_lifecycleState.name} deliveryDelayMs=$deliveryDelayMs '
+            'skippedBefore=${heartbeat.skippedBefore}';
+        if (deliveryDelayMs > 15 * 1000) {
           controller.diagnosticLogger.warn(
             'Heartbeat',
-            'completed_slow $detail elapsedMs=${startedAt.elapsedMilliseconds}',
+            'received_late $detail',
           );
         }
-      } catch (error, stack) {
-        controller.diagnosticLogger.warn(
-          'Heartbeat',
-          'failed $detail elapsedMs=${startedAt.elapsedMilliseconds}',
-          error,
-          stack,
-        );
-        rethrow;
-      }
-    });
+        final startedAt = Stopwatch()..start();
+        try {
+          await controller.keepAliveRetainedConnections(
+            heartbeatSequence: heartbeat.sequence,
+          );
+          if (startedAt.elapsed > const Duration(seconds: 5)) {
+            controller.diagnosticLogger.warn(
+              'Heartbeat',
+              'completed_slow $detail elapsedMs=${startedAt.elapsedMilliseconds}',
+            );
+          }
+        } catch (error, stack) {
+          controller.diagnosticLogger.warn(
+            'Heartbeat',
+            'failed $detail elapsedMs=${startedAt.elapsedMilliseconds}',
+            error,
+            stack,
+          );
+          rethrow;
+        }
+      },
+      onShutdown: () async {
+        _backgroundShutdownRequested = true;
+        await controller.shutdownForTaskRemoval();
+      },
+    );
     unawaited(turnCompletionNotifier.initialize());
   }
 
@@ -509,6 +519,7 @@ class _AppRootState extends ConsumerState<_AppRoot>
     AppUiState state,
     BackgroundConnectionIntent intent,
   ) {
+    if (_backgroundShutdownRequested) return;
     final required = keepsAppAliveInBackground(state) || !intent.isEmpty;
     final signature = '${required ? 1 : 0}:${intent.signature}';
     if (_backgroundProtectionSignature == signature) return;

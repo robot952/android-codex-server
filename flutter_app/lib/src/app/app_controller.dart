@@ -1035,6 +1035,27 @@ class AppController extends StateNotifier<AppUiState> {
     ]);
   }
 
+  /// Closes every active lane before Android destroys the recent-task entry.
+  /// This path is separate from transport-loss recovery so durable Codex
+  /// sessions receive the same cleanup as an explicit user disconnect.
+  Future<void> shutdownForTaskRemoval() async {
+    await _initialization;
+    if (!mounted) return;
+    final profileIds = <String>{
+      ...state.profiles.map((profile) => profile.id),
+      ..._connections.states.keys,
+      ..._agents.states.keys.map((key) => key.profileId),
+      ..._retainedHostConnections,
+    };
+    for (final profileId in profileIds) {
+      _invalidateConnectionRecovery(profileId);
+    }
+    await Future.wait<void>(
+      profileIds.map(disconnectProfile),
+      eagerError: false,
+    );
+  }
+
   Future<void> _traceHeartbeatLane({
     required int sequence,
     required String lane,

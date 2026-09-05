@@ -145,12 +145,22 @@ class BackgroundConnectionBridge {
   /// invokes this continuously while a retained connection exists, so SSH
   /// keepalive traffic does not depend on a Dart timer or the UI lifecycle.
   void registerHeartbeat(
-    Future<void> Function(BackgroundHeartbeat heartbeat) callback,
-  ) {
+    Future<void> Function(BackgroundHeartbeat heartbeat) callback, {
+    Future<void> Function()? onShutdown,
+  }) {
     _channel.setMethodCallHandler((call) async {
-      if (call.method != 'heartbeat') return null;
-      await callback(BackgroundHeartbeat.fromChannelArguments(call.arguments));
-      return true;
+      switch (call.method) {
+        case 'heartbeat':
+          await callback(
+            BackgroundHeartbeat.fromChannelArguments(call.arguments),
+          );
+          return true;
+        case 'shutdown':
+          await onShutdown?.call();
+          return true;
+        default:
+          return null;
+      }
     });
   }
 

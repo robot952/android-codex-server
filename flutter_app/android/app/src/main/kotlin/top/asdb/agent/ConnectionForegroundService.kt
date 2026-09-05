@@ -42,6 +42,7 @@ class ConnectionForegroundService : Service() {
     private var heartbeatSequence = 0L
     private var skippedHeartbeats = 0L
     private var heartbeatStartedAt = 0L
+    private var taskRemovalShutdownStarted = false
     @Volatile
     private var serviceActive = false
     private val renewWakeLock = Runnable { acquireWakeLock() }
@@ -346,19 +347,79 @@ class ConnectionForegroundService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Some Android builds stop a foreground service when the task is
-        // swiped away even with stopWithTask=false. Re-submit it while a
-        // persisted connection intent still exists. Explicit stop clears the
-        // intent before stopping, so it is not resurrected by this hook.
+        // Removing the app from the recent-task list is an explicit exit. Ask
+        // Dart to close SSH/Agent lanes first so durable remote sessions get
+        // their normal cleanup command, then stop the sticky service.
+        if (taskRemovalShutdownStarted) {
+            super.onTaskRemoved(rootIntent)
+            return
+        }
+        taskRemovalShutdownStarted = true
         val connectionIntent = readConnectionIntent()
         if (connectionIntent.hostProfileIds.isNotEmpty()) {
-            start(
-                this,
-                connectionIntent.hostProfileIds,
-                connectionIntent.agentConnectionKeys,
+            DiagnosticLogBridge.append(
+                "INFO",
+                "Background",
+                "task_removed_stop profiles=${connectionIntent.hostProfileIds.size} " +
+                    "agents=${connectionIntent.agentConnectionKeys.size}",
             )
         }
+        clearPersistedConnectionIntent()
+        val finish = Runnable {
+            clearTaskRemovalState()
+            stopSelf()
+        }
+        val channel = heartbeatChannel
+        if (channel == null) {
+            finish.run()
+        } else {
+            var completed = false
+            val complete = Runnable {
+                if (!completed) {
+                    completed = true
+                    finish.run()
+                }
+            }
+            handler.postDelayed(complete, TASK_REMOVAL_SHUTDOWN_TIMEOUT_MS)
+            runCatching {
+                channel.invokeMethod(
+                    "shutdown",
+                    null,
+                    object : MethodChannel.Result {
+                        override fun success(result: Any?) = complete.run()
+
+                        override fun error(
+                            errorCode: String,
+                            errorMessage: String?,
+                            errorDetails: Any?,
+                        ) = complete.run()
+
+                        override fun notImplemented() = complete.run()
+                    },
+                )
+            }.onFailure { complete.run() }
+        }
         super.onTaskRemoved(rootIntent)
+    }
+
+    private fun clearTaskRemovalState() {
+        serviceActive = false
+        heartbeatInFlight = false
+        heartbeatChannel = null
+        handler.removeCallbacks(sendHeartbeat)
+        val cachedEngine = FlutterEngineCache.getInstance().get(RETAINED_ENGINE_ID)
+        FlutterEngineCache.getInstance().remove(RETAINED_ENGINE_ID)
+        if (cachedEngine != null) {
+            if (cachedEngine === flutterEngine) flutterEngine = null
+            runCatching { cachedEngine.destroy() }
+        }
+    }
+
+    private fun clearPersistedConnectionIntent() {
+        applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
     }
 
     private fun readConnectionIntent(): BackgroundConnectionIntent {
@@ -394,6 +455,7 @@ class ConnectionForegroundService : Service() {
         private const val WAKE_LOCK_TIMEOUT_MS = 4 * 60 * 60_000L
         private const val WAKE_LOCK_RENEWAL_MS = 3 * 60 * 60_000L
         private const val HEARTBEAT_INTERVAL_MS = 10_000L
+        private const val TASK_REMOVAL_SHUTDOWN_TIMEOUT_MS = 5_000L
 
         fun start(
             context: Context,

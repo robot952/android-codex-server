@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.97+227，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.98+228，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -792,9 +792,10 @@ Service 的 MethodChannel 心跳同一时刻最多允许一个请求在途；Flu
 不会排队堆积调用。Agent transport 同样合并尚未完成的 keepalive，避免回到前台时集中回放 SSH global request。
 前台服务和回合完成通知都使用专用白色连接图标并声明 private 锁屏可见性，
 不使用彩色启动图标作为 Android small icon。有活动连接时，服务器根页面的系统返回调用
-`moveTaskToBack(true)`，不能 finish Activity；若最近任务移除等场景仍销毁 Activity，`MainActivity` 通过
-`FlutterEngineCache` 保留并在下次打开时复用同一 Dart 引擎，SSH/Agent socket 因此前台服务进程存活期间
-不会跟随 Activity 关闭。
+`moveTaskToBack(true)`，不能 finish Activity；Activity 重建期间 `MainActivity` 通过 `FlutterEngineCache`
+保留并复用同一 Dart 引擎，SSH/Agent socket 不会因普通 Activity 关闭而断开。用户从最近任务列表划掉 APP
+时，`ConnectionForegroundService.onTaskRemoved()` 会先请求 Dart 关闭 SSH/Agent（包括持久化 Codex 会话清理），
+再清除恢复意图、销毁缓存引擎并停止服务，不再把退出误当成后台驻留。
 
 为覆盖整个 App 进程被系统回收的情况，Service 使用 `START_STICKY`。Flutter 在成功连接后只把需要恢复的
 Profile ID 和 Agent lane 写入原生 `SharedPreferences`，不保存密码、私钥或 Token；Service 被重建时读取这份
@@ -1134,7 +1135,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 4. 输入草稿、模型、思考强度按服务器 + Agent + 会话独立并持久保存；自定义模型管理和远端模型隐藏也按服务器 + Agent 隔离（当前已接入）。
 5. 后台返回不得自动弹键盘；IME 出现时输入区和消息同步移动（已有 inset/viewport 处理，仍需真机验收）。
    有 SSH/Agent 连接或活动回合时，根页面系统返回只能将任务移到后台；Activity 重建不得销毁 FlutterEngine
-   或关闭 SSH。只有用户明确断开、强制停止或系统杀死整个进程时才允许连接结束。
+   或关闭 SSH。用户从最近任务列表明确划掉 APP 视为退出，会清除后台恢复意图、停止前台服务并销毁缓存引擎，
+   让 SSH/Agent 通道结束；强制停止或系统杀死整个进程也允许连接结束。
 6. 会话重进优先显示缓存，较大历史允许更长的后台恢复，不长期白屏（当前缓存 + 180 秒 thread timeout）。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
 8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
@@ -2091,6 +2093,16 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 应用版本：`1.8.97+227`。会话列表“设置”菜单新增“Codex 版本”，直接显示当前托管 CLI 版本、官方稳定版本列表和刷新按钮，支持升级或降级。
 - 应用版本选择只更新服务器 Profile 的 `codexVersion`；URL、API Key、Provider、工作目录、会话列表和历史缓存均保持不变。版本变化后复用既有运行时探测和安装进度流程。
 - Widget/控制器回归覆盖菜单入口、版本列表和版本切换后的运行时重新加载。
+
+### 17.59 最近任务退出清理（2026-09-05）
+
+- 应用版本：`1.8.98+228`。系统 Home 和服务器根页面返回仍保留后台连接；用户从 Android 最近任务列表
+  划掉 APP 时改为明确退出，不再由 `onTaskRemoved()` 重新启动粘性前台服务。
+- 最近任务退出先通过原生到 Dart 的 `shutdown` 回调逐台执行显式断开，使普通 stdio Agent 结束并让可选
+  持久化 Codex 会话执行远端清理；随后清除后台恢复意图、销毁缓存 FlutterEngine 并停止前台服务。Dart
+  无响应时原生层最多等待 5 秒后仍会完成本地清理，避免通知和服务永久残留。
+- 控制器和平台桥接回归覆盖退出时 Host/Agent 全部断开、恢复意图清空，以及原有后台心跳不受影响；Android
+  发布门禁还需核对 Home 后服务保留、最近任务划掉后服务和进程退出。
 
 ## 18. 文档维护规则
 

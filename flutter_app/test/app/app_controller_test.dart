@@ -1531,6 +1531,39 @@ void main() {
   );
 
   test(
+    'recent-task shutdown disconnects retained host and Agent lanes',
+    () async {
+      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+      await controller.shutdownForTaskRemoval();
+
+      expect(host.connected, isFalse);
+      expect(agent.connected, isFalse);
+      expect(controller.backgroundConnectionIntent.isEmpty, isTrue);
+      expect(controller.state.connection.phase, ConnectionPhase.disconnected);
+    },
+  );
+
+  test(
     'background heartbeat propagates a lane failure for native logs',
     () async {
       final profile = _firstProfile.copyWith(workspacePromptShown: true);

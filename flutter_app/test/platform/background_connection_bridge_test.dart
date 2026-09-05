@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:codex_remote/src/platform/background_connection_bridge.dart';
@@ -40,6 +41,28 @@ void main() {
       'agentConnectionKeys': <String>['server-a\u0000codex'],
     });
     expect(calls.last.arguments, isNull);
+  });
+
+  test('forwards native task-removal shutdown to Dart cleanup', () async {
+    const bridge = BackgroundConnectionBridge(channel: channel);
+    var heartbeatCalls = 0;
+    var shutdownCalls = 0;
+    bridge.registerHeartbeat(
+      (_) async => heartbeatCalls++,
+      onShutdown: () async => shutdownCalls++,
+    );
+
+    final response = Completer<ByteData?>();
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          channel.name,
+          const StandardMethodCodec().encodeMethodCall(MethodCall('shutdown')),
+          response.complete,
+        );
+    await response.future;
+
+    expect(heartbeatCalls, 0);
+    expect(shutdownCalls, 1);
   });
 
   test('decodes bounded connection intents from a sticky service restart', () {
