@@ -142,8 +142,11 @@ else
   value LIBC unknown
 fi
 if [ -x "$HOME/.local/bin/codex-remote" ]; then
-  value MANAGED_PATH "$HOME/.local/bin/codex-remote"
-  value MANAGED_VERSION "$("$HOME/.local/bin/codex-remote" --version 2>/dev/null || true)"
+  MANAGED_VERSION="$("$HOME/.local/bin/codex-remote" --version 2>/dev/null || true)"
+  if [ -n "$MANAGED_VERSION" ]; then
+    value MANAGED_PATH "$HOME/.local/bin/codex-remote"
+    value MANAGED_VERSION "$MANAGED_VERSION"
+  fi
 fi
 if command -v codex >/dev/null 2>&1; then
   value SYSTEM_PATH "$(command -v codex)"
@@ -582,6 +585,7 @@ else
   for CANDIDATE in "$ROOT"/runtime/"$NODE_NAME"-*; do
     if node_runtime_works "$CANDIDATE"; then
       NODE_DIR="$CANDIDATE"
+      NODE_SLOT="${CANDIDATE##*/}"
       NODE_OK=1
       break
     fi

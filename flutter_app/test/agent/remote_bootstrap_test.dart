@@ -276,6 +276,7 @@ __CODEX_REMOTE_DOWNLOADER=curl
       expect(script, contains(r'trap cleanup EXIT'));
       expect(script, contains(r'INSTALL_COMMITTED=1'));
       expect(script, contains('node_modules/@openai/codex/bin/codex.js'));
+      expect(script, contains(r'NODE_SLOT="${CANDIDATE##*/}"'));
       expect(script, isNot(contains('/lib/node_modules/@openai/codex')));
       expect(script, isNot(contains('sudo')));
       expect(script, isNot(contains('npm install -g')));
