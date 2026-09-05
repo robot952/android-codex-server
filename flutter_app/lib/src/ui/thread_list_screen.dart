@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -361,6 +362,12 @@ void _showThreadSettings(
   AppUiState state,
   AppController controller,
 ) {
+  final profileId = state.selectedProfileId;
+  final codexKey = profileId == null
+      ? null
+      : AgentConnectionKey(profileId: profileId, agent: AgentKind.codex);
+  final codexSetupInProgress =
+      codexKey != null && state.agentSetupStates[codexKey]?.inProgress == true;
   showDialog<void>(
     context: context,
     builder: (_) => _ThreadSettingsDialog(
@@ -382,7 +389,33 @@ void _showThreadSettings(
         Navigator.of(context).pop();
         controller.showAgentSettings();
       },
+      showCodexVersion: state.activeAgent == AgentKind.codex,
+      codexVersionEnabled:
+          profileId != null &&
+          hostConnected(state, profileId) &&
+          !codexSetupInProgress,
+      onSelectCodexVersion: () {
+        Navigator.of(context).pop();
+        if (profileId != null) {
+          _showCodexVersionDialog(context, controller, profileId);
+        }
+      },
     ),
+  );
+}
+
+bool hostConnected(AppUiState state, String profileId) =>
+    state.connectionStates[profileId]?.phase == ConnectionPhase.connected;
+
+void _showCodexVersionDialog(
+  BuildContext context,
+  AppController controller,
+  String profileId,
+) {
+  showDialog<void>(
+    context: context,
+    builder: (_) =>
+        _CodexVersionDialog(profileId: profileId, controller: controller),
   );
 }
 
@@ -414,6 +447,9 @@ class _ThreadSettingsDialog extends StatelessWidget {
     required this.canConfigureAgent,
     required this.onSelectWorkspace,
     required this.onConfigureAgent,
+    required this.showCodexVersion,
+    required this.codexVersionEnabled,
+    required this.onSelectCodexVersion,
   });
 
   final AgentKind agent;
@@ -421,6 +457,9 @@ class _ThreadSettingsDialog extends StatelessWidget {
   final bool canConfigureAgent;
   final VoidCallback onSelectWorkspace;
   final VoidCallback onConfigureAgent;
+  final bool showCodexVersion;
+  final bool codexVersionEnabled;
+  final VoidCallback onSelectCodexVersion;
 
   @override
   Widget build(BuildContext context) {
@@ -456,10 +495,178 @@ class _ThreadSettingsDialog extends StatelessWidget {
                 enabled: agentConnected && canConfigureAgent,
                 onTap: onConfigureAgent,
               ),
+              if (showCodexVersion)
+                _SettingsActionRow(
+                  icon: Icons.system_update_alt,
+                  title: 'Codex 版本',
+                  detail: codexVersionEnabled
+                      ? '升级或降级托管 Codex CLI'
+                      : '运行时操作进行中，请稍后再试',
+                  enabled: codexVersionEnabled,
+                  onTap: onSelectCodexVersion,
+                ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CodexVersionDialog extends ConsumerStatefulWidget {
+  const _CodexVersionDialog({
+    required this.profileId,
+    required this.controller,
+  });
+
+  final String profileId;
+  final AppController controller;
+
+  @override
+  ConsumerState<_CodexVersionDialog> createState() =>
+      _CodexVersionDialogState();
+}
+
+class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
+  String? _selectedVersion;
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.refreshCodexVersions(widget.profileId);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(appControllerProvider);
+    final profile = state.profiles.firstWhereOrNull(
+      (candidate) => candidate.id == widget.profileId,
+    );
+    if (profile == null) return const SizedBox.shrink();
+    final current = profile.codexVersion;
+    final versions = <String>{
+      current,
+      ...state.codexVersions,
+    }.where((version) => version.trim().isNotEmpty).toList(growable: false);
+    final selected = _selectedVersion ?? current;
+    final loading = state.codexVersionsLoading || _saving;
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.system_update_alt),
+          const SizedBox(width: 10),
+          const Expanded(child: Text('Codex 版本')),
+          IconButton(
+            tooltip: '刷新版本列表',
+            onPressed: loading
+                ? null
+                : () =>
+                      widget.controller.refreshCodexVersions(widget.profileId),
+            icon: state.codexVersionsLoading
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '当前版本：Codex $current',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '只影响当前服务器托管的 Codex CLI，不会修改模型地址、API 密钥或历史对话。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 14),
+            if (state.codexVersionsError != null)
+              Text(
+                state.codexVersionsError!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            if (state.codexVersionsLoading)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else
+              DropdownButtonFormField<String>(
+                key: const ValueKey('codex-version-selector'),
+                initialValue: selected,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '选择版本'),
+                items: versions
+                    .map(
+                      (version) => DropdownMenuItem<String>(
+                        value: version,
+                        child: Text('Codex $version'),
+                      ),
+                    )
+                    .toList(growable: false),
+                onChanged: _saving
+                    ? null
+                    : (value) => setState(() => _selectedVersion = value),
+              ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _saving || selected == current
+              ? null
+              : () async {
+                  final navigator = Navigator.of(context);
+                  setState(() {
+                    _saving = true;
+                    _error = null;
+                  });
+                  try {
+                    await widget.controller.changeCodexVersion(
+                      widget.profileId,
+                      selected,
+                    );
+                    if (mounted) navigator.pop();
+                  } catch (error) {
+                    if (mounted) {
+                      setState(() {
+                        _saving = false;
+                        _error = error.toString();
+                      });
+                    }
+                  }
+                },
+          child: _saving
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('应用版本'),
+        ),
+      ],
     );
   }
 }

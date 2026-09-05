@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.96+226，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.97+227，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -667,7 +667,7 @@ Node/Codex、VS Code、`~/.codex` 账户/配置或工作区。命令固定为
 `CODEX_REMOTE_SSH_PID=$PPID setsid --wait sh -s`，脚本经 stdin 发送，超时 30 分钟，SSH 消失时远端
 watchdog 终止安装进程组。
 
-连接成功后 App 会请求 GitHub 官方稳定 Release 列表，在服务器设置中提供 Codex 版本下拉选择和刷新按钮。
+连接成功后 App 会请求 GitHub 官方稳定 Release 列表，在服务器设置和会话列表的设置菜单中提供 Codex 版本下拉选择和刷新按钮。
 版本选择保存在服务器 Profile，只影响该服务器用户目录中的 Codex 托管运行时；URL、API Key、Provider、工作目录和会话不变。
 列表请求失败不阻塞连接，已保存版本仍可继续使用。
 
@@ -2085,6 +2085,12 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 光标和拖拽手柄继续使用琥珀色；本轮只调整选区绘制，不修改长按定位、复制菜单或
   对话滚动。Widget 回归直接验证 Markdown 链接、版本号和数字所在 `RichText` 的实际
   `selectionColor`，并约束它与背景、正文和链接前景的对比度。
+
+### 17.58 对话列表 Codex 版本入口（2026-09-05）
+
+- 应用版本：`1.8.97+227`。会话列表“设置”菜单新增“Codex 版本”，直接显示当前托管 CLI 版本、官方稳定版本列表和刷新按钮，支持升级或降级。
+- 应用版本选择只更新服务器 Profile 的 `codexVersion`；URL、API Key、Provider、工作目录、会话列表和历史缓存均保持不变。版本变化后复用既有运行时探测和安装进度流程。
+- Widget/控制器回归覆盖菜单入口、版本列表和版本切换后的运行时重新加载。
 
 ## 18. 文档维护规则
 

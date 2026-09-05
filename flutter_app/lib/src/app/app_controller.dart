@@ -971,6 +971,30 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
+  /// Changes only the managed Codex CLI version for one server.
+  ///
+  /// The next lane load will inspect the selected version and show the normal
+  /// runtime setup flow when an install or downgrade is required.
+  Future<void> changeCodexVersion(String profileId, String version) async {
+    await _ensureInitialized();
+    final profile = state.profiles.firstWhereOrNull(
+      (candidate) => candidate.id == profileId,
+    );
+    if (profile == null) throw StateError('服务器配置不存在');
+    final normalized = RemoteBootstrap.validateCodexVersion(version);
+    if (profile.codexVersion == normalized) return;
+    final saved = await saveProfile(profile.copyWith(codexVersion: normalized));
+    if (!mounted || state.selectedProfileId != profileId) return;
+    if (_connections.states[profileId]?.phase != ConnectionPhase.connected) {
+      return;
+    }
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: AgentKind.codex,
+    );
+    await _loadAgentData(key, saved, includeModels: true);
+  }
+
   /// Called by the Android foreground service while the Activity is paused.
   /// Host features and Agent lanes own separate SSH transports, matching the
   /// original Android architecture, so their heartbeats cannot disrupt an

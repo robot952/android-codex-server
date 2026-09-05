@@ -479,6 +479,7 @@ void main() {
     await tester.tap(settingsButton);
     await tester.pumpAndSettle();
     expect(find.text('文件管理'), findsNothing);
+    expect(find.text('Codex 版本'), findsOneWidget);
   });
 
   testWidgets('pulling the thread panel reveals refresh states below search', (
