@@ -573,7 +573,7 @@ int findMatchingResumedUserTimelineEntry(
 ) {
   if (incoming.kind != TimelineKind.userMessage ||
       incoming.turnId.trim().isEmpty ||
-      incoming.text.trim().isEmpty) {
+      (incoming.text.trim().isEmpty && incoming.attachments.isEmpty)) {
     return -1;
   }
   final incomingText = incoming.text.trim();
@@ -606,7 +606,14 @@ int findMatchingOptimisticUserTimelineEntry(
       continue;
     }
     if (incomingText.isEmpty) {
-      if (!allowEmptyContent || incoming.attachments.isNotEmpty) continue;
+      if (incoming.attachments.isNotEmpty) {
+        if (candidate.text.trim().isNotEmpty) continue;
+        if (!_sameAttachmentSet(candidate.attachments, incoming.attachments)) {
+          continue;
+        }
+      } else if (!allowEmptyContent) {
+        continue;
+      }
       if (candidate.turnId.isNotEmpty &&
           incoming.turnId.isNotEmpty &&
           candidate.turnId != incoming.turnId) {

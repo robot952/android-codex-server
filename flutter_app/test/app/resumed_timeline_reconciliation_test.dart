@@ -257,6 +257,86 @@ void main() {
       expect(result.timeline.single.text, first.text);
     });
 
+    test('merges an image-only optimistic row after its server rename', () {
+      const remotePath =
+          '/root/.codex-mobile/uploads/'
+          '9a94e845-fc5e-4ab1-9fcc-84fd6354-scaled_1000153437.jpg';
+      const optimistic = TimelineEntry(
+        id: 'local-user-123',
+        kind: TimelineKind.userMessage,
+        attachments: <MessageAttachment>[
+          MessageAttachment(
+            name: 'scaled_1000153437.jpg',
+            remotePath: remotePath,
+            mimeType: 'image/jpeg',
+          ),
+        ],
+        turnId: 'turn-2',
+      );
+      const server = TimelineEntry(
+        id: 'server-user-1',
+        kind: TimelineKind.userMessage,
+        attachments: <MessageAttachment>[
+          MessageAttachment(
+            name: '9a94e845-fc5e-4ab1-9fcc-84fd6354-scaled_1000153437.jpg',
+            remotePath: remotePath,
+            mimeType: 'image/*',
+          ),
+        ],
+        turnId: 'turn-2',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[optimistic],
+        cachedNextCursor: null,
+        refreshedTimeline: const <TimelineEntry>[server],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-2'],
+        cachedThreadUpdatedAt: 10,
+        refreshedThreadUpdatedAt: 11,
+      );
+
+      expect(result.timeline, const <TimelineEntry>[server]);
+    });
+
+    test('collapses renamed image-only rows inside one resumed snapshot', () {
+      const remotePath = '/tmp/9a94e845-scaled_1000153437.jpg';
+      const originalName = TimelineEntry(
+        id: 'server-user-1',
+        kind: TimelineKind.userMessage,
+        attachments: <MessageAttachment>[
+          MessageAttachment(
+            name: 'scaled_1000153437.jpg',
+            remotePath: remotePath,
+            mimeType: 'image/jpeg',
+          ),
+        ],
+        turnId: 'turn-2',
+      );
+      const generatedName = TimelineEntry(
+        id: 'server-user-2',
+        kind: TimelineKind.userMessage,
+        attachments: <MessageAttachment>[
+          MessageAttachment(
+            name: '9a94e845-scaled_1000153437.jpg',
+            remotePath: remotePath,
+            mimeType: 'image/*',
+          ),
+        ],
+        turnId: 'turn-2',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[],
+        cachedNextCursor: null,
+        refreshedTimeline: const <TimelineEntry>[originalName, generatedName],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-2'],
+      );
+
+      expect(result.timeline, const <TimelineEntry>[generatedName]);
+    });
+
     test('summary replaces only matching timeline identities', () {
       final cached = <TimelineEntry>[
         const TimelineEntry(

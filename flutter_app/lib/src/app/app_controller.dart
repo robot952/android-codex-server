@@ -7115,13 +7115,19 @@ int? _findResumedUserIndex(
   return null;
 }
 
-String _timelineAttachmentKey(TimelineEntry entry) => entry.attachments
-    .map(
-      (attachment) =>
-          '${attachment.name}|${attachment.remotePath}|${attachment.mimeType}',
-    )
-    .toList(growable: false)
-    .join(';;');
+String _timelineAttachmentKey(TimelineEntry entry) {
+  final keys = entry.attachments.map((attachment) {
+    final remotePath = attachment.remotePath.trim();
+    final identity = remotePath.isNotEmpty
+        ? 'path:$remotePath'
+        : 'name:${attachment.name.trim()}';
+    final mimeType = attachment.mimeType.startsWith('image/')
+        ? 'image/*'
+        : attachment.mimeType;
+    return '$identity|$mimeType';
+  }).toList()..sort();
+  return keys.join(';;');
+}
 
 List<TimelineEntry> _mergeRefreshedTimeline(
   List<TimelineEntry> cached,

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.98+228，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.99+229，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1169,7 +1169,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 26. SSH 登录是前置条件；无 Agent 时终端/文件仍可用，Agent 设置和工作目录灰显不可操作（终端/文件当前已接入；无 Agent 的真机行为仍需回归）。
 27. 图片消息使用“查看了图片”中文状态；点击打开图片预览，长按可调用系统保存到手机（当前已接入）。
 28. 本地图片/文件附件必须有选择、受限上传、待发列表、移除和失败恢复；当前端到端发送及
-    `turn/start` 失败恢复已接入，仍需真机 picker 和 Widget 自动化回归。
+    `turn/start` 失败恢复已接入；只有图片且正文为空时，本地乐观消息与服务器回显也必须按远端路径合并，
+    不能因压缩文件名和 UUID 暂存名不同显示两条，仍需真机 picker 和 Widget 自动化回归。
 29. Markdown 远程绝对文件链接只能在当前 SSH profile 内通过 SFTP 下载；必须使用系统保存位置选择器、
     分块写入并清理失败半成品，内部链接不得泄露给外部浏览器（当前已接入，仍需真机回归）。
 
@@ -2103,6 +2104,17 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   无响应时原生层最多等待 5 秒后仍会完成本地清理，避免通知和服务永久残留。
 - 控制器和平台桥接回归覆盖退出时 Host/Agent 全部断开、恢复意图清空，以及原有后台心跳不受影响；Android
   发布门禁还需核对 Home 后服务保留、最近任务划掉后服务和进程退出。
+
+### 17.60 纯图片消息回显去重（2026-09-05）
+
+- 应用版本：`1.8.99+229`。修复只发送图片、不带文字时偶发显示两个用户气泡的问题：Codex 的
+  `item/started` 有时直接携带完整 `localImage`，旧逻辑只允许完全空的 started 接管本地乐观消息，因而
+  把相册压缩文件名和远端 UUID 暂存名当成两条消息。
+- 实时 started/completed 和断线恢复快照现在都以规范化的 `remotePath + MIME` 作为已上传图片身份，忽略
+  展示文件名变化；图片 MIME 子类型与服务器 `image/*` 兼容。正文为空且路径相同才合并，不同远端路径
+  仍保留为不同消息。
+- Reducer 与恢复合并回归覆盖原名 `scaled_*.jpg`、服务器 `UUID-scaled_*.jpg`、空正文、不同路径和服务器
+  重复 item ID 的组合，原有“先空 started、后补正文”兼容路径保持不变。
 
 ## 18. 文档维护规则
 

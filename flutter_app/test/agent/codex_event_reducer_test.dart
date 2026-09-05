@@ -392,6 +392,143 @@ void main() {
     );
   });
 
+  test(
+    'reconciles an image-only optimistic row with a renamed server item',
+    () {
+      const remotePath =
+          '/root/.codex-mobile/uploads/'
+          '9a94e845-fc5e-4ab1-9fcc-84fd6354-scaled_1000153437.jpg';
+      final state = _state().copyWith(
+        timeline: const <TimelineEntry>[
+          TimelineEntry(
+            id: 'local-user-123',
+            kind: TimelineKind.userMessage,
+            attachments: <MessageAttachment>[
+              MessageAttachment(
+                name: 'scaled_1000153437.jpg',
+                remotePath: remotePath,
+                mimeType: 'image/jpeg',
+              ),
+            ],
+          ),
+        ],
+      );
+
+      final started = reduceCodexNotification(
+        state,
+        _notification('item/started', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': <String, Object?>{
+            'id': 'server-user-1',
+            'type': 'userMessage',
+            'content': <Object?>[
+              <String, Object?>{'type': 'localImage', 'path': remotePath},
+            ],
+          },
+        }),
+      );
+      final completed = reduceCodexNotification(
+        started,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': <String, Object?>{
+            'id': 'server-user-1',
+            'type': 'userMessage',
+            'content': <Object?>[
+              <String, Object?>{'type': 'localImage', 'path': remotePath},
+            ],
+          },
+        }),
+      );
+
+      expect(started.timeline, hasLength(1));
+      expect(completed.timeline, hasLength(1));
+      expect(completed.timeline.single.id, 'server-user-1');
+      expect(
+        completed.timeline.single.attachments.single.name,
+        '9a94e845-fc5e-4ab1-9fcc-84fd6354-scaled_1000153437.jpg',
+      );
+    },
+  );
+
+  test('reconciles a repeated image-only server item by remote path', () {
+    const remotePath = '/tmp/9a94e845-scaled_1000153437.jpg';
+    final state = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'server-user-1',
+          kind: TimelineKind.userMessage,
+          attachments: <MessageAttachment>[
+            MessageAttachment(
+              name: 'scaled_1000153437.jpg',
+              remotePath: remotePath,
+              mimeType: 'image/jpeg',
+            ),
+          ],
+          turnId: 'turn-1',
+        ),
+      ],
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'server-user-2',
+          'type': 'userMessage',
+          'content': <Object?>[
+            <String, Object?>{'type': 'localImage', 'path': remotePath},
+          ],
+        },
+      }),
+    );
+
+    expect(next.timeline, hasLength(1));
+    expect(next.timeline.single.id, 'server-user-2');
+  });
+
+  test('keeps image-only messages with different remote paths separate', () {
+    final state = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'local-user-123',
+          kind: TimelineKind.userMessage,
+          attachments: <MessageAttachment>[
+            MessageAttachment(
+              name: 'same.jpg',
+              remotePath: '/tmp/first-same.jpg',
+              mimeType: 'image/jpeg',
+            ),
+          ],
+        ),
+      ],
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('item/started', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'server-user-1',
+          'type': 'userMessage',
+          'content': <Object?>[
+            <String, Object?>{
+              'type': 'localImage',
+              'path': '/tmp/second-same.jpg',
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(next.timeline, hasLength(2));
+  });
+
   test('does not reconcile images with different remote paths', () {
     final state = _state().copyWith(
       timeline: const <TimelineEntry>[
