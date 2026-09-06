@@ -848,6 +848,38 @@ void main() {
     expect(laterTurn.timeline[1].status, 'running');
   });
 
+  test(
+    'keeps a completed sub-agent when a late interruption updates its item',
+    () {
+      final completed = _state().copyWith(
+        timeline: const <TimelineEntry>[
+          TimelineEntry(
+            id: 'agent-item',
+            kind: TimelineKind.subAgent,
+            status: 'completed',
+            turnId: 'turn-1',
+            subAgentThreadId: 'child-thread',
+          ),
+        ],
+      );
+      final late = reduceCodexNotification(
+        completed,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': <String, Object?>{
+            'id': 'agent-item',
+            'type': 'subAgentActivity',
+            'kind': 'interrupted',
+            'agentThreadId': 'child-thread',
+          },
+        }),
+      );
+
+      expect(late.timeline.single.status, 'completed');
+    },
+  );
+
   test('completes active sub-agents when their parent turn completes', () {
     final running = _state().copyWith(
       running: true,
@@ -928,6 +960,42 @@ void main() {
           .where((entry) => entry.kind == TimelineKind.subAgent)
           .map((entry) => entry.status),
       everyElement('completed'),
+    );
+  });
+
+  test('collab completion upgrades a prior interrupted activity', () {
+    final interrupted = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'agent-item',
+          kind: TimelineKind.subAgent,
+          status: 'interrupted',
+          turnId: 'turn-1',
+          subAgentThreadId: 'child-a',
+        ),
+      ],
+    );
+    final completed = reduceCodexNotification(
+      interrupted,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'collab-state',
+          'type': 'collabAgentToolCall',
+          'agentsStates': <String, Object?>{
+            'child-a': <String, Object?>{'status': 'completed'},
+          },
+        },
+      }),
+    );
+
+    expect(
+      completed.timeline
+          .where((entry) => entry.subAgentThreadId == 'child-a')
+          .single
+          .status,
+      'completed',
     );
   });
 }

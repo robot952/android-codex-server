@@ -685,6 +685,11 @@ TimelineEntry mergeCodexTimelineEntry(
           _isActiveSubAgentStatus(incoming.status) &&
           sameTurn
       ? previous.status
+      : previous.kind == TimelineKind.subAgent &&
+            _isTerminalSubAgentStatus(previous.status) &&
+            _isTerminalSubAgentStatus(incoming.status) &&
+            sameTurn
+      ? _strongerTerminalSubAgentStatus(previous.status, incoming.status)
       : incoming.status.isEmpty
       ? previous.status
       : incoming.status;
@@ -735,6 +740,18 @@ bool _isTerminalSubAgentStatus(String status) => const <String>{
   'shutdown',
   'notFound',
 }.contains(status);
+
+String _strongerTerminalSubAgentStatus(String current, String next) {
+  int rank(String status) => switch (status) {
+    'completed' => 5,
+    'errored' || 'failed' => 4,
+    'interrupted' => 3,
+    'shutdown' => 2,
+    'notFound' => 1,
+    _ => 0,
+  };
+  return rank(next) >= rank(current) ? next : current;
+}
 
 String _subAgentStatusForTurn(String turnStatus) => switch (turnStatus.trim()) {
   'interrupted' => 'interrupted',
@@ -790,16 +807,32 @@ List<TimelineEntry> _applySubAgentStates(
           return entry;
         }
         final status = states[entry.subAgentThreadId];
-        if (status == null ||
-            !_isActiveSubAgentStatus(entry.status) ||
-            status == entry.status) {
+        if (status == null || status == entry.status) {
           return entry;
         }
+        final mergedStatus = _mergeSubAgentStateStatus(entry.status, status);
+        if (mergedStatus == entry.status) return entry;
         changed = true;
-        return entry.copyWith(status: status);
+        return entry.copyWith(status: mergedStatus);
       })
       .toList(growable: false);
   return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
+}
+
+String _mergeSubAgentStateStatus(String current, String next) {
+  if (_isActiveSubAgentStatus(current)) return next;
+  if (!_isTerminalSubAgentStatus(current) || !_isTerminalSubAgentStatus(next)) {
+    return current;
+  }
+  int rank(String status) => switch (status) {
+    'completed' => 5,
+    'errored' || 'failed' => 4,
+    'interrupted' => 3,
+    'shutdown' => 2,
+    'notFound' => 1,
+    _ => 0,
+  };
+  return rank(next) >= rank(current) ? next : current;
 }
 
 List<TimelineEntry> _reduceTextDelta(

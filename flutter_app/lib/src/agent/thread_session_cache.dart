@@ -134,12 +134,17 @@ class ThreadSessionCache {
           .map((item) {
             if (item.kind != TimelineKind.subAgent ||
                 item.subAgentThreadId != childId ||
-                !_isActiveSubAgentStatus(item.status) ||
                 item.status == nextStatus) {
               return item;
             }
+            final currentStatus = item.status.trim();
+            final mergedStatus = _mergeCachedSubAgentStatus(
+              currentStatus,
+              nextStatus,
+            );
+            if (mergedStatus == currentStatus) return item;
             timelineChanged = true;
-            return item.copyWith(status: nextStatus);
+            return item.copyWith(status: mergedStatus);
           })
           .toList(growable: false);
       if (!timelineChanged) continue;
@@ -166,6 +171,32 @@ class ThreadSessionCache {
     }
     return changed;
   }
+
+  String _mergeCachedSubAgentStatus(String current, String next) {
+    if (_isActiveSubAgentStatus(current)) return next;
+    if (!_isTerminalSubAgentStatus(current) ||
+        !_isTerminalSubAgentStatus(next)) {
+      return current;
+    }
+    int rank(String status) => switch (status) {
+      'completed' => 5,
+      'errored' || 'failed' => 4,
+      'interrupted' => 3,
+      'shutdown' => 2,
+      'notFound' => 1,
+      _ => 0,
+    };
+    return rank(next) >= rank(current) ? next : current;
+  }
+
+  bool _isTerminalSubAgentStatus(String status) => const <String>{
+    'completed',
+    'interrupted',
+    'errored',
+    'failed',
+    'shutdown',
+    'notFound',
+  }.contains(status);
 
   void clear() {
     _entries.clear();

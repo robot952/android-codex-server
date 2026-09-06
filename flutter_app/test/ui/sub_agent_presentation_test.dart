@@ -53,6 +53,16 @@ void main() {
     },
   );
 
+  test('a late interrupted terminal update cannot replace completed', () {
+    final agent = <TimelineEntry>[
+      _agent('completed', 'thread', 'turn', 'completed'),
+      _agent('late-interrupted', 'thread', 'turn', 'interrupted'),
+    ].toSubAgentPresentations().single;
+
+    expect(agent.status, SubAgentDisplayStatus.completed);
+    expect(agent.status.label, '已完成');
+  });
+
   test('a later turn can reactivate a completed agent', () {
     final agent = <TimelineEntry>[
       _agent('completed', 'thread', 'turn-1', 'completed'),

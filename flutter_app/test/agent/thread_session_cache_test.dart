@@ -96,4 +96,20 @@ void main() {
     expect(cache.getStale('unrelated')?.timeline.single.text, 'unchanged');
     expect(cache.updateSubAgentStatus('child-thread', 'completed'), isFalse);
   });
+
+  test('upgrades a cached interrupted child when completion arrives later', () {
+    final cache = ThreadSessionCache();
+    const thread = AgentThread(id: 'parent');
+    cache.put(thread, const <TimelineEntry>[
+      TimelineEntry(
+        id: 'child-activity',
+        kind: TimelineKind.subAgent,
+        status: 'interrupted',
+        subAgentThreadId: 'child-thread',
+      ),
+    ]);
+
+    expect(cache.updateSubAgentStatus('child-thread', 'completed'), isTrue);
+    expect(cache.get('parent')?.timeline.single.status, 'completed');
+  });
 }

@@ -296,13 +296,33 @@ SubAgentPresentation _mergeWith(
     );
   }
 
+  final mergedStatus =
+      !current.status.isActive && !next.status.isActive && sameOrUnknownTurn
+      ? _strongerTerminalStatus(current.status, next.status)
+      : next.status;
+
   return SubAgentPresentation(
     threadId: next.threadId,
     name: name,
     path: path,
     turnId: next.turnId,
-    status: next.status,
+    status: mergedStatus,
     summary: summary,
     timelineIndex: next.timelineIndex,
   );
+}
+
+SubAgentDisplayStatus _strongerTerminalStatus(
+  SubAgentDisplayStatus current,
+  SubAgentDisplayStatus next,
+) {
+  int rank(SubAgentDisplayStatus status) => switch (status) {
+    SubAgentDisplayStatus.completed => 5,
+    SubAgentDisplayStatus.failed => 4,
+    SubAgentDisplayStatus.interrupted => 3,
+    SubAgentDisplayStatus.stopped => 2,
+    SubAgentDisplayStatus.unavailable => 1,
+    _ => 0,
+  };
+  return rank(next) >= rank(current) ? next : current;
 }

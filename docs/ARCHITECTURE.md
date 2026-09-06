@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.100+230，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.102+232，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2127,6 +2127,23 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   或远端 watchdog 判断 SSH 父进程已消失时才终止远端任务。这样不会因为普通网络抖动误杀可恢复回合。
 - 定向 Codex/Agent 管理器回归覆盖 watchdog 命令、shell 语法、durable manager close 顺序；完整 Android
   门禁还需在真实服务器验证断网后远端 Codex PID 是否在 SSH 会话收口后退出。
+
+### 17.62 子 Agent 迟到中断状态保护（2026-09-06）
+
+- 应用版本：`1.8.101+231`。同一子 Agent、同一父回合可能先收到 `completed`，随后在父回合继续处理或
+  上下文压缩时收到迟到的 `interrupted` 活动；展示层和 reducer 现在按终态优先级合并，已完成不会被迟到
+  的中断覆盖。
+- 新父回合仍可复用同一个子 Agent thread 并重新进入工作态；仅同一回合的终态互相合并，避免把真实的新一轮
+  中断错误保留为旧的完成状态。
+- 回归覆盖时间线展示、同条目 reducer 合并和“先完成后中断”的状态序列。
+
+### 17.63 子 Agent 完成通知覆盖中断（2026-09-06）
+
+- 应用版本：`1.8.102+232`。子 Agent 的独立 `turn/completed` 现在可以把此前已写入父时间线或缓存的
+  `interrupted` 条目升级为 `completed`；此前只更新活动态条目的限制会导致“文件已修改但显示中断”。
+- 同一子 Agent、同一父回合的终态按 `completed > errored > interrupted > shutdown > notFound` 合并，迟到的
+  活动态不会复活终态；后续新父回合仍可重新进入工作态。
+- 回归覆盖 UI 多活动合并、Codex reducer 的协作状态、子 Agent 完成事件和缓存恢复。
 
 ## 18. 文档维护规则
 

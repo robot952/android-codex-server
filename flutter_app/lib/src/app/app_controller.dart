@@ -6844,15 +6844,37 @@ List<TimelineEntry> _withSubAgentTerminalStatus(
   final result = timeline
       .map((entry) {
         if (entry.kind != TimelineKind.subAgent ||
-            entry.subAgentThreadId != childThreadId ||
-            !_isActiveSubAgentTimelineStatus(entry.status)) {
+            entry.subAgentThreadId != childThreadId) {
           return entry;
         }
+        final currentStatus = entry.status.trim();
+        final nextStatus = _mergeSubAgentTerminalStatus(
+          currentStatus,
+          terminalStatus,
+        );
+        if (nextStatus == currentStatus) return entry;
         changed = true;
-        return entry.copyWith(status: terminalStatus);
+        return entry.copyWith(status: nextStatus);
       })
       .toList(growable: false);
   return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
+}
+
+String _mergeSubAgentTerminalStatus(String current, String next) {
+  if (_isActiveSubAgentTimelineStatus(current)) return next;
+  if (!_isTerminalSubAgentTimelineStatus(current) ||
+      !_isTerminalSubAgentTimelineStatus(next)) {
+    return current;
+  }
+  int rank(String status) => switch (status) {
+    'completed' => 5,
+    'errored' || 'failed' => 4,
+    'interrupted' => 3,
+    'shutdown' => 2,
+    'notFound' => 1,
+    _ => 0,
+  };
+  return rank(next) >= rank(current) ? next : current;
 }
 
 bool _isActiveSubAgentTimelineStatus(String status) => const <String>{
@@ -6862,6 +6884,15 @@ bool _isActiveSubAgentTimelineStatus(String status) => const <String>{
   'started',
   'interacted',
   'unknown',
+}.contains(status);
+
+bool _isTerminalSubAgentTimelineStatus(String status) => const <String>{
+  'completed',
+  'interrupted',
+  'errored',
+  'failed',
+  'shutdown',
+  'notFound',
 }.contains(status);
 
 Map<String, Object?>? _notificationMap(Object? value) {
