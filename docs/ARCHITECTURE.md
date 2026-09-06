@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.102+232，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.103+233，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2144,6 +2144,16 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 同一子 Agent、同一父回合的终态按 `completed > errored > interrupted > shutdown > notFound` 合并，迟到的
   活动态不会复活终态；后续新父回合仍可重新进入工作态。
 - 回归覆盖 UI 多活动合并、Codex reducer 的协作状态、子 Agent 完成事件和缓存恢复。
+
+### 17.64 Codex stdio 启动回退（2026-09-06）
+
+- 应用版本：`1.8.103+233`。撤回上一版本为普通 Codex stdio 命令添加的 `setsid`/后台 watchdog 包装。
+  部分 SSH shell 会把 `setsid` 启动器作为进程组 leader fork 后提前退出，导致 app-server 初始化前 stdout
+  EOF，表现为所有服务器约 1 秒后统一显示“Codex 服务已退出”。
+- 普通 stdio 恢复为前台 `exec remoteCommand`，保持 SSH exec channel 与 Codex stdin/stdout 的原有生命周期。
+  durable 会话的显式 stop、manager close 和最近任务退出清理继续生效；强制停止无法执行 Dart 清理时，
+  只能依赖远端 SSH/sshd 的会话回收策略，不能用有风险的 shell 包装破坏正常连接。
+- 定向 Codex/Agent/控制器测试和真实 SSH 连接仍需验证；本轮先以最小回退恢复连接。
 
 ## 18. 文档维护规则
 

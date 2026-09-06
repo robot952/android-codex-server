@@ -1928,37 +1928,16 @@ String buildCodexAppServerCommand(ServerProfile profile) {
   final changeDirectory = workspace.isEmpty
       ? ''
       : 'cd -- ${_shellQuote(workspace)} && ';
-  final launchCommand =
-      'if [ -r "\$HOME/.codex/codex-remote.env" ]; then '
+  // Keep the stdio command in the SSH exec foreground. Some SSH servers run
+  // the command shell as a process-group leader; wrapping it in `setsid` can
+  // fork and let the launcher exit early, which closes stdout before Codex
+  // completes its initialize handshake. SSH channel teardown still closes
+  // this foreground process, while explicit durable cleanup is handled by the
+  // connection manager.
+  return 'if [ -r "\$HOME/.codex/codex-remote.env" ]; then '
       '. "\$HOME/.codex/codex-remote.env"; fi; '
       '$changeDirectory'
       'exec $remoteCommand';
-  // Force-stopping Android skips Dart cleanup. Keep a remote watchdog in a
-  // separate session so an SSH exec parent disappearing also terminates the
-  // Codex process group and any children it spawned.
-  const watchdogCommand =
-      'parent=\$1; child=\$2; '
-      'while kill -0 "\$parent" 2>/dev/null; do sleep 1; done; '
-      'kill -TERM -"\$child" 2>/dev/null || kill -TERM "\$child" 2>/dev/null || true; '
-      'sleep 2; '
-      'kill -KILL -"\$child" 2>/dev/null || kill -KILL "\$child" 2>/dev/null || true';
-  final quotedLaunch = _shellQuote(launchCommand);
-  final quotedWatchdog = _shellQuote(watchdogCommand);
-  return 'SSH_PARENT=\$PPID; '
-      'if command -v setsid >/dev/null 2>&1; then '
-      'setsid sh -c $quotedLaunch & '
-      'else sh -c $quotedLaunch & fi; '
-      'CODEX_CHILD=\$!; '
-      'if command -v setsid >/dev/null 2>&1; then '
-      'setsid sh -c $quotedWatchdog sh "\$SSH_PARENT" "\$CODEX_CHILD" '
-      '</dev/null >/dev/null 2>&1 & '
-      'else sh -c $quotedWatchdog sh "\$SSH_PARENT" "\$CODEX_CHILD" '
-      '</dev/null >/dev/null 2>&1 & fi; '
-      'WATCHDOG=\$!; '
-      'wait "\$CODEX_CHILD"; STATUS=\$?; '
-      'kill "\$WATCHDOG" 2>/dev/null || true; '
-      'wait "\$WATCHDOG" 2>/dev/null || true; '
-      'exit "\$STATUS"';
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
