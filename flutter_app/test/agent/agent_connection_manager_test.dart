@@ -855,6 +855,26 @@ void main() {
     expect(client.disconnectCount, 1);
   });
 
+  test(
+    'manager close stops durable remote Agent sessions before closing',
+    () async {
+      final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);
+      late _DurableFakeAgent client;
+      final manager = AgentConnectionManager(
+        hostManager,
+        clientFactory: (kind) => client = _DurableFakeAgent(kind),
+      );
+
+      await hostManager.connect(_first);
+      await manager.connect(_first, AgentKind.codex);
+      await manager.close();
+
+      expect(client.stopCount, 1);
+      expect(client.disconnectCount, 1);
+      await hostManager.close();
+    },
+  );
+
   test('disconnect does not wait for an active runtime installation', () async {
     final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);
     late _FakeRuntimeAgent client;

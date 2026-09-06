@@ -765,6 +765,8 @@ class AgentConnectionManager {
     for (final entry in entries) {
       entry.generation++;
       await entry.eventSubscription.cancel();
+      await _stopDurableSession(entry).catchError((_) {});
+      await _disconnectClient(entry).catchError((_) {});
       entry.client.close();
     }
     await _stateController.close();
@@ -1022,7 +1024,19 @@ class AgentConnectionManager {
     if (entry == null) return;
     entry.generation++;
     unawaited(entry.eventSubscription.cancel());
-    entry.client.close();
+    // Profile replacement/removal can happen without the explicit disconnect
+    // action. Give durable Codex sessions a bounded chance to stop remotely
+    // before closing their local transport. Lightweight adapters still close
+    // synchronously so replacement does not leave a stale client observable.
+    if (entry.client is RemoteAgentDurableSessionClient) {
+      unawaited(
+        _stopDurableSession(entry)
+            .catchError((_) {})
+            .whenComplete(entry.client.close),
+      );
+    } else {
+      entry.client.close();
+    }
     if (_states.remove(key) != null) _emitStates();
   }
 

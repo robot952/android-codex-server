@@ -205,22 +205,30 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
-  test('builds the app-server command with env and a quoted workspace', () {
-    const profile = ServerProfile(
-      id: 'server',
-      workspace: "/srv/team's app",
-      remoteCommand: '~/.local/bin/codex-remote app-server --listen stdio://',
-    );
+  test(
+    'builds the app-server command with env and a quoted workspace',
+    () async {
+      const profile = ServerProfile(
+        id: 'server',
+        workspace: "/srv/team's app",
+        remoteCommand: '~/.local/bin/codex-remote app-server --listen stdio://',
+      );
 
-    final command = buildCodexAppServerCommand(profile);
+      final command = buildCodexAppServerCommand(profile);
 
-    expect(command, contains(r'. "$HOME/.codex/codex-remote.env"'));
-    expect(command, contains("cd -- '/srv/team'\"'\"'s app' &&"));
-    expect(
-      command,
-      endsWith('exec ~/.local/bin/codex-remote app-server --listen stdio://'),
-    );
-  });
+      expect(command, contains(r'. "$HOME/.codex/codex-remote.env"'));
+      expect(command, contains('/srv/team'));
+      expect(command, contains('s app'));
+      expect(command, contains('SSH_PARENT=\$PPID'));
+      expect(
+        command,
+        contains('exec ~/.local/bin/codex-remote app-server --listen stdio://'),
+      );
+      expect(command, contains('kill -TERM -"\$child"'));
+      final syntax = await Process.run('sh', <String>['-n', '-c', command]);
+      expect(syntax.exitCode, 0, reason: syntax.stderr.toString());
+    },
+  );
 
   test('rejects an empty remote command', () {
     expect(

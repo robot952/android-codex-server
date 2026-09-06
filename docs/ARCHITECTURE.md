@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.99+229，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.100+230，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2115,6 +2115,18 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   仍保留为不同消息。
 - Reducer 与恢复合并回归覆盖原名 `scaled_*.jpg`、服务器 `UUID-scaled_*.jpg`、空正文、不同路径和服务器
   重复 item ID 的组合，原有“先空 started、后补正文”兼容路径保持不变。
+
+### 17.61 Codex 意外退出远端进程收口（2026-09-06）
+
+- 应用版本：`1.8.100+230`。普通 Codex SSH stdio 启动命令增加远端父进程 watchdog：Codex 进程在独立
+  进程组中运行，SSH exec 父进程消失后由 watchdog 终止该进程组，覆盖断网、SSH 连接异常和 Android
+  强制停止来不及执行 Dart 清理的场景。
+- `AgentConnectionManager.close()` 及 profile/lane 移除路径现在先清理 durable Codex 远端 Unix listener，
+  再关闭本地客户端；清理失败也会继续关闭本地资源，不产生未处理异步异常。
+- durable 模式仍保留“意外断线后继续运行并恢复 turn”的产品语义；只有显式断开、最近任务退出、引擎销毁
+  或远端 watchdog 判断 SSH 父进程已消失时才终止远端任务。这样不会因为普通网络抖动误杀可恢复回合。
+- 定向 Codex/Agent 管理器回归覆盖 watchdog 命令、shell 语法、durable manager close 顺序；完整 Android
+  门禁还需在真实服务器验证断网后远端 Codex PID 是否在 SSH 会话收口后退出。
 
 ## 18. 文档维护规则
 
