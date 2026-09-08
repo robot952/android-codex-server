@@ -323,6 +323,28 @@ class AppController extends StateNotifier<AppUiState> {
 
   ServerProfile newProfile() => ServerProfile.create();
 
+  /// Changes presentation order only; existing connections and selection stay
+  /// attached to their profile IDs. A null anchor moves the server to the end.
+  Future<void> moveServer(String profileId, {String? beforeProfileId}) async {
+    await _ensureInitialized();
+    final profiles = _moveServerBefore(
+      state.profiles,
+      profileId,
+      beforeProfileId,
+    );
+    if (identical(profiles, state.profiles)) return;
+    state = state.copyWith(profiles: profiles);
+    await _persist(
+      (stored) => stored.copyWith(
+        profiles: _moveServerBefore(
+          stored.profiles,
+          profileId,
+          beforeProfileId,
+        ),
+      ),
+    );
+  }
+
   Future<ServerProfile> prepareLocalLinux() async {
     await _ensureInitialized();
     _diagnostics.info('LocalLinux', 'prepare_requested');
@@ -7464,6 +7486,32 @@ String _requestString(Map<String, Object?> value, List<String> keys) {
     if (candidate is num || candidate is bool) return candidate.toString();
   }
   return '';
+}
+
+List<ServerProfile> _moveServerBefore(
+  List<ServerProfile> profiles,
+  String profileId,
+  String? beforeProfileId,
+) {
+  bool isRemote(ServerProfile profile) =>
+      !isLocalLinuxProfile(profile) && !isLocalWindowsProfile(profile);
+  if (profileId == beforeProfileId) return profiles;
+  final remote = profiles.where(isRemote).toList();
+  final oldIndex = remote.indexWhere((profile) => profile.id == profileId);
+  if (oldIndex < 0) return profiles;
+  final moved = remote.removeAt(oldIndex);
+  final newIndex = beforeProfileId == null
+      ? remote.length
+      : remote.indexWhere((profile) => profile.id == beforeProfileId);
+  if (newIndex < 0 || newIndex == oldIndex) return profiles;
+  remote.insert(newIndex, moved);
+  // Local runtime panels aren't part of the draggable list. Keep their stored
+  // slots and reuse current profile objects, including any recently edited data.
+  var index = 0;
+  return List<ServerProfile>.unmodifiable([
+    for (final profile in profiles)
+      if (isRemote(profile)) remote[index++] else profile,
+  ]);
 }
 
 extension _FirstWhereOrNull<T> on Iterable<T> {

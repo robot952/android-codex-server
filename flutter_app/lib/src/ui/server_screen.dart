@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:collection/collection.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart' hide ConnectionState;
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -156,6 +157,12 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       onSettings: _editProfile,
                       onOpen: _openProfile,
                       onDisconnect: _confirmDisconnect,
+                      onMove: (profileId, beforeProfileId) => ref
+                          .read(appControllerProvider.notifier)
+                          .moveServer(
+                            profileId,
+                            beforeProfileId: beforeProfileId,
+                          ),
                       onOpenDebugLogs: _openDebugLogs,
                       onShareDebugLogs: _shareDebugLogs,
                     ),
@@ -820,6 +827,7 @@ class _ServerList extends StatelessWidget {
     required this.onSettings,
     required this.onOpen,
     required this.onDisconnect,
+    required this.onMove,
     required this.onOpenDebugLogs,
     required this.onShareDebugLogs,
   });
@@ -834,6 +842,7 @@ class _ServerList extends StatelessWidget {
   final ValueChanged<ServerProfile> onSettings;
   final void Function(ServerProfile, ConnectionState) onOpen;
   final ValueChanged<ServerProfile> onDisconnect;
+  final void Function(String profileId, String? beforeProfileId) onMove;
   final VoidCallback onOpenDebugLogs;
   final VoidCallback onShareDebugLogs;
 
@@ -854,99 +863,170 @@ class _ServerList extends StatelessWidget {
         .length;
     return SafeArea(
       top: false,
-      child: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
-        children: [
+      child: CustomScrollView(
+        key: const ValueKey('server-list-scroll'),
+        slivers: [
           if (!Platform.isWindows)
-            _LocalLinuxPanel(
-              state: localLinux,
-              onOpen: onOpenLocalLinux,
-              onUninstall: onUninstallLocalLinux,
+            SliverToBoxAdapter(
+              child: _LocalLinuxPanel(
+                state: localLinux,
+                onOpen: onOpenLocalLinux,
+                onUninstall: onUninstallLocalLinux,
+              ),
             ),
           if (localWindows != null)
-            _LocalWindowsPanel(
-              profile: localWindows!,
-              connection:
-                  state.connectionStates[localWindows!.id] ??
-                  const ConnectionState(),
-              onOpen: onOpenLocalWindows,
+            SliverToBoxAdapter(
+              child: _LocalWindowsPanel(
+                profile: localWindows!,
+                connection:
+                    state.connectionStates[localWindows!.id] ??
+                    const ConnectionState(),
+                onOpen: onOpenLocalWindows,
+              ),
             ),
-          Padding(
+          SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: DecoratedBox(
+            sliver: DecoratedSliver(
               decoration: BoxDecoration(
                 color: codexSurface,
                 border: Border.all(color: codexBorder),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-                    child: Row(
+              sliver: SliverMainAxisGroup(
+                slivers: [
+                  SliverToBoxAdapter(
+                    child: Column(
                       children: [
-                        const Icon(Icons.star, size: 22, color: codexAmber),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+                          child: Row(
                             children: [
-                              Text(
-                                '服务器会话',
-                                style: Theme.of(context).textTheme.titleSmall,
+                              const Icon(
+                                Icons.star,
+                                size: 22,
+                                color: codexAmber,
                               ),
-                              Text(
-                                profiles.isEmpty
-                                    ? '添加第一台 SSH 服务器'
-                                    : '${profiles.length} 台服务器 · $connectedCount 台已连接',
-                                style: Theme.of(context).textTheme.bodySmall,
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '服务器会话',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleSmall,
+                                    ),
+                                    Text(
+                                      profiles.isEmpty
+                                          ? '添加第一台 SSH 服务器'
+                                          : '${profiles.length} 台服务器 · $connectedCount 台已连接',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodySmall,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              SizedBox.square(
+                                dimension: 40,
+                                child: IconButton(
+                                  tooltip: '添加服务器',
+                                  onPressed: onAdd,
+                                  icon: const Icon(Icons.add, size: 21),
+                                ),
                               ),
                             ],
                           ),
                         ),
-                        SizedBox.square(
-                          dimension: 40,
-                          child: IconButton(
-                            tooltip: '添加服务器',
-                            onPressed: onAdd,
-                            icon: const Icon(Icons.add, size: 21),
-                          ),
-                        ),
+                        const Divider(height: 1, color: codexBorder),
                       ],
                     ),
                   ),
-                  const Divider(height: 1, color: codexBorder),
                   if (profiles.isEmpty)
-                    _EmptyServerState(onAdd: onAdd)
+                    SliverToBoxAdapter(child: _EmptyServerState(onAdd: onAdd))
                   else
-                    for (var index = 0; index < profiles.length; index++) ...[
-                      _ServerRow(
-                        profile: profiles[index],
-                        connection:
-                            state.connectionStates[profiles[index].id] ??
-                            const ConnectionState(),
-                        metrics: state.serverMetrics[profiles[index].id],
-                        onOpen: onOpen,
-                        onSettings: onSettings,
-                        onDisconnect: onDisconnect,
-                      ),
-                      if (index != profiles.length - 1)
-                        Padding(
-                          padding: EdgeInsets.only(left: 52),
-                          child: Divider(
-                            height: 1,
-                            color: codexBorder.withValues(alpha: 0.72),
+                    SliverReorderableList(
+                      key: const ValueKey('server-reorder-list'),
+                      itemCount: profiles.length,
+                      onReorderStart: (_) => HapticFeedback.selectionClick(),
+                      onReorderItem: (oldIndex, newIndex) {
+                        final ids = profiles
+                            .map((profile) => profile.id)
+                            .toList();
+                        final movedId = ids.removeAt(oldIndex);
+                        ids.insert(newIndex, movedId);
+                        onMove(
+                          movedId,
+                          newIndex + 1 < ids.length ? ids[newIndex + 1] : null,
+                        );
+                      },
+                      proxyDecorator: (child, index, animation) =>
+                          AnimatedBuilder(
+                            animation: animation,
+                            child: child,
+                            builder: (context, child) => Material(
+                              color: codexRaised,
+                              elevation: 8 * animation.value,
+                              shadowColor: Colors.black87,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                side: const BorderSide(color: codexAmber),
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: child,
+                            ),
                           ),
-                        ),
-                    ],
+                      itemBuilder: (context, index) =>
+                          ReorderableDelayedDragStartListener(
+                            key: ValueKey('server-row-${profiles[index].id}'),
+                            index: index,
+                            enabled: profiles.length > 1,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _ServerRow(
+                                  profile: profiles[index],
+                                  connection:
+                                      state.connectionStates[profiles[index]
+                                          .id] ??
+                                      const ConnectionState(),
+                                  metrics:
+                                      state.serverMetrics[profiles[index].id],
+                                  onOpen: onOpen,
+                                  onSettings: onSettings,
+                                  onDisconnect: onDisconnect,
+                                ),
+                                if (index != profiles.length - 1)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 52),
+                                    child: Divider(
+                                      height: 1,
+                                      color: codexBorder.withValues(
+                                        alpha: 0.72,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                    ),
                 ],
               ),
             ),
           ),
           if (state.debugModeEnabled)
-            _DebugLogBar(onOpen: onOpenDebugLogs, onShare: onShareDebugLogs),
+            SliverToBoxAdapter(
+              child: _DebugLogBar(
+                onOpen: onOpenDebugLogs,
+                onShare: onShareDebugLogs,
+              ),
+            ),
           if (state.debugModeEnabled)
-            const Divider(height: 1, color: codexBorder),
+            const SliverToBoxAdapter(
+              child: Divider(height: 1, color: codexBorder),
+            ),
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
       ),
     );
@@ -1272,6 +1352,7 @@ class _ServerRow extends StatelessWidget {
     return Semantics(
       button: true,
       label: '服务器：${profile.name}，${_connectionLabel(connection.phase)}',
+      hint: '长按并拖动调整顺序',
       child: InkWell(
         onTap: busy ? null : () => onOpen(profile, connection),
         child: Padding(

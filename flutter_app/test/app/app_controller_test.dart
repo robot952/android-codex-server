@@ -1304,6 +1304,136 @@ Future<void> _openSubAgent(
 }
 
 void main() {
+  test(
+    'server ordering preserves live sessions and local runtime slots',
+    () async {
+      final localLinux = localLinuxProfile(_localLinuxInstance);
+      final localWindows = localWindowsProfile();
+      final third = _secondProfile.copyWith(id: 'third', name: 'Third');
+      final harness = await _createSubAgentHarness(
+        storedProfiles: StoredProfiles(
+          profiles: [
+            _firstProfile.copyWith(workspacePromptShown: true),
+            localLinux,
+            _secondProfile,
+            localWindows,
+            third,
+          ],
+          selectedProfileId: 'first',
+          composerDrafts: {
+            threadPreferenceKey('first', AgentKind.codex, 'other'):
+                'saved draft',
+          },
+        ),
+      );
+      final before = harness.controller.state;
+      final drafts = harness.store.value.composerDrafts;
+      final intent = harness.controller.backgroundConnectionIntent;
+      await harness.controller.moveServer('first');
+
+      expect(harness.controller.state.profiles.map((p) => p.id), [
+        'second',
+        localLinux.id,
+        'third',
+        localWindows.id,
+        'first',
+      ]);
+      expect(
+        harness.store.value.profiles,
+        normalizeStoredProfiles(
+          StoredProfiles(profiles: harness.controller.state.profiles),
+        ).profiles,
+      );
+      expect(
+        harness.controller.state.copyWith(profiles: before.profiles),
+        before,
+      );
+      expect(
+        harness.controller.backgroundConnectionIntent.signature,
+        intent.signature,
+      );
+      expect(
+        harness.connections.states['first']?.phase,
+        ConnectionPhase.connected,
+      );
+      expect(harness.store.value.composerDrafts, drafts);
+      expect(harness.store.value.selectedProfileId, 'first');
+
+      await harness.controller.moveServer('first', beforeProfileId: 'second');
+      expect(harness.controller.state.profiles, before.profiles);
+      expect(
+        harness.store.value.profiles,
+        normalizeStoredProfiles(
+          StoredProfiles(profiles: before.profiles),
+        ).profiles,
+      );
+    },
+  );
+
+  test('server ordering ignores invalid, local and unchanged moves', () async {
+    final local = localLinuxProfile(_localLinuxInstance);
+    final store = _MemoryProfileStore(
+      StoredProfiles(profiles: [_firstProfile, local, _secondProfile]),
+    );
+    final connections = ServerConnectionManager();
+    final controller = AppController(store, connections);
+    addTearDown(() async {
+      controller.dispose();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    final before = controller.state;
+    final writes = store.writes.length;
+    await controller.moveServer('missing');
+    await controller.moveServer(local.id);
+    await controller.moveServer('first', beforeProfileId: 'first');
+    await controller.moveServer('first', beforeProfileId: local.id);
+    await controller.moveServer('first', beforeProfileId: 'missing');
+    await controller.moveServer('first', beforeProfileId: 'second');
+    await controller.moveServer('second');
+    expect(controller.state, before);
+    expect(store.writes.length, writes);
+  });
+
+  test(
+    'rapid server moves serialize saves without losing profile edits',
+    () async {
+      final store = _BlockingFirstSaveProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile, _secondProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final connections = ServerConnectionManager();
+      final controller = AppController(store, connections);
+      addTearDown(() async {
+        controller.dispose();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      final firstMove = controller.moveServer(
+        'second',
+        beforeProfileId: 'first',
+      );
+      await store.firstSaveStarted.future;
+      final secondMove = controller.moveServer(
+        'first',
+        beforeProfileId: 'second',
+      );
+      final edit = controller.saveProfile(
+        _firstProfile.copyWith(name: 'Renamed'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(store.maximumActiveSaves, 1);
+      store.releaseFirstSave.complete();
+      await Future.wait([firstMove, secondMove, edit]);
+      expect(store.value.profiles.map((p) => p.id), ['first', 'second']);
+      expect(store.value.profiles.first.name, 'Renamed');
+      expect(store.value.profiles.first.password, _firstProfile.password);
+      expect(store.maximumActiveSaves, 1);
+    },
+  );
+
   test('persists OpenCode selection for the native Windows profile', () async {
     final profile = localWindowsProfile();
     final store = _MemoryProfileStore(
