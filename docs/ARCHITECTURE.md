@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.105+235，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.106+236，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2179,6 +2179,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   容量配置。没有声明思考档位的模型不凭名称猜测支持的档位，不修改远端 Codex、Provider 或认证配置。
 - 回归通过模拟服务端按 `includeHidden` 返回不同目录，覆盖多个隐藏模型、旧版无 hidden 字段、
   同 ID 自定义模型的档位继承和用户手动隐藏。按小功能快速流程发布，本轮不要求模拟器验收。
+
+### 17.67 删除自定义模型后恢复 Codex 远端模型（2026-09-09）
+
+- 应用版本：`1.8.106+236`。删除与 Codex 远端模型同 ID 的自定义覆盖项后，立即恢复服务端模型及其
+  显示名、默认思考强度和可选档位，不再把 OpenCode 模型同步用的删除标记套到 Codex 目录。
+- 兼容旧版本已保存的 Codex `managedModelIds` 删除标记：它们不再过滤远端模型；用户通过眼睛按钮写入的
+  `hiddenModelIds` 继续生效。OpenCode 删除自定义模型仍保留 tombstone 并同步远端，不改变原有行为。
+- 控制器回归覆盖当前删除动作和旧数据恢复，确保误删的 `gpt-6-astra` 在下次连接后重新出现并保留
+  `low/medium/high/xhigh/max/ultra` 思考档位。按小功能快速流程发布，本轮不要求模拟器验收。
 
 ## 18. 文档维护规则
 

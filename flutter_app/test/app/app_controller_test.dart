@@ -3768,12 +3768,72 @@ void main() {
           .isEmpty,
     );
     final settings = store.value.profiles.single.modelSettings(AgentKind.codex);
-    expect(settings.managedModelIds, contains('remote-a'));
+    expect(settings.managedModelIds, isNot(contains('remote-a')));
     expect(
       controller.state.models.any((model) => model.model == 'remote-a'),
-      isFalse,
+      isTrue,
     );
+    final restored = controller.state.models.firstWhere(
+      (model) => model.model == 'remote-a',
+    );
+    expect(restored.isCustom, isFalse);
+    expect(restored.displayName, 'Remote A');
   });
+
+  test(
+    'ignores stale Codex removal tombstones from older app versions',
+    () async {
+      final profile = _firstProfile.copyWith(
+        workspacePromptShown: true,
+        agentModelSettings: const <AgentKind, AgentModelSettings>{
+          AgentKind.codex: AgentModelSettings(
+            managedModelIds: <String>['gpt-6-astra'],
+          ),
+        },
+      );
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final connections = ServerConnectionManager(
+        clientFactory: _FingerprintClient.new,
+      );
+      final agent = _SettingsAgent()
+        ..modelList = const <AgentModel>[
+          AgentModel(
+            id: 'gpt-6-astra',
+            model: 'gpt-6-astra',
+            displayName: 'GPT-6-Astra',
+            defaultEffort: 'medium',
+            efforts: <String>['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          ),
+        ];
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+      await _waitUntil(() => controller.state.models.isNotEmpty);
+
+      expect(controller.state.models.single.model, 'gpt-6-astra');
+      expect(controller.state.models.single.efforts, <String>[
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+        'ultra',
+      ]);
+    },
+  );
 
   test('tests global settings without saving or disconnecting', () async {
     final profile = _firstProfile.copyWith(workspacePromptShown: true);

@@ -3987,10 +3987,14 @@ class AppController extends StateNotifier<AppUiState> {
         customModels: current.customModels
             .where((model) => model.modelId.trim() != normalizedId)
             .toList(growable: false),
-        managedModelIds: <String>{
-          ...current.managedModelIds,
-          normalizedId,
-        }.toList(growable: false),
+        managedModelIds: agent == AgentKind.openCode
+            ? <String>{
+                ...current.managedModelIds,
+                normalizedId,
+              }.toList(growable: false)
+            : current.managedModelIds
+                  .where((id) => id.trim() != normalizedId)
+                  .toList(growable: false),
       ),
     );
   }
@@ -4876,7 +4880,8 @@ class AppController extends StateNotifier<AppUiState> {
           settings.customModels,
           <String>{
             ...settings.hiddenModelIds,
-            ..._pendingManagedModelRemovals(settings),
+            if (key.agent == AgentKind.openCode)
+              ..._pendingManagedModelRemovals(settings),
           },
           customReasoningEfforts: key.agent == AgentKind.openCode
               ? openCodeReasoningEfforts
@@ -6117,7 +6122,8 @@ class AppController extends StateNotifier<AppUiState> {
       updatedSettings.customModels,
       <String>{
         ...updatedSettings.hiddenModelIds,
-        ..._pendingManagedModelRemovals(updatedSettings),
+        if (agent == AgentKind.openCode)
+          ..._pendingManagedModelRemovals(updatedSettings),
       },
       customReasoningEfforts: agent == AgentKind.openCode
           ? openCodeReasoningEfforts
