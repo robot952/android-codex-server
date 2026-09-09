@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.106+236，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.107+237，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2188,6 +2188,12 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `hiddenModelIds` 继续生效。OpenCode 删除自定义模型仍保留 tombstone 并同步远端，不改变原有行为。
 - 控制器回归覆盖当前删除动作和旧数据恢复，确保误删的 `gpt-6-astra` 在下次连接后重新出现并保留
   `low/medium/high/xhigh/max/ultra` 思考档位。按小功能快速流程发布，本轮不要求模拟器验收。
+
+### 17.68 远端模型容量编辑
+
+- `1.8.107+237`：模型管理的远端模型增加编辑入口，可保存上下文和输出容量为当前服务器的自定义覆盖项。
+- 首次编辑保留模型 ID，复用远端思考档位；删除覆盖项可恢复远端默认值。容量配置不扩大模型实际支持的上限。
+- 使用现有模型目录合并及持久化链路，按小功能流程验证并发布。
 
 ## 18. 文档维护规则
 

@@ -1324,10 +1324,15 @@ class _ModelSelectionSheet extends ConsumerWidget {
 }
 
 class _ModelEditorRequest {
-  const _ModelEditorRequest({this.originalModelId, this.definition});
+  const _ModelEditorRequest({
+    this.originalModelId,
+    this.definition,
+    this.remoteModel = false,
+  });
 
   final String? originalModelId;
   final CustomModelDefinition? definition;
+  final bool remoteModel;
 }
 
 class _ModelManagerSheet extends ConsumerWidget {
@@ -1448,6 +1453,26 @@ class _ModelManagerSheet extends ConsumerWidget {
                           for (final model in remoteModels)
                             _RemoteModelRow(
                               model: model,
+                              onEdit: () => _showEditor(
+                                context,
+                                ref,
+                                _ModelEditorRequest(
+                                  originalModelId: agentModelWireName(model),
+                                  remoteModel: true,
+                                  definition: CustomModelDefinition(
+                                    modelId: agentModelWireName(model),
+                                    displayName: model.displayName,
+                                    contextWindowTokens:
+                                        model.contextWindowTokens,
+                                    maxOutputTokens: model.maxOutputTokens,
+                                    apiProtocol:
+                                        model.apiProtocol ??
+                                        ModelApiProtocol.chatCompletions,
+                                  ),
+                                ),
+                                customModels,
+                                state,
+                              ),
                               onHide: () => controller.setModelHidden(
                                 agentModelWireName(model),
                                 true,
@@ -1618,10 +1643,15 @@ class _CustomModelRow extends StatelessWidget {
 }
 
 class _RemoteModelRow extends StatelessWidget {
-  const _RemoteModelRow({required this.model, required this.onHide});
+  const _RemoteModelRow({
+    required this.model,
+    required this.onHide,
+    required this.onEdit,
+  });
 
   final AgentModel model;
   final VoidCallback onHide;
+  final VoidCallback onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -1644,10 +1674,20 @@ class _RemoteModelRow extends StatelessWidget {
           if (details.isNotEmpty) Text(details),
         ],
       ),
-      trailing: IconButton(
-        tooltip: '隐藏模型',
-        onPressed: onHide,
-        icon: const Icon(Icons.visibility_off_outlined),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: '编辑模型',
+            onPressed: onEdit,
+            icon: const Icon(Icons.edit_outlined),
+          ),
+          IconButton(
+            tooltip: '隐藏模型',
+            onPressed: onHide,
+            icon: const Icon(Icons.visibility_off_outlined),
+          ),
+        ],
       ),
     );
   }
@@ -1783,7 +1823,7 @@ class _CustomModelEditorDialogState
     return AlertDialog(
       key: const ValueKey('custom-model-editor'),
       scrollable: true,
-      title: Text(widget.request.originalModelId == null ? '新增模型' : '编辑自定义模型'),
+      title: Text(widget.request.originalModelId == null ? '新增模型' : '编辑模型'),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
         child: Column(
@@ -1797,7 +1837,8 @@ class _CustomModelEditorDialogState
                   child: TextField(
                     key: const ValueKey('custom-model-id'),
                     controller: _modelIdController,
-                    autofocus: true,
+                    readOnly: widget.request.remoteModel,
+                    autofocus: !widget.request.remoteModel,
                     maxLength: maxCustomModelIdChars,
                     decoration: InputDecoration(
                       labelText: '模型 ID',
@@ -1809,7 +1850,8 @@ class _CustomModelEditorDialogState
                     ),
                   ),
                 ),
-                if (widget.canFetchApiModels) ...[
+                if (widget.canFetchApiModels &&
+                    !widget.request.remoteModel) ...[
                   const SizedBox(width: 8),
                   SizedBox(
                     height: 56,
@@ -1863,6 +1905,7 @@ class _CustomModelEditorDialogState
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: '上下文长度（tokens，可选）',
+                helperText: '保存为当前服务器的模型配置；不会扩大模型实际支持的容量',
                 errorText: invalidContext
                     ? '请输入 0 到 $maxModelTokenLimit 的整数'
                     : null,
