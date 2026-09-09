@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.104+234，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.105+235，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1176,6 +1176,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     不能因压缩文件名和 UUID 暂存名不同显示两条，仍需真机 picker 和 Widget 自动化回归。
 29. Markdown 远程绝对文件链接只能在当前 SSH profile 内通过 SFTP 下载；必须使用系统保存位置选择器、
     分块写入并清理失败半成品，内部链接不得泄露给外部浏览器（当前已接入，仍需真机回归）。
+30. Codex 模型列表请求必须包含 `includeHidden: true`，展示服务端默认隐藏的所有模型，不仅限于 GPT-6。
+    模型思考档位以服务端元数据为准，同 ID 的自定义模型继承这些能力；用户在 App 中主动隐藏的选择继续保留。
 
 ## 15. 修改影响图和顺序
 
@@ -2168,6 +2170,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   活动连接保留及快速连续排序/编辑的串行保存。
 - 本轮 Flutter 全量 `506` 项测试及 analyze 通过；按用户的小功能快速交付要求使用
   `publish --no-emulator`，不将 Widget 测试记作模拟器或真机拖动验收。
+
+### 17.66 Codex 完整模型目录（2026-09-09）
+
+- 应用版本：`1.8.105+235`。`model/list` 显式请求 `includeHidden: true`；返回的模型均进入共享目录，
+  不因服务端 `hidden` 标志过滤 GPT-6 Astra 或其他模型。用户保存的隐藏列表仍由已有模型管理逻辑处理。
+- 服务端返回的默认及可选思考强度保持原样；已手动添加的同 ID 自定义模型复用远端能力并保留用户名称、
+  容量配置。没有声明思考档位的模型不凭名称猜测支持的档位，不修改远端 Codex、Provider 或认证配置。
+- 回归通过模拟服务端按 `includeHidden` 返回不同目录，覆盖多个隐藏模型、旧版无 hidden 字段、
+  同 ID 自定义模型的档位继承和用户手动隐藏。按小功能快速流程发布，本轮不要求模拟器验收。
 
 ## 18. 文档维护规则
 

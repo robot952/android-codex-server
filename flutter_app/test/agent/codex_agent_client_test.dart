@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:codex_remote/src/agent/codex_agent_client.dart';
 import 'package:codex_remote/src/agent/opencode_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
+import 'package:codex_remote/src/domain/model_catalog.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -86,6 +87,9 @@ class _FakeCodexHost
 }
 
 class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
+  _FakeCodexSession({this.models = const []});
+
+  final List<Map<String, Object?>> models;
   final StreamController<Uint8List> _stdout = StreamController<Uint8List>(
     sync: true,
   );
@@ -113,12 +117,24 @@ class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
     final payload = jsonDecode(line) as Map<String, Object?>;
     final id = payload['id'];
     if (id == null) return;
+    final result = payload['method'] == 'model/list'
+        ? <String, Object?>{
+            'data': models
+                .where(
+                  (model) =>
+                      (payload['params'] as Map?)?['includeHidden'] == true ||
+                      model['hidden'] != true,
+                )
+                .toList(),
+            'nextCursor': null,
+          }
+        : <String, Object?>{};
     scheduleMicrotask(() {
       if (!_stdout.isClosed) {
         _stdout.add(
           Uint8List.fromList(
             utf8.encode(
-              '${jsonEncode(<String, Object?>{'id': id, 'result': {}})}\n',
+              '${jsonEncode(<String, Object?>{'id': id, 'result': result})}\n',
             ),
           ),
         );
@@ -205,6 +221,86 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  test(
+    'lists all server-hidden models and preserves custom model efforts',
+    () async {
+      final session = _FakeCodexSession(
+        models: [
+          {
+            'id': 'gpt-6-astra',
+            'model': 'gpt-6-astra',
+            'displayName': 'GPT-6-Astra',
+            'hidden': true,
+            'defaultReasoningEffort': 'medium',
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'low'},
+              {'reasoningEffort': 'medium'},
+              {'reasoningEffort': 'high'},
+              {'reasoningEffort': 'xhigh'},
+              {'reasoningEffort': 'max'},
+              {'reasoningEffort': 'ultra'},
+            ],
+          },
+          {
+            'id': 'another-hidden-model',
+            'hidden': true,
+            'supportedReasoningEfforts': [
+              {'reasoningEffort': 'low'},
+              {'reasoningEffort': 'high'},
+            ],
+          },
+          {'id': 'visible-model', 'hidden': false, 'isDefault': true},
+          {'id': 'legacy-model'},
+        ],
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+
+      final models = await client.listModels();
+      expect(models.map((model) => model.model), [
+        'gpt-6-astra',
+        'another-hidden-model',
+        'visible-model',
+        'legacy-model',
+      ]);
+      expect(models[1].efforts, ['low', 'high']);
+      expect(models[2].isDefault, isTrue);
+      expect(models[2].efforts, isEmpty);
+
+      final catalog = buildModelCatalog(
+        models,
+        const [
+          CustomModelDefinition(
+            modelId: 'gpt-6-astra',
+            displayName: 'My Astra',
+          ),
+        ],
+        const ['another-hidden-model'],
+      );
+      expect(catalog.map((model) => model.model), [
+        'gpt-6-astra',
+        'visible-model',
+        'legacy-model',
+      ]);
+      expect(catalog.first.displayName, 'My Astra');
+      expect(catalog.first.defaultEffort, 'medium');
+      expect(catalog.first.efforts, [
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+        'ultra',
+      ]);
+      expect(catalog.first.isCustom, isTrue);
+      await client.disconnect();
+    },
+  );
+
   test('builds the app-server command with env and a quoted workspace', () {
     const profile = ServerProfile(
       id: 'server',

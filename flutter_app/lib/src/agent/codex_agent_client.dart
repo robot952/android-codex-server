@@ -677,7 +677,7 @@ class CodexAgentClient
     final response = await _request(
       scope.request(
         'model/list',
-        params: const <String, Object?>{'limit': 100},
+        params: const <String, Object?>{'limit': 100, 'includeHidden': true},
       ),
       timeout: requestTimeout,
     );
