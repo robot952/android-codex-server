@@ -8,8 +8,11 @@
 分支 `flutter-refactor` 上进行；修改前应确认自己没有误在 `main` 或其他人的分支上工作。
 
 Gitee 环境准备由 `scripts/build-gitee-release.sh` 执行，YAML 仅传入分支名，防止平台提前替换 Shell 变量。
-Flutter 缓存路径为挂载点时保留根目录，在其子目录克隆、验 revision 并复用 SDK；首次、失败重试及旧缓存
-兼容由 `bash scripts/test-ci-flutter.sh` 验证，并纳入 `scripts/test-workflow.sh`。
+Flutter 缓存路径为挂载点时保留根目录，从 `storage.flutter-io.cn` 下载固定版本 SDK 压缩包，验证固定
+SHA-256 与 revision 后在子目录复用。下载有三次限时尝试，保留断点文件；不从 GitHub 克隆 Flutter。
+`FLUTTER_STORAGE_BASE_URL` 和 `PUB_HOSTED_URL` 默认使用 Flutter 中国社区镜像，允许流水线变量覆盖。
+首次安装、HTTP 中断/续传、错误哈希、失败重试及旧缓存兼容由 `bash scripts/test-ci-flutter.sh` 验证，
+并纳入 `scripts/test-workflow.sh`。
 
 每次开始工作以及任何新会话、任务恢复、上下文压缩或摘要恢复后，都必须从仓库磁盘重新完整阅读根目录
 `AGENTS.md` 和 `docs/ARCHITECTURE.md`；涉及构建、测试或发布时还必须完整重读本文。聊天记录、记忆和

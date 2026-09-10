@@ -936,8 +936,12 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 
 Gitee 的构建命令只调用 `bash scripts/build-gitee-release.sh <branch>`，Shell 变量在仓库脚本中展开，
 避免 YAML 的变量预处理清空 SDK 路径。Flutter 缓存根目录可能是平台挂载点，禁止删除；
-`prepare-ci-flutter.sh` 在根目录内加锁、临时克隆并校验固定 revision 后启用子目录 SDK，兼容完整旧缓存。
-下载失败、半成品和错误 revision 不得破坏缓存挂载点。对应回归入口为 `scripts/test-ci-flutter.sh`。
+`prepare-ci-flutter.sh` 在根目录内加锁，从国内 `storage.flutter-io.cn` 下载固定版本的 SDK 压缩包，
+核对发布清单固定的 SHA-256 并验证解压后的 revision，再启用子目录 SDK，兼容完整旧缓存。
+工具准备不再从 GitHub 克隆；下载采用 HTTP/1.1、每次最多 300 秒、三次尝试和断点续传，失败保留
+`.part` 文件供下一轮恢复。Pub 和 Flutter 引擎下载默认使用 Flutter 中国社区镜像，可由环境变量覆盖。
+下载失败、半成品和错误 revision 不得破坏缓存挂载点。`scripts/test-ci-flutter.sh` 覆盖缓存与挂载，
+`scripts/test-ci-flutter-download.cjs` 覆盖 HTTP 中断续传、Range 不支持回退和错误哈希拒绝。
 
 构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
 `extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用
