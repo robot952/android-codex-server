@@ -24,36 +24,10 @@ export GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.grad
 export PATH="$FLUTTER_ROOT/bin:$PATH"
 mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME"
 
-SDKMANAGER="$(command -v sdkmanager || true)"
-if [[ -z "$SDKMANAGER" ]]; then
-    for sdk_root in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}"; do
-        [[ -n "$sdk_root" ]] || continue
-        for candidate in "$sdk_root/cmdline-tools/latest/bin/sdkmanager" "$sdk_root/tools/bin/sdkmanager"; do
-            if [[ -x "$candidate" ]]; then
-                SDKMANAGER="$candidate"
-                break 2
-            fi
-        done
-    done
-fi
-if [[ -z "$SDKMANAGER" ]]; then
-    echo "sdkmanager was not found; check ANDROID_HOME/ANDROID_SDK_ROOT in the Gitee runner" >&2
-    exit 1
-fi
-
-# Some runners expose sdkmanager on PATH without exporting the SDK root.
-if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
-    sdkmanager_path="$(readlink -f "$SDKMANAGER")"
-    case "$sdkmanager_path" in
-        */cmdline-tools/*/bin/sdkmanager) export ANDROID_HOME="${sdkmanager_path%/cmdline-tools/*}" ;;
-        */tools/bin/sdkmanager) export ANDROID_HOME="${sdkmanager_path%/tools/bin/sdkmanager}" ;;
-    esac
-fi
-source "$ROOT_DIR/scripts/android-sdk.sh"
-resolve_android_sdk "$ROOT_DIR"
-yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-"$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
-    "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+ANDROID_HOME="$(bash "$ROOT_DIR/scripts/prepare-ci-android.sh" "$HOME/.cache/codex/android-sdk")"
+export ANDROID_HOME
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export PATH="$ANDROID_HOME/platform-tools:$PATH"
 "$CODEX_FLUTTER_BIN" precache --android
 "$ROOT_DIR/scripts/publish-gitee-release.sh"
 ls -lh dist

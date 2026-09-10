@@ -943,6 +943,17 @@ Gitee 的构建命令只调用 `bash scripts/build-gitee-release.sh <branch>`，
 下载失败、半成品和错误 revision 不得破坏缓存挂载点。`scripts/test-ci-flutter.sh` 覆盖缓存与挂载，
 `scripts/test-ci-flutter-download.cjs` 覆盖 HTTP 中断续传、Range 不支持回退和错误哈希拒绝。
 
+Android 工具准备由 `prepare-ci-android.sh` 单独负责，不再把 Gitee Android 插件是否预装
+`sdkmanager` 当作前置条件。脚本会从 `ANDROID_HOME`/`ANDROID_SDK_ROOT`、PATH 中的 sdkmanager、
+常见 SDK 目录和缓存目录依次探测；缺少命令行工具时从 `googledownloads.cn` 下载固定的
+Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根目录、许可证和
+`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;28.2.13676358`
+安装到可缓存的 `~/.cache/codex/android-sdk`。sdkmanager 的仓库地址也通过官方支持的
+`SDK_TEST_BASE_URL` 指向国内下载端点；已有完整 SDK 直接复用，缺失包按三次有限重试补齐。
+缓存根目录、下载和安装均有锁，工具包、许可证、包内容和失败路径都有
+`scripts/test-ci-android.sh` 的隔离回归，覆盖无预装 SDK、旧目录布局、空目录、缓存复用、
+并发、下载失败、许可证失败和流水线入口环境传递。
+
 构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
 `extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用
 `scripts/test-local-linux-runtime.sh <release-apk>` 检查，不得仅依据 APK 文件大小判断 ABI 是否完整。

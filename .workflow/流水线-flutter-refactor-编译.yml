@@ -23,6 +23,7 @@ stages:
       type: .tar.gz
     caches:
     - "~/.cache/codex/flutter-3.44.8"
+    - "~/.cache/codex/android-sdk"
     - "~/.pub-cache"
     - "~/.gradle/caches"
     - "~/.gradle/wrapper"

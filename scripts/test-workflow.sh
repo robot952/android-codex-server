@@ -94,6 +94,7 @@ rg -Fq 'bash scripts/build-gitee-release.sh release' "$ROOT_DIR/.workflow/流水
 rg -Fq '"$ROOT_DIR/scripts/publish-gitee-release.sh"' "$ROOT_DIR/scripts/build-gitee-release.sh"
 rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
 bash "$ROOT_DIR/scripts/test-ci-flutter.sh"
+bash "$ROOT_DIR/scripts/test-ci-android.sh"
 runtime_path="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 expected_runtime_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/opencode-version.txt")"
 [[ "$(workflow_opencode_version "$runtime_path")" == "$expected_runtime_version" ]]

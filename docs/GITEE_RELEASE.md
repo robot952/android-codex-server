@@ -23,7 +23,9 @@ sudo install -o codexci -g codexci -m 600 \
   /opt/codex-remote-ci/codex-remote-stable.keystore
 ~~~
 
-Runner 还必须能读取 Android SDK。构建脚本会优先识别仓库同级的 `../android-sdk`；如果新机器不同，
+Runner 还必须能读取 Android SDK。构建脚本会先自动探测现有 `sdkmanager`；如果新机器没有预装，
+`scripts/prepare-ci-android.sh` 会从 `googledownloads.cn` 下载并校验固定命令行工具，使用缓存根目录
+`~/.cache/codex/android-sdk` 安装所需 SDK 包和许可证。构建脚本会优先识别仓库同级的 `../android-sdk`；如果新机器不同，
 安装 Android Platform 36、build-tools 36.0.0、NDK 28.2.13676358 和 JDK 17，并通过
 `ANDROID_HOME` 或 `ANDROID_SDK_ROOT` 指向实际路径。
 
