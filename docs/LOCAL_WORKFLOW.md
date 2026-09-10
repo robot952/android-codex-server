@@ -11,6 +11,9 @@ Gitee 环境准备由 `scripts/build-gitee-release.sh` 执行，YAML 仅传入�
 Flutter 缓存路径为挂载点时保留根目录，从 `storage.flutter-io.cn` 下载固定版本 SDK 压缩包，验证固定
 SHA-256 与 revision 后在子目录复用。下载有三次限时尝试，保留断点文件；不从 GitHub 克隆 Flutter。
 `FLUTTER_STORAGE_BASE_URL` 和 `PUB_HOSTED_URL` 默认使用 Flutter 中国社区镜像，允许流水线变量覆盖。
+Gitee 依赖阶段启用 `CODEX_CI_PUB=1`：`prepare-ci-pub.sh` 对国内默认 Pub 源的临时网络错误
+最多重试两次，再回退 `pub.dev` 两次，每次上限 300 秒。全程强制锁定依赖版本和哈希；
+只临时映射公共源 URL，退出后恢复原 `pubspec.lock`。自定义源不自动回退，版本/哈希/鉴权错误直接失败。
 首次安装、HTTP 中断/续传、错误哈希、失败重试及旧缓存兼容由 `bash scripts/test-ci-flutter.sh` 验证，
 并纳入 `scripts/test-workflow.sh`。
 Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它先探测现有 `sdkmanager`，

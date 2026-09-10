@@ -15,6 +15,11 @@
 改用 `~/.cache/codex/android-sdk`，并将最终路径传给 Flutter/Gradle。无需修改系统挂载权限。
 缓存目录也必须可写；若缓存同样只读，脚本会明确指出缓存路径并停止。
 
+Pub 依赖优先使用 `pub.flutter-io.cn`。遇到 424/429/5xx 等临时网络错误时有限重试，
+仍失败则回退官方 `pub.dev`；每次都通过 `--enforce-lockfile` 保留依赖版本和哈希。
+镜像 URL 映射仅作用于本次获取依赖，原锁文件退出时恢复；不会执行依赖升级或从 GitHub 克隆。
+如果显式配置自定义 `PUB_HOSTED_URL`，只重试该源，不自动将私有包请求转向公共源。
+
 ## One-Time Variable Setup
 
 Create a Gitee personal access token with repository project access. Create the following masked

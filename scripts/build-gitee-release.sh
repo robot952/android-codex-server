@@ -20,6 +20,7 @@ export CODEX_FLUTTER_BIN="$FLUTTER_ROOT/bin/flutter"
 export PUB_CACHE="$HOME/.pub-cache"
 export GRADLE_USER_HOME="$HOME/.gradle"
 export CODEX_BUILD_ONLINE=1
+export CODEX_CI_PUB=1
 export GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=4"
 export PATH="$FLUTTER_ROOT/bin:$PATH"
 mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME"

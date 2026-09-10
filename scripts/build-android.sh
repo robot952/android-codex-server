@@ -70,6 +70,7 @@ android_input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     flutter_app/analysis_options.yaml \
     keystore \
     scripts/android-sdk.sh \
+    scripts/prepare-ci-pub.sh \
     scripts/build-android.sh \
     scripts/workflow-lib.sh)"
 java_identity="$(java -version 2>&1 | head -n 1)"
@@ -207,7 +208,11 @@ resolve_flutter_dependencies() {
         if (echo >/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
             configure_proxy
         fi
-        "$FLUTTER_BIN" pub get
+        if [[ "${CODEX_CI_PUB:-0}" == 1 ]]; then
+            bash "$ROOT_DIR/scripts/prepare-ci-pub.sh" "$FLUTTER_BIN" "$FLUTTER_DIR"
+        else
+            "$FLUTTER_BIN" pub get
+        fi
     elif ! "$FLUTTER_BIN" pub get --offline; then
         if (echo >/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
             configure_proxy

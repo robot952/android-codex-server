@@ -940,6 +940,11 @@ Gitee 的构建命令只调用 `bash scripts/build-gitee-release.sh <branch>`，
 核对发布清单固定的 SHA-256 并验证解压后的 revision，再启用子目录 SDK，兼容完整旧缓存。
 工具准备不再从 GitHub 克隆；下载采用 HTTP/1.1、每次最多 300 秒、三次尝试和断点续传，失败保留
 `.part` 文件供下一轮恢复。Pub 和 Flutter 引擎下载默认使用 Flutter 中国社区镜像，可由环境变量覆盖。
+Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行：国内默认 Pub 源最多
+尝试两次，遇到 HTTP 408/424/429/5xx、连接错误或超时后允许回退 `pub.dev`（同样最多两次），
+单次限时 300 秒。每次均使用 `--enforce-lockfile`；镜像尝试只临时映射公共源 URL，保留所有版本
+和 SHA-256，结束后恢复原锁文件。版本冲突、哈希不一致或鉴权失败立即停止；自定义源不自动回退公共源。
+本机默认离线依赖流程保持原行为。`test-ci-pub.cjs` 覆盖重试、回退、锁文件保留和失败清理。
 下载失败、半成品和错误 revision 不得破坏缓存挂载点。`scripts/test-ci-flutter.sh` 覆盖缓存与挂载，
 `scripts/test-ci-flutter-download.cjs` 覆盖 HTTP 中断续传、Range 不支持回退和错误哈希拒绝。
 
