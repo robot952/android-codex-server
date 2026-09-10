@@ -934,6 +934,11 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 标签再次触发，避免重复出包。历史 `release` 分支流水线保留为受保护的兼容入口，
 同一版本不应同时触发两条发布流水线。
 
+Gitee 的构建命令只调用 `bash scripts/build-gitee-release.sh <branch>`，Shell 变量在仓库脚本中展开，
+避免 YAML 的变量预处理清空 SDK 路径。Flutter 缓存根目录可能是平台挂载点，禁止删除；
+`prepare-ci-flutter.sh` 在根目录内加锁、临时克隆并校验固定 revision 后启用子目录 SDK，兼容完整旧缓存。
+下载失败、半成品和错误 revision 不得破坏缓存挂载点。对应回归入口为 `scripts/test-ci-flutter.sh`。
+
 构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
 `extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用
 `scripts/test-local-linux-runtime.sh <release-apk>` 检查，不得仅依据 APK 文件大小判断 ABI 是否完整。

@@ -7,6 +7,10 @@
 正式 Gitee 发布不信任本机成功缓存；本文只覆盖本机开发和本机 HTTP APK 发布。当前迁移任务在独立
 分支 `flutter-refactor` 上进行；修改前应确认自己没有误在 `main` 或其他人的分支上工作。
 
+Gitee 环境准备由 `scripts/build-gitee-release.sh` 执行，YAML 仅传入分支名，防止平台提前替换 Shell 变量。
+Flutter 缓存路径为挂载点时保留根目录，在其子目录克隆、验 revision 并复用 SDK；首次、失败重试及旧缓存
+兼容由 `bash scripts/test-ci-flutter.sh` 验证，并纳入 `scripts/test-workflow.sh`。
+
 每次开始工作以及任何新会话、任务恢复、上下文压缩或摘要恢复后，都必须从仓库磁盘重新完整阅读根目录
 `AGENTS.md` 和 `docs/ARCHITECTURE.md`；涉及构建、测试或发布时还必须完整重读本文。聊天记录、记忆和
 压缩摘要不能替代这些原始文档。

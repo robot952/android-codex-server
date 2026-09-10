@@ -89,15 +89,19 @@ rg -q 'http://192\.168\.8\.107/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.
 rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q '^publish_name agent\.apk$' "$ROOT_DIR/scripts/publish-local-apk.sh"
 flutter_gitee_workflow="$ROOT_DIR/.workflow/流水线-flutter-refactor-编译.yml"
-rg -Fq 'export CODEX_RELEASE_BRANCH="flutter-refactor"' "$flutter_gitee_workflow"
-rg -Fq './scripts/publish-gitee-release.sh' "$flutter_gitee_workflow"
+rg -Fq 'bash scripts/build-gitee-release.sh flutter-refactor' "$flutter_gitee_workflow"
+rg -Fq 'bash scripts/build-gitee-release.sh release' "$ROOT_DIR/.workflow/流水线-202608021802.yml"
+rg -Fq '"$ROOT_DIR/scripts/publish-gitee-release.sh"' "$ROOT_DIR/scripts/build-gitee-release.sh"
 rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
+bash "$ROOT_DIR/scripts/test-ci-flutter.sh"
 runtime_path="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 expected_runtime_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/opencode-version.txt")"
 [[ "$(workflow_opencode_version "$runtime_path")" == "$expected_runtime_version" ]]
 expected_codex_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/codex-version.txt")"
 expected_node_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/node-version.txt")"
-rg -Fq "const pinnedCodexVersion = '$expected_codex_version';" \
+rg -Fq "const defaultCodexVersion = '$expected_codex_version';" \
+    "$ROOT_DIR/flutter_app/lib/src/domain/models.dart"
+rg -Fq 'const pinnedCodexVersion = defaultCodexVersion;' \
     "$ROOT_DIR/flutter_app/lib/src/agent/remote_bootstrap.dart"
 rg -Fq "const pinnedNodeVersion = '$expected_node_version';" \
     "$ROOT_DIR/flutter_app/lib/src/agent/remote_bootstrap.dart"
