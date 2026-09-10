@@ -10,6 +10,11 @@
 不要在同一版本再推送 `release` 分支。Tag 推送本身不触发 Android 构建，避免发布
 脚本创建标签后重复跑流水线。
 
+构建入口 `scripts/build-gitee-release.sh` 自动准备 Flutter 和 Android SDK。平台导出的
+`ANDROID_HOME`/`ANDROID_SDK_ROOT` 可能指向只读工具挂载；脚本先验证可写性，不能写入时
+改用 `~/.cache/codex/android-sdk`，并将最终路径传给 Flutter/Gradle。无需修改系统挂载权限。
+缓存目录也必须可写；若缓存同样只读，脚本会明确指出缓存路径并停止。
+
 ## One-Time Variable Setup
 
 Create a Gitee personal access token with repository project access. Create the following masked

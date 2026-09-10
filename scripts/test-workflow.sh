@@ -94,7 +94,12 @@ rg -Fq 'bash scripts/build-gitee-release.sh release' "$ROOT_DIR/.workflow/流水
 rg -Fq '"$ROOT_DIR/scripts/publish-gitee-release.sh"' "$ROOT_DIR/scripts/build-gitee-release.sh"
 rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
 bash "$ROOT_DIR/scripts/test-ci-flutter.sh"
-bash "$ROOT_DIR/scripts/test-ci-android.sh"
+if command -v unshare >/dev/null && unshare --mount --propagation private true 2>/dev/null; then
+    unshare --mount --propagation private bash "$ROOT_DIR/scripts/test-ci-android.sh" --read-only-mounts
+else
+    bash "$ROOT_DIR/scripts/test-ci-android.sh"
+    echo "Read-only SDK mount tests skipped: mount namespace unavailable"
+fi
 runtime_path="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 expected_runtime_version="$(tr -d '[:space:]' < "$ROOT_DIR/protocol/opencode-version.txt")"
 [[ "$(workflow_opencode_version "$runtime_path")" == "$expected_runtime_version" ]]

@@ -17,7 +17,13 @@ Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它�
 缺少时从 `googledownloads.cn` 下载并校验固定 Android Command-line Tools 12.0，再用国内仓库
 安装所需 platform、Build Tools 和 NDK；完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
 `scripts/test-ci-android.sh` 会隔离模拟无预装 SDK、旧命令行工具目录、损坏/缺失包、许可证和
-并发缓存；本地工作流测试由 `scripts/test-workflow.sh` 一并调用。
+并发缓存；本地工作流测试由 `scripts/test-workflow.sh` 一并调用。Gitee 预装目录只读时，
+通过实际写入探测自动切换到独立缓存；后续 Flutter/Gradle 使用回传的可写 SDK 路径。
+有挂载权限的 Linux 会额外自动执行真实只读挂载测试，也可显式运行：
+
+```bash
+unshare --mount --propagation private bash scripts/test-ci-android.sh --read-only-mounts
+```
 
 每次开始工作以及任何新会话、任务恢复、上下文压缩或摘要恢复后，都必须从仓库磁盘重新完整阅读根目录
 `AGENTS.md` 和 `docs/ARCHITECTURE.md`；涉及构建、测试或发布时还必须完整重读本文。聊天记录、记忆和

@@ -948,11 +948,15 @@ Android 工具准备由 `prepare-ci-android.sh` 单独负责，不再把 Gitee A
 常见 SDK 目录和缓存目录依次探测；缺少命令行工具时从 `googledownloads.cn` 下载固定的
 Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根目录、许可证和
 `platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;28.2.13676358`
-安装到可缓存的 `~/.cache/codex/android-sdk`。sdkmanager 的仓库地址也通过官方支持的
+安装到选定的可写 SDK 目录，默认缓存为 `~/.cache/codex/android-sdk`。sdkmanager 的仓库地址通过固定工具实现提供的
 `SDK_TEST_BASE_URL` 指向国内下载端点；已有完整 SDK 直接复用，缺失包按三次有限重试补齐。
 缓存根目录、下载和安装均有锁，工具包、许可证、包内容和失败路径都有
 `scripts/test-ci-android.sh` 的隔离回归，覆盖无预装 SDK、旧目录布局、空目录、缓存复用、
-并发、下载失败、许可证失败和流水线入口环境传递。
+并发、下载失败、许可证失败和流水线入口环境传递。对 Gitee 导出的只读 SDK（如
+`/mnt/pipeline-tools/standard/android/sdk`），先实际创建临时文件验证可写性；失败后切换到独立
+SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK 不会被改写或重新挂载。
+`test-ci-android.sh --read-only-mounts` 在独立 mount namespace 中使用真实只读挂载，验证冷/热缓存、
+环境变量和 PATH 探测、只读缓存报错、下游环境传递与原 SDK 内容不变；工作流自测在有挂载权限时自动执行。
 
 构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
 `extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用

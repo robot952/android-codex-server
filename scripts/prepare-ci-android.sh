@@ -49,7 +49,23 @@ if [[ -z "$sdk_root" ]]; then
     done
 fi
 sdk_root="${sdk_root:-$cache_root}"
-mkdir -p "$sdk_root"
+# Hosted runners can export a preinstalled SDK on a read-only bind mount.
+# Check actual writes (not just mode bits, which are misleading for root/ACLs)
+# before opening the lock, accepting licenses or installing any packages.
+writable_directory() {
+    local directory="$1" probe
+    mkdir -p -- "$directory" 2>/dev/null || return 1
+    probe="$(mktemp "$directory/.codex-write-test.XXXXXX" 2>/dev/null)" || return 1
+    rm -f -- "$probe"
+}
+if ! writable_directory "$sdk_root"; then
+    echo "Android SDK directory is not writable: $sdk_root; using cache: $cache_root" >&2
+    sdk_root="$cache_root"
+    if ! writable_directory "$sdk_root"; then
+        echo "Android SDK cache is not writable: $sdk_root; provide a writable cache directory" >&2
+        exit 1
+    fi
+fi
 sdk_root="$(cd "$sdk_root" && pwd -P)"
 export ANDROID_HOME="$sdk_root" ANDROID_SDK_ROOT="$sdk_root"
 # The pinned Android command-line tools support this repository override.
