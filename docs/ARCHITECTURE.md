@@ -926,15 +926,13 @@ flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ~~~
 
-Gitee Go 的 `flutter-refactor` 分支流水线使用固定 Flutter `3.44.8`、JDK 17、Android
+Gitee Go 的 Flutter 发布流水线只响应 `v` 前缀的 Git 标签，使用固定 Flutter `3.44.8`、JDK 17、Android
 Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
-`scripts/publish-gitee-release.sh` 验证稳定证书，创建不可移动的 `v<versionName>`
-标签与 Gitee Release，并上传 `Agent-<version>.apk`；`CODEX_RELEASE_TOKEN` 只从 Gitee Go
-受保护通用变量注入。流水线仍归档 `dist/` 供构建页直接下载，且不由新创建的
-标签再次触发，避免重复出包。历史 `release` 分支流水线保留为受保护的兼容入口，
-同一版本不应同时触发两条发布流水线。
+`scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。流水线仍归档
+`dist/` 供构建页直接下载；标签脚本不会再次创建或触发标签，避免重复出包。旧的分支触发配置已一并改为
+相同的 `v` 前缀标签触发规则，不再因普通提交消耗构建额度。
 
-Gitee 的构建命令只调用 `bash scripts/build-gitee-release.sh <branch>`，Shell 变量在仓库脚本中展开，
+Gitee 的构建命令只调用 `bash scripts/publish-tag-release.sh`，Shell 变量在仓库脚本中展开，
 避免 YAML 的变量预处理清空 SDK 路径。Flutter 缓存根目录可能是平台挂载点，禁止删除；
 `prepare-ci-flutter.sh` 在根目录内加锁，从国内 `storage.flutter-io.cn` 下载固定版本的 SDK 压缩包，
 核对发布清单固定的 SHA-256 并验证解压后的 revision，再启用子目录 SDK，兼容完整旧缓存。

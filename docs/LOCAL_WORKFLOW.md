@@ -7,7 +7,8 @@
 正式 Gitee 发布不信任本机成功缓存；本文只覆盖本机开发和本机 HTTP APK 发布。当前迁移任务在独立
 分支 `flutter-refactor` 上进行；修改前应确认自己没有误在 `main` 或其他人的分支上工作。
 
-Gitee 环境准备由 `scripts/build-gitee-release.sh` 执行，YAML 仅传入分支名，防止平台提前替换 Shell 变量。
+Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只响应 `v` 前缀的 Git 标签；普通提交不会触发云端构建。
+标签脚本会核对标签与 `pubspec.yaml` 版本一致，再执行发布构建，避免错误标签消耗构建额度。
 Flutter 缓存路径为挂载点时保留根目录，从 `storage.flutter-io.cn` 下载固定版本 SDK 压缩包，验证固定
 SHA-256 与 revision 后在子目录复用。下载有三次限时尝试，保留断点文件；不从 GitHub 克隆 Flutter。
 `FLUTTER_STORAGE_BASE_URL` 和 `PUB_HOSTED_URL` 默认使用 Flutter 中国社区镜像，允许流水线变量覆盖。

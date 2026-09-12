@@ -15,7 +15,7 @@ stages:
     buildToolsVersion: "36.0.0"
     ndkVersion: 28.2.13676358
     commands:
-    - bash scripts/build-gitee-release.sh release
+    - bash scripts/publish-tag-release.sh
     artifacts:
     - name: BUILD_ARTIFACT
       path:
@@ -35,10 +35,10 @@ stages:
 triggers:
   trigger: auto
   push:
-    branches:
-      prefix: []
-      precise:
-      - release
+    tags:
+      prefix:
+      - v
+      precise: []
       include: []
 notify: []
 strategy:
