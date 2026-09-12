@@ -11,7 +11,19 @@ The client performs the following JSON-RPC flow over newline-delimited JSON:
 4. `turn/start`, `turn/steer`, and `turn/interrupt` for work.
 5. `review/start` for uncommitted-change review.
 6. Server notifications for turn, item, command, file change, plan, and diff updates.
-7. Server requests for command and file-change approvals.
+7. Server requests for command/file-change/permission approvals and user-input questions.
+
+`item/tool/requestUserInput` (legacy alias `tool/requestUserInput`) is displayed as a modal,
+thread-scoped question form. Preserve question ids, option labels/descriptions, `isOther`, and
+`isSecret`. Submit `{ "answers": { "question-id": { "answers": ["user answer"] } } }`
+with the original numeric/string request id. Skipping sends `{ "answers": {} }`, never empty
+strings or suggested answers on the user's behalf. `autoResolutionMs` does not cause this client
+to select or submit an answer automatically.
+
+`serverRequest/resolved` removes only the matching thread and type-sensitive request id from
+both the adapter pending map and UI queue, including background threads. Dialog ownership
+prevents a resolved request from dismissing unrelated routes. Replies are bound to the initiating
+transport generation. See https://learn.chatgpt.com/docs/app-server#toolrequestuserinput.
 
 Generate the authoritative schema whenever the pinned CLI changes:
 

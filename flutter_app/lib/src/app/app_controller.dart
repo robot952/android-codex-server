@@ -3735,6 +3735,7 @@ class AppController extends StateNotifier<AppUiState> {
   Future<void> answerApproval(
     bool accept, {
     Map<String, String> answers = const <String, String>{},
+    ApprovalPrompt? expectedPrompt,
   }) async {
     await _ensureInitialized();
     final profileId = state.selectedProfileId;
@@ -3742,6 +3743,7 @@ class AppController extends StateNotifier<AppUiState> {
     final activeThreadId = _approvalThreadId(state.activeThread?.id);
     if (profileId == null ||
         prompt == null ||
+        (expectedPrompt != null && prompt != expectedPrompt) ||
         state.submitting ||
         (_approvalThreadId(prompt.threadId).isNotEmpty &&
             _approvalThreadId(prompt.threadId) != activeThreadId)) {
@@ -4606,6 +4608,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   bool _sameApprovalRequest(ApprovalPrompt left, ApprovalPrompt right) =>
       left.requestId == right.requestId &&
+      left.requestIdIsString == right.requestIdIsString &&
       _approvalThreadId(left.threadId) == _approvalThreadId(right.threadId);
 
   void _enqueueApproval(AgentConnectionKey key, ApprovalPrompt prompt) {
@@ -5768,6 +5771,20 @@ class AppController extends StateNotifier<AppUiState> {
           );
         }
       case RemoteAgentNotification(:final message):
+        if (message.method == 'serverRequest/resolved') {
+          final id = CodexRequestId.tryParse(message.params['requestId']);
+          final threadId = _requestString(message.params, const ['threadId']);
+          if (id != null && threadId.isNotEmpty) {
+            for (final prompt in _approvalQueueFor(envelope.key, threadId)) {
+              if (prompt.requestId == id.wireValue.toString() &&
+                  prompt.requestIdIsString == id.isString) {
+                _removeApproval(envelope.key, prompt);
+              }
+            }
+            _syncVisibleApprovals(envelope.key);
+          }
+          return;
+        }
         final before = state;
         final routedMessage = _withResolvedNotificationThreadId(message);
         _rememberSubAgentReferences(
@@ -7428,6 +7445,7 @@ ApprovalPrompt? _approvalPromptFromRequest(CodexServerRequest request) {
             16384,
           ),
           options: options,
+          isOther: question['isOther'] == true,
           isSecret: question['isSecret'] == true,
         );
       })

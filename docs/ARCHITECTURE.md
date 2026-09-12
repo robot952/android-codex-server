@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.107+237，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.108+238，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -463,7 +463,11 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 - Composer 发送时先插入 optimistic user row，`turn/start` 返回稳定 turn ID 后合并；活动回合中再次
   发送且 Agent 支持时走 `turn/steer`，运行中显示停止图标且停止需要确认；事件 reducer 会合并消息
   delta、命令输出、文件修改、思考/计划和完成状态；
-- 审批面板支持命令、文件修改、权限和 user-input 问题，可选择答案或输入秘密字段；权限 sheet 提供
+- 命令、文件修改和权限保留底部审批面板；`item/tool/requestUserInput`（兼容 `tool/requestUserInput`）
+  使用独立提问弹窗，显示多问题、选项说明、`isOther` 自定义回答和 `isSecret` 私密输入。
+  全部问题填写后才可提交，不默认选择或自动发送答案；跳过回复空 answers 映射。
+  弹窗适配竖屏、放大字体与软键盘，失败保留草稿供重试；服务器 `serverRequest/resolved`、断线或离开
+  目标会话会关闭对应弹窗，不误关其他路由。权限 sheet 提供
   请求批准、替我审批、完全访问，启用完全访问需要二次确认；审批队列按
   `profileId + AgentKind + threadId` 分桶，迟到的其他会话请求不会覆盖当前面板，旧适配器缺少
   `threadId` 时仅使用 lane 级兼容回退；
@@ -1037,6 +1041,8 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ssh/server_metrics_test.dart | 采样协议解析、兼容短格式、非法/哨兵值和大小边界 |
 | test/agent/codex_protocol_test.dart | JSONL 编解码、generation、模型/会话/时间线/回合/附件兼容解析和字段边界 |
 | test/agent/codex_agent_client_test.dart | app-server 命令的环境加载/workspace shell quoting，以及空 `remoteCommand` 拒绝 |
+| test/agent/user_input_flow_test.dart | 真实 JSONL adapter/controller 的提问解析、回答、跳过、撤销、请求编号类型与 thread 隔离 |
+| test/ui/user_input_dialog_test.dart | 提问弹窗、选项说明、自定义输入、多问题、队列、键盘/大字体、私密输入与失败重试 |
 | test/agent/codex_global_settings_test.dart | Shell 语法、临时 HOME 配置读写、Provider/Key/`supports_websockets` 保留与更新、权限、`/models` 解析/去重、0600 header 文件和密钥不泄漏、自动 Responses/Chat 回退、显式 API 协议严格不回退和 HTTP/网络错误映射 |
 | test/agent/opencode_agent_client_test.dart | capability、workspace quoting、运行时生命周期、全局设置、真实 Key、Provider 前缀、模型同步/tombstone/缓存和显式 API 协议 |
 | test/agent/open_code_bootstrap_test.dart | 打包 bridge hash、固定版本探测、安装/卸载脚本语法、HTTP/HTTPS 代理防注入和托管卸载边界 |
@@ -1070,7 +1076,7 @@ OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 调度、question/审批和固定 OpenCode runtime 集成。已有 `quick --force` 通过记录只能证明这些 bridge
 fixture，当次真实服务器和 Android 端到端仍需单独验证。
 
-没有 integration test、golden test 或完整 Work/会话/文件/终端 UI 测试；附件 picker、IME、真实远端
+除提问弹窗的受控 Android integration test 外，尚无 golden test 或完整 Work/会话/文件/终端 UI 测试；附件 picker、真实远端
 app-server、Android 前台 Service 和系统通知展示仍没有自动化覆盖（通知协议/去重逻辑已有纯 Dart 测试）。
 当前 `codex_agent_client_test.dart` 也未覆盖握手、请求超时、事件、审批或断线。新增共享状态、持久化、
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
@@ -1336,7 +1342,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 应用内更新已接入 Gitee 检查、DownloadManager 和系统安装器；下载任务以受校验记录跨进程持久化并在
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
-- 没有 Android integration/golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
+- Android integration 目前仅覆盖受控提问弹窗；尚无 golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
   方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 358 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
@@ -2221,6 +2227,23 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - `1.8.107+237`：模型管理的远端模型增加编辑入口，可保存上下文和输出容量为当前服务器的自定义覆盖项。
 - 首次编辑保留模型 ID，复用远端思考档位；删除覆盖项可恢复远端默认值。容量配置不扩大模型实际支持的上限。
 - 使用现有模型目录合并及持久化链路，按小功能流程验证并发布。
+
+### 17.69 Codex 提问弹窗
+
+- `1.8.108+238`：将用户输入请求从底部审批面板改为独立弹窗，补齐选项说明、`isOther` 自定义回答、
+  多问题校验和私密输入；不代选、不自动提交，跳过不发送空字符串答案。
+- 按 thread 和原始数字/字符串 request id 处理 `serverRequest/resolved`；后台请求同样清理。
+  断线、切换会话和服务器撤销只关闭对应问题弹窗，回复失败保留本次答案；连接代次变化后不复用旧写入。
+- `integration_test/user_input_dialog_test.dart` 在 Android 模拟器使用生产 JSONL adapter、控制器和
+  WorkScreen，验证填写、软键盘避让、提交后继续输出、跳过与撤销。协议对端为受控内存 fixture，
+  不将该结果写成真实模型主动调用工具或真实 SSH 服务端端到端验收。
+- 本轮不修改服务器 Codex 版本、全局功能开关或 MCP 配置；只适配实际到达客户端的用户输入请求。
+- 验收：Flutter 全量 `515` 项和 analyze 通过；Android 14、`1220x2712` 模拟器完成提问设备测试，
+  随后保留数据覆盖安装正常 Release 包并通过启动检查。内外网完整下载与构建包 SHA-256 一致：
+  `714d96c0d33403ede47ff97e9b54238ccd4a2cf7c50dc2a372bc2de5d99e538e`，稳定证书未变化。
+- 构建返工：首次 Release 误沿用 Debug 的测试插件注册表，已让 Release 保留 `--pub` 重新生成。
+  工作流自测通过，真实 `check -> full` 分别耗时 `71.061s` / `140.762s`；full 复用 analyze、
+  `515` 项测试和 Debug APK，只补 Release 编译 `113.623s`、安装检查 `22.100s`；本地发布命中缓存。
 
 ## 18. 文档维护规则
 

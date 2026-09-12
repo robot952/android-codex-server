@@ -5694,7 +5694,7 @@ as String,
 /// @nodoc
 mixin _$InputQuestion {
 
- String get id; String get header; String get question; List<InputOption> get options; bool get isSecret;
+ String get id; String get header; String get question; List<InputOption> get options; bool get isOther; bool get isSecret;
 /// Create a copy of InputQuestion
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -5705,16 +5705,16 @@ $InputQuestionCopyWith<InputQuestion> get copyWith => _$InputQuestionCopyWithImp
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is InputQuestion&&(identical(other.id, id) || other.id == id)&&(identical(other.header, header) || other.header == header)&&(identical(other.question, question) || other.question == question)&&const DeepCollectionEquality().equals(other.options, options)&&(identical(other.isSecret, isSecret) || other.isSecret == isSecret));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is InputQuestion&&(identical(other.id, id) || other.id == id)&&(identical(other.header, header) || other.header == header)&&(identical(other.question, question) || other.question == question)&&const DeepCollectionEquality().equals(other.options, options)&&(identical(other.isOther, isOther) || other.isOther == isOther)&&(identical(other.isSecret, isSecret) || other.isSecret == isSecret));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id,header,question,const DeepCollectionEquality().hash(options),isSecret);
+int get hashCode => Object.hash(runtimeType,id,header,question,const DeepCollectionEquality().hash(options),isOther,isSecret);
 
 @override
 String toString() {
-  return 'InputQuestion(id: $id, header: $header, question: $question, options: $options, isSecret: $isSecret)';
+  return 'InputQuestion(id: $id, header: $header, question: $question, options: $options, isOther: $isOther, isSecret: $isSecret)';
 }
 
 
@@ -5725,7 +5725,7 @@ abstract mixin class $InputQuestionCopyWith<$Res>  {
   factory $InputQuestionCopyWith(InputQuestion value, $Res Function(InputQuestion) _then) = _$InputQuestionCopyWithImpl;
 @useResult
 $Res call({
- String id, String header, String question, List<InputOption> options, bool isSecret
+ String id, String header, String question, List<InputOption> options, bool isOther, bool isSecret
 });
 
 
@@ -5742,13 +5742,14 @@ class _$InputQuestionCopyWithImpl<$Res>
 
 /// Create a copy of InputQuestion
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? header = null,Object? question = null,Object? options = null,Object? isSecret = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? header = null,Object? question = null,Object? options = null,Object? isOther = null,Object? isSecret = null,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,header: null == header ? _self.header : header // ignore: cast_nullable_to_non_nullable
 as String,question: null == question ? _self.question : question // ignore: cast_nullable_to_non_nullable
 as String,options: null == options ? _self.options : options // ignore: cast_nullable_to_non_nullable
-as List<InputOption>,isSecret: null == isSecret ? _self.isSecret : isSecret // ignore: cast_nullable_to_non_nullable
+as List<InputOption>,isOther: null == isOther ? _self.isOther : isOther // ignore: cast_nullable_to_non_nullable
+as bool,isSecret: null == isSecret ? _self.isSecret : isSecret // ignore: cast_nullable_to_non_nullable
 as bool,
   ));
 }
@@ -5834,10 +5835,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String header,  String question,  List<InputOption> options,  bool isSecret)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String header,  String question,  List<InputOption> options,  bool isOther,  bool isSecret)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _InputQuestion() when $default != null:
-return $default(_that.id,_that.header,_that.question,_that.options,_that.isSecret);case _:
+return $default(_that.id,_that.header,_that.question,_that.options,_that.isOther,_that.isSecret);case _:
   return orElse();
 
 }
@@ -5855,10 +5856,10 @@ return $default(_that.id,_that.header,_that.question,_that.options,_that.isSecre
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String header,  String question,  List<InputOption> options,  bool isSecret)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String header,  String question,  List<InputOption> options,  bool isOther,  bool isSecret)  $default,) {final _that = this;
 switch (_that) {
 case _InputQuestion():
-return $default(_that.id,_that.header,_that.question,_that.options,_that.isSecret);case _:
+return $default(_that.id,_that.header,_that.question,_that.options,_that.isOther,_that.isSecret);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -5875,10 +5876,10 @@ return $default(_that.id,_that.header,_that.question,_that.options,_that.isSecre
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String header,  String question,  List<InputOption> options,  bool isSecret)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String header,  String question,  List<InputOption> options,  bool isOther,  bool isSecret)?  $default,) {final _that = this;
 switch (_that) {
 case _InputQuestion() when $default != null:
-return $default(_that.id,_that.header,_that.question,_that.options,_that.isSecret);case _:
+return $default(_that.id,_that.header,_that.question,_that.options,_that.isOther,_that.isSecret);case _:
   return null;
 
 }
@@ -5890,7 +5891,7 @@ return $default(_that.id,_that.header,_that.question,_that.options,_that.isSecre
 
 
 class _InputQuestion implements InputQuestion {
-  const _InputQuestion({required this.id, required this.header, required this.question, final  List<InputOption> options = const <InputOption>[], this.isSecret = false}): _options = options;
+  const _InputQuestion({required this.id, required this.header, required this.question, final  List<InputOption> options = const <InputOption>[], this.isOther = false, this.isSecret = false}): _options = options;
   
 
 @override final  String id;
@@ -5903,6 +5904,7 @@ class _InputQuestion implements InputQuestion {
   return EqualUnmodifiableListView(_options);
 }
 
+@override@JsonKey() final  bool isOther;
 @override@JsonKey() final  bool isSecret;
 
 /// Create a copy of InputQuestion
@@ -5915,16 +5917,16 @@ _$InputQuestionCopyWith<_InputQuestion> get copyWith => __$InputQuestionCopyWith
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _InputQuestion&&(identical(other.id, id) || other.id == id)&&(identical(other.header, header) || other.header == header)&&(identical(other.question, question) || other.question == question)&&const DeepCollectionEquality().equals(other._options, _options)&&(identical(other.isSecret, isSecret) || other.isSecret == isSecret));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _InputQuestion&&(identical(other.id, id) || other.id == id)&&(identical(other.header, header) || other.header == header)&&(identical(other.question, question) || other.question == question)&&const DeepCollectionEquality().equals(other._options, _options)&&(identical(other.isOther, isOther) || other.isOther == isOther)&&(identical(other.isSecret, isSecret) || other.isSecret == isSecret));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id,header,question,const DeepCollectionEquality().hash(_options),isSecret);
+int get hashCode => Object.hash(runtimeType,id,header,question,const DeepCollectionEquality().hash(_options),isOther,isSecret);
 
 @override
 String toString() {
-  return 'InputQuestion(id: $id, header: $header, question: $question, options: $options, isSecret: $isSecret)';
+  return 'InputQuestion(id: $id, header: $header, question: $question, options: $options, isOther: $isOther, isSecret: $isSecret)';
 }
 
 
@@ -5935,7 +5937,7 @@ abstract mixin class _$InputQuestionCopyWith<$Res> implements $InputQuestionCopy
   factory _$InputQuestionCopyWith(_InputQuestion value, $Res Function(_InputQuestion) _then) = __$InputQuestionCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String header, String question, List<InputOption> options, bool isSecret
+ String id, String header, String question, List<InputOption> options, bool isOther, bool isSecret
 });
 
 
@@ -5952,13 +5954,14 @@ class __$InputQuestionCopyWithImpl<$Res>
 
 /// Create a copy of InputQuestion
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? header = null,Object? question = null,Object? options = null,Object? isSecret = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? header = null,Object? question = null,Object? options = null,Object? isOther = null,Object? isSecret = null,}) {
   return _then(_InputQuestion(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,header: null == header ? _self.header : header // ignore: cast_nullable_to_non_nullable
 as String,question: null == question ? _self.question : question // ignore: cast_nullable_to_non_nullable
 as String,options: null == options ? _self._options : options // ignore: cast_nullable_to_non_nullable
-as List<InputOption>,isSecret: null == isSecret ? _self.isSecret : isSecret // ignore: cast_nullable_to_non_nullable
+as List<InputOption>,isOther: null == isOther ? _self.isOther : isOther // ignore: cast_nullable_to_non_nullable
+as bool,isSecret: null == isSecret ? _self.isSecret : isSecret // ignore: cast_nullable_to_non_nullable
 as bool,
   ));
 }

@@ -167,7 +167,8 @@ jobs:
         run: flutter pub get
 
       - name: Build Android release APK
-        run: flutter build apk --release --no-pub
+        # Refresh the Release registrant to exclude dev-only integration_test.
+        run: flutter build apk --release --pub
 
       - name: Package Android release APK
         run: |

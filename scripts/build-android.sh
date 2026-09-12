@@ -243,7 +243,11 @@ if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == 1 ]]; then
     run_timed_build_step "Debug APK build" "$FLUTTER_BIN" build apk --debug --no-pub
 fi
 if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == 1 ]]; then
-    run_timed_build_step "Release APK build" "$FLUTTER_BIN" build apk --release --no-pub
+    # Flutter 3.44 only regenerates mode-specific native plugin registrants
+    # with --pub. Reusing the Debug registrant would retain integration_test,
+    # while Gradle deliberately excludes that dev-only plugin from Release.
+    # The preceding dependency stage leaves pub's up-to-date cache reusable.
+    run_timed_build_step "Release APK build" "$FLUTTER_BIN" build apk --release --pub
 fi
 
 end_ns="$(date +%s%N)"

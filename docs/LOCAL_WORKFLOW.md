@@ -256,6 +256,16 @@ UI 验收推荐使用约 1.5K 画布：
 每次做响应式或键盘回归至少覆盖一次推荐竖屏和软键盘弹出场景，并核对截图实际 PNG 尺寸；
 不要把推荐尺寸误写成“必须精确 1220x2712”。
 
+提问弹窗的设备回归：在 SDK/Gradle 缓存环境已设置后执行
+`./scripts/flutter-tool.sh --no-version-check test integration_test/user_input_dialog_test.dart -d emulator-5554`。
+它使用真实 JSONL adapter、AppController 和 WorkScreen，但协议对端与 Profile 存储均为内存 fixture，
+不登录真实 SSH、不调用模型、不消耗云端额度。测试包会替换模拟器 APK；结束后必须安装正常发布包，
+保留既有 App 数据，不把测试包交付给用户。普通分支推送仍不得创建标签触发云端构建。
+Flutter 3.44 的 Android Release 构建须保留 `--pub`，以按 Release 模式重新生成原生插件注册表，
+剔除仅测试使用的 `integration_test`；直接沿用 Debug 注册表并使用 `--no-pub` 会编译失败。
+已解析依赖仍由 Pub 的 up-to-date 检查复用，不清理缓存。
+设备测试入口同样保留默认 Pub 步骤，以在 Release 后重新生成含测试插件的 Debug 注册表。
+
 ## 6. SSH 测试主机
 
 长期测试主机只准备一次：

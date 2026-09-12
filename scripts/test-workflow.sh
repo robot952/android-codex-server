@@ -88,6 +88,7 @@ assert_android_plan all 0 1 1 1 1 1 1 0
 rg -q 'http://192\.168\.8\.107/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q '^publish_name agent\.apk$' "$ROOT_DIR/scripts/publish-local-apk.sh"
+rg -Fq '"$FLUTTER_BIN" build apk --release --pub' "$ROOT_DIR/scripts/build-android.sh"
 flutter_gitee_workflow="$ROOT_DIR/.workflow/流水线-flutter-refactor-编译.yml"
 rg -Fq 'bash scripts/publish-tag-release.sh' "$flutter_gitee_workflow"
 rg -Fq 'bash scripts/publish-tag-release.sh' "$ROOT_DIR/.workflow/流水线-202608021802.yml"

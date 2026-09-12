@@ -21,6 +21,7 @@ import 'model_selection_presentation.dart';
 import 'sub_agent_presentation.dart';
 import 'theme.dart';
 import 'work_content.dart';
+import 'user_input_dialog.dart';
 
 typedef _OpenRemoteImage =
     Future<void> Function(String path, {String? fileName});
@@ -139,191 +140,197 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       );
     }
 
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      appBar: AppBar(
-        toolbarHeight: 64,
-        leading: IconButton(
-          tooltip: backTooltip,
-          onPressed: back,
-          icon: const Icon(Icons.arrow_back),
-        ),
-        titleSpacing: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              thread.title.isNotEmpty
-                  ? thread.title
-                  : state.activeAgentName?.isNotEmpty == true
-                  ? state.activeAgentName!
-                  : '未命名任务',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-            ),
-            if (thread.cwd.isNotEmpty)
+    return UserInputPromptHost(
+      child: Scaffold(
+        resizeToAvoidBottomInset: false,
+        appBar: AppBar(
+          toolbarHeight: 64,
+          leading: IconButton(
+            tooltip: backTooltip,
+            onPressed: back,
+            icon: const Icon(Icons.arrow_back),
+          ),
+          titleSpacing: 0,
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Text(
-                thread.cwd,
+                thread.title.isNotEmpty
+                    ? thread.title
+                    : state.activeAgentName?.isNotEmpty == true
+                    ? state.activeAgentName!
+                    : '未命名任务',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (thread.cwd.isNotEmpty)
+                Text(
+                  thread.cwd,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+            ],
+          ),
+          actions: [
+            if (_fileDownloadPath != null)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+            PopupMenuButton<String>(
+              key: const Key('work-action-menu'),
+              tooltip: '会话操作',
+              enabled: !state.loading && !state.attachmentUploading,
+              color: _workPopupSurface,
+              surfaceTintColor: Colors.transparent,
+              shadowColor: Colors.black87,
+              elevation: 12,
+              constraints: const BoxConstraints(minWidth: 112, maxWidth: 232),
+              menuPadding: const EdgeInsets.symmetric(vertical: 8),
+              position: PopupMenuPosition.under,
+              offset: const Offset(0, 8),
+              popUpAnimationStyle: AnimationStyle.noAnimation,
+              shape: _workPopupShape,
+              onSelected: (value) =>
+                  unawaited(_handleWorkAction(value, state, controller)),
+              itemBuilder: (context) => [
+                if (state.activeAgentCapabilities.renameThread)
+                  PopupMenuItem(
+                    value: 'rename',
+                    enabled: !state.submitting,
+                    height: 48,
+                    padding: EdgeInsets.zero,
+                    child: const _WorkPopupMenuRow(
+                      icon: Icons.edit,
+                      label: '重命名',
+                    ),
+                  ),
+                if (state.activeAgentCapabilities.archiveThread &&
+                    state.screen != AppScreen.agentWork)
+                  PopupMenuItem(
+                    value: 'archive',
+                    enabled: !state.submitting && !state.running,
+                    height: 48,
+                    padding: EdgeInsets.zero,
+                    child: const _WorkPopupMenuRow(
+                      icon: Icons.archive,
+                      label: '归档',
+                    ),
+                  ),
+                if (state.activeAgentCapabilities.threadGoals)
+                  PopupMenuItem(
+                    value: 'goal',
+                    enabled: !state.submitting,
+                    height: 48,
+                    padding: EdgeInsets.zero,
+                    child: _WorkPopupMenuRow(
+                      icon: Icons.track_changes,
+                      label: state.activeGoal == null ? '设置目标' : '编辑目标',
+                    ),
+                  ),
+                if (state.debugModeEnabled) const PopupMenuDivider(height: 1),
+                if (state.debugModeEnabled)
+                  const PopupMenuItem(
+                    value: 'debug-logs',
+                    height: 48,
+                    padding: EdgeInsets.zero,
+                    child: _WorkPopupMenuRow(
+                      icon: Icons.bug_report,
+                      label: '添加崩溃 / Debug 日志',
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+        body: Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(
+                  child: _Transcript(
+                    state: state,
+                    controller: _scrollController,
+                    onOpenImage: (path, {fileName}) =>
+                        _openRemoteImage(path, fileName: fileName),
+                    imageLoadingPath: _imageLoadingPath,
+                    onOpenRemoteFile: _downloadRemoteFile,
+                    onOpenDiff: _openDiff,
+                    onOpenSubAgent: controller.openSubAgentThread,
+                    onRefresh:
+                        state.olderTurnsCursor == null ||
+                            state.loading ||
+                            state.olderTurnsLoading ||
+                            _refreshing
+                        ? null
+                        : () => _loadOlder(controller),
+                    onScrollNotification: _onTranscriptScroll,
+                    onTextSelectionChanged: _pauseFollowOutputForSelection,
+                    initialBottomPending: _initialBottomPending,
+                    paginationViewportKey: _paginationViewportKey,
+                    transcriptItemsSliverKey: _transcriptItemsSliverKey,
+                    bottomGap: _transcriptBottomGap,
+                    onRefreshStart: _preparePagination,
+                    showJumpToBottom:
+                        state.timeline.isNotEmpty &&
+                        !_followOutput &&
+                        _canScrollForward,
+                    onJumpToBottom: _jumpToBottom,
+                    onReview: controller.reviewChanges,
+                    onRollback: () => _confirmRollback(controller),
+                  ),
+                ),
+                if (state.approval case final prompt?
+                    when prompt.kind != ApprovalKind.userInput)
+                  _ApprovalPanel(
+                    key: ValueKey(prompt.requestId),
+                    prompt: prompt,
+                    submitting: state.submitting,
+                    onAnswer: controller.answerApproval,
+                  ),
+                _Composer(
+                  state: state,
+                  controller: _composerController,
+                  focusNode: _composerFocus,
+                  attachmentBusy:
+                      _preparingAttachments || state.attachmentUploading,
+                  onChanged: controller.setComposerDraft,
+                  onTakePhoto: _takePhoto,
+                  onAttachImage: () => _pickAttachments(imagesOnly: true),
+                  onAttachFile: () => _pickAttachments(imagesOnly: false),
+                  onRemoveAttachment: controller.removeAttachment,
+                  onSend: () => controller.sendMessage(),
+                  onStop: () => _confirmStop(controller),
+                  onModelTap: () => unawaited(_showModelSheet(context, state)),
+                  onPermissionTap: () =>
+                      _showPermissionSheet(context, state, controller),
+                  onAction: (value) =>
+                      _handleComposerAction(value, state, controller),
+                  onEditGoal: () => _showGoalDialog(state, controller),
+                  onToggleGoal: () => _toggleGoal(state, controller),
+                  onClearGoal: () => _confirmClearGoal(controller),
+                  onOpenSubAgent: controller.openSubAgentThread,
+                ),
+              ],
+            ),
+            if (_imageLoadingPath case final path?)
+              _RemoteImageLoadingOverlay(
+                path: path,
+                receivedBytes: _imageReceivedBytes,
+                totalBytes: _imageTotalBytes,
               ),
           ],
         ),
-        actions: [
-          if (_fileDownloadPath != null)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12),
-              child: Center(
-                child: SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            ),
-          PopupMenuButton<String>(
-            key: const Key('work-action-menu'),
-            tooltip: '会话操作',
-            enabled: !state.loading && !state.attachmentUploading,
-            color: _workPopupSurface,
-            surfaceTintColor: Colors.transparent,
-            shadowColor: Colors.black87,
-            elevation: 12,
-            constraints: const BoxConstraints(minWidth: 112, maxWidth: 232),
-            menuPadding: const EdgeInsets.symmetric(vertical: 8),
-            position: PopupMenuPosition.under,
-            offset: const Offset(0, 8),
-            popUpAnimationStyle: AnimationStyle.noAnimation,
-            shape: _workPopupShape,
-            onSelected: (value) =>
-                unawaited(_handleWorkAction(value, state, controller)),
-            itemBuilder: (context) => [
-              if (state.activeAgentCapabilities.renameThread)
-                PopupMenuItem(
-                  value: 'rename',
-                  enabled: !state.submitting,
-                  height: 48,
-                  padding: EdgeInsets.zero,
-                  child: const _WorkPopupMenuRow(
-                    icon: Icons.edit,
-                    label: '重命名',
-                  ),
-                ),
-              if (state.activeAgentCapabilities.archiveThread &&
-                  state.screen != AppScreen.agentWork)
-                PopupMenuItem(
-                  value: 'archive',
-                  enabled: !state.submitting && !state.running,
-                  height: 48,
-                  padding: EdgeInsets.zero,
-                  child: const _WorkPopupMenuRow(
-                    icon: Icons.archive,
-                    label: '归档',
-                  ),
-                ),
-              if (state.activeAgentCapabilities.threadGoals)
-                PopupMenuItem(
-                  value: 'goal',
-                  enabled: !state.submitting,
-                  height: 48,
-                  padding: EdgeInsets.zero,
-                  child: _WorkPopupMenuRow(
-                    icon: Icons.track_changes,
-                    label: state.activeGoal == null ? '设置目标' : '编辑目标',
-                  ),
-                ),
-              if (state.debugModeEnabled) const PopupMenuDivider(height: 1),
-              if (state.debugModeEnabled)
-                const PopupMenuItem(
-                  value: 'debug-logs',
-                  height: 48,
-                  padding: EdgeInsets.zero,
-                  child: _WorkPopupMenuRow(
-                    icon: Icons.bug_report,
-                    label: '添加崩溃 / Debug 日志',
-                  ),
-                ),
-            ],
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Column(
-            children: [
-              Expanded(
-                child: _Transcript(
-                  state: state,
-                  controller: _scrollController,
-                  onOpenImage: (path, {fileName}) =>
-                      _openRemoteImage(path, fileName: fileName),
-                  imageLoadingPath: _imageLoadingPath,
-                  onOpenRemoteFile: _downloadRemoteFile,
-                  onOpenDiff: _openDiff,
-                  onOpenSubAgent: controller.openSubAgentThread,
-                  onRefresh:
-                      state.olderTurnsCursor == null ||
-                          state.loading ||
-                          state.olderTurnsLoading ||
-                          _refreshing
-                      ? null
-                      : () => _loadOlder(controller),
-                  onScrollNotification: _onTranscriptScroll,
-                  onTextSelectionChanged: _pauseFollowOutputForSelection,
-                  initialBottomPending: _initialBottomPending,
-                  paginationViewportKey: _paginationViewportKey,
-                  transcriptItemsSliverKey: _transcriptItemsSliverKey,
-                  bottomGap: _transcriptBottomGap,
-                  onRefreshStart: _preparePagination,
-                  showJumpToBottom:
-                      state.timeline.isNotEmpty &&
-                      !_followOutput &&
-                      _canScrollForward,
-                  onJumpToBottom: _jumpToBottom,
-                  onReview: controller.reviewChanges,
-                  onRollback: () => _confirmRollback(controller),
-                ),
-              ),
-              if (state.approval case final prompt?)
-                _ApprovalPanel(
-                  key: ValueKey(prompt.requestId),
-                  prompt: prompt,
-                  submitting: state.submitting,
-                  onAnswer: controller.answerApproval,
-                ),
-              _Composer(
-                state: state,
-                controller: _composerController,
-                focusNode: _composerFocus,
-                attachmentBusy:
-                    _preparingAttachments || state.attachmentUploading,
-                onChanged: controller.setComposerDraft,
-                onTakePhoto: _takePhoto,
-                onAttachImage: () => _pickAttachments(imagesOnly: true),
-                onAttachFile: () => _pickAttachments(imagesOnly: false),
-                onRemoveAttachment: controller.removeAttachment,
-                onSend: () => controller.sendMessage(),
-                onStop: () => _confirmStop(controller),
-                onModelTap: () => unawaited(_showModelSheet(context, state)),
-                onPermissionTap: () =>
-                    _showPermissionSheet(context, state, controller),
-                onAction: (value) =>
-                    _handleComposerAction(value, state, controller),
-                onEditGoal: () => _showGoalDialog(state, controller),
-                onToggleGoal: () => _toggleGoal(state, controller),
-                onClearGoal: () => _confirmClearGoal(controller),
-                onOpenSubAgent: controller.openSubAgentThread,
-              ),
-            ],
-          ),
-          if (_imageLoadingPath case final path?)
-            _RemoteImageLoadingOverlay(
-              path: path,
-              receivedBytes: _imageReceivedBytes,
-              totalBytes: _imageTotalBytes,
-            ),
-        ],
       ),
     );
   }

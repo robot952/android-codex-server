@@ -512,6 +512,7 @@ abstract class InputQuestion with _$InputQuestion {
     required String header,
     required String question,
     @Default(<InputOption>[]) List<InputOption> options,
+    @Default(false) bool isOther,
     @Default(false) bool isSecret,
   }) = _InputQuestion;
 }

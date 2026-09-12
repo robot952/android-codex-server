@@ -916,8 +916,9 @@ class CodexAgentClient
         : CodexRequestId.number(
             num.tryParse(prompt.requestId) ?? (throw StateError('审批请求编号无效')),
           );
-    final request = _serverRequests.remove(id);
-    if (request == null || request.generation != _scope?.value) {
+    final scope = _requireScope();
+    final request = _serverRequests[id];
+    if (request == null || request.generation != scope.value) {
       throw StateError('审批请求已经失效');
     }
     final result = _approvalResult(
@@ -926,12 +927,13 @@ class CodexAgentClient
       accept: accept,
       answers: answers,
     );
+    _serverRequests.remove(id);
     try {
       await _write(
         '${jsonEncode(<String, Object?>{'id': request.id.wireValue, 'result': result})}\n',
       );
     } catch (_) {
-      if (_scope?.isCurrent == true) _serverRequests[id] = request;
+      if (scope.isCurrent) _serverRequests[id] = request;
       rethrow;
     }
   }
@@ -1368,10 +1370,10 @@ class CodexAgentClient
   }
 
   Future<void> _write(String line) {
+    final session = _session;
+    final scope = _scope;
     final previous = _writeTail;
     final next = previous.catchError((_) {}).then((_) async {
-      final session = _session;
-      final scope = _scope;
       if (session == null || scope == null || !scope.isCurrent) {
         throw StateError('${kind.label} 通道已断开');
       }
@@ -1553,6 +1555,14 @@ class CodexAgentClient
           pending.complete(message);
         }
       case CodexRpcNotification():
+        if (message.method == 'serverRequest/resolved') {
+          final id = CodexRequestId.tryParse(message.params['requestId']);
+          final pendingRequest = _serverRequests[id];
+          if (pendingRequest != null &&
+              pendingRequest.params['threadId'] == message.params['threadId']) {
+            _serverRequests.remove(id);
+          }
+        }
         _emit(RemoteAgentNotification(message));
       case CodexServerRequest():
         if (_isApprovalRequest(message.method)) {
@@ -1979,10 +1989,12 @@ Map<String, Object?> _approvalResult(
   },
   'item/tool/requestUserInput' || 'tool/requestUserInput' => <String, Object?>{
     'answers': <String, Object?>{
-      for (final question in prompt.questions)
-        question.id: <String, Object?>{
-          'answers': <String>[answers[question.id] ?? ''],
-        },
+      if (accept)
+        for (final question in prompt.questions)
+          if (answers[question.id]?.trim().isNotEmpty == true)
+            question.id: <String, Object?>{
+              'answers': <String>[answers[question.id]!],
+            },
     },
   },
   _ => throw StateError('不支持的审批类型: ${request.method}'),
