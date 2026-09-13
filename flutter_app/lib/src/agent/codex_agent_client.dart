@@ -411,11 +411,14 @@ class CodexAgentClient
   static const _oversizedPrefixLimit = 64 * 1024;
   static const _goalReadTimeout = Duration(seconds: 6);
 
-  // Thread-local overrides: enable the question UI without modifying the
-  // server user's config, permission policy or collaboration mode. OpenCode
-  // shares this transport but must never receive Codex-specific settings.
+  // Thread-local overrides enable questions without a developer banner. Keep the
+  // server user's config, permission policy and collaboration mode unchanged.
+  // OpenCode shares this transport but must never receive Codex-specific settings.
   Map<String, Object?>? get _questionConfig => kind == AgentKind.codex
-      ? const {'features.default_mode_request_user_input': true}
+      ? const {
+          'features.default_mode_request_user_input': true,
+          'suppress_unstable_features_warning': true,
+        }
       : null;
 
   final String clientVersion;

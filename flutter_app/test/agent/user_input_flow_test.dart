@@ -5,7 +5,7 @@ import '../support/user_input_harness.dart';
 
 void main() {
   test(
-    'Codex opts into Default questions on start and resume, not globally',
+    'Codex enables quiet Default questions on start and resume, not globally',
     () async {
       final h = QuestionHarness();
       addTearDown(h.close);
@@ -19,6 +19,7 @@ void main() {
                 as Map;
         expect(params['config'], {
           'features.default_mode_request_user_input': true,
+          'suppress_unstable_features_warning': true,
         });
         expect(
           params['approvalPolicy'],

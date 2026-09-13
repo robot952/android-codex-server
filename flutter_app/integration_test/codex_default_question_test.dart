@@ -99,6 +99,16 @@ void main() {
       expect(find.byType(UserInputDialog), findsNothing);
       expect(find.textContaining('QUESTION_RESULT'), findsOneWidget);
       expect(find.textContaining('茶'), findsWidgets);
+      expect(
+        find.textContaining('Under-development features enabled:'),
+        findsNothing,
+      );
+      expect(
+        controller.state.timeline.any(
+          (entry) => entry.text.contains('Under-development features enabled:'),
+        ),
+        isFalse,
+      );
       expect(tester.takeException(), isNull);
     },
   );

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.109+239，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.110+240，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -581,6 +581,7 @@ thread/name/set、review/start 和 thread/goal/get|set|clear。协议层保持 t
 
 Codex 的 `thread/start` 和 `thread/resume` 显式携带会话级配置
 `features.default_mode_request_user_input=true`，使普通 Default/Agent 模式也能使用已有提问弹窗。
+同时传入 `suppress_unstable_features_warning=true`，关闭会话中的英文开发功能提示；提问和其他错误提示照常处理。
 该配置只进入 Codex adapter，不发送给 OpenCode；不修改服务器全局配置、启动命令、模型、权限或
 collaboration mode。服务端版本和管理员策略仍需支持该功能；已运行线程可能忽略 resume 配置覆盖，
 升级 App 后应在任务结束时断开并重连服务器，再打开会话。不能用切换 Plan 或 full-access 代替提问开关。
@@ -2267,6 +2268,17 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 发布门禁：测试 `47.984s`、Debug `22.627s`、Release `147.798s`、模拟器 `24.340s`、本地发布
   回验 `49.091s`；服务器/OpenCode/发布前 Release 校验命中缓存。定向返工仅涉及测试中的权限期望值、
   SDK 环境发现、持续转圈等待和 teardown 重复释放；没有云端构建或真实模型请求。
+
+### 17.71 提问功能开发提示收敛
+
+- `1.8.110+240`：在 App 新建和恢复 Codex 会话时使用官方提示开关，不再向对话底部追加英文开发功能说明。
+  不修改服务器全局配置、不关闭提问功能，也不屏蔽其他错误或警告。
+- 真实 Codex fixture 对比未关闭提示与关闭提示的请求，验证新建/恢复会话均能回答问题且没有开发提示；
+  Android 设备回归同时检查最终时间线和可见页面。测试使用本地 Responses 数据，不调用真实模型。
+- 验收：Codex `0.153.3` / `0.154.0` fixture、Android 14 提问设备回归、Flutter `517` 项测试和 analyze
+  均通过；正常 Release 在 `1220x2712` 模拟器覆盖安装，稳定证书和内外网整包下载回验通过。
+  本地发布门禁 `5m10.370s`，测试 `49.110s`、Debug `20.917s`、Release `146.967s`、安装检查
+  `21.802s`、发布回验 `45.213s`；服务器/OpenCode 和发布前 Release 校验复用缓存，无失败返工或云端构建。
 
 ## 18. 文档维护规则
 

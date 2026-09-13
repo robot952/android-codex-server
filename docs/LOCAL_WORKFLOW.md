@@ -272,7 +272,7 @@ Flutter 3.44 的 Android Release 构建须保留 `--pub`，以按 Release 模式
 CODEX_USER_INPUT_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-user-input.cjs
 ```
 
-脚本以临时 HOME 和本地 Responses 服务测试开关关闭、新建开启和恢复开启三个场景。设备测试先使用
+脚本以临时 HOME 和本地 Responses 服务测试开关关闭、新建开启和恢复开启，并对比开发提示的显示/关闭。设备测试先使用
 同一命令追加 `--serve`，读取输出端口，执行 `adb -s emulator-5554 reverse tcp:<port> tcp:<port>`，再运行
 `./scripts/flutter-tool.sh --no-version-check test integration_test/codex_default_question_test.dart --dart-define=CODEX_QUESTION_WS_PORT=<port> -d emulator-5554`。
 必须设置正确的 `ANDROID_HOME` / `ANDROID_SDK_ROOT` 和共享 `GRADLE_USER_HOME`；结束后终止本轮 fixture、

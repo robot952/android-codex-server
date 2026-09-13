@@ -166,10 +166,12 @@ async function main() {
     await rpc("initialize", { clientInfo: { name: "question_fixture", version: "1" },
       capabilities: { experimentalApi: true } });
     send({ method: "initialized", params: {} });
-    for (const enabled of [false, true]) {
+    for (const [enabled, quiet] of [[false, false], [true, false], [true, true]]) {
+      const messageStart = messages.length;
       const result = await rpc("thread/start", {
         cwd: temporary, approvalPolicy: "on-request", sandbox: "read-only",
-        config: { "features.default_mode_request_user_input": enabled },
+        config: { "features.default_mode_request_user_input": enabled,
+          "suppress_unstable_features_warning": quiet },
       });
       const threadId = result.thread.id;
       await rpc("turn/start", { threadId, input: [{ type: "text", text: "Ask the fixture question." }] });
@@ -179,17 +181,24 @@ async function main() {
         send({ id: question.id, result: { answers: { drink: { answers: ["茶"] } } } });
       }
       await waitFor(x => x.method === "turn/completed" && x.params.threadId === threadId);
+      const hasDeveloperWarning = values => values.some(x =>
+        x.method === "warning" &&
+        String(x.params?.message).startsWith("Under-development features enabled:"));
+      assert.equal(hasDeveloperWarning(messages.slice(messageStart)), enabled && !quiet,
+        "Only the unsuppressed feature should emit the developer warning");
       const modelResult = requests.at(-1).input.findLast(x => x.type === "function_call_output").output;
       if (enabled) assert.match(modelResult, /茶/);
       else {
         assert.match(modelResult, /unavailable in Default mode/);
         assert(!messages.some(x => x.method === "item/tool/requestUserInput" && x.params.threadId === threadId));
       }
-      console.log(`Real Codex Default mode: feature=${enabled}, ${enabled ? "question answered" : "restriction reproduced"}`);
+      console.log(`Real Codex Default mode: feature=${enabled}, quiet=${quiet}, ${enabled ? "question answered" : "restriction reproduced"}`);
       if (!enabled) {
         await rpc("thread/unsubscribe", { threadId });
+        const resumeMessageStart = messages.length;
         await rpc("thread/resume", { threadId,
-          config: { "features.default_mode_request_user_input": true } });
+          config: { "features.default_mode_request_user_input": true,
+            "suppress_unstable_features_warning": true } });
         // Start a new user turn; only answer outputs after its last user input
         // belong to the synthetic model's current turn.
         await rpc("turn/start", { threadId, input: [{ type: "text", text: "Ask again after resume." }] });
@@ -197,7 +206,8 @@ async function main() {
         send({ id: question.id, result: { answers: { drink: { answers: ["白开水"] } } } });
         await waitFor(x => x.method === "turn/completed" && x.params.threadId === threadId && x.params.turn.id === question.params.turnId);
         assert.match(requests.at(-1).input.findLast(x => x.type === "function_call_output").output, /白开水/);
-        console.log("Real Codex resumed thread: Default question override applied");
+        assert.equal(hasDeveloperWarning(messages.slice(resumeMessageStart)), false);
+        console.log("Real Codex resumed thread: question answered without developer warning");
       }
     }
   } finally { await stop(); }
