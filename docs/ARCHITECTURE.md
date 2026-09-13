@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.108+238，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.109+239，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -578,6 +578,12 @@ thread/name/set、review/start 和 thread/goal/get|set|clear。协议层保持 t
 用户消息的空 `item/started` 会先接管最近的本地乐观行，再由同 item id 的 completed 内容补全，不能短暂
 显示两条相同输入。
 未知通知保留但可忽略；未知 server request 回复 JSON-RPC -32601，避免远端永久等待。
+
+Codex 的 `thread/start` 和 `thread/resume` 显式携带会话级配置
+`features.default_mode_request_user_input=true`，使普通 Default/Agent 模式也能使用已有提问弹窗。
+该配置只进入 Codex adapter，不发送给 OpenCode；不修改服务器全局配置、启动命令、模型、权限或
+collaboration mode。服务端版本和管理员策略仍需支持该功能；已运行线程可能忽略 resume 配置覆盖，
+升级 App 后应在任务结束时断开并重连服务器，再打开会话。不能用切换 Plan 或 full-access 代替提问开关。
 
 固定 Codex 版本变化前必须核对官方 schema、本地 `codex-manual-markdown (8)` 资料和协议测试，不能靠
 放宽动态 Map 或无限提高响应上限兼容未知格式。
@@ -2244,6 +2250,23 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 构建返工：首次 Release 误沿用 Debug 的测试插件注册表，已让 Release 保留 `--pub` 重新生成。
   工作流自测通过，真实 `check -> full` 分别耗时 `71.061s` / `140.762s`；full 复用 analyze、
   `515` 项测试和 Debug APK，只补 Release 编译 `113.623s`、安装检查 `22.100s`；本地发布命中缓存。
+
+### 17.70 普通 Agent 模式提问
+
+- `1.8.109+239`：根据真实日志的 `request_user_input is unavailable in Default mode`，在 Codex
+  新建和恢复会话请求中启用会话级提问开关。原有服务器配置和 OpenCode 行为保持不变。
+- `scripts/test-codex-user-input.cjs` 使用真实 Codex 程序、临时 HOME 和本地 Responses fixture，
+  复现关闭开关时的拒绝，并验证新建/恢复会话开启后能提问和接收答案；不使用真实凭据或模型额度。
+- `integration_test/codex_default_question_test.dart` 通过 adb reverse 连接上述真实 app-server，
+  验证生产 adapter/controller/WorkScreen 的提问与回答。该测试包含真实 Codex 工具路由，但模型响应
+  仍是本地受控数据，不等于用户手机、SSH 服务器或真实 Provider 已验收。
+- 本轮真实 Codex `0.146.0`、`0.153.3`、`0.154.0` 的关闭/开启/恢复场景通过；Android 14、
+  `1220x2712` 设备测试完成选择“茶”、提交与后续输出。全量 Flutter `517` 项和 analyze 通过，
+  正常 Release 覆盖安装、稳定验签及内外网完整下载回验通过；APK SHA-256 为
+  `706441acff5e5b406fc103f5db5aea679a706586e663c567852f3d86652435f1`。
+- 发布门禁：测试 `47.984s`、Debug `22.627s`、Release `147.798s`、模拟器 `24.340s`、本地发布
+  回验 `49.091s`；服务器/OpenCode/发布前 Release 校验命中缓存。定向返工仅涉及测试中的权限期望值、
+  SDK 环境发现、持续转圈等待和 teardown 重复释放；没有云端构建或真实模型请求。
 
 ## 18. 文档维护规则
 

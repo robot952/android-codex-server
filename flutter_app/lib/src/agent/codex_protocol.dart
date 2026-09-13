@@ -609,6 +609,7 @@ final class CodexProtocolGeneration {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
     SandboxChoice? sandbox,
     bool ephemeral = false,
+    Map<String, Object?>? config,
   }) => request(
     'thread/start',
     params: <String, Object?>{
@@ -617,6 +618,7 @@ final class CodexProtocolGeneration {
       'approvalPolicy': approvalMode.approvalPolicy,
       'sandbox': (sandbox ?? approvalMode.sandbox).wireValue,
       'ephemeral': ephemeral,
+      if (config != null && config.isNotEmpty) 'config': config,
     },
   );
 
@@ -639,6 +641,7 @@ final class CodexProtocolGeneration {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
     String itemsView = 'full',
     int limit = 4,
+    Map<String, Object?>? config,
   }) {
     _requireNonEmpty(threadId, 'threadId');
     if (limit <= 0) {
@@ -650,6 +653,7 @@ final class CodexProtocolGeneration {
         'threadId': threadId,
         'approvalPolicy': approvalMode.approvalPolicy,
         'excludeTurns': true,
+        if (config != null && config.isNotEmpty) 'config': config,
         'initialTurnsPage': <String, Object?>{
           'limit': limit,
           'sortDirection': 'desc',

@@ -78,6 +78,7 @@ class QuestionSession implements CodexSession {
   final _stderr = StreamController<Uint8List>();
   final _done = Completer<void>();
   final List<Map<String, dynamic>> responses = [];
+  final List<Map<String, dynamic>> requests = [];
   @override
   Stream<Uint8List> get stdout => _stdout.stream;
   @override
@@ -130,12 +131,16 @@ class QuestionSession implements CodexSession {
       return;
     }
     if (!value.containsKey('id')) return;
+    requests.add(value);
     final result = switch (value['method']) {
       'thread/list' => {
         'data': [
           {'id': 'question-thread', 'preview': '提问弹窗测试', 'turns': []},
         ],
         'nextCursor': null,
+      },
+      'thread/start' => {
+        'thread': {'id': 'new-question-thread', 'turns': []},
       },
       'thread/resume' => {
         'thread': {'id': (value['params'] as Map)['threadId'], 'turns': []},

@@ -118,8 +118,11 @@ If the host does not expose a compatible subsystem, use direct mode without atta
 separate, dedicated upload-only SSH account rather than weakening the forced command.
 
 The `request_user_input` dialog is an experimental app-server API. In Codex 0.153.3 the
-`default_mode_request_user_input` feature is disabled by default; enable it explicitly in the
-server's own configuration/command only after reviewing the risk, for example:
+`default_mode_request_user_input` feature is disabled by default. App 1.8.109 enables it through
+thread-local `config` overrides on start/resume; it does not edit the server user's files, change
+permissions, or switch to Plan mode. Reconnect the App after active work finishes so loaded
+threads are reopened with the override. For older clients, a reviewed server command can also
+enable it explicitly, for example:
 
 ```text
 codex --enable default_mode_request_user_input app-server --listen stdio://

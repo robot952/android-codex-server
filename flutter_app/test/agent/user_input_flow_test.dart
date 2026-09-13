@@ -1,8 +1,60 @@
 import 'package:codex_remote/src/domain/models.dart';
+import 'package:codex_remote/src/agent/opencode_agent_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import '../support/user_input_harness.dart';
 
 void main() {
+  test(
+    'Codex opts into Default questions on start and resume, not globally',
+    () async {
+      final h = QuestionHarness();
+      addTearDown(h.close);
+      await h.start();
+      await h.client.startThread();
+      for (final method in ['thread/start', 'thread/resume']) {
+        final params =
+            h.session.requests.firstWhere(
+                  (x) => x['method'] == method,
+                )['params']
+                as Map;
+        expect(params['config'], {
+          'features.default_mode_request_user_input': true,
+        });
+        expect(
+          params['approvalPolicy'],
+          ApprovalMode.requestApproval.approvalPolicy,
+        );
+        expect(params.containsKey('collaborationMode'), isFalse);
+      }
+      expect(
+        h.session.requests.any(
+          (x) => x['method'].toString().startsWith('config/'),
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test('OpenCode never receives Codex question feature overrides', () async {
+    final session = QuestionSession();
+    final host = QuestionHost();
+    await host.connect(questionProfile);
+    final client = OpenCodeAgentClient(sessionOpener: (_, _) async => session);
+    addTearDown(() async {
+      await client.disconnect();
+      client.close();
+      host.close();
+    });
+    await client.connect(questionProfile, host);
+    await client.startThread();
+    await client.resumeThread('question-thread');
+    for (final request in session.requests.where(
+      (x) => ['thread/start', 'thread/resume'].contains(x['method']),
+    )) {
+      expect((request['params'] as Map).containsKey('config'), isFalse);
+    }
+  });
+
   test(
     'JSONL questions preserve options and custom input and roundtrip answers',
     () async {

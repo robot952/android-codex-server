@@ -411,6 +411,13 @@ class CodexAgentClient
   static const _oversizedPrefixLimit = 64 * 1024;
   static const _goalReadTimeout = Duration(seconds: 6);
 
+  // Thread-local overrides: enable the question UI without modifying the
+  // server user's config, permission policy or collaboration mode. OpenCode
+  // shares this transport but must never receive Codex-specific settings.
+  Map<String, Object?>? get _questionConfig => kind == AgentKind.codex
+      ? const {'features.default_mode_request_user_input': true}
+      : null;
+
   final String clientVersion;
   final Duration requestTimeout;
   final Duration threadRequestTimeout;
@@ -737,6 +744,7 @@ class CodexAgentClient
             approvalMode: approvalMode,
             itemsView: attempt.itemsView,
             limit: attempt.limit,
+            config: _questionConfig,
           ),
           timeout: threadRequestTimeout,
         );
@@ -823,6 +831,7 @@ class CodexAgentClient
         model: model,
         approvalMode: approvalMode,
         sandbox: sandbox,
+        config: _questionConfig,
       ),
       timeout: threadRequestTimeout,
     );

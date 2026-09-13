@@ -266,6 +266,18 @@ Flutter 3.44 的 Android Release 构建须保留 `--pub`，以按 Release 模式
 已解析依赖仍由 Pub 的 up-to-date 检查复用，不清理缓存。
 设备测试入口同样保留默认 Pub 步骤，以在 Release 后重新生成含测试插件的 Debug 注册表。
 
+普通 Agent 模式的真实 Codex 工具路由回归使用已安装二进制，不下载/升级、不读取真实认证：
+
+```bash
+CODEX_USER_INPUT_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-user-input.cjs
+```
+
+脚本以临时 HOME 和本地 Responses 服务测试开关关闭、新建开启和恢复开启三个场景。设备测试先使用
+同一命令追加 `--serve`，读取输出端口，执行 `adb -s emulator-5554 reverse tcp:<port> tcp:<port>`，再运行
+`./scripts/flutter-tool.sh --no-version-check test integration_test/codex_default_question_test.dart --dart-define=CODEX_QUESTION_WS_PORT=<port> -d emulator-5554`。
+必须设置正确的 `ANDROID_HOME` / `ANDROID_SDK_ROOT` 和共享 `GRADLE_USER_HOME`；结束后终止本轮 fixture、
+移除本轮 adb reverse 并覆盖安装正常 Release 包。fixture 最长运行 15 分钟，仅绑定 loopback。
+
 ## 6. SSH 测试主机
 
 长期测试主机只准备一次：

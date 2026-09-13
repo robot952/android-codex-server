@@ -33,8 +33,13 @@ codex app-server generate-json-schema --out server/generated-schema
 
 The client opts into `experimentalApi` because the VS Code-style approval/input surface uses the
 experimental `request_user_input` request. Codex 0.153.3 keeps the corresponding
-`default_mode_request_user_input` feature disabled by default; enable it explicitly on the server
-only when that workflow is wanted. Unknown notifications are ignored, while unsupported
+`default_mode_request_user_input` feature disabled by default. Since App 1.8.109, the Codex adapter
+passes `config: { "features.default_mode_request_user_input": true }` on `thread/start` and
+`thread/resume`. This is a thread-local override, not a global config write or collaboration-mode
+change, and is never sent to OpenCode. Existing loaded threads can ignore resume overrides;
+finish active work and reconnect after upgrading the App. Real Codex 0.153.3 and 0.154.0 were
+tested with isolated local model responses for disabled, enabled and resumed-thread cases.
+Unknown notifications are ignored, while unsupported
 server-initiated requests receive a JSON-RPC `-32601` response so a turn cannot wait forever. A
 different CLI version is reported in the connection status and must be validated before release.
 Turn timestamps such as `startedAt` are Unix seconds and must be normalized to milliseconds before
