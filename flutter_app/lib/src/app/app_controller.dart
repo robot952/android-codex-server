@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -145,6 +146,8 @@ class AppController extends StateNotifier<AppUiState> {
       TurnCompletionDeduplicator();
   final SubAgentThreadRegistry _subAgentThreadRegistry =
       SubAgentThreadRegistry();
+  final LinkedHashMap<String, _SubAgentTurnState> _subAgentTurns =
+      LinkedHashMap();
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
   final Map<AgentConnectionKey, int> _agentLoadRevisions = {};
   final Set<String> _retainedHostConnections = <String>{};
@@ -477,6 +480,9 @@ class AppController extends StateNotifier<AppUiState> {
         _workspaceStateProfileId = null;
       }
       _threadCaches.removeWhere((key, _) => key.profileId == normalized.id);
+      _subAgentTurns.removeWhere(
+        (key, _) => key.startsWith('${normalized.id}\u0000'),
+      );
       _resumeNotificationBuffers.removeWhere(
         (key, _) => key.profileId == normalized.id,
       );
@@ -589,6 +595,7 @@ class AppController extends StateNotifier<AppUiState> {
         : state.selectedProfileId;
     final agentData = _withoutAgentProfileData(state, profileId);
     _threadCaches.removeWhere((key, _) => key.profileId == profileId);
+    _subAgentTurns.removeWhere((key, _) => key.startsWith('$profileId\u0000'));
     _resumeNotificationBuffers.removeWhere(
       (key, _) => key.profileId == profileId,
     );
@@ -1438,6 +1445,11 @@ class AppController extends StateNotifier<AppUiState> {
     )..remove(key);
     _clearAgentThreadPagination(key);
     _threadCaches.remove(key);
+    _subAgentTurns.removeWhere(
+      (storageKey, _) => storageKey.startsWith(
+        threadPreferenceKey(key.profileId, key.agent, ''),
+      ),
+    );
     _resumeNotificationBuffers.remove(key);
     _remoteModelsByLane.remove(key);
     state = state.copyWith(
@@ -2846,15 +2858,12 @@ class AppController extends StateNotifier<AppUiState> {
             return true;
           }
           if (mounted && _isActiveKey(key)) {
-            state = childSnapshot
-                .restore(state)
-                .copyWith(
-                  screen: AppScreen.agentWork,
-                  subAgentBackNavigation: false,
-                  loading: false,
-                  submitting: false,
-                  error: _message(error, '无法返回上级智能体'),
-                );
+            _restoreNavigationSnapshot(
+              key,
+              childSnapshot,
+              targetScreen: AppScreen.agentWork,
+              error: _message(error, '无法返回上级智能体'),
+            );
           }
           return true;
         },
@@ -2877,15 +2886,50 @@ class AppController extends StateNotifier<AppUiState> {
         !_isActiveKey(key)) {
       return;
     }
-    state = frame.snapshot
-        .restore(state)
-        .copyWith(
-          screen: frame.screen,
-          subAgentBackNavigation: true,
-          loading: false,
-          submitting: false,
-          error: '服务器连接已断开，已返回上级会话；重连后请重新打开会话',
-        );
+    _restoreNavigationSnapshot(
+      key,
+      frame.snapshot,
+      targetScreen: frame.screen,
+      subAgentBackNavigation: true,
+      error: '服务器连接已断开，已返回上级会话；重连后请重新打开会话',
+    );
+  }
+
+  void _restoreNavigationSnapshot(
+    AgentConnectionKey key,
+    _SessionSnapshot snapshot, {
+    required AppScreen targetScreen,
+    required String error,
+    bool subAgentBackNavigation = false,
+  }) {
+    final thread = snapshot.activeThread;
+    if (thread == null) return;
+    final cache = _threadCaches[key];
+    final latest = cache?.getStale(thread.id);
+    // Background events continue updating this thread during a failed return
+    // or a disconnect. Restore its composer, but never roll back live output,
+    // lane catalogs or the authoritative pending request queue.
+    _showThreadSnapshot(
+      key,
+      AgentSession(
+        thread: latest?.thread ?? thread,
+        timeline: latest?.timeline ?? snapshot.timeline,
+        nextTurnsCursor: latest == null
+            ? snapshot.olderTurnsCursor
+            : latest.nextTurnsCursor,
+        tokenUsage:
+            cache?.contextUsage(thread.id) ??
+            latest?.tokenUsage ??
+            snapshot.tokenUsage,
+      ),
+      loading: false,
+      activeGoal: snapshot.activeGoal,
+      targetScreen: targetScreen,
+      activeAgentName: snapshot.activeAgentName,
+      subAgentBackNavigation: subAgentBackNavigation,
+      initialSnapshot: snapshot,
+    );
+    state = state.copyWith(error: error);
   }
 
   Future<void> _openThread(AgentThread thread) async {
@@ -4093,10 +4137,14 @@ class AppController extends StateNotifier<AppUiState> {
     final defaults = profile?.modelSettings(key.agent);
     final sameInitialThread =
         initialSnapshot?.activeThread?.id == snapshot.thread.id;
-    final approvalQueue = sameInitialThread
-        ? initialSnapshot!.approvalQueue
-        : _approvalQueueFor(key, snapshot.thread.id);
-    final draft = sameInitialThread
+    final sameVisibleThread =
+        active && state.activeThread?.id == snapshot.thread.id;
+    // Parent snapshots are display fallbacks. Requests can arrive or resolve
+    // while a child is open, and the user can edit while resume is pending.
+    final approvalQueue = _approvalQueueFor(key, snapshot.thread.id);
+    final draft = sameVisibleThread
+        ? state.composerDraft
+        : sameInitialThread
         ? initialSnapshot!.composerDraft
         : active && snapshot.thread.id.isNotEmpty
         ? _stored.composerDrafts[threadPreferenceKey(
@@ -4116,12 +4164,14 @@ class AppController extends StateNotifier<AppUiState> {
       configuredModel,
       configuredEffort,
     );
-    final selectedModel =
-        sameInitialThread && initialSnapshot!.selectedModel != null
+    final selectedModel = sameVisibleThread
+        ? state.selectedModel
+        : sameInitialThread && initialSnapshot!.selectedModel != null
         ? initialSnapshot.selectedModel
         : resolvedModel.model;
-    final selectedEffort =
-        sameInitialThread && initialSnapshot!.selectedEffort != null
+    final selectedEffort = sameVisibleThread
+        ? state.selectedEffort
+        : sameInitialThread && initialSnapshot!.selectedEffort != null
         ? initialSnapshot.selectedEffort
         : resolvedModel.effort;
     final threadHasActiveTurn =
@@ -4199,6 +4249,12 @@ class AppController extends StateNotifier<AppUiState> {
       activeGoal: sameInitialThread ? initialSnapshot!.activeGoal : activeGoal,
       timeline: snapshot.timeline,
       olderTurnsCursor: snapshot.nextTurnsCursor,
+      aggregateDiff: sameVisibleThread
+          ? state.aggregateDiff
+          : sameInitialThread
+          ? initialSnapshot!.aggregateDiff
+          : '',
+      diagnostic: sameVisibleThread ? state.diagnostic : null,
       tokenUsage: snapshot.tokenUsage,
       loading: active ? loading : state.loading,
       activeTurnId: activeTurnId,
@@ -4209,7 +4265,9 @@ class AppController extends StateNotifier<AppUiState> {
       composerClearNonce: sameInitialThread
           ? initialSnapshot!.composerClearNonce
           : state.composerClearNonce,
-      attachments: sameInitialThread
+      attachments: sameVisibleThread
+          ? state.attachments
+          : sameInitialThread
           ? initialSnapshot!.attachments
           : const <PendingAttachment>[],
       attachmentUploading: false,
@@ -5231,6 +5289,11 @@ class AppController extends StateNotifier<AppUiState> {
       // A Provider switch changes the server's thread namespace. Do not let a
       // stale transcript be used when the new Provider reuses a thread ID.
       _threadCaches[key]?.clear();
+      _subAgentTurns.removeWhere(
+        (storageKey, _) => storageKey.startsWith(
+          threadPreferenceKey(key.profileId, key.agent, ''),
+        ),
+      );
     }
     final retained = _retainedAgentConnections.remove(key);
     try {
@@ -5497,6 +5560,15 @@ class AppController extends StateNotifier<AppUiState> {
     if (thread != null &&
         (targetScreen == AppScreen.work ||
             targetScreen == AppScreen.agentWork)) {
+      final scope = _subAgentNavigationScope(key);
+      final pendingParent = _subAgentNavigationStacks.isPopPending(scope)
+          ? _subAgentNavigationStacks.peek(scope)
+          : null;
+      if (pendingParent?.snapshot.activeThread?.id == thread.id) {
+        // The parent is already visible. Recovery supersedes its old resume,
+        // whose completion callback can no longer finish the pending pop.
+        _subAgentNavigationStacks.completePendingPop(scope, pendingParent!);
+      }
       final requestKey = threadPreferenceKey(profile.id, key.agent, thread.id);
       final snapshot = _SessionSnapshot.capture(state);
       final generation = _advanceSessionNavigation(key);
@@ -5794,12 +5866,12 @@ class AppController extends StateNotifier<AppUiState> {
               ? before.timeline
               : const <TimelineEntry>[],
         );
+        if (!_applyChildSubAgentLifecycle(envelope.key, routedMessage)) return;
         final resumeBuffer = _resumeNotificationBuffers[envelope.key];
         final buffered = resumeBuffer?.offer(routedMessage) ?? false;
         if (publishCompletion) {
           _publishTurnCompletionIfNeeded(envelope.key, routedMessage, before);
         }
-        _applyChildSubAgentCompletion(envelope.key, routedMessage);
         if (buffered) return;
         if (!_notificationTargetsVisibleThread(envelope.key, routedMessage)) {
           _applyBackgroundAgentNotification(envelope.key, routedMessage);
@@ -6047,24 +6119,84 @@ class AppController extends StateNotifier<AppUiState> {
     _rememberSubAgentReferences(key, reduced.threads, reduced.timeline);
   }
 
-  void _applyChildSubAgentCompletion(
+  bool _applyChildSubAgentLifecycle(
     AgentConnectionKey key,
     CodexRpcNotification message,
   ) {
     final childThreadId = _notificationThreadId(message);
     final terminalStatus = _subAgentTerminalStatusFromCompletion(message);
-    if (childThreadId.isEmpty ||
-        terminalStatus == null ||
-        !_subAgentThreadRegistry.contains(key, childThreadId)) {
-      return;
+    final started =
+        message.method == 'turn/started' ||
+        (message.method == 'thread/status/changed' &&
+            _threadStatusIndicatesRunning(
+              _notificationStatus(message.params['status']),
+            ));
+    if (childThreadId.isEmpty || (!started && terminalStatus == null)) {
+      return true;
     }
+    final turn = _notificationMap(message.params['turn']);
+    final turnId = _notificationString(turn, const ['id', 'turnId', 'turn_id'])
+        .ifEmpty(
+          () => _notificationString(message.params, const [
+            'turnId',
+            'turn_id',
+            'activeTurnId',
+            'active_turn_id',
+          ]),
+        );
+    if (childThreadId.length > 512 || turnId.length > 512) return true;
+    final storageKey = threadPreferenceKey(
+      key.profileId,
+      key.agent,
+      childThreadId,
+    );
+    var tracked = _subAgentTurns.remove(storageKey);
+    final cachedActiveTurn = _threadCaches[key]
+        ?.getStale(childThreadId)
+        ?.thread
+        .activeTurnId;
+    final visibleActiveTurn = _isActiveThread(key, childThreadId)
+        ? state.activeTurnId
+        : null;
+    final knownActiveTurn = visibleActiveTurn ?? cachedActiveTurn;
+    if (tracked == null && knownActiveTurn?.isNotEmpty == true) {
+      tracked = _SubAgentTurnState(knownActiveTurn!);
+    }
+    if (tracked != null) _rememberSubAgentTurn(storageKey, tracked);
+    final isChild = _subAgentThreadRegistry.contains(key, childThreadId);
+    if (started && turnId.isNotEmpty) {
+      if (tracked?.retiredTurnIds.contains(turnId) == true ||
+          (tracked?.turnId == turnId && tracked!.terminal)) {
+        return !isChild;
+      }
+      if (tracked == null) {
+        tracked = _SubAgentTurnState(turnId);
+        _rememberSubAgentTurn(storageKey, tracked);
+      } else if (tracked.turnId != turnId) {
+        tracked.start(turnId);
+      }
+    } else if (terminalStatus != null) {
+      if (tracked != null &&
+          ((turnId.isNotEmpty && tracked.turnId != turnId) ||
+              (turnId.isEmpty && !tracked.terminal))) {
+        return !isChild;
+      }
+      if (turnId.isNotEmpty) {
+        tracked ??= _SubAgentTurnState(turnId);
+        tracked.terminal = true;
+        _rememberSubAgentTurn(storageKey, tracked);
+      }
+    }
+    if (!isChild || (started && turnId.isEmpty)) return true;
+    final status = started ? 'running' : terminalStatus!;
 
     var visibleTimelineChanged = false;
     if (_isActiveKey(key)) {
-      final timeline = _withSubAgentTerminalStatus(
+      final timeline = _withSubAgentStatus(
         state.timeline,
         childThreadId,
-        terminalStatus,
+        status,
+        allowRestart: started,
       );
       if (!identical(timeline, state.timeline)) {
         visibleTimelineChanged = true;
@@ -6073,7 +6205,7 @@ class AppController extends StateNotifier<AppUiState> {
     }
 
     final cache = _threadCaches[key];
-    cache?.updateSubAgentStatus(childThreadId, terminalStatus);
+    cache?.updateSubAgentStatus(childThreadId, status, allowRestart: started);
     if (visibleTimelineChanged && state.activeThread != null) {
       (cache ?? _threadCaches.putIfAbsent(key, ThreadSessionCache.new)).put(
         state.activeThread!,
@@ -6081,6 +6213,15 @@ class AppController extends StateNotifier<AppUiState> {
         nextTurnsCursor: state.olderTurnsCursor,
         tokenUsage: state.tokenUsage,
       );
+    }
+    return true;
+  }
+
+  void _rememberSubAgentTurn(String key, _SubAgentTurnState value) {
+    _subAgentTurns.remove(key);
+    _subAgentTurns[key] = value;
+    while (_subAgentTurns.length > 512) {
+      _subAgentTurns.remove(_subAgentTurns.keys.first);
     }
   }
 
@@ -6557,39 +6698,6 @@ class _SessionSnapshot {
       diagnostic: state.diagnostic,
     );
   }
-
-  AppUiState restore(AppUiState base) => base.copyWith(
-    threads: threads,
-    threadSearch: threadSearch,
-    models: models,
-    selectedModel: selectedModel,
-    selectedEffort: selectedEffort,
-    activeThread: activeThread,
-    activeAgentName: activeAgentName,
-    activeGoal: activeGoal,
-    timeline: timeline,
-    olderTurnsCursor: olderTurnsCursor,
-    olderTurnsLoading: false,
-    activeTurnId: activeTurnId,
-    running: running,
-    turnTiming: turnTiming,
-    submitting: submitting,
-    loading: loading,
-    aggregateDiff: aggregateDiff,
-    tokenUsage: tokenUsage,
-    attachments: attachments,
-    attachmentUploading: false,
-    composerClearNonce: composerClearNonce,
-    composerDraft: composerDraft,
-    workspaceCurrentPath: workspaceCurrentPath,
-    workspaceParentPath: workspaceParentPath,
-    workspaceDirectories: workspaceDirectories,
-    workspaceError: workspaceError,
-    approval: approval,
-    approvalQueue: approvalQueue,
-    error: error,
-    diagnostic: diagnostic,
-  );
 }
 
 class _BoundedSessionTimeline {
@@ -6843,6 +6951,7 @@ bool _isCompletionNotification(CodexRpcNotification message) {
 }
 
 String? _subAgentTerminalStatusFromCompletion(CodexRpcNotification message) {
+  if (isTerminalAgentMessageNotification(message)) return 'completed';
   final method = message.method;
   final params = message.params;
   final turn = _notificationMap(params['turn']);
@@ -6858,7 +6967,7 @@ String? _subAgentTerminalStatusFromCompletion(CodexRpcNotification message) {
       'aborted' ||
       'cancelled' ||
       'canceled' => 'interrupted',
-      'failed' || 'error' || 'systemerror' => 'errored',
+      'failed' || 'errored' || 'error' || 'systemerror' => 'errored',
       _ => 'completed',
     };
   }
@@ -6870,7 +6979,7 @@ String? _subAgentTerminalStatusFromCompletion(CodexRpcNotification message) {
     'aborted' ||
     'cancelled' ||
     'canceled' => 'interrupted',
-    'failed' || 'error' || 'systemerror' => 'errored',
+    'failed' || 'errored' || 'error' || 'systemerror' => 'errored',
     _ => null,
   };
 }
@@ -6880,29 +6989,56 @@ String _notificationStatus(Object? value) {
   return _notificationString(_notificationMap(value), const ['type', 'status']);
 }
 
-List<TimelineEntry> _withSubAgentTerminalStatus(
+List<TimelineEntry> _withSubAgentStatus(
   List<TimelineEntry> timeline,
   String childThreadId,
-  String terminalStatus,
-) {
+  String status, {
+  bool allowRestart = false,
+}) {
+  String? latestParentTurn;
+  for (final entry in timeline.reversed) {
+    if (entry.kind == TimelineKind.subAgent &&
+        entry.subAgentThreadId == childThreadId) {
+      latestParentTurn = entry.turnId;
+      break;
+    }
+  }
   var changed = false;
   final result = timeline
       .map((entry) {
         if (entry.kind != TimelineKind.subAgent ||
-            entry.subAgentThreadId != childThreadId) {
+            entry.subAgentThreadId != childThreadId ||
+            entry.turnId != latestParentTurn) {
           return entry;
         }
         final currentStatus = entry.status.trim();
-        final nextStatus = _mergeSubAgentTerminalStatus(
-          currentStatus,
-          terminalStatus,
-        );
+        final nextStatus =
+            allowRestart && _isActiveSubAgentTimelineStatus(status)
+            ? status
+            : _mergeSubAgentTerminalStatus(currentStatus, status);
         if (nextStatus == currentStatus) return entry;
         changed = true;
         return entry.copyWith(status: nextStatus);
       })
       .toList(growable: false);
   return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
+}
+
+class _SubAgentTurnState {
+  _SubAgentTurnState(this.turnId);
+
+  String turnId;
+  bool terminal = false;
+  final LinkedHashSet<String> retiredTurnIds = LinkedHashSet();
+
+  void start(String nextTurnId) {
+    retiredTurnIds.add(turnId);
+    while (retiredTurnIds.length > 8) {
+      retiredTurnIds.remove(retiredTurnIds.first);
+    }
+    turnId = nextTurnId;
+    terminal = false;
+  }
 }
 
 String _mergeSubAgentTerminalStatus(String current, String next) {

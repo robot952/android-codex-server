@@ -874,7 +874,7 @@ void main() {
       expect(page.nextCursor, isNull);
     });
 
-    test('hydrates stable sub-agent states from turn and collab payloads', () {
+    test('hydrates child states without inferring parent completion', () {
       final historical = CodexPayloadParser.parseTimeline(<String, Object?>{
         'turns': <Object?>[
           <String, Object?>{
@@ -919,13 +919,13 @@ void main() {
         historical
             .singleWhere((entry) => entry.kind == TimelineKind.subAgent)
             .status,
-        'completed',
+        'running',
       );
       expect(
         collab
-            .singleWhere((entry) => entry.kind == TimelineKind.subAgent)
-            .status,
-        'errored',
+            .where((entry) => entry.kind == TimelineKind.subAgent)
+            .map((entry) => entry.status),
+        everyElement('errored'),
       );
     });
   });

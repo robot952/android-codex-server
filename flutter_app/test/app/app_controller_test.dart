@@ -778,6 +778,65 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
   }
 }
 
+class _LiveSubAgentNavigationAgent extends _SubAgentNavigationAgent {
+  final StreamController<RemoteAgentEvent> eventController =
+      StreamController<RemoteAgentEvent>.broadcast(sync: true);
+
+  @override
+  Stream<RemoteAgentEvent> get events => eventController.stream;
+
+  void emitNotification(String method, Map<String, Object?> params) {
+    eventController.add(
+      RemoteAgentNotification(
+        CodexRpcNotification(
+          generation: 1,
+          sequence: 1,
+          raw: const {},
+          method: method,
+          params: params,
+          isKnown: true,
+        ),
+      ),
+    );
+  }
+
+  void emitChildActivity({
+    String status = 'running',
+    String parentTurn = 'parent-turn',
+  }) {
+    emitNotification('item/completed', {
+      'threadId': 'root-thread',
+      'turnId': parentTurn,
+      'item': {
+        'id': 'activity-$parentTurn',
+        'type': 'collabAgentToolCall',
+        'tool': 'wait',
+        'status': 'completed',
+        'receiverThreadIds': ['child-thread'],
+        'agentsStates': {
+          'child-thread': {'status': status},
+        },
+      },
+    });
+  }
+
+  void emitChildTurn(String turnId, {String? completedStatus}) {
+    emitNotification(
+      completedStatus == null ? 'turn/started' : 'turn/completed',
+      {
+        'threadId': 'child-thread',
+        'turn': {'id': turnId, 'status': ?completedStatus},
+      },
+    );
+  }
+
+  @override
+  void close() {
+    super.close();
+    unawaited(eventController.close());
+  }
+}
+
 class _SubAgentEventAgent extends _SubAgentNavigationAgent {
   static const _parentTurnId = 'parent-turn';
   static const _childThreadA = 'child-thread-a';
@@ -1238,6 +1297,7 @@ Future<_SubAgentHarness> _createSubAgentHarness({
   StoredProfiles? storedProfiles,
   _SubAgentNavigationAgent? agent,
   RemoteAgentClientFactory? clientFactory,
+  _FingerprintClient? host,
 }) async {
   final primaryAgent = agent ?? _SubAgentNavigationAgent();
   final initial =
@@ -1250,8 +1310,10 @@ Future<_SubAgentHarness> _createSubAgentHarness({
     (candidate) => candidate.id == _firstProfile.id,
   );
   final store = _MemoryProfileStore(initial);
-  final host = _FingerprintClient();
-  final connections = ServerConnectionManager(clientFactory: () => host);
+  final selectedHost = host ?? _FingerprintClient();
+  final connections = ServerConnectionManager(
+    clientFactory: () => selectedHost,
+  );
   final agents = AgentConnectionManager(
     connections,
     clientFactory: clientFactory ?? (kind) => primaryAgent,
@@ -4277,6 +4339,331 @@ void main() {
       1,
     );
   });
+
+  test('restores parent approvals received while a child is visible', () async {
+    final agent = _ApprovalAgent();
+    final harness = await _createSubAgentHarness(agent: agent);
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'Worker',
+    );
+    agent.emitApproval(requestId: 'parent-request', threadId: 'root-thread');
+    await _drainAsyncWork();
+    expect(harness.controller.state.approvalQueue, isEmpty);
+
+    harness.controller.backFromSubAgentThread();
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id == 'root-thread' &&
+          !harness.controller.state.loading,
+    );
+
+    expect(harness.controller.state.approval?.requestId, 'parent-request');
+    await harness.controller.answerApproval(true);
+    expect(agent.answeredPrompts.single.threadId, 'root-thread');
+  });
+
+  test('keeps parent edits made while returning from a child', () async {
+    final harness = await _createSubAgentHarness();
+    harness.controller.setComposerDraft('old parent draft');
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'Worker',
+    );
+    final rootGate = harness.agent.gateNextResume('root-thread');
+    harness.controller.backFromSubAgentThread();
+    await _waitUntil(() => harness.agent.resumeCount('root-thread') == 2);
+    harness.controller.setComposerDraft('new parent draft');
+    harness.controller.selectThreadModel('new-parent-model', effort: 'high');
+    rootGate.complete(_SubAgentNavigationAgent.sessions['root-thread']!);
+    await _waitUntil(() => !harness.controller.state.loading);
+    expect(harness.controller.state.composerDraft, 'new parent draft');
+    expect(harness.controller.state.selectedModel, 'new-parent-model');
+    expect(harness.controller.state.selectedEffort, 'high');
+  });
+
+  test(
+    'reconnect during nested return does not strand a pending back frame',
+    () async {
+      final host = _ReconnectableHost();
+      final harness = await _createSubAgentHarness(host: host);
+      await _openSubAgent(
+        harness,
+        _SubAgentNavigationAgent.childThread,
+        'Worker',
+      );
+      await _openSubAgent(
+        harness,
+        _SubAgentNavigationAgent.grandchildThread,
+        'Reviewer',
+      );
+      final oldReturn = harness.agent.gateNextResume('child-thread');
+      harness.controller.backFromSubAgentThread();
+      await _waitUntil(() => harness.agent.resumeCount('child-thread') == 2);
+      host.drop(StateError('network changed during return'));
+      await _waitUntil(
+        () =>
+            host.connectCount == 2 &&
+            harness.agent.resumeCount('child-thread') == 3 &&
+            !harness.controller.state.loading,
+      );
+      oldReturn.complete(_SubAgentNavigationAgent.sessions['child-thread']!);
+      await _drainAsyncWork();
+      harness.controller.backFromSubAgentThread();
+      await _drainAsyncWork();
+      expect(harness.controller.state.activeThread?.id, 'root-thread');
+      expect(harness.controller.state.screen, AppScreen.work);
+    },
+  );
+
+  test(
+    'failed parent return keeps child output received during resume',
+    () async {
+      final agent = _LiveSubAgentNavigationAgent();
+      final harness = await _createSubAgentHarness(agent: agent);
+      await _openSubAgent(
+        harness,
+        _SubAgentNavigationAgent.childThread,
+        'Worker',
+      );
+      final rootGate = agent.gateNextResume('root-thread');
+      harness.controller.backFromSubAgentThread();
+      await _waitUntil(() => agent.resumeCount('root-thread') == 2);
+      agent.emitNotification('item/completed', {
+        'threadId': 'child-thread',
+        'turnId': 'child-turn',
+        'item': {
+          'id': 'late-result',
+          'type': 'agentMessage',
+          'text': 'Child finished while returning',
+        },
+      });
+      await _drainAsyncWork();
+      rootGate.completeError(StateError('parent unavailable'));
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == 'child-thread' &&
+            !harness.controller.state.loading,
+      );
+      expect(
+        harness.controller.state.timeline.map((entry) => entry.text),
+        contains('Child finished while returning'),
+      );
+      expect(harness.controller.state.error, contains('parent unavailable'));
+    },
+  );
+
+  test('stopping a child addresses only the child turn', () async {
+    final agent = _LiveSubAgentNavigationAgent();
+    final harness = await _createSubAgentHarness(agent: agent);
+    agent.emitNotification('turn/started', {
+      'threadId': 'root-thread',
+      'turn': {'id': 'parent-turn'},
+    });
+    await _drainAsyncWork();
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'Worker',
+    );
+    agent.emitNotification('turn/started', {
+      'threadId': 'child-thread',
+      'turn': {'id': 'child-turn'},
+    });
+    await _drainAsyncWork();
+    await harness.controller.stopMessage();
+    expect(agent.interruptedThreadId, 'child-thread');
+    expect(agent.interruptedTurnId, 'child-turn');
+    expect(harness.controller.state.turnTiming?.stopped, isTrue);
+    final rootGate = agent.gateNextResume('root-thread');
+    harness.controller.backFromSubAgentThread();
+    await _waitUntil(() => agent.resumeCount('root-thread') == 2);
+    expect(harness.controller.state.activeTurnId, 'parent-turn');
+    expect(harness.controller.state.running, isTrue);
+    rootGate.complete(_SubAgentNavigationAgent.sessions['root-thread']!);
+    await _waitUntil(() => !harness.controller.state.loading);
+  });
+
+  test(
+    'reconnect inside a grandchild preserves the full return chain',
+    () async {
+      final host = _ReconnectableHost();
+      final harness = await _createSubAgentHarness(host: host);
+      await _openSubAgent(
+        harness,
+        _SubAgentNavigationAgent.childThread,
+        'Worker',
+      );
+      await _openSubAgent(
+        harness,
+        _SubAgentNavigationAgent.grandchildThread,
+        'Reviewer',
+      );
+      host.drop(StateError('temporary disconnect'));
+      await _waitUntil(
+        () =>
+            host.connectCount == 2 &&
+            harness.agent.resumeCount('grandchild-thread') == 2 &&
+            !harness.controller.state.loading,
+      );
+      expect(harness.controller.state.activeThread?.id, 'grandchild-thread');
+      harness.controller.backFromSubAgentThread();
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == 'child-thread' &&
+            !harness.controller.state.loading,
+      );
+      harness.controller.backFromSubAgentThread();
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == 'root-thread' &&
+            !harness.controller.state.loading,
+      );
+      expect(harness.controller.state.screen, AppScreen.work);
+    },
+  );
+
+  test('isolates parent and child workspace diffs across navigation', () async {
+    final agent = _LiveSubAgentNavigationAgent();
+    final harness = await _createSubAgentHarness(agent: agent);
+    agent.emitNotification('turn/diff/updated', {
+      'threadId': 'root-thread',
+      'diff': '+parent change',
+    });
+    await _drainAsyncWork();
+    expect(harness.controller.state.aggregateDiff, '+parent change');
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'Worker',
+    );
+    expect(harness.controller.state.aggregateDiff, isEmpty);
+    agent.emitNotification('turn/diff/updated', {
+      'threadId': 'child-thread',
+      'diff': '+child change',
+    });
+    await _drainAsyncWork();
+    harness.controller.backFromSubAgentThread();
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id == 'root-thread' &&
+          !harness.controller.state.loading,
+    );
+    expect(harness.controller.state.aggregateDiff, '+parent change');
+  });
+
+  test('child new turn restarts only its latest parent activity', () async {
+    final agent = _LiveSubAgentNavigationAgent();
+    final harness = await _createSubAgentHarness(agent: agent);
+    agent.emitChildActivity(
+      status: 'interrupted',
+      parentTurn: 'older-parent-turn',
+    );
+    agent.emitChildActivity(status: 'completed');
+    await _drainAsyncWork();
+    agent.emitChildTurn('child-old', completedStatus: 'completed');
+    agent.emitChildTurn('child-new');
+    await _drainAsyncWork();
+    final rows = harness.controller.state.timeline
+        .where((e) => e.kind == TimelineKind.subAgent)
+        .toList();
+    expect(rows.map((e) => e.status), ['interrupted', 'running']);
+    agent.emitChildTurn('child-old', completedStatus: 'completed');
+    agent.emitChildTurn('child-old');
+    agent.emitNotification('thread/status/changed', {
+      'threadId': 'child-thread',
+      'status': 'idle',
+    });
+    await _drainAsyncWork();
+    expect(harness.controller.state.timeline.last.status, 'running');
+    agent.emitChildTurn('child-new', completedStatus: 'failed');
+    await _drainAsyncWork();
+    expect(harness.controller.state.timeline.last.status, 'errored');
+    agent.emitChildTurn('child-third');
+    agent.emitChildTurn('child-third', completedStatus: 'interrupted');
+    await _drainAsyncWork();
+    expect(harness.controller.state.timeline.last.status, 'interrupted');
+    agent.emitChildTurn('child-third');
+    await _drainAsyncWork();
+    expect(harness.controller.state.timeline.last.status, 'interrupted');
+  });
+
+  test(
+    'background parent cache follows child restart and ignores older completion',
+    () async {
+      final agent = _LiveSubAgentNavigationAgent();
+      final harness = await _createSubAgentHarness(agent: agent);
+      agent.emitChildActivity(status: 'completed');
+      agent.emitChildTurn('child-old', completedStatus: 'completed');
+      await _drainAsyncWork();
+      await _openSubAgent(
+        harness,
+        _SubAgentNavigationAgent.childThread,
+        'Worker',
+      );
+      agent.emitChildTurn('child-new');
+      agent.emitChildTurn('child-old', completedStatus: 'completed');
+      await _drainAsyncWork();
+      expect(harness.controller.state.activeTurnId, 'child-new');
+      expect(harness.controller.state.running, isTrue);
+      final rootGate = agent.gateNextResume('root-thread');
+      harness.controller.backFromSubAgentThread();
+      await _waitUntil(() => agent.resumeCount('root-thread') == 2);
+      expect(harness.controller.state.timeline.last.status, 'running');
+      rootGate.completeError(StateError('keep child visible for this test'));
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == 'child-thread' &&
+            !harness.controller.state.loading,
+      );
+      expect(harness.controller.state.running, isTrue);
+    },
+  );
+
+  test(
+    'child terminal history is isolated between profiles with equal thread ids',
+    () async {
+      final firstAgent = _LiveSubAgentNavigationAgent();
+      final secondAgent = _LiveSubAgentNavigationAgent();
+      var clientsCreated = 0;
+      final second = _secondProfile.copyWith(workspacePromptShown: true);
+      final harness = await _createSubAgentHarness(
+        agent: firstAgent,
+        storedProfiles: StoredProfiles(
+          profiles: [
+            _firstProfile.copyWith(workspacePromptShown: true),
+            second,
+          ],
+          selectedProfileId: 'first',
+        ),
+        clientFactory: (_) => clientsCreated++ == 0 ? firstAgent : secondAgent,
+      );
+      firstAgent.emitChildActivity(status: 'completed');
+      firstAgent.emitChildTurn('shared-old', completedStatus: 'completed');
+      firstAgent.emitChildTurn('first-new');
+      await _drainAsyncWork();
+      await harness.controller.requestConnect(second);
+      await harness.controller.ensureActiveAgent();
+      harness.controller.openThread(_SubAgentNavigationAgent.rootThread);
+      await _waitUntil(
+        () =>
+            harness.controller.state.selectedProfileId == second.id &&
+            harness.controller.state.activeThread?.id == 'root-thread' &&
+            secondAgent.resumeCount('root-thread') == 1 &&
+            !harness.controller.state.loading,
+      );
+      secondAgent.emitChildActivity();
+      secondAgent.emitChildTurn('shared-old');
+      secondAgent.emitChildTurn('shared-old', completedStatus: 'errored');
+      await _drainAsyncWork();
+      expect(harness.controller.state.timeline.last.status, 'errored');
+      firstAgent.emitChildTurn('first-new', completedStatus: 'completed');
+      await _drainAsyncWork();
+      expect(harness.controller.state.timeline.last.status, 'errored');
+    },
+  );
 
   test('persists model and reasoning effort for the active thread', () async {
     final harness = await _createSubAgentHarness();

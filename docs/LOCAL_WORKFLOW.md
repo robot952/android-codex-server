@@ -278,6 +278,25 @@ CODEX_USER_INPUT_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-user-i
 必须设置正确的 `ANDROID_HOME` / `ANDROID_SDK_ROOT` 和共享 `GRADLE_USER_HOME`；结束后终止本轮 fixture、
 移除本轮 adb reverse 并覆盖安装正常 Release 包。fixture 最长运行 15 分钟，仅绑定 loopback。
 
+子 Agent 专项使用 `test/agent/sub_agent_protocol_lifecycle_test.dart`、
+`test/agent/sub_agent_live_replay_test.dart`、`test/ui/sub_agent_workflow_test.dart`，以及控制器的导航/恢复测试。
+设备入口为 `integration_test/sub_agent_workflow_test.dart`，复用生产 JSONL adapter/controller，协议对端是
+受控模拟数据；完成后仍须覆盖安装正常 Release。已捕获的真实协作事件使用归一化 ID 的 fixture 回放，
+不含 API 地址或凭据。
+
+只有用户授权真实 API 消耗后才运行：
+
+```bash
+CODEX_SUBAGENT_TEST_BIN=/absolute/path/to/codex \
+CODEX_SUBAGENT_CONFIG_DIR=/path/to/existing/codex-home \
+node scripts/test-codex-subagents-live.cjs --live
+```
+
+追加 `--interrupt` 验证子任务停止与继续、父任务独立性，以及测试 app-server 重启后的历史恢复。
+脚本使用独立私有目录、低思考强度和短任务，最长 8 分钟，不修改原用户配置，不读取或操作用户现有会话。
+只复制 Provider 配置和认证到临时目录，禁止把 URL/Key 加进命令参数或测试 APK。测试结束销毁临时目录，
+只在 `.workflow-cache/subagent-live-*.json` 留存脱敏的测试事件与可用 token 统计；该统计不等于账单金额。
+
 ## 6. SSH 测试主机
 
 长期测试主机只准备一次：

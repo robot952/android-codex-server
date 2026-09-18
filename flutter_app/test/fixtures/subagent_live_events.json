@@ -1,0 +1,303 @@
+[
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "parent",
+      "turn": {
+        "id": "turn-1",
+        "status": "inProgress",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-1",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-1",
+        "kind": "started",
+        "agentThreadId": "alpha",
+        "agentPath": "/root/alpha"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "alpha",
+      "turn": {
+        "id": "turn-2",
+        "status": "inProgress",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-1",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-2",
+        "kind": "started",
+        "agentThreadId": "beta",
+        "agentPath": "/root/beta"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "beta",
+      "turn": {
+        "id": "turn-3",
+        "status": "inProgress",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "alpha",
+      "turn": {
+        "id": "turn-2",
+        "status": "completed",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-1",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-3",
+        "kind": "completed",
+        "agentThreadId": "alpha",
+        "agentPath": "/root/alpha"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-1",
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "item-4",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "parent",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "beta",
+      "turnId": "turn-3",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-5",
+        "kind": "started",
+        "agentThreadId": "beta/gamma",
+        "agentPath": "/root/beta/gamma"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "beta/gamma",
+      "turn": {
+        "id": "turn-4",
+        "status": "inProgress",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "beta/gamma",
+      "turn": {
+        "id": "turn-4",
+        "status": "completed",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "beta",
+      "turnId": "turn-3",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-6",
+        "kind": "completed",
+        "agentThreadId": "beta/gamma",
+        "agentPath": "/root/beta/gamma"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "beta",
+      "turnId": "turn-3",
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "item-7",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "beta",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "beta",
+      "turn": {
+        "id": "turn-3",
+        "status": "completed",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-1",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-8",
+        "kind": "completed",
+        "agentThreadId": "beta",
+        "agentPath": "/root/beta"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-1",
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "item-9",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "parent",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "parent",
+      "turn": {
+        "id": "turn-1",
+        "status": "completed",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "parent",
+      "turn": {
+        "id": "turn-5",
+        "status": "inProgress",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-5",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-10",
+        "kind": "interacted",
+        "agentThreadId": "alpha",
+        "agentPath": "/root/alpha"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "alpha",
+      "turn": {
+        "id": "turn-6",
+        "status": "inProgress",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "alpha",
+      "turn": {
+        "id": "turn-6",
+        "status": "completed",
+        "items": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "parent",
+      "turnId": "turn-5",
+      "item": {
+        "type": "subAgentActivity",
+        "id": "item-11",
+        "kind": "completed",
+        "agentThreadId": "alpha",
+        "agentPath": "/root/alpha"
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "parent",
+      "turn": {
+        "id": "turn-5",
+        "status": "completed",
+        "items": []
+      }
+    }
+  }
+]

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.110+240，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.111+241，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -655,6 +655,11 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
   `pendingInit/running/completed/interrupted/failed/shutdown/notFound` 和 activity 映射；同 turn 终态具有
   单向保护，后续 turn 才允许重新激活。有效 thread ID 的标签调用 `openSubAgentThread`，无 ID 的活动不会
   伪造会话入口；Composer 面板以父会话为范围累计全部已确认 Agent，不按当前 turn 丢弃先前完成项。
+- 标准 `collabAgentToolCall` 按 receiver/agentsStates 投影独立子 Agent；无 receiver 的 wait 保持普通工具，
+  创建失败不显示运行中。父回合完成或停止不能推断子回合也已完成；子 `turn/started`、匹配回合的终态与
+  协作状态才更新当前子任务。按 lane + childThreadId 保存有界回合记录，迟到旧回合事件不得覆盖新任务。
+- 子任务状态事件省略名称时保留已有路径/名称；同名任务按 thread ID 分开，长按可查看完整路径。
+  子任务标签在窄屏和大字体下收缩名称；返回父会话采用最新审批队列和缓存，保留恢复期间的输入修改。
 - `openSubAgentThread` 在按 `profileId + AgentKind` 隔离的 `ProfileScopedBackStack` 中保存有界
   `_SessionSnapshot`（时间线、草稿、模型/effort、上下文用量、附件和工作区状态），随后执行真实
   `thread/resume`。最多嵌套 8 层；返回先显示缓存父快照，再等 resume 成功后弹栈。重复返回在 pending 状态幂等，
@@ -2279,6 +2284,23 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   均通过；正常 Release 在 `1220x2712` 模拟器覆盖安装，稳定证书和内外网整包下载回验通过。
   本地发布门禁 `5m10.370s`，测试 `49.110s`、Debug `20.917s`、Release `146.967s`、安装检查
   `21.802s`、发布回验 `45.213s`；服务器/OpenCode 和发布前 Release 校验复用缓存，无失败返工或云端构建。
+
+### 17.72 子 Agent 生命周期与导航专项
+
+- `1.8.111+241`：补齐标准多 receiver 协作事件、真实 `subAgentActivity.completed`、失败创建与无目标
+  wait；取消“父任务结束即子任务全部完成”的推断。新子回合可恢复运行，旧回合迟到事件保持隔离。
+- 修复返回时父审批丢失、恢复覆盖草稿/模型/附件、返回中重连后返回栈卡住、恢复失败丢失后台输出，
+  以及父子工作区 diff 串页。秒/毫秒时间戳统一后再排除继承的父历史。
+- 新增生产 JSONL adapter/controller 的 UI 工作流测试和 Android integration 入口，覆盖并行、多层返回、
+  子任务提问、同名身份、大字体、多回合累计；真实 API 事件归一化为无凭据 fixture，验证实时与恢复一致。
+- `scripts/test-codex-subagents-live.cjs --live` 仅在明确授权时调用用户配置的 Provider；`--interrupt`
+  额外验证子任务停止、继续与测试 app-server 重启后历史恢复。凭据仅复制到 0700 临时测试目录中的
+  0600 文件，结束删除；输出与留存证据脱敏。测试只生成独立会话，不更改用户配置或工作区。
+- 真实 Codex `0.154.0` 已验证两个子任务并行、孙级嵌套、等待、继续原子任务、停止子任务不影响父任务，
+  中断后继续，以及重启测试进程后恢复父历史。创建失败、找不到子任务、关闭、迟到/重复事件、多服务器隔离
+  等异常由可控协议回归验证；不把模拟结果写成真实 Provider 异常或真机厂商后台行为已验收。
+- 验收：Flutter `546` 项、analyze、Android 14 模拟器 `4` 组交互及正常 Release 安装通过；稳定证书和
+  内外网整包回验通过。测试矩阵、边界、返工、耗时和 APK 哈希见 [子 Agent 专项验收](SUBAGENT_VALIDATION.md)。
 
 ## 18. 文档维护规则
 

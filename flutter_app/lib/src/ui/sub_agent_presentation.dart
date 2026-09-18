@@ -29,6 +29,7 @@ class SubAgentPresentation {
     required this.status,
     required this.summary,
     required this.timelineIndex,
+    this.activity = '',
   });
 
   final String threadId;
@@ -38,6 +39,7 @@ class SubAgentPresentation {
   final SubAgentDisplayStatus status;
   final String summary;
   final int timelineIndex;
+  final String activity;
 
   /// An activity item is only a real collaborator after the server assigns it
   /// a child-thread id. Before that, it represents a creation attempt.
@@ -179,10 +181,9 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
     final confirmedAgents = agents
         .where((agent) => agent.isConfirmed)
         .toList(growable: false);
-    final statuses = confirmedAgents.map((agent) => agent.status).toSet();
+    final statuses = agents.map((agent) => agent.status).toSet();
     final isActive = confirmedAgents.any((agent) => agent.status.isActive);
     final status = switch (statuses.length) {
-      0 when agents.isNotEmpty => SubAgentDisplayStatus.preparing,
       0 => SubAgentDisplayStatus.unavailable,
       1 => statuses.single,
       _ when isActive => SubAgentDisplayStatus.working,
@@ -225,6 +226,7 @@ SubAgentPresentation _toSubAgentPresentation(TimelineEntry entry, int index) {
     status: _toDisplayStatus(entry),
     summary: entry.text.trim(),
     timelineIndex: index,
+    activity: entry.subAgentActivity,
   );
 }
 
@@ -280,11 +282,18 @@ SubAgentPresentation _mergeWith(
       current.turnId.isEmpty ||
       next.turnId.isEmpty ||
       current.turnId == next.turnId;
-  final name = next.name == '智能体' ? current.name : next.name;
   final path = next.path.isEmpty ? current.path : next.path;
+  // Collaboration status updates often omit agentPath. The shortened thread id
+  // is only a fallback, not a rename of an already named collaborator.
+  final name = path.isNotEmpty ? _leafName(path) : next.name;
   final summary = next.summary.isEmpty ? current.summary : next.summary;
+  final explicitlyRestarts =
+      next.activity == 'sendInput' || next.activity == 'resumeAgent';
 
-  if (!current.status.isActive && next.status.isActive && sameOrUnknownTurn) {
+  if (!current.status.isActive &&
+      next.status.isActive &&
+      sameOrUnknownTurn &&
+      !explicitlyRestarts) {
     return SubAgentPresentation(
       threadId: current.threadId,
       name: name,
@@ -293,6 +302,7 @@ SubAgentPresentation _mergeWith(
       status: current.status,
       summary: summary,
       timelineIndex: next.timelineIndex,
+      activity: next.activity,
     );
   }
 
@@ -309,6 +319,7 @@ SubAgentPresentation _mergeWith(
     status: mergedStatus,
     summary: summary,
     timelineIndex: next.timelineIndex,
+    activity: next.activity,
   );
 }
 

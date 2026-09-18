@@ -880,7 +880,7 @@ void main() {
     },
   );
 
-  test('completes active sub-agents when their parent turn completes', () {
+  test('keeps active children running when their parent turn completes', () {
     final running = _state().copyWith(
       running: true,
       activeTurnId: 'turn-1',
@@ -914,7 +914,7 @@ void main() {
     );
 
     expect(completed.timeline.map((entry) => entry.status), <String>[
-      'completed',
+      'running',
       'completed',
     ]);
   });
@@ -993,9 +993,8 @@ void main() {
     expect(
       completed.timeline
           .where((entry) => entry.subAgentThreadId == 'child-a')
-          .single
-          .status,
-      'completed',
+          .map((entry) => entry.status),
+      everyElement('completed'),
     );
   });
 }

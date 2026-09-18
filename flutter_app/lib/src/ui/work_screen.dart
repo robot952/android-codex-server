@@ -2813,19 +2813,24 @@ class _SubAgentActivityGroupBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final agents = entries.toSubAgentPresentations();
     if (agents.isEmpty) return const SizedBox.shrink();
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 5,
-        children: [
-          for (final agent in agents)
-            _SubAgentStatusChip(
-              agent: agent,
-              enabled: enabled,
-              onOpenSubAgent: onOpenSubAgent,
-            ),
-        ],
+    return LayoutBuilder(
+      builder: (context, constraints) => Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 5,
+          children: [
+            for (final agent in agents)
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                child: _SubAgentStatusChip(
+                  agent: agent,
+                  enabled: enabled,
+                  onOpenSubAgent: onOpenSubAgent,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -2850,7 +2855,12 @@ class _SubAgentStatusChip extends StatelessWidget {
       label: agent.path.isEmpty ? agent.name : '${agent.name}，${agent.path}',
       value: agent.status.label,
       child: ActionChip(
-        tooltip: canOpen ? '打开 ${agent.name}' : agent.status.label,
+        key: agent.isConfirmed
+            ? ValueKey('sub-agent-chip:${agent.threadId}')
+            : null,
+        tooltip: canOpen
+            ? '打开 ${agent.path.isEmpty ? agent.name : agent.path} · ${agent.status.label}'
+            : agent.status.label,
         onPressed: canOpen
             ? () => onOpenSubAgent(agent.threadId, agent.name)
             : null,
@@ -2858,12 +2868,14 @@ class _SubAgentStatusChip extends StatelessWidget {
         label: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 160),
-              child: Text(
-                agent.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+            Flexible(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Text(
+                  agent.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ),
             const SizedBox(width: 7),
@@ -3062,23 +3074,34 @@ class _BackgroundAgentRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final canOpen = enabled && agent.isOpenable;
-    return InkWell(
-      onTap: canOpen ? () => onOpenSubAgent(agent.threadId, agent.name) : null,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-        child: Row(
-          children: [
-            _SubAgentAvatar(agent: agent),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                agent.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+    return Semantics(
+      button: canOpen,
+      label: agent.path.isEmpty ? agent.name : '${agent.name}，${agent.path}',
+      value: agent.status.label,
+      child: Tooltip(
+        message: agent.path.isEmpty ? agent.name : agent.path,
+        child: InkWell(
+          key: ValueKey('background-agent:${agent.threadId}'),
+          onTap: canOpen
+              ? () => onOpenSubAgent(agent.threadId, agent.name)
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+            child: Row(
+              children: [
+                _SubAgentAvatar(agent: agent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    agent.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                _SubAgentStatusVisual(agent: agent),
+              ],
             ),
-            _SubAgentStatusVisual(agent: agent),
-          ],
+          ),
         ),
       ),
     );
@@ -5228,13 +5251,17 @@ class _Composer extends StatelessWidget {
                                         size: 16,
                                       ),
                                       const SizedBox(width: 3),
-                                      Text(
-                                        '权限',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.labelMedium,
+                                      Flexible(
+                                        child: FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          child: Text(
+                                            '权限',
+                                            maxLines: 1,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.labelMedium,
+                                          ),
+                                        ),
                                       ),
                                     ],
                                   ),

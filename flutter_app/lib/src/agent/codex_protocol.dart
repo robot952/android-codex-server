@@ -1232,7 +1232,6 @@ abstract final class CodexPayloadParser {
 
   static List<TimelineEntry> parseTimeline(Map<String, Object?> thread) {
     final result = <TimelineEntry>[];
-    final historicalTurnStatuses = <String, String>{};
     for (final turnValue in _asList(
       thread['turns'],
       maxItems: _maxTimelineTurns,
@@ -1244,13 +1243,6 @@ abstract final class CodexPayloadParser {
         'id',
         'turnId',
       ], marker: '');
-      final turnStatus = _wireType(turn['status']);
-      if (turnId.isNotEmpty &&
-          turnStatus.isNotEmpty &&
-          turnStatus != 'inProgress') {
-        historicalTurnStatuses[turnId] = turnStatus;
-      }
-      final collabItems = <Map<String, Object?>>[];
       for (final itemValue in _asList(
         turn['items'],
         maxItems: _maxTimelineItemsPerTurn,
@@ -1258,27 +1250,88 @@ abstract final class CodexPayloadParser {
         if (result.length >= _maxTimelineEntries) break;
         final item = _asObjectMap(itemValue);
         if (item == null) continue;
-        final entry = parseItem(item, turnId: turnId);
-        if (entry != null) result.add(entry);
         if (_firstString(item, const <String>['type']) ==
             'collabAgentToolCall') {
-          collabItems.add(item);
+          _applySubAgentStates(result, item, turnId);
         }
-      }
-      for (final item in collabItems) {
-        _applySubAgentStates(result, item, turnId);
+        result.addAll(
+          parseItems(
+            item,
+            turnId: turnId,
+          ).take(_maxTimelineEntries - result.length),
+        );
       }
     }
-    return List<TimelineEntry>.unmodifiable(
-      result.map((entry) {
-        if (entry.kind != TimelineKind.subAgent ||
-            !_isActiveSubAgentStatus(entry.status)) {
-          return entry;
-        }
-        final terminal = _subAgentStatusForTurn(
-          historicalTurnStatuses[entry.turnId] ?? '',
+    // A parent may finish while its children continue in the background.
+    // Only child notifications and collaboration states establish child status.
+    return List<TimelineEntry>.unmodifiable(result);
+  }
+
+  /// One collaboration call can target several independently running children.
+  /// Keep their thread identities and statuses instead of reducing the call to
+  /// an opaque tool row or confusing tool completion with child completion.
+  static List<TimelineEntry> parseItems(
+    Map<String, Object?> item, {
+    required String turnId,
+  }) {
+    if (_firstString(item, const ['type']) != 'collabAgentToolCall') {
+      final entry = parseItem(item, turnId: turnId);
+      return entry == null ? const [] : [entry];
+    }
+    final states =
+        _asObjectMap(item['agentsStates'] ?? item['agents_states']) ??
+        const <String, Object?>{};
+    final receivers = <String>{
+      for (final value in _asList(
+        item['receiverThreadIds'] ?? item['receiver_thread_ids'],
+      ))
+        if (value is String && value.trim().isNotEmpty)
+          _bounded(value.trim(), codexMaxThreadFieldChars, ''),
+      for (final value in states.keys)
+        if (value.trim().isNotEmpty)
+          _bounded(value.trim(), codexMaxThreadFieldChars, ''),
+    };
+    final id = _firstString(item, const ['id'], marker: '');
+    final tool = _firstString(item, const ['tool'], marker: '');
+    final toolStatus = _firstString(item, const ['status'], marker: '');
+    if (receivers.isEmpty) {
+      if (tool != 'spawnAgent') {
+        return [_parseToolItem(item: item, id: id, turnId: turnId)];
+      }
+      return [
+        TimelineEntry(
+          id: id.isEmpty ? 'collab-${item.hashCode}' : id,
+          kind: TimelineKind.subAgent,
+          status: toolStatus == 'failed' ? 'errored' : 'pendingInit',
+          subAgentActivity: tool,
+          turnId: _bounded(turnId, codexMaxThreadFieldChars, ''),
+        ),
+      ];
+    }
+    return List.unmodifiable(
+      receivers.take(_maxPayloadListItems).map((receiver) {
+        final state = _asObjectMap(states[receiver]);
+        final rawStatus = _firstString(state ?? const {}, const [
+          'status',
+        ], marker: '');
+        final status = _knownSubAgentStatuses.contains(rawStatus)
+            ? rawStatus
+            : tool == 'closeAgent' && toolStatus == 'completed'
+            ? 'shutdown'
+            : tool == 'spawnAgent' && toolStatus != 'failed'
+            ? 'pendingInit'
+            : 'unknown';
+        return TimelineEntry(
+          id: 'collab:$id:$receiver',
+          kind: TimelineKind.subAgent,
+          status: status,
+          subAgentThreadId: receiver,
+          subAgentActivity: tool,
+          text: _firstString(state ?? const {}, const [
+            'message',
+          ], maxChars: codexMaxTimelineTextChars),
+          turnId: _bounded(turnId, codexMaxThreadFieldChars, ''),
         );
-        return terminal == null ? entry : entry.copyWith(status: terminal);
       }),
     );
   }
@@ -1750,8 +1803,8 @@ List<Object?> _withoutInheritedSubAgentTurns(
   List<Object?> turns,
   int? subAgentCreatedAt,
 ) {
-  final cutoff = subAgentCreatedAt;
-  if (cutoff == null || cutoff <= 0) return turns;
+  final cutoff = _normalizeEpochMillis(subAgentCreatedAt ?? 0);
+  if (cutoff == null) return turns;
   return turns
       .where((value) {
         final turn = _asObjectMap(value);
@@ -1762,7 +1815,7 @@ List<Object?> _withoutInheritedSubAgentTurns(
         ]);
         // Older servers can omit startedAt. Keep those turns rather than
         // discarding valid child work.
-        return startedAt == 0 || startedAt >= cutoff;
+        return startedAt <= 0 || _normalizeEpochMillis(startedAt)! >= cutoff;
       })
       .toList(growable: false);
 }
@@ -2003,7 +2056,12 @@ List<FileChange> _parseChanges(Object? value) {
 
 String _subAgentStatus(String activity) => switch (activity) {
   'started' || 'interacted' => 'running',
-  'interrupted' => 'interrupted',
+  'completed' ||
+  'interrupted' ||
+  'shutdown' ||
+  'notFound' ||
+  'pendingInit' => activity,
+  'failed' || 'errored' => 'errored',
   _ => 'unknown',
 };
 
@@ -2028,13 +2086,6 @@ const Set<String> _knownSubAgentStatuses = <String>{
 
 bool _isActiveSubAgentStatus(String status) =>
     _activeSubAgentStatuses.contains(status);
-
-String? _subAgentStatusForTurn(String turnStatus) => switch (turnStatus) {
-  '' || 'inProgress' => null,
-  'interrupted' => 'interrupted',
-  'failed' || 'systemError' => 'errored',
-  _ => 'completed',
-};
 
 void _applySubAgentStates(
   List<TimelineEntry> entries,
@@ -2064,13 +2115,30 @@ void _applySubAgentStates(
     }
     final status = states[entry.subAgentThreadId];
     if (status == null || status.isEmpty) continue;
-    final entryIsActive = _isActiveSubAgentStatus(entry.status);
-    if (_isActiveSubAgentStatus(status)) {
-      if (entryIsActive) entries[index] = entry.copyWith(status: status);
-    } else if (entryIsActive) {
-      entries[index] = entry.copyWith(status: status);
-    }
+    entries[index] = entry.copyWith(
+      status: mergeSubAgentStatus(entry.status, status),
+    );
   }
+}
+
+/// Passive activity can arrive late. Preserve terminal evidence unless a
+/// separate, explicit collaboration operation starts another child turn.
+String mergeSubAgentStatus(String current, String next) {
+  if (_isActiveSubAgentStatus(current)) return next;
+  if (!_knownSubAgentStatuses.contains(current) ||
+      !_knownSubAgentStatuses.contains(next) ||
+      _isActiveSubAgentStatus(next)) {
+    return current;
+  }
+  int rank(String status) => switch (status) {
+    'completed' => 5,
+    'errored' || 'failed' => 4,
+    'interrupted' => 3,
+    'shutdown' => 2,
+    'notFound' => 1,
+    _ => 0,
+  };
+  return rank(next) >= rank(current) ? next : current;
 }
 
 String _jsonPreview(

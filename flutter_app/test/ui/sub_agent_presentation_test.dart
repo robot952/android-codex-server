@@ -74,6 +74,20 @@ void main() {
     expect(agent.turnId, 'turn-2');
   });
 
+  test(
+    'explicit follow-up and resume restart completed work in the same parent turn',
+    () {
+      for (final tool in ['sendInput', 'resumeAgent']) {
+        final agent = <TimelineEntry>[
+          _agent('completed', 'thread', 'turn', 'completed'),
+          _agent('new-task', 'thread', 'turn', 'running', activity: tool),
+        ].toSubAgentPresentations().single;
+        expect(agent.status, SubAgentDisplayStatus.working, reason: tool);
+        expect(agent.showsProgressIndicator, isTrue, reason: tool);
+      }
+    },
+  );
+
   test('accumulates composer agents across parent turns', () {
     final entries = <TimelineEntry>[
       _agent('old-a', 'old-a', 'turn-old', 'completed'),
@@ -191,6 +205,45 @@ void main() {
     expect(pathFallback.avatarIdentityKey, 'team/review-agent');
     expect(pathFallback.avatarColorIndex(7), inInclusiveRange(0, 6));
     expect(() => running.avatarColorIndex(0), throwsArgumentError);
+  });
+
+  test('status-only updates preserve the collaborator name and path', () {
+    final agent = <TimelineEntry>[
+      _agent(
+        'created',
+        'thread-with-id',
+        'turn',
+        'running',
+        path: '/root/review',
+      ),
+      _agent('finished', 'thread-with-id', 'turn', 'completed', path: ''),
+    ].toSubAgentPresentations().single;
+    expect(agent.name, 'review');
+    expect(agent.path, '/root/review');
+    expect(agent.status, SubAgentDisplayStatus.completed);
+  });
+
+  test('failed creation is reported as failed and remains unopenable', () {
+    final group = <TimelineEntry>[
+      _agent('failed-attempt', '', 'turn', 'errored'),
+    ].toSubAgentActivityGroupPresentation();
+    expect(group.status, SubAgentDisplayStatus.failed);
+    expect(group.isActive, isFalse);
+    expect(group.agents.single.isOpenable, isFalse);
+    expect(group.agents.single.showsProgressIndicator, isFalse);
+  });
+
+  test('same display name never merges different thread identities', () {
+    final agents = <TimelineEntry>[
+      _agent('one', 'thread-one', 'turn', 'completed', path: '/root/a/review'),
+      _agent('two', 'thread-two', 'turn', 'running', path: '/root/b/review'),
+    ].toSubAgentPresentations();
+    expect(agents, hasLength(2));
+    expect(agents.map((agent) => agent.name), ['review', 'review']);
+    expect(agents.map((agent) => agent.threadId).toSet(), {
+      'thread-one',
+      'thread-two',
+    });
   });
 }
 

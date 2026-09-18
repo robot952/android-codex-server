@@ -121,7 +121,11 @@ class ThreadSessionCache {
   /// Child turns are delivered on their own thread, so their terminal event
   /// would otherwise wait for the parent turn to end before its cached
   /// collaborator rows are refreshed.
-  bool updateSubAgentStatus(String subAgentThreadId, String status) {
+  bool updateSubAgentStatus(
+    String subAgentThreadId,
+    String status, {
+    bool allowRestart = false,
+  }) {
     final childId = subAgentThreadId.trim();
     final nextStatus = status.trim();
     if (childId.isEmpty || nextStatus.isEmpty || _entries.isEmpty) return false;
@@ -129,19 +133,30 @@ class ThreadSessionCache {
     var changed = false;
     for (final entry in _entries.entries.toList(growable: false)) {
       final snapshot = entry.value.snapshot;
+      // Only the latest parent turn reflects this live child run. A later
+      // result must not rewrite earlier completed/failed tasks in history.
+      String? latestParentTurn;
+      for (final item in snapshot.timeline.reversed) {
+        if (item.kind == TimelineKind.subAgent &&
+            item.subAgentThreadId == childId) {
+          latestParentTurn = item.turnId;
+          break;
+        }
+      }
       var timelineChanged = false;
       final timeline = snapshot.timeline
           .map((item) {
             if (item.kind != TimelineKind.subAgent ||
                 item.subAgentThreadId != childId ||
+                item.turnId != latestParentTurn ||
                 item.status == nextStatus) {
               return item;
             }
             final currentStatus = item.status.trim();
-            final mergedStatus = _mergeCachedSubAgentStatus(
-              currentStatus,
-              nextStatus,
-            );
+            final mergedStatus =
+                allowRestart && _isActiveSubAgentStatus(nextStatus)
+                ? nextStatus
+                : _mergeCachedSubAgentStatus(currentStatus, nextStatus);
             if (mergedStatus == currentStatus) return item;
             timelineChanged = true;
             return item.copyWith(status: mergedStatus);

@@ -56,11 +56,6 @@ AppUiState settleActiveTurnLocally(
     activeTurnId: null,
     running: false,
     submitting: false,
-    timeline: _completeSubAgentsForTurn(
-      next.timeline,
-      resolvedTurnId,
-      stopped ? 'stopped' : 'completed',
-    ),
     turnTiming: completedTiming,
   );
 }
@@ -183,14 +178,7 @@ AppUiState reduceCodexNotification(
         stopped: _isStoppedStatus(turnStatus),
         nowMillis: now,
       );
-      return next.copyWith(
-        timeline: _completeSubAgentsForTurn(
-          next.timeline,
-          resolvedTurnId,
-          _subAgentStatusForTurn(turnStatus),
-        ),
-        error: error.isEmpty ? next.error : error,
-      );
+      return next.copyWith(error: error.isEmpty ? next.error : error);
 
     case 'thread/status/changed':
       if (threadId.isEmpty) return state;
@@ -284,6 +272,28 @@ AppUiState reduceCodexNotification(
       final item = _map(params['item']);
       if (item == null) return state;
       final itemType = _string(item, const ['type']);
+      if (itemType == 'collabAgentToolCall') {
+        final turnId = _turnId(params);
+        var timeline = _applySubAgentStates(state.timeline, item, turnId);
+        final entries = CodexPayloadParser.parseItems(item, turnId: turnId);
+        // Once creation resolves, replace its unconfirmed placeholder.
+        if (entries.any((entry) => entry.subAgentThreadId.isNotEmpty)) {
+          final callId = _string(item, const ['id']);
+          timeline = timeline
+              .where(
+                (entry) =>
+                    !(entry.kind == TimelineKind.subAgent &&
+                        entry.id == callId &&
+                        entry.turnId == turnId &&
+                        entry.subAgentThreadId.isEmpty),
+              )
+              .toList(growable: false);
+        }
+        for (final entry in entries) {
+          timeline = _upsertTimeline(timeline, entry);
+        }
+        return state.copyWith(timeline: timeline);
+      }
       var entry = CodexPayloadParser.parseItem(item, turnId: _turnId(params));
       if (entry == null) return state;
       if (entry.kind == TimelineKind.command &&
@@ -302,9 +312,6 @@ AppUiState reduceCodexNotification(
         entry,
         allowEmptyOptimisticUserMatch: method == 'item/started',
       );
-      if (itemType == 'collabAgentToolCall') {
-        timeline = _applySubAgentStates(timeline, item, entry.turnId);
-      }
       final next = state.copyWith(timeline: timeline);
       if (!isTerminalAgentMessageNotification(notification)) return next;
       return settleActiveTurnLocally(
@@ -751,33 +758,6 @@ String _strongerTerminalSubAgentStatus(String current, String next) {
     _ => 0,
   };
   return rank(next) >= rank(current) ? next : current;
-}
-
-String _subAgentStatusForTurn(String turnStatus) => switch (turnStatus.trim()) {
-  'interrupted' => 'interrupted',
-  'failed' || 'systemError' => 'errored',
-  _ => 'completed',
-};
-
-List<TimelineEntry> _completeSubAgentsForTurn(
-  List<TimelineEntry> timeline,
-  String turnId,
-  String terminalStatus,
-) {
-  if (turnId.isEmpty) return timeline;
-  var changed = false;
-  final result = timeline
-      .map((entry) {
-        if (entry.kind != TimelineKind.subAgent ||
-            entry.turnId != turnId ||
-            !_isActiveSubAgentStatus(entry.status)) {
-          return entry;
-        }
-        changed = true;
-        return entry.copyWith(status: terminalStatus);
-      })
-      .toList(growable: false);
-  return changed ? List<TimelineEntry>.unmodifiable(result) : timeline;
 }
 
 List<TimelineEntry> _applySubAgentStates(
