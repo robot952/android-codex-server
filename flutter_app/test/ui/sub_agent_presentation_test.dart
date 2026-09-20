@@ -3,6 +3,94 @@ import 'package:codex_remote/src/ui/sub_agent_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'activity rows keep start, finish and message in chronological order',
+    () {
+      final entries = <TimelineEntry>[
+        _agent(
+          'start',
+          'child',
+          'turn',
+          'completed',
+          activity: 'started',
+          path: '/root/Check loading placement',
+        ),
+        _agent(
+          'finish',
+          'child',
+          'turn',
+          'completed',
+          activity: 'completed',
+          path: '',
+        ),
+        _agent(
+          'message',
+          'child',
+          'turn',
+          'running',
+          activity: 'sendInput',
+          path: '',
+        ),
+      ];
+      final row =
+          entries.toTimelineRenderRows().single as SubAgentTimelineRenderRow;
+      final activities = row.entries.toSubAgentActivityPresentations();
+      expect(
+        activities.map((agent) => agent.name),
+        everyElement('Check loading placement'),
+      );
+      expect(activities.map((agent) => agent.activityLabel), [
+        '开始工作',
+        '已完成',
+        '发送消息',
+      ]);
+      expect(activities.map((agent) => agent.isMessageActivity), [
+        false,
+        false,
+        true,
+      ]);
+      expect(entries.toBackgroundSubAgentPresentations(), hasLength(1));
+    },
+  );
+
+  test('activity names survive separating messages and missing paths', () {
+    final rows = <TimelineEntry>[
+      _agent('start', 'child', 'turn', 'running', path: '/root/review'),
+      _entry('answer', TimelineKind.agentMessage, turnId: 'turn'),
+      _agent('finish', 'child', 'turn', 'completed', path: ''),
+    ].toTimelineRenderRows();
+    final activity = (rows.last as SubAgentTimelineRenderRow).entries
+        .toSubAgentActivityPresentations()
+        .single;
+    expect(activity.name, 'review');
+  });
+
+  test(
+    'parent messages remain informational and are not child index entries',
+    () {
+      final entries = [
+        _agent(
+          'parent-message',
+          'parent',
+          'turn',
+          'completed',
+          activity: 'sendMessageToParent',
+          path: '/root',
+        ),
+      ];
+      final activity = entries.toSubAgentActivityPresentations().single;
+      expect(activity.activityLabel, '已向父代理发送消息');
+      expect(activity.isMessageActivity, isTrue);
+      expect(activity.isOpenable, isFalse);
+      expect(entries.toBackgroundSubAgentPresentations(), isEmpty);
+    },
+  );
+
+  test('avatar color uses deterministic identity hashing', () {
+    expect(subAgentAvatarColorIndex('', 7), 2);
+    expect(subAgentAvatarColorIndex('child', 7), 0);
+  });
+
   test('groups adjacent sub-agent activities from the same turn', () {
     final rows = <TimelineEntry>[
       _entry('user', TimelineKind.userMessage, turnId: 'turn-1'),

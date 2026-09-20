@@ -87,9 +87,15 @@ class _FakeCodexHost
 }
 
 class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
-  _FakeCodexSession({this.models = const []});
+  _FakeCodexSession({
+    this.models = const [],
+    this.results = const {},
+    this.replyFor,
+  });
 
   final List<Map<String, Object?>> models;
+  final Map<String, Object?> results;
+  final Map<String, Object?> Function(Map<String, Object?> request)? replyFor;
   final StreamController<Uint8List> _stdout = StreamController<Uint8List>(
     sync: true,
   );
@@ -128,13 +134,13 @@ class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
                 .toList(),
             'nextCursor': null,
           }
-        : <String, Object?>{};
+        : results[payload['method']] ?? <String, Object?>{};
     scheduleMicrotask(() {
       if (!_stdout.isClosed) {
         _stdout.add(
           Uint8List.fromList(
             utf8.encode(
-              '${jsonEncode(<String, Object?>{'id': id, 'result': result})}\n',
+              '${jsonEncode(<String, Object?>{'id': id, ...?replyFor?.call(payload), if (replyFor == null) 'result': result})}\n',
             ),
           ),
         );
@@ -221,6 +227,266 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  test(
+    'reads an unloaded real child snapshot without resuming parent or child',
+    () async {
+      final fixture =
+          jsonDecode(
+                File(
+                  'test/fixtures/subagent_child_history_live.json',
+                ).readAsStringSync(),
+              )
+              as Map<String, dynamic>;
+      final snapshots = fixture['snapshots'] as List;
+      final payload = snapshots.last['response'] as Map<String, dynamic>;
+      final thread = payload['thread'] as Map<String, dynamic>;
+      final session = _FakeCodexSession(
+        results: {
+          'thread/read': payload,
+          'thread/turns/list': {
+            'data': (thread['turns'] as List).reversed.toList(),
+          },
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      final result = await client.readThread(thread['id'] as String);
+      expect(result.thread.id, thread['id']);
+      expect(result.thread.source, 'subAgent');
+      expect(result.timeline, isNotEmpty);
+      final reads = session.writes
+          .map(jsonDecode)
+          .where((x) => x['method'] == 'thread/read');
+      expect(reads.first['params'], {
+        'threadId': thread['id'],
+        'includeTurns': false,
+      });
+      expect(
+        session.writes
+            .map(jsonDecode)
+            .any((x) => x['method'] == 'thread/resume'),
+        isFalse,
+      );
+      expect(
+        session.writes
+            .map(jsonDecode)
+            .any((x) => (x['params'] as Map?)?.containsKey('config') == true),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'read-only history bounds oversized pages through all four views',
+    () async {
+      final session = _FakeCodexSession(
+        replyFor: (request) {
+          if (request['method'] == 'thread/read') {
+            return {
+              'result': {
+                'thread': {'id': 'child', 'parentThreadId': 'parent'},
+              },
+            };
+          }
+          if (request['method'] == 'thread/turns/list') {
+            final params = request['params'] as Map;
+            return {
+              'result': params['itemsView'] == 'notLoaded'
+                  ? {
+                      'data': [
+                        {'id': 'child-turn', 'items': []},
+                      ],
+                      'nextCursor': 'older',
+                    }
+                  : {'padding': 'x' * 2048},
+            };
+          }
+          return {'result': <String, Object?>{}};
+        },
+      );
+      final client = CodexAgentClient(
+        sessionOpener: (_, _) async => session,
+        maxLineChars: 1024,
+      );
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      final result = await client.readThread('child');
+      expect(result.itemsView, 'notLoaded');
+      expect(result.turnIds, ['child-turn']);
+      expect(result.nextTurnsCursor, 'older');
+      final pages = session.writes
+          .map(jsonDecode)
+          .where((x) => x['method'] == 'thread/turns/list')
+          .toList();
+      expect(pages.map((x) => (x['params'] as Map)['limit']), [4, 1, 1, 1]);
+      expect(pages.map((x) => (x['params'] as Map)['itemsView']), [
+        'full',
+        'full',
+        'summary',
+        'notLoaded',
+      ]);
+      expect(
+        session.writes
+            .map(jsonDecode)
+            .any((x) => x['method'] == 'thread/resume'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'unsupported read endpoint never falls back to resuming a child',
+    () async {
+      final session = _FakeCodexSession(
+        replyFor: (request) => request['method'] == 'thread/read'
+            ? {
+                'error': {'code': -32601, 'message': 'unsupported'},
+              }
+            : {'result': <String, Object?>{}},
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await expectLater(client.readThread('child'), throwsA(isA<Exception>()));
+      expect(
+        session.writes
+            .map(jsonDecode)
+            .any((x) => x['method'] == 'thread/resume'),
+        isFalse,
+      );
+    },
+  );
+
+  test('legacy read endpoint is used when pagination is unavailable', () async {
+    final session = _FakeCodexSession(
+      replyFor: (request) {
+        if (request['method'] == 'thread/turns/list') {
+          return {
+            'error': {'code': -32601, 'message': 'unsupported'},
+          };
+        }
+        if (request['method'] == 'thread/read') {
+          final includeTurns =
+              (request['params'] as Map)['includeTurns'] == true;
+          return {
+            'result': {
+              'thread': {
+                'id': 'child',
+                'parentThreadId': 'parent',
+                'turns': includeTurns
+                    ? [
+                        {
+                          'id': 'child-turn',
+                          'items': [
+                            {
+                              'id': 'child-item',
+                              'type': 'agentMessage',
+                              'text': 'child',
+                            },
+                          ],
+                        },
+                      ]
+                    : [],
+              },
+            },
+          };
+        }
+        return {'result': <String, Object?>{}};
+      },
+    );
+    final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    addTearDown(() async {
+      await client.disconnect();
+      client.close();
+    });
+    await client.connect(
+      const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+      _FakeCodexHost(),
+    );
+    final result = await client.readThread('child');
+    expect(result.timeline.map((item) => item.text), ['child']);
+    expect(
+      session.writes.map(jsonDecode).any((x) => x['method'] == 'thread/resume'),
+      isFalse,
+    );
+  });
+
+  test(
+    'child pagination keeps the verified history boundary from resume',
+    () async {
+      const childId = '01a0b573-91cc-7ad3-ad41-72bd0b489c52';
+      const childTurnId = '01a0b573-91f2-7523-b25d-4fd4bc1fdc8e';
+      const parentTurnId = '01a0b573-9000-7c51-a2e0-4389f0c8c6b2';
+      Map<String, Object?> turn(String id, String text) => {
+        'id': id,
+        'items': [
+          {'id': '$text-item', 'type': 'agentMessage', 'text': text},
+        ],
+      };
+      final session = _FakeCodexSession(
+        results: {
+          'thread/resume': {
+            'thread': {
+              'id': childId,
+              'source': 'vscode',
+              'parentThreadId': 'parent',
+              'createdAt': 1789750645,
+              'turns': [turn(childTurnId, 'child')],
+            },
+          },
+          'thread/turns/list': {
+            'nextCursor': 'older',
+            'data': [turn(childTurnId, 'child'), turn(parentTurnId, 'parent')],
+          },
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await client.resumeThread(childId);
+      final page = await client.loadOlderTurns(
+        threadId: childId,
+        cursor: 'first',
+      );
+      expect(page.timeline.map((entry) => entry.text), ['child']);
+      expect(page.nextCursor, isNull);
+      final ordinaryPage = await client.loadOlderTurns(
+        threadId: 'ordinary-thread',
+        cursor: 'first',
+      );
+      expect(ordinaryPage.timeline.map((entry) => entry.text), [
+        'parent',
+        'child',
+      ]);
+      expect(ordinaryPage.nextCursor, 'older');
+    },
+  );
+
   test(
     'lists all server-hidden models and preserves custom model efforts',
     () async {

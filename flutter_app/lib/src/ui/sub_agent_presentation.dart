@@ -41,11 +41,38 @@ class SubAgentPresentation {
   final int timelineIndex;
   final String activity;
 
+  bool get isMessageActivity =>
+      activity == 'sendInput' ||
+      activity == 'sendMessage' ||
+      activity == 'followupTask' ||
+      activity == 'interacted' ||
+      isParentMessage;
+
+  bool get isParentMessage => activity == 'sendMessageToParent';
+
+  /// Activity rows describe what happened at that point in the transcript.
+  /// Their status may later be updated by a child lifecycle notification.
+  String get activityLabel {
+    if (isParentMessage) return '已向父代理发送消息';
+    if (!isConfirmed) return status.label;
+    return switch (activity) {
+      'started' || 'spawnAgent' => '开始工作',
+      'completed' => '已完成',
+      'sendInput' || 'sendMessage' || 'interacted' => '发送消息',
+      'followupTask' => '追加任务',
+      'resumeAgent' => '已恢复',
+      'closeAgent' => '已关闭',
+      'interrupted' => '已中断',
+      'interruptAgent' => '已请求中断',
+      _ => status.label,
+    };
+  }
+
   /// An activity item is only a real collaborator after the server assigns it
   /// a child-thread id. Before that, it represents a creation attempt.
-  bool get isConfirmed => threadId.isNotEmpty;
+  bool get isConfirmed => threadId.isNotEmpty && !isParentMessage;
 
-  bool get isOpenable => threadId.isNotEmpty;
+  bool get isOpenable => isConfirmed;
 
   /// Only an assigned collaborator may report actual work in progress.
   bool get showsProgressIndicator => isConfirmed && status.isActive;
@@ -58,12 +85,20 @@ class SubAgentPresentation {
       : name;
 
   int avatarColorIndex(int paletteSize) {
-    if (paletteSize <= 0) {
-      throw ArgumentError.value(paletteSize, 'paletteSize', 'must be positive');
-    }
-    final remainder = avatarIdentityKey.hashCode.remainder(paletteSize);
-    return remainder < 0 ? remainder + paletteSize : remainder;
+    return subAgentAvatarColorIndex(avatarIdentityKey, paletteSize);
   }
+}
+
+/// A deterministic identity color across app processes and platforms.
+int subAgentAvatarColorIndex(String identity, int paletteSize) {
+  if (paletteSize <= 0) {
+    throw ArgumentError.value(paletteSize, 'paletteSize', 'must be positive');
+  }
+  var hash = 0x811c9dc5;
+  for (final codeUnit in identity.codeUnits) {
+    hash = ((hash ^ codeUnit) * 0x01000193) & 0xffffffff;
+  }
+  return hash % paletteSize;
 }
 
 class SubAgentActivityGroupPresentation {
@@ -112,6 +147,13 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
 
     final rows = <TimelineRenderRow>[];
     final pendingAgents = <TimelineEntry>[];
+    final knownPaths = <String, String>{
+      for (final entry in this)
+        if (entry.kind == TimelineKind.subAgent &&
+            entry.subAgentThreadId.trim().isNotEmpty &&
+            entry.subAgentPath.trim().isNotEmpty)
+          entry.subAgentThreadId: entry.subAgentPath,
+    };
 
     void flushAgents() {
       if (pendingAgents.isEmpty) return;
@@ -130,7 +172,14 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
                 previousTurn.isNotEmpty &&
                 previousTurn == entry.turnId);
         if (!canJoin) flushAgents();
-        pendingAgents.add(entry);
+        pendingAgents.add(
+          entry.subAgentPath.trim().isEmpty &&
+                  knownPaths.containsKey(entry.subAgentThreadId)
+              ? entry.copyWith(
+                  subAgentPath: knownPaths[entry.subAgentThreadId]!,
+                )
+              : entry,
+        );
       } else {
         flushAgents();
         rows.add(TimelineEntryRenderRow(entry));
@@ -140,6 +189,15 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
     return List.unmodifiable(rows);
   }
 
+  /// Keeps each activity in wire order. Only the background index deduplicates
+  /// collaborators; starts, completions and messages remain separate rows.
+  List<SubAgentPresentation> toSubAgentActivityPresentations() =>
+      List.unmodifiable([
+        for (var index = 0; index < length; index++)
+          if (this[index].kind == TimelineKind.subAgent)
+            _toSubAgentPresentation(this[index], index),
+      ]);
+
   /// Returns the latest stable display state for each sub-agent.
   List<SubAgentPresentation> toSubAgentPresentations() {
     final agents = <String, SubAgentPresentation>{};
@@ -148,6 +206,7 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
       if (entry.kind != TimelineKind.subAgent) continue;
 
       final candidate = _toSubAgentPresentation(entry, index);
+      if (candidate.isParentMessage) continue;
       final key = candidate.threadId.isNotEmpty
           ? candidate.threadId
           : 'entry:${entry.id}:$index';

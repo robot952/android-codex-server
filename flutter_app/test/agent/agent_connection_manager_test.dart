@@ -93,6 +93,26 @@ class _IndependentFakeAgent extends _FakeAgent
   bool get usesIndependentConnection => true;
 }
 
+class _ReadOnlyFakeAgent extends _FakeAgent
+    implements RemoteAgentThreadInspectionClient {
+  _ReadOnlyFakeAgent(super.kind);
+
+  int readCount = 0;
+  Completer<AgentSession>? readGate;
+
+  @override
+  Future<AgentSession> readThread(String threadId) async {
+    readCount++;
+    return readGate?.future ??
+        Future.value(
+          AgentSession(
+            thread: AgentThread(id: threadId, title: 'read only'),
+            timeline: const [],
+          ),
+        );
+  }
+}
+
 class _DurableFakeAgent extends _FakeAgent
     implements RemoteAgentDurableSessionClient {
   _DurableFakeAgent(super.kind);
@@ -365,6 +385,82 @@ const _second = ServerProfile(
 );
 
 void main() {
+  test(
+    'read-only inspection is opt-in and legacy adapters still resume',
+    () async {
+      final hosts = ServerConnectionManager(clientFactory: _FakeHost.new);
+      late _ReadOnlyFakeAgent reader;
+      final manager = AgentConnectionManager(
+        hosts,
+        clientFactory: (kind) => kind == AgentKind.codex
+            ? reader = _ReadOnlyFakeAgent(kind)
+            : _FakeAgent(kind),
+      );
+      addTearDown(() async {
+        await manager.close();
+        await hosts.close();
+      });
+      await hosts.connect(_first);
+      await manager.connect(_first, AgentKind.codex);
+      await manager.connect(_first, AgentKind.openCode);
+      final key = AgentConnectionKey(
+        profileId: _first.id,
+        agent: AgentKind.codex,
+      );
+      final inspected = await manager.resumeThread(
+        key,
+        'child',
+        readOnly: true,
+      );
+      expect(inspected.thread.title, 'read only');
+      expect(reader.readCount, 1);
+      final resumed = await manager.resumeThread(key, 'parent');
+      expect(resumed.thread.title, 'resumed');
+      expect(reader.readCount, 1);
+      final legacy = await manager.resumeThread(
+        AgentConnectionKey(profileId: _first.id, agent: AgentKind.openCode),
+        'legacy',
+        readOnly: true,
+      );
+      expect(legacy.thread.title, 'resumed');
+    },
+  );
+
+  test(
+    'read-only inspection rejects results after the lane is replaced',
+    () async {
+      final hosts = ServerConnectionManager(clientFactory: _FakeHost.new);
+      late _ReadOnlyFakeAgent reader;
+      final manager = AgentConnectionManager(
+        hosts,
+        clientFactory: (kind) => reader = _ReadOnlyFakeAgent(kind),
+      );
+      addTearDown(() async {
+        await manager.close();
+        await hosts.close();
+      });
+      await hosts.connect(_first);
+      await manager.connect(_first, AgentKind.codex);
+      final key = AgentConnectionKey(
+        profileId: _first.id,
+        agent: AgentKind.codex,
+      );
+      final gate = reader.readGate = Completer<AgentSession>();
+      final result = manager.resumeThread(key, 'child', readOnly: true);
+      final checked = expectLater(result, throwsStateError);
+      manager.registerProfile(
+        _first.copyWith(remoteCommand: 'different-codex'),
+      );
+      gate.complete(
+        const AgentSession(
+          thread: AgentThread(id: 'child'),
+          timeline: [],
+        ),
+      );
+      await checked;
+    },
+  );
+
   test('does not advertise capabilities before an Agent client exists', () {
     final hostManager = ServerConnectionManager(clientFactory: _FakeHost.new);
     final manager = AgentConnectionManager(hostManager);

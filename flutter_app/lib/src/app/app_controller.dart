@@ -148,6 +148,9 @@ class AppController extends StateNotifier<AppUiState> {
       SubAgentThreadRegistry();
   final LinkedHashMap<String, _SubAgentTurnState> _subAgentTurns =
       LinkedHashMap();
+  final LinkedHashMap<String, Set<String>> _inheritedSubAgentTurns =
+      LinkedHashMap();
+  final LinkedHashMap<String, String> _subAgentParents = LinkedHashMap();
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
   final Map<AgentConnectionKey, int> _agentLoadRevisions = {};
   final Set<String> _retainedHostConnections = <String>{};
@@ -480,6 +483,7 @@ class AppController extends StateNotifier<AppUiState> {
         _workspaceStateProfileId = null;
       }
       _threadCaches.removeWhere((key, _) => key.profileId == normalized.id);
+      _clearSubAgentHistory('${normalized.id}\u0000');
       _subAgentTurns.removeWhere(
         (key, _) => key.startsWith('${normalized.id}\u0000'),
       );
@@ -595,6 +599,7 @@ class AppController extends StateNotifier<AppUiState> {
         : state.selectedProfileId;
     final agentData = _withoutAgentProfileData(state, profileId);
     _threadCaches.removeWhere((key, _) => key.profileId == profileId);
+    _clearSubAgentHistory('$profileId\u0000');
     _subAgentTurns.removeWhere((key, _) => key.startsWith('$profileId\u0000'));
     _resumeNotificationBuffers.removeWhere(
       (key, _) => key.profileId == profileId,
@@ -1186,6 +1191,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> selectApprovalMode(ApprovalMode mode) async {
     await _ensureInitialized();
+    if (state.screen == AppScreen.agentWork) return;
     final profileId = state.selectedProfileId;
     if (profileId == null || state.approvalMode == mode) return;
     final profiles = state.profiles
@@ -1445,6 +1451,7 @@ class AppController extends StateNotifier<AppUiState> {
     )..remove(key);
     _clearAgentThreadPagination(key);
     _threadCaches.remove(key);
+    _clearSubAgentHistory(threadPreferenceKey(key.profileId, key.agent, ''));
     _subAgentTurns.removeWhere(
       (storageKey, _) => storageKey.startsWith(
         threadPreferenceKey(key.profileId, key.agent, ''),
@@ -2421,6 +2428,7 @@ class AppController extends StateNotifier<AppUiState> {
     Iterable<LocalAttachmentUpload> uploads,
   ) async {
     await _ensureInitialized();
+    if (state.screen == AppScreen.agentWork) return;
     final items = uploads.toList(growable: false);
     final profileId = state.selectedProfileId;
     final threadId = state.activeThread?.id;
@@ -2681,7 +2689,8 @@ class AppController extends StateNotifier<AppUiState> {
       state = state.copyWith(error: '当前操作尚未完成，请稍后打开智能体');
       return;
     }
-    if (current.approvalQueue.isNotEmpty) {
+    if (current.screen != AppScreen.agentWork &&
+        current.approvalQueue.isNotEmpty) {
       state = state.copyWith(error: '请先处理当前审批请求');
       return;
     }
@@ -2754,6 +2763,22 @@ class AppController extends StateNotifier<AppUiState> {
     }
     _flushPendingDraft();
     final parentSnapshot = _SessionSnapshot.capture(state);
+    _subAgentThreadRegistry.remember(key, threadId);
+    final childKey = threadPreferenceKey(key.profileId, key.agent, threadId);
+    _rememberSubAgentParent(key, threadId, parent.id);
+    final parentKey = threadPreferenceKey(key.profileId, key.agent, parent.id);
+    final inherited = <String>{
+      ...?_inheritedSubAgentTurns[parentKey],
+      ...?_inheritedSubAgentTurns.remove(childKey),
+      for (final entry in parentSnapshot.timeline)
+        if (entry.turnId.isNotEmpty) entry.turnId,
+    };
+    _inheritedSubAgentTurns[childKey] = inherited.length <= 2048
+        ? inherited
+        : inherited.skip(inherited.length - 2048).toSet();
+    while (_inheritedSubAgentTurns.length > 128) {
+      _inheritedSubAgentTurns.remove(_inheritedSubAgentTurns.keys.first);
+    }
     final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
     cache.put(
       parent,
@@ -2774,7 +2799,7 @@ class AppController extends StateNotifier<AppUiState> {
           id: threadId,
           title: agentName.isEmpty ? '智能体' : agentName,
           cwd: parent.cwd,
-          source: 'appServer',
+          source: 'subAgent',
           status: 'idle',
           cliVersion: state.agentConnectionStates[key]?.cliVersion ?? '',
         );
@@ -2802,7 +2827,8 @@ class AppController extends StateNotifier<AppUiState> {
       state = state.copyWith(error: '当前操作尚未完成，请稍后返回');
       return;
     }
-    if (current.approvalQueue.isNotEmpty) {
+    if (current.screen != AppScreen.agentWork &&
+        current.approvalQueue.isNotEmpty) {
       state = state.copyWith(error: '请先处理当前审批请求');
       return;
     }
@@ -3055,17 +3081,25 @@ class AppController extends StateNotifier<AppUiState> {
         subAgentCreatedAt: _subAgentThreadCreatedAt(thread),
       );
       if (!mounted || !_isActiveThread(key, thread.id)) return;
-      final merged = _mergeTimeline(page.timeline, state.timeline);
+      final childPage = _isolateSubAgentTimeline(key, thread, page.timeline);
+      final nextCursor = childPage.length == page.timeline.length
+          ? page.nextCursor
+          : null;
+      final merged = _isolateSubAgentTimeline(
+        key,
+        thread,
+        _mergeTimeline(childPage, state.timeline),
+      );
       state = state.copyWith(
         timeline: merged,
-        olderTurnsCursor: page.nextCursor,
+        olderTurnsCursor: nextCursor,
         olderTurnsLoading: false,
       );
       final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
       cache.put(
         state.activeThread ?? thread,
         merged,
-        nextTurnsCursor: page.nextCursor,
+        nextTurnsCursor: nextCursor,
         tokenUsage: state.tokenUsage,
       );
     } catch (error) {
@@ -3082,6 +3116,7 @@ class AppController extends StateNotifier<AppUiState> {
   /// debounce so rotating the screen or leaving the thread does not lose
   /// partially typed input without issuing a storage write for every key.
   void setComposerDraft(String value) {
+    if (state.screen == AppScreen.agentWork) return;
     if (!mounted || state.composerDraft == value) return;
     state = state.copyWith(composerDraft: value);
     final profileId = state.selectedProfileId;
@@ -3129,6 +3164,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> sendMessage({String? text}) async {
     await _ensureInitialized();
+    if (state.screen == AppScreen.agentWork) return;
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     if (profileId == null ||
@@ -3324,6 +3360,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> stopMessage() async {
     await _ensureInitialized();
+    if (state.screen == AppScreen.agentWork) return;
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     final turnId = state.activeTurnId;
@@ -3748,7 +3785,8 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   bool _beginThreadMutation(AgentConnectionKey key, String threadId) {
-    if (state.loading ||
+    if (state.screen == AppScreen.agentWork ||
+        state.loading ||
         state.submitting ||
         !_isActiveThread(key, threadId) ||
         !_threadMutationLanes.add(key)) {
@@ -3782,6 +3820,7 @@ class AppController extends StateNotifier<AppUiState> {
     ApprovalPrompt? expectedPrompt,
   }) async {
     await _ensureInitialized();
+    if (state.screen == AppScreen.agentWork) return;
     final profileId = state.selectedProfileId;
     final prompt = state.approval;
     final activeThreadId = _approvalThreadId(state.activeThread?.id);
@@ -4069,6 +4108,7 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   void selectThreadModel(String model, {String? effort}) {
+    if (state.screen == AppScreen.agentWork) return;
     if (!state.activeAgentCapabilities.models) return;
     final profileId = state.selectedProfileId;
     final threadId = state.activeThread?.id;
@@ -4118,9 +4158,26 @@ class AppController extends StateNotifier<AppUiState> {
     bool subAgentBackNavigation = false,
     _SessionSnapshot? initialSnapshot,
   }) {
-    _rememberSubAgentReferences(key, <AgentThread>[
+    if (targetScreen == AppScreen.agentWork) {
+      _subAgentThreadRegistry.remember(key, snapshot.thread.id);
+    }
+    final isSubAgentThread =
+        isSubAgentThreadSource(snapshot.thread.source) ||
+        _subAgentThreadRegistry.contains(key, snapshot.thread.id);
+    if (isSubAgentThread) {
+      targetScreen = AppScreen.agentWork;
+    }
+    final resolvedAgentName =
+        isSubAgentThread &&
+            (activeAgentName == null || activeAgentName.trim().isEmpty)
+        ? snapshot.thread.title
+        : activeAgentName;
+    final timeline = _isolateSubAgentTimeline(
+      key,
       snapshot.thread,
-    ], snapshot.timeline);
+      snapshot.timeline,
+    );
+    _rememberSubAgentReferences(key, <AgentThread>[snapshot.thread], timeline);
     final active = _isActiveKey(key);
     final preference = active && snapshot.thread.id.isNotEmpty
         ? _stored.threadModelPreferences[threadPreferenceKey(
@@ -4180,7 +4237,7 @@ class AppController extends StateNotifier<AppUiState> {
       snapshot.thread.status,
     );
     final timelineTurnId = threadHasActiveTurn || threadStatusRunning
-        ? _activeTimelineTurnId(snapshot.timeline)
+        ? _activeTimelineTurnId(timeline)
         : null;
     final serverActiveTurnId = threadHasActiveTurn
         ? snapshot.thread.activeTurnId
@@ -4245,10 +4302,12 @@ class AppController extends StateNotifier<AppUiState> {
       screen: targetScreen,
       subAgentBackNavigation: subAgentBackNavigation,
       activeThread: resolvedThread,
-      activeAgentName: activeAgentName,
+      activeAgentName: resolvedAgentName,
       activeGoal: sameInitialThread ? initialSnapshot!.activeGoal : activeGoal,
-      timeline: snapshot.timeline,
-      olderTurnsCursor: snapshot.nextTurnsCursor,
+      timeline: timeline,
+      olderTurnsCursor: timeline.length == snapshot.timeline.length
+          ? snapshot.nextTurnsCursor
+          : null,
       aggregateDiff: sameVisibleThread
           ? state.aggregateDiff
           : sameInitialThread
@@ -4405,11 +4464,20 @@ class AppController extends StateNotifier<AppUiState> {
       }
       final session = await _resumeExpectedThread(key, thread.id);
       final cachedSnapshot = cache.getStale(thread.id);
+      final refreshedTimeline = _isolateSubAgentTimeline(
+        key,
+        session.thread,
+        session.timeline,
+      );
       final reconciled = reconcileResumedTimeline(
-        cachedTimeline: cachedSnapshot?.timeline,
+        cachedTimeline: cachedSnapshot == null
+            ? null
+            : _isolateSubAgentTimeline(key, thread, cachedSnapshot.timeline),
         cachedNextCursor: cachedSnapshot?.nextTurnsCursor,
-        refreshedTimeline: session.timeline,
-        refreshedNextCursor: session.nextTurnsCursor,
+        refreshedTimeline: refreshedTimeline,
+        refreshedNextCursor: refreshedTimeline.length == session.timeline.length
+            ? session.nextTurnsCursor
+            : null,
         refreshedTurnIds: session.turnIds,
         cachedThreadUpdatedAt: _knownRevision(cachedSnapshot?.thread.updatedAt),
         refreshedThreadUpdatedAt: _knownRevision(session.thread.updatedAt),
@@ -4427,7 +4495,11 @@ class AppController extends StateNotifier<AppUiState> {
               : cachedSnapshot?.tokenUsage ?? session.tokenUsage);
       final resolvedSession = AgentSession(
         thread: session.thread,
-        timeline: reconciled.timeline,
+        timeline: _isolateSubAgentTimeline(
+          key,
+          session.thread,
+          reconciled.timeline,
+        ),
         nextTurnsCursor: reconciled.nextCursor,
         tokenUsage: tokenUsage,
         responseSequence: session.responseSequence,
@@ -4517,16 +4589,19 @@ class AppController extends StateNotifier<AppUiState> {
     AgentConnectionKey key,
     String threadId,
   ) async {
+    final readOnly = _subAgentThreadRegistry.contains(key, threadId);
     final first = await _agents.resumeThread(
       key,
       threadId,
       approvalMode: state.approvalMode,
+      readOnly: readOnly,
     );
     if (first.thread.id == threadId) return first;
     final retry = await _agents.resumeThread(
       key,
       threadId,
       approvalMode: state.approvalMode,
+      readOnly: readOnly,
     );
     if (retry.thread.id == threadId) return retry;
     throw StateError('服务器返回了其他会话，已阻止显示父会话内容');
@@ -4598,10 +4673,85 @@ class AppController extends StateNotifier<AppUiState> {
     final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
     cache.put(
       activeThread,
-      state.timeline,
+      _isolateSubAgentTimeline(key, activeThread, state.timeline),
       nextTurnsCursor: state.olderTurnsCursor,
       tokenUsage: state.tokenUsage,
     );
+  }
+
+  List<TimelineEntry> _isolateSubAgentTimeline(
+    AgentConnectionKey key,
+    AgentThread thread,
+    List<TimelineEntry> timeline,
+  ) {
+    if (!isSubAgentThreadSource(thread.source) &&
+        !_subAgentThreadRegistry.contains(key, thread.id)) {
+      return timeline;
+    }
+    final inherited =
+        _inheritedSubAgentTurns[threadPreferenceKey(
+          key.profileId,
+          key.agent,
+          thread.id,
+        )] ??
+        const <String>{};
+    final parentId =
+        _subAgentParents[threadPreferenceKey(
+          key.profileId,
+          key.agent,
+          thread.id,
+        )];
+    var normalizedMessage = false;
+    final filtered = timeline
+        .where(
+          (entry) => !CodexPayloadParser.isInheritedSubAgentTurn(
+            entry.turnId,
+            subAgentThreadId: thread.id,
+            subAgentCreatedAt: thread.createdAt,
+            inheritedTurnIds: inherited,
+          ),
+        )
+        .map((entry) {
+          if (parentId != null &&
+              entry.subAgentThreadId == parentId &&
+              const {
+                'sendMessage',
+                'sendInput',
+                'interacted',
+              }.contains(entry.subAgentActivity)) {
+            normalizedMessage = true;
+            return entry.copyWith(
+              subAgentThreadId: '',
+              subAgentPath: '',
+              subAgentActivity: 'sendMessageToParent',
+            );
+          }
+          return entry;
+        })
+        .toList(growable: false);
+    return !normalizedMessage && filtered.length == timeline.length
+        ? timeline
+        : List.unmodifiable(filtered);
+  }
+
+  void _rememberSubAgentParent(
+    AgentConnectionKey key,
+    String childId,
+    String parentId,
+  ) {
+    if (childId.isEmpty || parentId.isEmpty || childId == parentId) return;
+    final storageKey = threadPreferenceKey(key.profileId, key.agent, childId);
+    _subAgentParents.remove(storageKey);
+    _subAgentParents[storageKey] = parentId;
+    while (_subAgentParents.length > 128) {
+      _subAgentParents.remove(_subAgentParents.keys.first);
+    }
+    _subAgentThreadRegistry.remember(key, childId);
+  }
+
+  void _clearSubAgentHistory(String prefix) {
+    _inheritedSubAgentTurns.removeWhere((key, _) => key.startsWith(prefix));
+    _subAgentParents.removeWhere((key, _) => key.startsWith(prefix));
   }
 
   Future<void> _hydrateThreadGoal(
@@ -5289,6 +5439,7 @@ class AppController extends StateNotifier<AppUiState> {
       // A Provider switch changes the server's thread namespace. Do not let a
       // stale transcript be used when the new Provider reuses a thread ID.
       _threadCaches[key]?.clear();
+      _clearSubAgentHistory(threadPreferenceKey(key.profileId, key.agent, ''));
       _subAgentTurns.removeWhere(
         (storageKey, _) => storageKey.startsWith(
           threadPreferenceKey(key.profileId, key.agent, ''),
@@ -5859,6 +6010,43 @@ class AppController extends StateNotifier<AppUiState> {
         }
         final before = state;
         final routedMessage = _withResolvedNotificationThreadId(message);
+        final threadMetadata = _notificationMap(routedMessage.params['thread']);
+        final source = _notificationMap(threadMetadata?['source']);
+        final subAgent = _notificationMap(
+          source?['subAgent'] ?? source?['sub_agent'],
+        );
+        final spawn = _notificationMap(subAgent?['thread_spawn']);
+        _rememberSubAgentParent(
+          envelope.key,
+          _notificationString(threadMetadata, const ['id']),
+          _notificationString(threadMetadata, const [
+            'parentThreadId',
+            'parent_thread_id',
+          ]).ifEmpty(
+            () => _notificationString(spawn, const ['parent_thread_id']),
+          ),
+        );
+        final eventThreadId = _notificationThreadId(routedMessage);
+        if (_subAgentThreadRegistry.contains(envelope.key, eventThreadId)) {
+          final turn = _notificationMap(routedMessage.params['turn']);
+          final turnId = _notificationString(routedMessage.params, const [
+            'turnId',
+            'turn_id',
+          ]).ifEmpty(() => _notificationString(turn, const ['id']));
+          if (CodexPayloadParser.isInheritedSubAgentTurn(
+            turnId,
+            subAgentThreadId: eventThreadId,
+            inheritedTurnIds:
+                _inheritedSubAgentTurns[threadPreferenceKey(
+                  envelope.key.profileId,
+                  envelope.key.agent,
+                  eventThreadId,
+                )] ??
+                const <String>{},
+          )) {
+            return;
+          }
+        }
         _rememberSubAgentReferences(
           envelope.key,
           before.agentThreadLists[envelope.key] ?? const <AgentThread>[],
@@ -5886,6 +6074,13 @@ class AppController extends StateNotifier<AppUiState> {
           lists[envelope.key] = reduced.threads;
         }
         state = reduced.copyWith(
+          timeline: reduced.activeThread == null
+              ? reduced.timeline
+              : _isolateSubAgentTimeline(
+                  envelope.key,
+                  reduced.activeThread!,
+                  reduced.timeline,
+                ),
           agentThreadLists: Map.unmodifiable(lists),
           threads: _isActiveKey(envelope.key) ? reduced.threads : state.threads,
           submitting: reduced.running ? false : reduced.submitting,
@@ -6066,7 +6261,11 @@ class AppController extends StateNotifier<AppUiState> {
       screen: AppScreen.work,
       threads: laneThreads,
       activeThread: seedThread,
-      timeline: cached?.timeline ?? const <TimelineEntry>[],
+      timeline: _isolateSubAgentTimeline(
+        key,
+        seedThread,
+        cached?.timeline ?? const <TimelineEntry>[],
+      ),
       olderTurnsCursor: cached?.nextTurnsCursor,
       activeTurnId: seedThread.activeTurnId,
       running: _threadIsRunning(seedThread),
@@ -6100,7 +6299,7 @@ class AppController extends StateNotifier<AppUiState> {
           cache ?? _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
       nextCache.put(
         reducedThread,
-        reduced.timeline,
+        _isolateSubAgentTimeline(key, reducedThread, reduced.timeline),
         nextTurnsCursor: reduced.olderTurnsCursor,
         tokenUsage: reduced.tokenUsage,
       );
@@ -6116,7 +6315,13 @@ class AppController extends StateNotifier<AppUiState> {
         threadPreferenceKey(key.profileId, key.agent, threadId),
       );
     }
-    _rememberSubAgentReferences(key, reduced.threads, reduced.timeline);
+    _rememberSubAgentReferences(
+      key,
+      reduced.threads,
+      reducedThread == null
+          ? reduced.timeline
+          : _isolateSubAgentTimeline(key, reducedThread, reduced.timeline),
+    );
   }
 
   bool _applyChildSubAgentLifecycle(

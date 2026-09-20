@@ -52,6 +52,11 @@ class AgentTurnsPage {
   final String itemsView;
 }
 
+/// Inspects an existing thread without resuming it or accepting direct input.
+abstract interface class RemoteAgentThreadInspectionClient {
+  Future<AgentSession> readThread(String threadId);
+}
+
 /// Optional capability used to bind resume-time buffering to the concrete
 /// app-server generation without source-breaking lightweight test adapters.
 abstract interface class RemoteAgentGenerationClient {

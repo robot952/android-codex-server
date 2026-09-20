@@ -381,6 +381,7 @@ class CodexAgentClient
     implements
         RemoteAgentClient,
         RemoteAgentThreadPaginationClient,
+        RemoteAgentThreadInspectionClient,
         RemoteAgentTurnClient,
         RemoteAgentSteerClient,
         RemoteAgentThreadCreateClient,
@@ -460,6 +461,7 @@ class CodexAgentClient
   String? _durableStopCommand;
   bool _connectedHostIsLocal = false;
   String? _modelProvider;
+  final Map<String, int> _subAgentCreatedAtByThread = <String, int>{};
 
   @override
   AgentKind get kind => AgentKind.codex;
@@ -757,11 +759,96 @@ class CodexAgentClient
         if (index == attempts.length - 1) rethrow;
       }
     }
-    final resolvedResponse = response!;
+    return _sessionFromResponse(response!, itemsView: itemsView);
+  }
+
+  @override
+  Future<AgentSession> readThread(String threadId) async {
+    final scope = _requireScope();
+    if (threadId.trim().isEmpty) {
+      throw ArgumentError.value(threadId, 'threadId');
+    }
+    // Read metadata and the latest bounded page. Loading a child must neither
+    // resume its runtime nor download thousands of inherited parent turns.
+    final metadata = await _request(
+      scope.request(
+        'thread/read',
+        params: {'threadId': threadId, 'includeTurns': false},
+      ),
+      timeout: threadRequestTimeout,
+    );
+    final result = metadata.resultOrThrow();
+    if (result is! Map || result['thread'] is! Map) {
+      throw StateError('子会话元数据无效');
+    }
+    final thread = Map<String, Object?>.from(result['thread'] as Map)
+      ..remove('turns');
+    const attempts = [
+      (view: 'full', limit: 4),
+      (view: 'full', limit: 1),
+      (view: 'summary', limit: 1),
+      (view: 'notLoaded', limit: 1),
+    ];
+    for (var index = 0; index < attempts.length; index++) {
+      final attempt = attempts[index];
+      try {
+        final page = await _request(
+          scope.request(
+            'thread/turns/list',
+            params: {
+              'threadId': threadId,
+              'limit': attempt.limit,
+              'sortDirection': 'desc',
+              'itemsView': attempt.view,
+            },
+          ),
+          timeout: threadRequestTimeout,
+        );
+        return _sessionFromResponse(
+          page,
+          itemsView: attempt.view,
+          payload: {'thread': thread, 'initialTurnsPage': page.resultOrThrow()},
+        );
+      } on CodexResponseTooLargeException {
+        if (index == attempts.length - 1) rethrow;
+      } on CodexRpcException catch (error) {
+        if (error.code != -32601) rethrow;
+        final legacy = await _request(
+          scope.request(
+            'thread/read',
+            params: {'threadId': threadId, 'includeTurns': true},
+          ),
+          timeout: threadRequestTimeout,
+        );
+        return _sessionFromResponse(legacy);
+      }
+    }
+    throw StateError('无法读取子会话历史');
+  }
+
+  AgentSession _sessionFromResponse(
+    CodexRpcResponse resolvedResponse, {
+    String itemsView = 'full',
+    Object? payload,
+  }) {
+    if (_scope?.isCurrent != true ||
+        resolvedResponse.generation != _scope!.value) {
+      throw StateError('${kind.label} 会话读取请求已失效');
+    }
     final snapshot = CodexPayloadParser.parseResumedThread(
-      resolvedResponse.resultOrThrow(),
+      payload ?? resolvedResponse.resultOrThrow(),
     );
     if (snapshot == null) throw StateError('${kind.label} 返回的会话内容无效');
+    if (snapshot.thread.source == 'subAgent') {
+      _subAgentCreatedAtByThread.remove(snapshot.thread.id);
+      _subAgentCreatedAtByThread[snapshot.thread.id] =
+          snapshot.thread.createdAt;
+      while (_subAgentCreatedAtByThread.length > 128) {
+        _subAgentCreatedAtByThread.remove(
+          _subAgentCreatedAtByThread.keys.first,
+        );
+      }
+    }
     return AgentSession(
       thread: snapshot.thread,
       timeline: snapshot.timeline,
@@ -810,7 +897,13 @@ class CodexAgentClient
     final resolvedResponse = response!;
     final page = CodexPayloadParser.parseTurnsPage(
       resolvedResponse.resultOrThrow(),
-      subAgentCreatedAt: subAgentCreatedAt,
+      subAgentCreatedAt:
+          subAgentCreatedAt ?? _subAgentCreatedAtByThread[threadId],
+      subAgentThreadId:
+          subAgentCreatedAt != null ||
+              _subAgentCreatedAtByThread.containsKey(threadId)
+          ? threadId
+          : null,
     );
     return AgentTurnsPage(
       timeline: page.timeline,
@@ -1104,6 +1197,7 @@ class CodexAgentClient
     _settingsHost = null;
     _connectedProfile = null;
     _modelProvider = null;
+    _subAgentCreatedAtByThread.clear();
     _protocol.invalidateGeneration();
     _connected = false;
     _scope = null;

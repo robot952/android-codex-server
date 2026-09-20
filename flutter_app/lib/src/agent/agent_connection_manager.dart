@@ -345,13 +345,16 @@ class AgentConnectionManager {
     AgentConnectionKey key,
     String threadId, {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
+    bool readOnly = false,
   }) async {
     final entry = _requireConnected(key);
     final generation = entry.generation;
-    final result = await entry.client.resumeThread(
-      threadId,
-      approvalMode: approvalMode,
-    );
+    final client = entry.client;
+    final result = readOnly && client is RemoteAgentThreadInspectionClient
+        ? await (client as RemoteAgentThreadInspectionClient).readThread(
+            threadId,
+          )
+        : await client.resumeThread(threadId, approvalMode: approvalMode);
     if (!_isCurrent(key, entry) || entry.generation != generation) {
       throw StateError('Agent 会话恢复请求已失效');
     }
@@ -1030,9 +1033,9 @@ class AgentConnectionManager {
     // synchronously so replacement does not leave a stale client observable.
     if (entry.client is RemoteAgentDurableSessionClient) {
       unawaited(
-        _stopDurableSession(entry)
-            .catchError((_) {})
-            .whenComplete(entry.client.close),
+        _stopDurableSession(
+          entry,
+        ).catchError((_) {}).whenComplete(entry.client.close),
       );
     } else {
       entry.client.close();

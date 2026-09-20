@@ -41,9 +41,116 @@ Future<void> pumpSubAgentEvents(WidgetTester tester) async {
 }
 
 Finder childChip(String thread) =>
-    find.byKey(ValueKey('sub-agent-chip:$thread'));
+    find.byKey(ValueKey('sub-agent-chip:$thread')).first;
 
 void main({bool device = false}) {
+  testWidgets(
+    'child history excludes root and parent messages are informational',
+    (tester) async {
+      if (!device) {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(420, 900);
+        addTearDown(tester.view.reset);
+      }
+      final h = await pumpSubAgentApp(tester);
+      h.session.addThread('child', title: 'Wrong inherited root title');
+      h.session.item('parent', 'root-turn', {
+        'id': 'root-only',
+        'type': 'agentMessage',
+        'text': 'ROOT_ONLY_CONTENT',
+      });
+      h.session.activity(
+        'parent',
+        'child',
+        turn: 'root-turn',
+        path: '/root/History audit',
+      );
+      h.session.item('child', 'root-turn', {
+        'id': 'root-only',
+        'type': 'agentMessage',
+        'text': 'ROOT_ONLY_CONTENT',
+      });
+      h.session.item('child', 'child-turn', {
+        'id': 'child-only',
+        'type': 'agentMessage',
+        'text': 'CHILD_ONLY_CONTENT',
+      });
+      h.session.collaboration(
+        'child',
+        {'parent': 'running'},
+        turn: 'child-turn',
+        tool: 'sendMessage',
+      );
+      await pumpSubAgentEvents(tester);
+      await tester.tap(childChip('child'));
+      await pumpSubAgentEvents(tester);
+      expect(find.text('CHILD_ONLY_CONTENT'), findsOneWidget);
+      expect(
+        h.controller.state.timeline.any(
+          (row) => row.text == 'ROOT_ONLY_CONTENT',
+        ),
+        isFalse,
+      );
+      expect(find.text('已向父代理发送消息'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      expect(
+        h.controller.state.timeline.toBackgroundSubAgentPresentations(),
+        isEmpty,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('sub-agent-page-title')),
+          matching: find.text('History audit'),
+        ),
+        findsOneWidget,
+      );
+      final childReads = h.session.requests
+          .where(
+            (request) => (request['params'] as Map?)?['threadId'] == 'child',
+          )
+          .toList();
+      expect(
+        childReads.any((request) => request['method'] == 'thread/read'),
+        isTrue,
+      );
+      expect(
+        childReads.any((request) => request['method'] == 'thread/resume'),
+        isFalse,
+      );
+      h.session.startTurn('child', 'child-live-turn');
+      h.session.ask('child');
+      await pumpSubAgentEvents(tester);
+      final requestCount = h.session.requests.length;
+      await tester.runAsync(() async {
+        await h.controller.sendMessage(text: 'must not send');
+        await h.controller.stopMessage();
+        await h.controller.answerApproval(true);
+        await h.controller.renameActiveThread('must not rename');
+        await h.controller.selectApprovalMode(ApprovalMode.fullAccess);
+      });
+      expect(h.session.requests.length, requestCount);
+      expect(h.session.responses, isEmpty);
+      expect(find.byType(UserInputDialog), findsNothing);
+      if (device) {
+        debugPrint('SUBAGENT_READ_ONLY_SCREENSHOT_READY');
+        await Future<void>.delayed(const Duration(seconds: 12));
+      }
+      await tester.tap(find.byTooltip('返回上级会话'));
+      await pumpSubAgentEvents(tester);
+      expect(h.controller.state.screen, AppScreen.work);
+      expect(find.byKey(const Key('composer-input')), findsOneWidget);
+      await tester.tap(childChip('child'));
+      await pumpSubAgentEvents(tester);
+      expect(
+        h.controller.state.timeline.any(
+          (row) => row.text == 'ROOT_ONLY_CONTENT',
+        ),
+        isFalse,
+      );
+      expect(h.controller.state.screen, AppScreen.agentWork);
+    },
+  );
+
   testWidgets('parallel children retain distinct names and terminal results', (
     tester,
   ) async {
@@ -90,7 +197,7 @@ void main({bool device = false}) {
   });
 
   testWidgets(
-    'nested child navigation keeps drafts and answers in the correct thread',
+    'nested child pages are read-only and preserve the parent draft',
     (tester) async {
       if (!device) {
         tester.view.devicePixelRatio = 1;
@@ -112,7 +219,21 @@ void main({bool device = false}) {
       await tester.tap(childChip('child'));
       await pumpSubAgentEvents(tester);
       expect(h.controller.state.activeThread?.id, 'child');
-      h.controller.setComposerDraft('子会话草稿');
+      expect(find.byType(TextField), findsNothing);
+      expect(find.byKey(const Key('work-action-menu')), findsNothing);
+      expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
+      final title = find.byKey(const Key('sub-agent-page-title'));
+      expect(
+        find.descendant(of: title, matching: find.text('review')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: title,
+          matching: find.byKey(const ValueKey('sub-agent-icon:child')),
+        ),
+        findsOneWidget,
+      );
       await tester.tap(childChip('grandchild'));
       await pumpSubAgentEvents(tester);
       expect(h.controller.state.activeThread?.id, 'grandchild');
@@ -122,25 +243,14 @@ void main({bool device = false}) {
       await tester.tap(find.byTooltip('返回上级会话'));
       await pumpSubAgentEvents(tester);
       expect(h.controller.state.activeThread?.id, 'child');
-      expect(h.controller.state.composerDraft, '子会话草稿');
-      expect(find.byType(UserInputDialog), findsOneWidget);
-      await tester.tap(find.text('当前模块'));
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('submit-user-input')));
-      await pumpSubAgentEvents(tester);
       expect(find.byType(UserInputDialog), findsNothing);
-      expect(h.session.responses.single['id'], 'child-question');
-      expect(h.session.responses.single['result'], {
-        'answers': {
-          'choice': {
-            'answers': ['当前模块'],
-          },
-        },
-      });
+      expect(find.byType(TextField), findsNothing);
+      expect(h.session.responses, isEmpty);
       await tester.tap(find.byTooltip('返回上级会话'));
       await pumpSubAgentEvents(tester);
       expect(h.controller.state.activeThread?.id, 'parent');
       expect(h.controller.state.composerDraft, '父会话草稿');
+      expect(find.byType(TextField), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

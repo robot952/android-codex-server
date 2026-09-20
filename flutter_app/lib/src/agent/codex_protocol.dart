@@ -945,6 +945,24 @@ abstract final class CodexPayloadParser {
       'working_directory',
     ]);
     final name = _firstString(value, const <String>['name', 'title']).trim();
+    final sourceObject = _asObjectMap(value['source']);
+    final subAgent = _asObjectMap(
+      sourceObject?['subAgent'] ?? sourceObject?['sub_agent'],
+    );
+    final spawn = _asObjectMap(subAgent?['thread_spawn']);
+    final agentPath = _firstString(spawn ?? const {}, const [
+      'agent_path',
+      'agentPath',
+    ], marker: '').trim();
+    final agentName = agentPath.isNotEmpty
+        ? agentPath
+              .replaceFirst(RegExp(r'[\\/]+$'), '')
+              .split(RegExp(r'[\\/]'))
+              .last
+        : _firstString(spawn ?? const {}, const [
+            'agent_nickname',
+            'agentNickname',
+          ], marker: '');
     final explicitActiveTurn = _firstString(value, const <String>[
       'activeTurnId',
       'active_turn_id',
@@ -960,12 +978,16 @@ abstract final class CodexPayloadParser {
     final status = _wireType(value['status']);
     return AgentThread(
       id: id,
-      title: name.isNotEmpty
+      title: _isSubAgentThread(value) && agentName.isNotEmpty
+          ? agentName
+          : name.isNotEmpty
           ? name
           : _threadFallbackTitle(preview: preview, cwd: cwd),
       preview: preview,
       cwd: cwd,
-      source: source.isNotEmpty
+      source: _isSubAgentThread(value)
+          ? 'subAgent'
+          : source.isNotEmpty
           ? source
           : _firstString(value, const <String>[
               'threadSource',
@@ -1078,6 +1100,9 @@ abstract final class CodexPayloadParser {
     final visibleTurns = _withoutInheritedSubAgentTurns(
       turns,
       subAgentCreatedAt,
+      subAgentThreadId: _isSubAgentThread(rawThread)
+          ? _firstString(rawThread, const ['id', 'threadId', 'thread_id'])
+          : null,
     );
     final reachedInheritedHistory = visibleTurns.length != turns.length;
     final hydratedThread = Map<String, Object?>.from(rawThread)
@@ -1120,6 +1145,7 @@ abstract final class CodexPayloadParser {
   static CodexTurnsPage parseTurnsPage(
     Object? result, {
     int? subAgentCreatedAt,
+    String? subAgentThreadId,
   }) {
     final root = _asObjectMap(result) ?? const <String, Object?>{};
     final rawTurns = _payloadList(root, const <String>[
@@ -1130,6 +1156,7 @@ abstract final class CodexPayloadParser {
     final visibleTurns = _withoutInheritedSubAgentTurns(
       rawTurns,
       subAgentCreatedAt,
+      subAgentThreadId: subAgentThreadId,
     );
     final reachedInheritedHistory = visibleTurns.length != rawTurns.length;
     final turns = visibleTurns.reversed.toList(growable: false);
@@ -1151,6 +1178,30 @@ abstract final class CodexPayloadParser {
             .where((id) => id.isNotEmpty),
       ),
     );
+  }
+
+  /// Uses explicit parent identities or Codex's UUIDv7 creation order. A
+  /// missing timestamp alone is never evidence that valid child work is old.
+  static bool isInheritedSubAgentTurn(
+    String turnId, {
+    required String subAgentThreadId,
+    int? subAgentCreatedAt,
+    int? turnStartedAt,
+    Set<String> inheritedTurnIds = const <String>{},
+  }) {
+    if (inheritedTurnIds.contains(turnId)) return true;
+    final childMillis = _uuidV7EpochMillis(subAgentThreadId);
+    final turnMillis = _uuidV7EpochMillis(turnId);
+    if (childMillis != null && turnMillis != null) {
+      return turnMillis < childMillis;
+    }
+    final cutoff =
+        _normalizeEpochMillis(subAgentCreatedAt ?? 0) ??
+        (childMillis == null ? null : childMillis ~/ 1000 * 1000);
+    final startedAt = _normalizeEpochMillis(turnStartedAt ?? 0);
+    return cutoff != null &&
+        (turnMillis ?? startedAt) != null &&
+        (turnMillis ?? startedAt)! < cutoff;
   }
 
   static TokenUsage? parseTokenUsage(Object? result) {
@@ -1232,6 +1283,18 @@ abstract final class CodexPayloadParser {
 
   static List<TimelineEntry> parseTimeline(Map<String, Object?> thread) {
     final result = <TimelineEntry>[];
+    final source = _asObjectMap(thread['source']);
+    final subAgent = _asObjectMap(source?['subAgent'] ?? source?['sub_agent']);
+    final spawn = _asObjectMap(subAgent?['thread_spawn']);
+    final explicitParent = _firstString(thread, const [
+      'parentThreadId',
+      'parent_thread_id',
+    ], marker: '');
+    final parentId = explicitParent.isNotEmpty
+        ? explicitParent
+        : _firstString(spawn ?? const {}, const [
+            'parent_thread_id',
+          ], marker: '');
     for (final turnValue in _asList(
       thread['turns'],
       maxItems: _maxTimelineTurns,
@@ -1255,10 +1318,24 @@ abstract final class CodexPayloadParser {
           _applySubAgentStates(result, item, turnId);
         }
         result.addAll(
-          parseItems(
-            item,
-            turnId: turnId,
-          ).take(_maxTimelineEntries - result.length),
+          parseItems(item, turnId: turnId)
+              .map(
+                (entry) =>
+                    parentId.isNotEmpty &&
+                        entry.subAgentThreadId == parentId &&
+                        const {
+                          'interacted',
+                          'sendMessage',
+                          'sendInput',
+                        }.contains(entry.subAgentActivity)
+                    ? entry.copyWith(
+                        subAgentThreadId: '',
+                        subAgentPath: '',
+                        subAgentActivity: 'sendMessageToParent',
+                      )
+                    : entry,
+              )
+              .take(_maxTimelineEntries - result.length),
         );
       }
     }
@@ -1782,16 +1859,26 @@ String _sourceLabel(Object? value) {
   return _jsonPreview(value, maxChars: codexMaxMetadataPreviewChars);
 }
 
-int? _subAgentCreatedAt(Map<String, Object?> thread) {
+bool _isSubAgentThread(Map<String, Object?> thread) {
+  if (_firstString(thread, const [
+    'parentThreadId',
+    'parent_thread_id',
+  ]).trim().isNotEmpty) {
+    return true;
+  }
   final threadSource = _firstString(thread, const <String>[
     'threadSource',
     'thread_source',
   ], marker: '');
   final source = _sourceLabel(thread['source']);
-  final isSubAgent =
-      threadSource.toLowerCase() == 'subagent' ||
-      source.toLowerCase() == 'subagent';
-  if (!isSubAgent) return null;
+  String normalize(String value) =>
+      value.trim().toLowerCase().replaceAll('_', '').replaceAll('-', '');
+  return normalize(threadSource) == 'subagent' ||
+      normalize(source) == 'subagent';
+}
+
+int? _subAgentCreatedAt(Map<String, Object?> thread) {
+  if (!_isSubAgentThread(thread)) return null;
   final createdAt = _firstInt(thread, const <String>[
     'createdAt',
     'created_at',
@@ -1801,10 +1888,10 @@ int? _subAgentCreatedAt(Map<String, Object?> thread) {
 
 List<Object?> _withoutInheritedSubAgentTurns(
   List<Object?> turns,
-  int? subAgentCreatedAt,
-) {
-  final cutoff = _normalizeEpochMillis(subAgentCreatedAt ?? 0);
-  if (cutoff == null) return turns;
+  int? subAgentCreatedAt, {
+  String? subAgentThreadId,
+}) {
+  if (subAgentCreatedAt == null && subAgentThreadId == null) return turns;
   return turns
       .where((value) {
         final turn = _asObjectMap(value);
@@ -1813,11 +1900,26 @@ List<Object?> _withoutInheritedSubAgentTurns(
           'startedAt',
           'started_at',
         ]);
-        // Older servers can omit startedAt. Keep those turns rather than
-        // discarding valid child work.
-        return startedAt <= 0 || _normalizeEpochMillis(startedAt)! >= cutoff;
+        return !CodexPayloadParser.isInheritedSubAgentTurn(
+          _firstString(turn, const ['id'], marker: ''),
+          subAgentThreadId: subAgentThreadId ?? '',
+          subAgentCreatedAt: subAgentCreatedAt,
+          turnStartedAt: startedAt,
+        );
       })
       .toList(growable: false);
+}
+
+final _uuidV7Pattern = RegExp(
+  r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
+);
+
+int? _uuidV7EpochMillis(String value) {
+  if (!_uuidV7Pattern.hasMatch(value)) return null;
+  return int.tryParse(
+    value.substring(0, 8) + value.substring(9, 13),
+    radix: 16,
+  );
 }
 
 String _threadFallbackTitle({required String preview, required String cwd}) {

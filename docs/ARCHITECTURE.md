@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.111+241，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.112+242，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -495,10 +495,11 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   直接使用 Work 页图片查看器预览，其他文件才通过系统保存位置选择器流式下载。内部链接不会交给浏览器；
   同一 Work 页面一次只允许一个远程文件下载；
   图片工具统一显示“查看了图片”，点击通过 SFTP 预览，长按确认后用系统保存入口写入手机；
-- 对声明 `subAgents` 的 Agent，时间线把相邻同 turn 的子 Agent 活动合并为紧凑标签，逐个显示稳定身份
-  图标、名称和状态；运行状态转圈，
-  完成/中断/失败等终态不会被同 turn 的迟到 activity 恢复。存在有效 thread ID 时点击进入 `AppScreen.agentWork`，
-  使用真实 `thread/resume`，而没有 thread ID 的活动只显示不可点击状态；父子会话使用独立缓存和设置。
+- 对声明 `subAgents` 的 Agent，时间线按事件原序显示图标、名称和动作单行，开始、完成和发送消息分别保留，
+  不折叠成一个最新状态标签。存在有效 child thread ID 时点击进入只读 `AppScreen.agentWork`，
+  Codex 使用 `thread/read` 和有界 `thread/turns/list`，不直接恢复或配置子任务。
+  子页面标题为该 Agent 的名字和身份图标，底部留空，不显示 Composer、模型、权限、审批、提问弹窗或会话修改菜单。
+  父代理发送消息显示为不可操作的“已向父代理发送消息”，不能将父线程计为新的子 Agent。
   Composer 上方的后台 Agent 面板按整个父会话累计已确认的 child thread，并按 thread ID 去重；后续
   父 turn 新建的 Agent 会追加到已有列表，未取得真实 child thread ID 的创建尝试不计入数量。
 - Composer 的附件菜单支持调用系统相机拍照，以及多选图片或文件；最多保留 8 项、一次选择总计不超过 40 MiB；单个普通附件
@@ -651,7 +652,7 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
   请求隐藏系统输入法，避免切回前台自动弹键盘。键盘动画与消息同帧移动仍需真机验证。
 - 空闲发送、运行停止、停止确认、权限模式、审批、上下文详情、回到底部、Markdown 链接确认、图片保存、
   当前会话独立 effort 选择和自定义模型管理均已接入。
-- 子 Agent 事件先由 `SubAgentPresentation` 合并为相邻同 turn 的渲染行，再以紧凑标签显示。标签状态按
+- 子 Agent 事件由 `SubAgentPresentation` 按事件原序显示为紧凑活动行；后台索引单独按 child ID 合并。后台状态按
   `pendingInit/running/completed/interrupted/failed/shutdown/notFound` 和 activity 映射；同 turn 终态具有
   单向保护，后续 turn 才允许重新激活。有效 thread ID 的标签调用 `openSubAgentThread`，无 ID 的活动不会
   伪造会话入口；Composer 面板以父会话为范围累计全部已确认 Agent，不按当前 turn 丢弃先前完成项。
@@ -661,8 +662,8 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
 - 子任务状态事件省略名称时保留已有路径/名称；同名任务按 thread ID 分开，长按可查看完整路径。
   子任务标签在窄屏和大字体下收缩名称；返回父会话采用最新审批队列和缓存，保留恢复期间的输入修改。
 - `openSubAgentThread` 在按 `profileId + AgentKind` 隔离的 `ProfileScopedBackStack` 中保存有界
-  `_SessionSnapshot`（时间线、草稿、模型/effort、上下文用量、附件和工作区状态），随后执行真实
-  `thread/resume`。最多嵌套 8 层；返回先显示缓存父快照，再等 resume 成功后弹栈。重复返回在 pending 状态幂等，
+  `_SessionSnapshot`（时间线、草稿、模型/effort、上下文用量、附件和工作区状态），随后只读取得子历史；
+  普通父会话继续使用 `thread/resume`。最多嵌套 8 层；返回先显示缓存父快照，再等读取成功后弹栈。重复返回在 pending 状态幂等，
   父 resume 失败会恢复子页并保留栈以便重试；断线时允许本地返回并提示重连。每次导航递增 generation，
   切服务器/Agent、断开、删除、普通打开或返回列表都会清理栈，迟到回调不能改写新页面。
 - 父子切换前会 flush 260 ms 防抖草稿，模型、effort 和 TokenUsage 使用 `profileId + AgentKind + threadId`
@@ -1188,7 +1189,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 6. 会话重进优先显示缓存，较大历史允许更长的后台恢复，不长期白屏（当前缓存 + 180 秒 thread timeout）。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
 8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
-9. 子 Agent 使用稳定身份色图标和逐个状态，不显示多余“子agent”文字；点击有效 thread ID 进入真实独立会话，父子返回可安全重试；Composer 上方按父会话累计全部已确认 Agent，连续两轮各创建 3 个时总数必须显示 6（当前已接入；真机长时回归仍需执行）。
+9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方累计全部已确认 Agent，连续两轮各创建 3 个时总数显示 6。
 10. 目标和操作菜单使用原生 app-server 能力，不依赖复杂斜杠解析（当前 Codex 已接入）。
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
 12. Agent 图标连续点击 10 次开启 Debug；最多 100 个日志文件/约 10 MiB，单文件约 100 KiB；日志可多选系统分享且脱敏，
@@ -2301,6 +2302,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   等异常由可控协议回归验证；不把模拟结果写成真实 Provider 异常或真机厂商后台行为已验收。
 - 验收：Flutter `546` 项、analyze、Android 14 模拟器 `4` 组交互及正常 Release 安装通过；稳定证书和
   内外网整包回验通过。测试矩阵、边界、返工、耗时和 APK 哈希见 [子 Agent 专项验收](SUBAGENT_VALIDATION.md)。
+
+### 17.73 子 Agent 只读详情与历史边界
+
+- `1.8.112+242`：活动行对齐用户截图；子页面只显示名称/图标及该线程内容，底部留空。控制器同步阻止子页发送、停止、审批和线程修改，不仅隐藏按钮。
+- 子线程身份由来源、明确父线程关系和已确认导航维护。历史过滤结合已知父回合 ID、合法 UUIDv7 时间和已有时间戳；缓存初显、恢复合并、分页、后台与实时事件使用同一边界，普通 fork 保留历史。
+- Codex 子页通过只读 metadata + 最近四回合分页读取，超大响应继续缩小页数/详情；仅旧版缺少分页接口时回退完整读取。不会因为未加载的 v2 子任务拒绝 resume 而恢复父任务或改写其配置。
+- 实际 `0.154.0` 样本在重启前后只含子内容，没有复现 root 混入；缺时间戳、同秒父回合和缓存污染由受控回归复现。真实测试发现重启后直接 child resume 被拒绝，而 thread/read 成功。
+- 发送给父线程的协作记录不进入子任务索引、不提供操作入口。普通父会话的输入、审批和返回后的草稿保持可用。
+- Android 14 `1220x2712` 模拟器五组交互已通过；该设备测试使用生产 adapter/controller 和受控对端，真实 API 样本单独留作脱敏回放。详见 [本轮验收](SUBAGENT_READONLY_VALIDATION.md)。
 
 ## 18. 文档维护规则
 

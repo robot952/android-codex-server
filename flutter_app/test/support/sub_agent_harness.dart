@@ -186,7 +186,8 @@ class SubAgentSession implements CodexSession {
     requests.add(request);
     final params = request['params'] as Map? ?? const {};
     final threadId = params['threadId'] as String? ?? '';
-    if (request['method'] == 'thread/resume' &&
+    if ((request['method'] == 'thread/resume' ||
+            request['method'] == 'thread/read') &&
         failNextResume.remove(threadId)) {
       emit({
         'id': request['id'],
@@ -200,7 +201,12 @@ class SubAgentSession implements CodexSession {
         'data': [threads['parent']],
         'nextCursor': null,
       },
-      'thread/resume' => {'thread': threads[threadId]},
+      'thread/resume' || 'thread/read' => {'thread': threads[threadId]},
+      'thread/turns/list' => {
+        'data': (threads[threadId]?['turns'] as List? ?? const []).reversed
+            .toList(),
+        'nextCursor': null,
+      },
       'turn/start' => {
         'turn': {'id': 'sent-$threadId', 'status': 'inProgress'},
       },

@@ -9,6 +9,8 @@ const { spawn } = require("node:child_process");
 const readline = require("node:readline");
 
 assert(process.argv.includes("--live"), "Live model usage requires --live");
+const historyOnly = process.argv.includes("--history") || process.argv.includes("--history-only");
+assert(!historyOnly || !process.argv.includes("--interrupt"), "History and interruption scenarios are separate");
 const binary = process.env.CODEX_SUBAGENT_TEST_BIN;
 const source = process.env.CODEX_SUBAGENT_CONFIG_DIR;
 assert(binary && source, "Set CODEX_SUBAGENT_TEST_BIN and CODEX_SUBAGENT_CONFIG_DIR");
@@ -38,6 +40,7 @@ const messages = [];
 const pending = new Map();
 const created = new Set();
 const results = [];
+const historySnapshots = [];
 const tokenUsage = new Map();
 let sequence = 0;
 let child;
@@ -90,7 +93,7 @@ async function turn(threadId, text, interruptChild = false) {
     return messages.slice(from);
   }
   const complete = await waitFor(x => x.method === "turn/completed" &&
-    x.params.threadId === threadId && x.params.turn.id === result.turn.id, 240000, from);
+    x.params.threadId === threadId && x.params.turn.id === result.turn.id, historyOnly ? 120000 : 240000, from);
   assert.equal(complete.params.turn.status, "completed", "Live model turn failed");
   return messages.slice(from);
 }
@@ -113,7 +116,8 @@ async function stop() {
     /^(thread\/started|turn\/(started|completed)|thread\/status\/changed)$/.test(x.method) ||
     /collab|subagent/i.test(x.method) || /collab|subagent/i.test(x.params?.item?.type || "")
   ));
-  const report = redact(JSON.stringify({ results, usage: [...tokenUsage.values()], events: evidence }, null, 2));
+  const report = redact(JSON.stringify({ results, usage: [...tokenUsage.values()],
+    historySnapshots, events: evidence }, null, 2));
   fs.writeFileSync(path.join(cache, `subagent-live-${Date.now()}.json`), report, { mode: 0o600 });
   fs.writeFileSync(path.join(cache, "subagent-live-evidence.json"), report, { mode: 0o600 });
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -122,7 +126,7 @@ async function main() {
   const overrides = {
     model_reasoning_effort: "low", suppress_unstable_features_warning: true,
     "features.multi_agent": true, "features.shell_tool": false,
-    "agents.max_threads": 4, "agents.max_depth": 2,
+    "agents.max_threads": historyOnly ? 2 : 4, "agents.max_depth": historyOnly ? 1 : 2,
     "agents.default_subagent_reasoning_effort": "low",
   };
   const args = Object.entries(overrides).flatMap(([k, v]) => ["-c", `${k}=${JSON.stringify(v)}`]);
@@ -166,12 +170,53 @@ async function main() {
   }
   launch();
   for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => void stop());
-  const limit = setTimeout(() => { console.error("Live test deadline reached"); process.exitCode = 1; void stop(); }, 8 * 60000);
+  const limit = setTimeout(() => { console.error("Live test deadline reached"); process.exitCode = 1; void stop(); }, (historyOnly ? 4 : 8) * 60000);
   try {
     await initialize();
     const root = await rpc("thread/start", { cwd: workspace, approvalPolicy: "never", sandbox: "read-only",
       developerInstructions: "This is an authorized bounded subagent integration test. Use collaboration tools as requested. No files, shell commands, web, skills, or external tools. Create at most three children total, nesting at most two levels. Keep messages and final answers under 30 words. Do not request user input. Child agents must use the same model and low reasoning effort." });
     rootId = root.thread.id;
+    if (historyOnly) {
+      console.log("Live provider connected; testing one forked child's inherited history.");
+      await turn(rootId, "This is the parent-only history marker. Reply exactly ROOT_HISTORY_ONLY_MARKER. Do not use tools.");
+      const delegated = await turn(rootId, "Create exactly one subagent named history_child with fork_turns=all (or fork_context=true if that is your supported tool). It must inherit this conversation. Its only task is to reply exactly CHILD_HISTORY_ONLY_MARKER, without tools or further children. Wait for its completion, then reply exactly ROOT_HISTORY_DONE. Use the real collaboration tool. Do not close the child.");
+      const childIds = [...created].filter(id => id !== rootId);
+      assert.equal(childIds.length, 1, "History test must create exactly one child");
+      const childId = childIds[0];
+      assert(delegated.some(x => x.method === "turn/completed" && x.params.threadId === childId &&
+        x.params.turn.status === "completed"), "History child did not finish");
+      async function captureHistory(stage, method = "thread/resume") {
+        const resumed = await rpc(method, { threadId: childId, includeTurns: true });
+        assert.equal(resumed.thread.id, childId);
+        const page = await rpc("thread/turns/list", { threadId: childId, limit: 100,
+          sortDirection: "asc", itemsView: "full" });
+        historySnapshots.push({ stage, method, rootId, childId, resume: resumed, turnsPage: page });
+        const turns = resumed.thread.turns || resumed.initialTurnsPage?.data || [];
+        const serialized = JSON.stringify(turns);
+        assert(serialized.includes("CHILD_HISTORY_ONLY_MARKER"), "Child history lost its output");
+        const summary = turns.map(t => ({ id: t.id, startedAt: t.startedAt ?? null,
+          completedAt: t.completedAt ?? null, items: (t.items || []).map(i => ({ type: i.type,
+            id: i.id, child: JSON.stringify(i).includes("CHILD_HISTORY_ONLY_MARKER"),
+            parent: JSON.stringify(i).includes("ROOT_HISTORY_ONLY_MARKER") })) }));
+        const result = { scenario: `child_history_${stage}`, passed: true,
+          inheritedParent: serialized.includes("ROOT_HISTORY_ONLY_MARKER"),
+          threadCreatedAt: resumed.thread.createdAt, source: resumed.thread.source, turns: summary };
+        results.push(result);
+        console.log(`PASS ${result.scenario}; parent history present=${result.inheritedParent}; turns=${turns.length}`);
+      }
+      await captureHistory("before_restart");
+      const old = child;
+      old.kill("SIGTERM");
+      await new Promise(resolve => old.once("exit", resolve));
+      launch();
+      await initialize();
+      // Multi-agent v2 intentionally disallows resuming an unloaded child before
+      // its parent. Read-only child pages must still work after reconnecting.
+      await captureHistory("after_restart_read", "thread/read");
+      await rpc("thread/resume", { threadId: rootId });
+      await captureHistory("after_parent_resume");
+      return;
+    }
     const interrupt = process.argv.includes("--interrupt");
     console.log(`Live provider connected; testing ${interrupt ? "child interruption" : "parallel and nested collaborators"}.`);
     const first = await turn(rootId, interrupt

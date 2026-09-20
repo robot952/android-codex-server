@@ -284,6 +284,9 @@ CODEX_USER_INPUT_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-user-i
 受控模拟数据；完成后仍须覆盖安装正常 Release。已捕获的真实协作事件使用归一化 ID 的 fixture 回放，
 不含 API 地址或凭据。
 
+子 Agent 详情现在只读：设备测试验证底部无输入/停止/模型/审批入口、名称和身份图标、父向消息仅作记录，
+以及子历史排除父回合、返回重进和多层导航。子页使用 `thread/read` + 有界分页，不能用直接恢复子线程替代读取。
+
 只有用户授权真实 API 消耗后才运行：
 
 ```bash
@@ -293,6 +296,8 @@ node scripts/test-codex-subagents-live.cjs --live
 ```
 
 追加 `--interrupt` 验证子任务停止与继续、父任务独立性，以及测试 app-server 重启后的历史恢复。
+追加 `--history` 只创建一个带上下文的子任务，在四分钟上限内验证重启前后只读历史；同样需要真实 API 授权。
+已有脱敏样本足以回归解析时应优先回放 `subagent_child_history_live.json`，避免重复消耗模型额度。
 脚本使用独立私有目录、低思考强度和短任务，最长 8 分钟，不修改原用户配置，不读取或操作用户现有会话。
 只复制 Provider 配置和认证到临时目录，禁止把 URL/Key 加进命令参数或测试 APK。测试结束销毁临时目录，
 只在 `.workflow-cache/subagent-live-*.json` 留存脱敏的测试事件与可用 token 统计；该统计不等于账单金额。

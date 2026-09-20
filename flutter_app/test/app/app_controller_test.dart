@@ -681,6 +681,7 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
       id: 'root-message',
       kind: TimelineKind.agentMessage,
       text: 'Root response',
+      turnId: 'root-turn',
     ),
   ];
   static const childTimeline = <TimelineEntry>[
@@ -688,6 +689,7 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
       id: 'child-message',
       kind: TimelineKind.agentMessage,
       text: 'Child response',
+      turnId: 'child-turn',
     ),
   ];
   static const grandchildTimeline = <TimelineEntry>[
@@ -695,6 +697,7 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
       id: 'grandchild-message',
       kind: TimelineKind.agentMessage,
       text: 'Grandchild response',
+      turnId: 'grandchild-turn',
     ),
   ];
   static const rootUsage = TokenUsage(
@@ -4340,6 +4343,60 @@ void main() {
     );
   });
 
+  test('child resume and cache discard inherited root turns', () async {
+    final harness = await _createSubAgentHarness();
+    final gate = harness.agent.gateNextResume(
+      _SubAgentNavigationAgent.childThread.id,
+    );
+    harness.controller.openSubAgentThread(
+      _SubAgentNavigationAgent.childThread.id,
+      'History worker',
+    );
+    await _waitUntil(
+      () =>
+          harness.agent.resumeCount(_SubAgentNavigationAgent.childThread.id) ==
+          1,
+    );
+    gate.complete(
+      const AgentSession(
+        thread: _SubAgentNavigationAgent.childThread,
+        timeline: <TimelineEntry>[
+          ..._SubAgentNavigationAgent.rootTimeline,
+          ..._SubAgentNavigationAgent.childTimeline,
+        ],
+      ),
+    );
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id ==
+              _SubAgentNavigationAgent.childThread.id &&
+          !harness.controller.state.loading,
+    );
+
+    expect(
+      harness.controller.state.timeline,
+      _SubAgentNavigationAgent.childTimeline,
+    );
+    expect(harness.controller.state.screen, AppScreen.agentWork);
+
+    harness.controller.backFromSubAgentThread();
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id ==
+              _SubAgentNavigationAgent.rootThread.id &&
+          !harness.controller.state.loading,
+    );
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'History worker',
+    );
+    expect(
+      harness.controller.state.timeline,
+      _SubAgentNavigationAgent.childTimeline,
+    );
+  });
+
   test('restores parent approvals received while a child is visible', () async {
     final agent = _ApprovalAgent();
     final harness = await _createSubAgentHarness(agent: agent);
@@ -4455,7 +4512,7 @@ void main() {
     },
   );
 
-  test('stopping a child addresses only the child turn', () async {
+  test('child pages do not allow stopping a child turn', () async {
     final agent = _LiveSubAgentNavigationAgent();
     final harness = await _createSubAgentHarness(agent: agent);
     agent.emitNotification('turn/started', {
@@ -4474,9 +4531,9 @@ void main() {
     });
     await _drainAsyncWork();
     await harness.controller.stopMessage();
-    expect(agent.interruptedThreadId, 'child-thread');
-    expect(agent.interruptedTurnId, 'child-turn');
-    expect(harness.controller.state.turnTiming?.stopped, isTrue);
+    expect(agent.interruptedThreadId, isNull);
+    expect(agent.interruptedTurnId, isNull);
+    expect(harness.controller.state.turnTiming?.stopped, isNot(true));
     final rootGate = agent.gateNextResume('root-thread');
     harness.controller.backFromSubAgentThread();
     await _waitUntil(() => agent.resumeCount('root-thread') == 2);
@@ -5074,52 +5131,47 @@ void main() {
     );
   });
 
-  test(
-    'flushes debounced drafts before entering and leaving a child',
-    () async {
-      final harness = await _createSubAgentHarness();
-      final rootKey = threadPreferenceKey(
-        harness.profile.id,
-        AgentKind.codex,
-        _SubAgentNavigationAgent.rootThread.id,
-      );
-      final childKey = threadPreferenceKey(
-        harness.profile.id,
-        AgentKind.codex,
-        _SubAgentNavigationAgent.childThread.id,
-      );
+  test('child pages ignore draft edits while parent drafts persist', () async {
+    final harness = await _createSubAgentHarness();
+    final rootKey = threadPreferenceKey(
+      harness.profile.id,
+      AgentKind.codex,
+      _SubAgentNavigationAgent.rootThread.id,
+    );
+    final childKey = threadPreferenceKey(
+      harness.profile.id,
+      AgentKind.codex,
+      _SubAgentNavigationAgent.childThread.id,
+    );
 
-      harness.controller.setComposerDraft('unsaved root draft');
-      await _openSubAgent(
-        harness,
-        _SubAgentNavigationAgent.childThread,
-        'Worker',
-      );
-      harness.controller.setComposerDraft('unsaved child draft');
-      harness.controller.backFromSubAgentThread();
-      await _waitUntil(
-        () =>
-            harness.controller.state.activeThread?.id ==
-                _SubAgentNavigationAgent.rootThread.id &&
-            !harness.controller.state.loading,
-      );
-      await _waitUntil(
-        () =>
-            harness.store.value.composerDrafts[rootKey] ==
-                'unsaved root draft' &&
-            harness.store.value.composerDrafts[childKey] ==
-                'unsaved child draft',
-      );
+    harness.controller.setComposerDraft('unsaved root draft');
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'Worker',
+    );
+    harness.controller.setComposerDraft('unsaved child draft');
+    harness.controller.backFromSubAgentThread();
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id ==
+              _SubAgentNavigationAgent.rootThread.id &&
+          !harness.controller.state.loading,
+    );
+    await _waitUntil(
+      () =>
+          harness.store.value.composerDrafts[rootKey] == 'unsaved root draft' &&
+          !harness.store.value.composerDrafts.containsKey(childKey),
+    );
 
-      expect(harness.controller.state.composerDraft, 'unsaved root draft');
-      await _openSubAgent(
-        harness,
-        _SubAgentNavigationAgent.childThread,
-        'Worker',
-      );
-      expect(harness.controller.state.composerDraft, 'unsaved child draft');
-    },
-  );
+    expect(harness.controller.state.composerDraft, 'unsaved root draft');
+    await _openSubAgent(
+      harness,
+      _SubAgentNavigationAgent.childThread,
+      'Worker',
+    );
+    expect(harness.controller.state.composerDraft, isEmpty);
+  });
 
   test('drops a child resume that completes after switching servers', () async {
     final first = _firstProfile.copyWith(workspacePromptShown: true);

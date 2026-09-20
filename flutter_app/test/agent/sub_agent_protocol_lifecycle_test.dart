@@ -5,6 +5,184 @@ import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'sub-agent metadata supplies its own name instead of inherited title',
+    () {
+      final thread = CodexPayloadParser.parseThread({
+        'id': 'child',
+        'title': 'Root task title',
+        'source': {
+          'subAgent': {
+            'thread_spawn': {
+              'parent_thread_id': 'parent',
+              'agent_path': '/root/History audit',
+            },
+          },
+        },
+      })!;
+      expect(thread.title, 'History audit');
+      expect(thread.source, 'subAgent');
+    },
+  );
+
+  test('parent-directed history is a message, not a child reference', () {
+    final history = CodexPayloadParser.parseResumedThread({
+      'thread': {
+        'id': 'child',
+        'parentThreadId': 'parent',
+        'turns': [
+          {
+            'id': 'child-turn',
+            'items': [
+              {
+                'id': 'message-to-parent',
+                'type': 'collabAgentToolCall',
+                'tool': 'sendMessage',
+                'status': 'completed',
+                'senderThreadId': 'child',
+                'receiverThreadIds': ['parent'],
+                'agentsStates': {},
+              },
+              {
+                'id': 'message-to-other',
+                'type': 'collabAgentToolCall',
+                'tool': 'sendMessage',
+                'status': 'completed',
+                'senderThreadId': 'child',
+                'receiverThreadIds': ['sibling'],
+                'agentsStates': {},
+              },
+            ],
+          },
+        ],
+      },
+    })!;
+    expect(history.timeline.first.subAgentActivity, 'sendMessageToParent');
+    expect(history.timeline.first.subAgentThreadId, isEmpty);
+    expect(history.timeline.last.subAgentThreadId, 'sibling');
+  });
+
+  // Both identifiers are in one second; createdAt's seconds precision cannot
+  // distinguish the copied parent turn from the first local child turn.
+  const childThreadId = '01a0b573-91cc-7ad3-ad41-72bd0b489c52';
+  const parentTurnId = '01a0b573-9000-7c51-a2e0-4389f0c8c6b2';
+  const childTurnId = '01a0b573-91f2-7523-b25d-4fd4bc1fdc8e';
+  Map<String, Object?> historyTurn(String id, String text, {int? startedAt}) =>
+      {
+        'id': id,
+        'startedAt': startedAt,
+        'items': [
+          {'id': '$text-message', 'type': 'agentMessage', 'text': text},
+        ],
+      };
+
+  test(
+    'child history excludes UUIDv7 parent turns with missing timestamps',
+    () {
+      final snapshot = CodexPayloadParser.parseResumedThread({
+        'thread': {
+          'id': childThreadId,
+          'source': {'subAgent': {}},
+          'createdAt': 1789750645,
+        },
+        'initialTurnsPage': {
+          'nextCursor': 'inherited-page',
+          'data': [
+            historyTurn(childTurnId, 'child'),
+            historyTurn(parentTurnId, 'parent'),
+          ],
+        },
+      });
+      expect(snapshot!.timeline.map((entry) => entry.text), ['child']);
+      expect(snapshot.turnIds, [childTurnId]);
+      expect(snapshot.nextTurnsCursor, isNull);
+    },
+  );
+
+  test(
+    'explicit parent metadata identifies a child even with ordinary source',
+    () {
+      final snapshot = CodexPayloadParser.parseResumedThread({
+        'thread': {
+          'id': childThreadId,
+          'source': 'vscode',
+          'parentThreadId': 'parent-thread',
+          'turns': [
+            historyTurn(parentTurnId, 'parent', startedAt: 1789750645),
+            historyTurn(childTurnId, 'child', startedAt: 1789750645),
+          ],
+        },
+      });
+      expect(snapshot!.thread.source, 'subAgent');
+      expect(snapshot.timeline.map((entry) => entry.text), ['child']);
+    },
+  );
+
+  test(
+    'paging preserves unknown child IDs and stops at inherited UUID turns',
+    () {
+      final page = CodexPayloadParser.parseTurnsPage({
+        'nextCursor': 'parent-page',
+        'data': [
+          historyTurn(childTurnId, 'child'),
+          historyTurn('legacy-child-turn', 'legacy-child'),
+          historyTurn(parentTurnId, 'parent'),
+        ],
+      }, subAgentThreadId: childThreadId);
+      expect(page.timeline.map((entry) => entry.text), [
+        'legacy-child',
+        'child',
+      ]);
+      expect(page.nextCursor, isNull);
+    },
+  );
+
+  test('ordinary forks retain their original history', () {
+    final snapshot = CodexPayloadParser.parseResumedThread({
+      'thread': {
+        'id': childThreadId,
+        'source': 'vscode',
+        'forkedFromId': 'parent-thread',
+        'createdAt': 1789750645,
+        'turns': [
+          historyTurn(parentTurnId, 'parent'),
+          historyTurn(childTurnId, 'child'),
+        ],
+      },
+    });
+    expect(snapshot!.timeline.map((entry) => entry.text), ['parent', 'child']);
+    expect(snapshot.thread.source, 'vscode');
+  });
+
+  test(
+    'known parent turn identities exclude legacy history without guessing',
+    () {
+      expect(
+        CodexPayloadParser.isInheritedSubAgentTurn(
+          'legacy-parent',
+          subAgentThreadId: 'legacy-child',
+          inheritedTurnIds: {'legacy-parent'},
+        ),
+        isTrue,
+      );
+      expect(
+        CodexPayloadParser.isInheritedSubAgentTurn(
+          'legacy-child-turn',
+          subAgentThreadId: childThreadId,
+        ),
+        isFalse,
+      );
+      expect(
+        CodexPayloadParser.isInheritedSubAgentTurn(
+          // A UUIDv4-looking value must not be interpreted as a timestamp.
+          '00000000-0000-4c51-a2e0-4389f0c8c6b2',
+          subAgentThreadId: childThreadId,
+        ),
+        isFalse,
+      );
+    },
+  );
+
   test('child history compares seconds and milliseconds in the same unit', () {
     final snapshot = CodexPayloadParser.parseResumedThread({
       'thread': {

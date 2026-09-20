@@ -1,0 +1,252 @@
+{
+  "provenance": {
+    "codexVersion": "0.154.0",
+    "provider": "authorized live API",
+    "scenario": "one parent marker turn, one child with inherited context; child read before and after restart",
+    "normalization": "UUIDv7 timestamp offsets and metadata dates shifted together; random UUID suffixes and message IDs replaced; provider, credentials, workspace and repository metadata omitted",
+    "observation": "This multi-agent v2 run returned only the child turn, even with forked context. Missing-time inherited turns are separate synthetic regressions."
+  },
+  "unloadedResumeError": {
+    "code": -32600,
+    "message": "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it"
+  },
+  "snapshots": [
+    {
+      "stage": "before_restart",
+      "method": "thread/resume",
+      "response": {
+        "thread": {
+          "id": "018bcfe5-68a3-7000-8000-000000000001",
+          "sessionId": "018bcfe4-01ec-7000-8000-000000000002",
+          "forkedFromId": "018bcfe4-01ec-7000-8000-000000000002",
+          "parentThreadId": "018bcfe4-01ec-7000-8000-000000000002",
+          "historyMode": "paginated",
+          "createdAt": 1700000000,
+          "updatedAt": 1700000015,
+          "status": {
+            "type": "idle"
+          },
+          "source": {
+            "subAgent": {
+              "thread_spawn": {
+                "parent_thread_id": "018bcfe4-01ec-7000-8000-000000000002",
+                "depth": 1,
+                "agent_path": "/root/history_child",
+                "agent_nickname": "Helmholtz",
+                "agent_role": null
+              }
+            }
+          },
+          "canAcceptDirectInput": false,
+          "threadSource": "subagent",
+          "turns": [
+            {
+              "id": "018bcfe5-68c3-7000-8000-000000000003",
+              "items": [
+                {
+                  "type": "agentMessage",
+                  "id": "child-message-1",
+                  "text": "CHILD_HISTORY_ONLY_MARKER",
+                  "phase": "final_answer",
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1700000000,
+              "completedAt": 1700000015,
+              "durationMs": 15212
+            }
+          ]
+        }
+      },
+      "turnsPage": {
+        "data": [
+          {
+            "id": "018bcfe5-68c3-7000-8000-000000000003",
+            "items": [
+              {
+                "type": "agentMessage",
+                "id": "child-message-1",
+                "text": "CHILD_HISTORY_ONLY_MARKER",
+                "phase": "final_answer",
+                "memoryCitation": null,
+                "delivery": null,
+                "questions": null
+              }
+            ],
+            "itemsView": "full",
+            "status": "completed",
+            "error": null,
+            "startedAt": 1700000000,
+            "completedAt": 1700000015,
+            "durationMs": 15212
+          }
+        ],
+        "nextCursor": null,
+        "backwardsCursor": "{\"requestedThreadId\":\"018bcfe5-68a3-7000-8000-000000000001\",\"rolloutOrdinal\":14,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+      }
+    },
+    {
+      "stage": "after_restart_read",
+      "method": "thread/read",
+      "response": {
+        "thread": {
+          "id": "018bcfe5-68a3-7000-8000-000000000001",
+          "sessionId": "018bcfe5-68a3-7000-8000-000000000001",
+          "forkedFromId": "018bcfe4-01ec-7000-8000-000000000002",
+          "parentThreadId": "018bcfe4-01ec-7000-8000-000000000002",
+          "historyMode": "paginated",
+          "createdAt": 1700000000,
+          "updatedAt": 1700000015,
+          "status": {
+            "type": "notLoaded"
+          },
+          "source": {
+            "subAgent": {
+              "thread_spawn": {
+                "parent_thread_id": "018bcfe4-01ec-7000-8000-000000000002",
+                "depth": 1,
+                "agent_path": "/root/history_child",
+                "agent_nickname": "Helmholtz",
+                "agent_role": null
+              }
+            }
+          },
+          "canAcceptDirectInput": null,
+          "threadSource": "subagent",
+          "turns": [
+            {
+              "id": "018bcfe5-68c3-7000-8000-000000000003",
+              "items": [
+                {
+                  "type": "agentMessage",
+                  "id": "child-message-1",
+                  "text": "CHILD_HISTORY_ONLY_MARKER",
+                  "phase": "final_answer",
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1700000000,
+              "completedAt": 1700000015,
+              "durationMs": 15212
+            }
+          ]
+        }
+      },
+      "turnsPage": {
+        "data": [
+          {
+            "id": "018bcfe5-68c3-7000-8000-000000000003",
+            "items": [
+              {
+                "type": "agentMessage",
+                "id": "child-message-1",
+                "text": "CHILD_HISTORY_ONLY_MARKER",
+                "phase": "final_answer",
+                "memoryCitation": null,
+                "delivery": null,
+                "questions": null
+              }
+            ],
+            "itemsView": "full",
+            "status": "completed",
+            "error": null,
+            "startedAt": 1700000000,
+            "completedAt": 1700000015,
+            "durationMs": 15212
+          }
+        ],
+        "nextCursor": null,
+        "backwardsCursor": "{\"requestedThreadId\":\"018bcfe5-68a3-7000-8000-000000000001\",\"rolloutOrdinal\":14,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+      }
+    },
+    {
+      "stage": "after_parent_resume",
+      "method": "thread/resume",
+      "response": {
+        "thread": {
+          "id": "018bcfe5-68a3-7000-8000-000000000001",
+          "sessionId": "018bcfe4-01ec-7000-8000-000000000002",
+          "forkedFromId": "018bcfe4-01ec-7000-8000-000000000002",
+          "parentThreadId": "018bcfe4-01ec-7000-8000-000000000002",
+          "historyMode": "paginated",
+          "createdAt": 1700000000,
+          "updatedAt": 1700000015,
+          "status": {
+            "type": "idle"
+          },
+          "source": {
+            "subAgent": {
+              "thread_spawn": {
+                "parent_thread_id": "018bcfe4-01ec-7000-8000-000000000002",
+                "depth": 1,
+                "agent_path": "/root/history_child",
+                "agent_nickname": "Helmholtz",
+                "agent_role": null
+              }
+            }
+          },
+          "canAcceptDirectInput": false,
+          "threadSource": "subagent",
+          "turns": [
+            {
+              "id": "018bcfe5-68c3-7000-8000-000000000003",
+              "items": [
+                {
+                  "type": "agentMessage",
+                  "id": "child-message-1",
+                  "text": "CHILD_HISTORY_ONLY_MARKER",
+                  "phase": "final_answer",
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1700000000,
+              "completedAt": 1700000015,
+              "durationMs": 15212
+            }
+          ]
+        }
+      },
+      "turnsPage": {
+        "data": [
+          {
+            "id": "018bcfe5-68c3-7000-8000-000000000003",
+            "items": [
+              {
+                "type": "agentMessage",
+                "id": "child-message-1",
+                "text": "CHILD_HISTORY_ONLY_MARKER",
+                "phase": "final_answer",
+                "memoryCitation": null,
+                "delivery": null,
+                "questions": null
+              }
+            ],
+            "itemsView": "full",
+            "status": "completed",
+            "error": null,
+            "startedAt": 1700000000,
+            "completedAt": 1700000015,
+            "durationMs": 15212
+          }
+        ],
+        "nextCursor": null,
+        "backwardsCursor": "{\"requestedThreadId\":\"018bcfe5-68a3-7000-8000-000000000001\",\"rolloutOrdinal\":14,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+      }
+    }
+  ]
+}

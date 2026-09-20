@@ -117,7 +117,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
-    final back = state.screen == AppScreen.agentWork
+    final isAgentWork = state.screen == AppScreen.agentWork;
+    final back = isAgentWork
         ? controller.backFromSubAgentThread
         : controller.backToThreadList;
     final backTooltip = state.screen == AppScreen.agentWork
@@ -140,53 +141,58 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       );
     }
 
-    return UserInputPromptHost(
-      child: Scaffold(
-        resizeToAvoidBottomInset: false,
-        appBar: AppBar(
-          toolbarHeight: 64,
-          leading: IconButton(
-            tooltip: backTooltip,
-            onPressed: back,
-            icon: const Icon(Icons.arrow_back),
-          ),
-          titleSpacing: 0,
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                thread.title.isNotEmpty
-                    ? thread.title
-                    : state.activeAgentName?.isNotEmpty == true
-                    ? state.activeAgentName!
-                    : '未命名任务',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (thread.cwd.isNotEmpty)
-                Text(
-                  thread.cwd,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-            ],
-          ),
-          actions: [
-            if (_fileDownloadPath != null)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 12),
-                child: Center(
-                  child: SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+    final page = Scaffold(
+      resizeToAvoidBottomInset: false,
+      appBar: AppBar(
+        toolbarHeight: 64,
+        leading: IconButton(
+          tooltip: backTooltip,
+          onPressed: back,
+          icon: const Icon(Icons.arrow_back),
+        ),
+        titleSpacing: 0,
+        title: isAgentWork
+            ? _SubAgentPageTitle(
+                threadId: thread.id,
+                name: state.activeAgentName ?? '',
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    thread.title.isNotEmpty
+                        ? thread.title
+                        : state.activeAgentName?.isNotEmpty == true
+                        ? state.activeAgentName!
+                        : '未命名任务',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
+                  if (thread.cwd.isNotEmpty)
+                    Text(
+                      thread.cwd,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                ],
+              ),
+        actions: [
+          if (_fileDownloadPath != null)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: Center(
+                child: SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
+            ),
+          if (!isAgentWork)
             PopupMenuButton<String>(
               key: const Key('work-action-menu'),
               tooltip: '会话操作',
@@ -251,53 +257,54 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   ),
               ],
             ),
-          ],
-        ),
-        body: Stack(
-          children: [
-            Column(
-              children: [
-                Expanded(
-                  child: _Transcript(
-                    state: state,
-                    controller: _scrollController,
-                    onOpenImage: (path, {fileName}) =>
-                        _openRemoteImage(path, fileName: fileName),
-                    imageLoadingPath: _imageLoadingPath,
-                    onOpenRemoteFile: _downloadRemoteFile,
-                    onOpenDiff: _openDiff,
-                    onOpenSubAgent: controller.openSubAgentThread,
-                    onRefresh:
-                        state.olderTurnsCursor == null ||
-                            state.loading ||
-                            state.olderTurnsLoading ||
-                            _refreshing
-                        ? null
-                        : () => _loadOlder(controller),
-                    onScrollNotification: _onTranscriptScroll,
-                    onTextSelectionChanged: _pauseFollowOutputForSelection,
-                    initialBottomPending: _initialBottomPending,
-                    paginationViewportKey: _paginationViewportKey,
-                    transcriptItemsSliverKey: _transcriptItemsSliverKey,
-                    bottomGap: _transcriptBottomGap,
-                    onRefreshStart: _preparePagination,
-                    showJumpToBottom:
-                        state.timeline.isNotEmpty &&
-                        !_followOutput &&
-                        _canScrollForward,
-                    onJumpToBottom: _jumpToBottom,
-                    onReview: controller.reviewChanges,
-                    onRollback: () => _confirmRollback(controller),
-                  ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          Column(
+            children: [
+              Expanded(
+                child: _Transcript(
+                  state: state,
+                  controller: _scrollController,
+                  onOpenImage: (path, {fileName}) =>
+                      _openRemoteImage(path, fileName: fileName),
+                  imageLoadingPath: _imageLoadingPath,
+                  onOpenRemoteFile: _downloadRemoteFile,
+                  onOpenDiff: _openDiff,
+                  onOpenSubAgent: controller.openSubAgentThread,
+                  onRefresh:
+                      state.olderTurnsCursor == null ||
+                          state.loading ||
+                          state.olderTurnsLoading ||
+                          _refreshing
+                      ? null
+                      : () => _loadOlder(controller),
+                  onScrollNotification: _onTranscriptScroll,
+                  onTextSelectionChanged: _pauseFollowOutputForSelection,
+                  initialBottomPending: _initialBottomPending,
+                  paginationViewportKey: _paginationViewportKey,
+                  transcriptItemsSliverKey: _transcriptItemsSliverKey,
+                  bottomGap: _transcriptBottomGap,
+                  onRefreshStart: _preparePagination,
+                  showJumpToBottom:
+                      state.timeline.isNotEmpty &&
+                      !_followOutput &&
+                      _canScrollForward,
+                  onJumpToBottom: _jumpToBottom,
+                  onReview: controller.reviewChanges,
+                  onRollback: () => _confirmRollback(controller),
                 ),
-                if (state.approval case final prompt?
-                    when prompt.kind != ApprovalKind.userInput)
-                  _ApprovalPanel(
-                    key: ValueKey(prompt.requestId),
-                    prompt: prompt,
-                    submitting: state.submitting,
-                    onAnswer: controller.answerApproval,
-                  ),
+              ),
+              if (state.approval case final prompt?
+                  when !isAgentWork && prompt.kind != ApprovalKind.userInput)
+                _ApprovalPanel(
+                  key: ValueKey(prompt.requestId),
+                  prompt: prompt,
+                  submitting: state.submitting,
+                  onAnswer: controller.answerApproval,
+                ),
+              if (!isAgentWork)
                 _Composer(
                   state: state,
                   controller: _composerController,
@@ -321,18 +328,18 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   onClearGoal: () => _confirmClearGoal(controller),
                   onOpenSubAgent: controller.openSubAgentThread,
                 ),
-              ],
+            ],
+          ),
+          if (_imageLoadingPath case final path?)
+            _RemoteImageLoadingOverlay(
+              path: path,
+              receivedBytes: _imageReceivedBytes,
+              totalBytes: _imageTotalBytes,
             ),
-            if (_imageLoadingPath case final path?)
-              _RemoteImageLoadingOverlay(
-                path: path,
-                receivedBytes: _imageReceivedBytes,
-                totalBytes: _imageTotalBytes,
-              ),
-          ],
-        ),
+        ],
       ),
     );
+    return isAgentWork ? page : UserInputPromptHost(child: page);
   }
 
   Future<void> _handleWorkAction(
@@ -2311,8 +2318,8 @@ class _Transcript extends StatelessWidget {
     final canOpenSubAgents =
         state.activeAgentCapabilities.subAgents &&
         !state.loading &&
-        !state.submitting &&
-        state.approvalQueue.isEmpty;
+        (state.screen == AppScreen.agentWork ||
+            (!state.submitting && state.approvalQueue.isEmpty));
     String? latestFileChangeId;
     for (final entry in entries.reversed) {
       if (entry.kind == TimelineKind.fileChange) {
@@ -2331,6 +2338,7 @@ class _Transcript extends StatelessWidget {
           onOpenRemoteFile: onOpenRemoteFile,
           onOpenDiff: onOpenDiff,
           canReview:
+              state.screen != AppScreen.agentWork &&
               entry.kind == TimelineKind.fileChange &&
               entry.changes.isNotEmpty &&
               state.activeAgentCapabilities.reviewChanges &&
@@ -2338,6 +2346,7 @@ class _Transcript extends StatelessWidget {
               !state.submitting &&
               !state.running,
           canRollback:
+              state.screen != AppScreen.agentWork &&
               entry.id == latestFileChangeId &&
               entry.changes.isNotEmpty &&
               state.activeAgentCapabilities.rollbackThread &&
@@ -2811,33 +2820,29 @@ class _SubAgentActivityGroupBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final agents = entries.toSubAgentPresentations();
+    final agents = entries.toSubAgentActivityPresentations();
     if (agents.isEmpty) return const SizedBox.shrink();
-    return LayoutBuilder(
-      builder: (context, constraints) => Align(
-        alignment: Alignment.centerLeft,
-        child: Wrap(
-          spacing: 6,
-          runSpacing: 5,
-          children: [
-            for (final agent in agents)
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: constraints.maxWidth),
-                child: _SubAgentStatusChip(
-                  agent: agent,
-                  enabled: enabled,
-                  onOpenSubAgent: onOpenSubAgent,
-                ),
-              ),
-          ],
-        ),
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final agent in agents)
+          KeyedSubtree(
+            key: ValueKey(
+              'sub-agent-activity:${entries[agent.timelineIndex].id}:${agent.timelineIndex}',
+            ),
+            child: _SubAgentActivityRow(
+              agent: agent,
+              enabled: enabled,
+              onOpenSubAgent: onOpenSubAgent,
+            ),
+          ),
+      ],
     );
   }
 }
 
-class _SubAgentStatusChip extends StatelessWidget {
-  const _SubAgentStatusChip({
+class _SubAgentActivityRow extends StatelessWidget {
+  const _SubAgentActivityRow({
     required this.agent,
     required this.enabled,
     required this.onOpenSubAgent,
@@ -2852,51 +2857,76 @@ class _SubAgentStatusChip extends StatelessWidget {
     final canOpen = enabled && agent.isOpenable;
     return Semantics(
       button: canOpen,
-      label: agent.path.isEmpty ? agent.name : '${agent.name}，${agent.path}',
-      value: agent.status.label,
-      child: ActionChip(
-        key: agent.isConfirmed
-            ? ValueKey('sub-agent-chip:${agent.threadId}')
-            : null,
-        tooltip: canOpen
-            ? '打开 ${agent.path.isEmpty ? agent.name : agent.path} · ${agent.status.label}'
-            : agent.status.label,
-        onPressed: canOpen
-            ? () => onOpenSubAgent(agent.threadId, agent.name)
-            : null,
-        avatar: _SubAgentAvatar(agent: agent),
-        label: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 160),
-                child: Text(
-                  agent.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+      label: agent.isParentMessage
+          ? agent.activityLabel
+          : agent.isMessageActivity
+          ? '已向 ${agent.name} 发送消息'
+          : '${agent.name} ${agent.activityLabel}',
+      child: Tooltip(
+        message: agent.path.isEmpty ? agent.name : agent.path,
+        child: InkWell(
+          key: agent.isConfirmed
+              ? ValueKey('sub-agent-chip:${agent.threadId}')
+              : null,
+          onTap: canOpen
+              ? () => onOpenSubAgent(agent.threadId, agent.name)
+              : null,
+          borderRadius: BorderRadius.circular(4),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 36),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: DefaultTextStyle(
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium!.copyWith(color: codexMuted),
+                child: Row(
+                  children: [
+                    if (agent.isMessageActivity)
+                      const Icon(
+                        Icons.chat_bubble_outline,
+                        size: 18,
+                        color: codexMuted,
+                      )
+                    else
+                      _SubAgentAvatar(identity: agent.avatarIdentityKey),
+                    const SizedBox(width: 7),
+                    if (agent.isMessageActivity && !agent.isParentMessage)
+                      const Text('已向 '),
+                    if (!agent.isParentMessage)
+                      Flexible(
+                        child: Text(
+                          agent.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    if (!agent.isParentMessage) const SizedBox(width: 4),
+                    if (agent.isParentMessage)
+                      Flexible(
+                        child: Text(
+                          agent.activityLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      )
+                    else
+                      Text(agent.activityLabel, maxLines: 1),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(width: 7),
-            _SubAgentStatusVisual(agent: agent),
-          ],
+          ),
         ),
-        side: const BorderSide(color: codexBorder),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-        backgroundColor: codexSurface,
-        disabledColor: codexSurface,
-        padding: const EdgeInsets.symmetric(horizontal: 7),
-        visualDensity: VisualDensity.compact,
       ),
     );
   }
 }
 
 class _SubAgentAvatar extends StatelessWidget {
-  const _SubAgentAvatar({required this.agent});
+  const _SubAgentAvatar({required this.identity});
 
-  final SubAgentPresentation agent;
+  final String identity;
 
   static const _palette = <Color>[
     Color(0xFF71A7F7),
@@ -2910,16 +2940,43 @@ class _SubAgentAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = _palette[agent.avatarColorIndex(_palette.length)];
-    return Container(
-      width: 20,
-      height: 20,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: color.withValues(alpha: 0.2),
-      ),
-      alignment: Alignment.center,
-      child: Icon(Icons.smart_toy_outlined, size: 13, color: color),
+    final color = _palette[subAgentAvatarColorIndex(identity, _palette.length)];
+    return Icon(
+      Icons.hub_rounded,
+      key: ValueKey('sub-agent-icon:$identity'),
+      size: 18,
+      color: color,
+    );
+  }
+}
+
+class _SubAgentPageTitle extends StatelessWidget {
+  const _SubAgentPageTitle({required this.threadId, required this.name});
+
+  final String threadId;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final leaf = name
+        .trim()
+        .replaceFirst(RegExp(r'[\\/]+$'), '')
+        .split(RegExp(r'[\\/]'))
+        .last;
+    return Row(
+      key: const Key('sub-agent-page-title'),
+      children: [
+        _SubAgentAvatar(identity: threadId),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            leaf.isNotEmpty ? leaf : '智能体',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -3089,7 +3146,7 @@ class _BackgroundAgentRow extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
             child: Row(
               children: [
-                _SubAgentAvatar(agent: agent),
+                _SubAgentAvatar(identity: agent.avatarIdentityKey),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
