@@ -739,12 +739,10 @@ class CodexAgentClient
       (itemsView: 'summary', limit: 1),
       (itemsView: 'notLoaded', limit: 1),
     ];
-    CodexRpcResponse? response;
-    var itemsView = 'full';
     for (var index = 0; index < attempts.length; index += 1) {
       final attempt = attempts[index];
       try {
-        response = await _request(
+        final response = await _request(
           scope.threadResume(
             threadId: threadId,
             approvalMode: approvalMode,
@@ -754,17 +752,35 @@ class CodexAgentClient
           ),
           timeout: threadRequestTimeout,
         );
-        itemsView = attempt.itemsView;
-        break;
+        return _sessionFromResponse(response, itemsView: attempt.itemsView);
       } on CodexResponseTooLargeException {
         if (index == attempts.length - 1) rethrow;
+      } on CodexRpcException catch (error) {
+        if (kind != AgentKind.codex ||
+            !isCodexThreadOwnershipError(error, threadId: threadId)) {
+          rethrow;
+        }
+        try {
+          return await _readThread(threadId, externallyOwned: true);
+        } catch (readError) {
+          throw CodexThreadOwnedException(
+            threadId: threadId,
+            ownershipError: error,
+            readError: readError,
+          );
+        }
       }
     }
-    return _sessionFromResponse(response!, itemsView: itemsView);
+    throw StateError('无法恢复会话历史');
   }
 
   @override
-  Future<AgentSession> readThread(String threadId) async {
+  Future<AgentSession> readThread(String threadId) => _readThread(threadId);
+
+  Future<AgentSession> _readThread(
+    String threadId, {
+    bool externallyOwned = false,
+  }) async {
     final scope = _requireScope();
     if (threadId.trim().isEmpty) {
       throw ArgumentError.value(threadId, 'threadId');
@@ -809,6 +825,7 @@ class CodexAgentClient
           page,
           itemsView: attempt.view,
           payload: {'thread': thread, 'initialTurnsPage': page.resultOrThrow()},
+          externallyOwned: externallyOwned,
         );
       } on CodexResponseTooLargeException {
         if (index == attempts.length - 1) rethrow;
@@ -821,7 +838,7 @@ class CodexAgentClient
           ),
           timeout: threadRequestTimeout,
         );
-        return _sessionFromResponse(legacy);
+        return _sessionFromResponse(legacy, externallyOwned: externallyOwned);
       }
     }
     throw StateError('无法读取子会话历史');
@@ -831,6 +848,7 @@ class CodexAgentClient
     CodexRpcResponse resolvedResponse, {
     String itemsView = 'full',
     Object? payload,
+    bool externallyOwned = false,
   }) {
     if (_scope?.isCurrent != true ||
         resolvedResponse.generation != _scope!.value) {
@@ -851,7 +869,7 @@ class CodexAgentClient
       }
     }
     return AgentSession(
-      thread: snapshot.thread,
+      thread: snapshot.thread.copyWith(isExternallyOwned: externallyOwned),
       timeline: snapshot.timeline,
       nextTurnsCursor: _nonEmpty(snapshot.nextTurnsCursor),
       tokenUsage: snapshot.tokenUsage,

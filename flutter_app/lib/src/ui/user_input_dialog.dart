@@ -39,6 +39,7 @@ class _UserInputPromptHostState extends ConsumerState<UserInputPromptHost> {
     final state = ref.read(appControllerProvider);
     final prompt = state.approval;
     final visible =
+        !state.isThreadReadOnly &&
         (state.screen == AppScreen.work ||
             state.screen == AppScreen.agentWork) &&
         prompt?.kind == ApprovalKind.userInput &&

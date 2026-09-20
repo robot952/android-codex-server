@@ -118,6 +118,17 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
     final isAgentWork = state.screen == AppScreen.agentWork;
+    final readOnly = state.isThreadReadOnly;
+    ref.listen<bool>(
+      appControllerProvider.select((value) => value.isThreadReadOnly),
+      (previous, current) {
+        if (!current || previous == true) return;
+        _composerFocus.unfocus();
+        unawaited(
+          SystemChannels.textInput.invokeMethod<void>('TextInput.hide'),
+        );
+      },
+    );
     final back = isAgentWork
         ? controller.backFromSubAgentThread
         : controller.backToThreadList;
@@ -192,7 +203,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                 ),
               ),
             ),
-          if (!isAgentWork)
+          if (!readOnly)
             PopupMenuButton<String>(
               key: const Key('work-action-menu'),
               tooltip: '会话操作',
@@ -297,14 +308,19 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                 ),
               ),
               if (state.approval case final prompt?
-                  when !isAgentWork && prompt.kind != ApprovalKind.userInput)
+                  when !readOnly && prompt.kind != ApprovalKind.userInput)
                 _ApprovalPanel(
                   key: ValueKey(prompt.requestId),
                   prompt: prompt,
                   submitting: state.submitting,
                   onAnswer: controller.answerApproval,
                 ),
-              if (!isAgentWork)
+              if (!isAgentWork && thread.isExternallyOwned)
+                _ExternallyOwnedThreadBanner(
+                  loading: state.loading,
+                  onRetry: controller.retryActiveThread,
+                ),
+              if (!readOnly)
                 _Composer(
                   state: state,
                   controller: _composerController,
@@ -347,6 +363,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     AppUiState state,
     AppController controller,
   ) async {
+    if (ref.read(appControllerProvider).isThreadReadOnly) return;
     switch (action) {
       case 'rename':
         await _showRenameDialog(state, controller);
@@ -393,6 +410,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     AppUiState state,
     AppController controller,
   ) async {
+    if (ref.read(appControllerProvider).isThreadReadOnly) return;
     switch (action) {
       case 'goal':
         await _showGoalDialog(state, controller);
@@ -421,25 +439,27 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     final text = TextEditingController(text: state.activeThread?.title ?? '');
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名任务'),
-        content: TextField(
-          controller: text,
-          autofocus: true,
-          maxLines: 1,
-          textInputAction: TextInputAction.done,
-          onSubmitted: (value) => Navigator.of(context).pop(value),
+      builder: (context) => _ThreadMutationRouteGuard(
+        child: AlertDialog(
+          title: const Text('重命名任务'),
+          content: TextField(
+            controller: text,
+            autofocus: true,
+            maxLines: 1,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (value) => Navigator.of(context).pop(value),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(text.text),
+              child: const Text('保存'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(text.text),
-            child: const Text('保存'),
-          ),
-        ],
       ),
     );
     text.dispose();
@@ -486,35 +506,37 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     var canSave = text.text.trim().isNotEmpty;
     final objective = await showDialog<String>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          icon: const Icon(Icons.track_changes_outlined),
-          title: Text(state.activeGoal == null ? '设置目标' : '编辑目标'),
-          content: TextField(
-            controller: text,
-            autofocus: true,
-            minLines: 3,
-            maxLines: 6,
-            maxLength: 4000,
-            onChanged: (value) =>
-                setDialogState(() => canSave = value.trim().isNotEmpty),
-            decoration: const InputDecoration(
-              labelText: '目标',
-              hintText: '设置要持续追逐的目标',
+      builder: (context) => _ThreadMutationRouteGuard(
+        child: StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            icon: const Icon(Icons.track_changes_outlined),
+            title: Text(state.activeGoal == null ? '设置目标' : '编辑目标'),
+            content: TextField(
+              controller: text,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 6,
+              maxLength: 4000,
+              onChanged: (value) =>
+                  setDialogState(() => canSave = value.trim().isNotEmpty),
+              decoration: const InputDecoration(
+                labelText: '目标',
+                hintText: '设置要持续追逐的目标',
+              ),
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: canSave
+                    ? () => Navigator.of(context).pop(text.text)
+                    : null,
+                child: const Text('保存'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: canSave
-                  ? () => Navigator.of(context).pop(text.text)
-                  : null,
-              child: const Text('保存'),
-            ),
-          ],
         ),
       ),
     );
@@ -554,26 +576,28 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     final selected = await showModalBottomSheet<ApprovalMode>(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.only(bottom: 12),
-          children: [
-            const ListTile(
-              leading: Icon(Icons.shield_outlined),
-              title: Text('权限'),
-            ),
-            for (final mode in ApprovalMode.values)
-              ListTile(
-                leading: Icon(_approvalModeIcon(mode)),
-                title: Text(mode.label),
-                subtitle: Text(mode.description),
-                trailing: mode == state.approvalMode
-                    ? const Icon(Icons.check_circle, color: codexAmber)
-                    : null,
-                onTap: () => Navigator.of(context).pop(mode),
+      builder: (context) => _ThreadMutationRouteGuard(
+        child: SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.only(bottom: 12),
+            children: [
+              const ListTile(
+                leading: Icon(Icons.shield_outlined),
+                title: Text('权限'),
               ),
-          ],
+              for (final mode in ApprovalMode.values)
+                ListTile(
+                  leading: Icon(_approvalModeIcon(mode)),
+                  title: Text(mode.label),
+                  subtitle: Text(mode.description),
+                  trailing: mode == state.approvalMode
+                      ? const Icon(Icons.check_circle, color: codexAmber)
+                      : null,
+                  onTap: () => Navigator.of(context).pop(mode),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -599,25 +623,27 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   }) async {
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        icon: icon == null ? null : Icon(icon),
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(
-              confirmLabel,
-              style: destructive
-                  ? TextStyle(color: Theme.of(context).colorScheme.error)
-                  : null,
+      builder: (context) => _ThreadMutationRouteGuard(
+        child: AlertDialog(
+          icon: icon == null ? null : Icon(icon),
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
             ),
-          ),
-        ],
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(
+                confirmLabel,
+                style: destructive
+                    ? TextStyle(color: Theme.of(context).colorScheme.error)
+                    : null,
+              ),
+            ),
+          ],
+        ),
       ),
     );
     return result == true;
@@ -625,6 +651,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
 
   Future<void> _pickAttachments({required bool imagesOnly}) async {
     if (_preparingAttachments ||
+        ref.read(appControllerProvider).isThreadReadOnly ||
         ref.read(appControllerProvider).attachmentUploading) {
       return;
     }
@@ -737,6 +764,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
 
   Future<void> _takePhoto() async {
     if (_preparingAttachments ||
+        ref.read(appControllerProvider).isThreadReadOnly ||
         ref.read(appControllerProvider).attachmentUploading) {
       return;
     }
@@ -929,6 +957,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       state.aggregateDiff.length,
       state.running,
       state.loading,
+      state.isThreadReadOnly,
       state.turnTiming?.startedAtMillis,
       state.turnTiming?.completedAtMillis,
       state.turnTiming?.stopped,
@@ -1132,14 +1161,18 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (context) => const _ModelSelectionSheet(),
+      builder: (context) =>
+          const _ThreadMutationRouteGuard(child: _ModelSelectionSheet()),
     );
-    if (manageModels == true && mounted) {
+    if (manageModels == true &&
+        mounted &&
+        !ref.read(appControllerProvider).isThreadReadOnly) {
       await showModalBottomSheet<void>(
         context: this.context,
         isScrollControlled: true,
         showDragHandle: true,
-        builder: (context) => const _ModelManagerSheet(),
+        builder: (context) =>
+            const _ThreadMutationRouteGuard(child: _ModelManagerSheet()),
       );
     }
   }
@@ -1532,13 +1565,15 @@ class _ModelManagerSheet extends ConsumerWidget {
   ) async {
     final definition = await showDialog<CustomModelDefinition>(
       context: context,
-      builder: (context) => _CustomModelEditorDialog(
-        request: request,
-        existingModelIds: customModels
-            .map((model) => model.modelId)
-            .toList(growable: false),
-        modelApiProtocols: state.activeAgentCapabilities.modelApiProtocols,
-        canFetchApiModels: state.activeAgentCapabilities.globalSettings,
+      builder: (context) => _ThreadMutationRouteGuard(
+        child: _CustomModelEditorDialog(
+          request: request,
+          existingModelIds: customModels
+              .map((model) => model.modelId)
+              .toList(growable: false),
+          modelApiProtocols: state.activeAgentCapabilities.modelApiProtocols,
+          canFetchApiModels: state.activeAgentCapabilities.globalSettings,
+        ),
       ),
     );
     if (definition == null || !context.mounted) return;
@@ -1554,26 +1589,28 @@ class _ModelManagerSheet extends ConsumerWidget {
   ) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除自定义模型？'),
-        content: Text(
-          definition.displayName.trim().isEmpty
-              ? definition.modelId
-              : definition.displayName,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+      builder: (context) => _ThreadMutationRouteGuard(
+        child: AlertDialog(
+          title: const Text('删除自定义模型？'),
+          content: Text(
+            definition.displayName.trim().isEmpty
+                ? definition.modelId
+                : definition.displayName,
           ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(
-              '删除',
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
             ),
-          ),
-        ],
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(
+                '删除',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          ],
+        ),
       ),
     );
     if (confirmed == true && context.mounted) {
@@ -1967,7 +2004,8 @@ class _CustomModelEditorDialogState
   Future<void> _pickApiModel() async {
     final option = await showDialog<ApiModelOption>(
       context: context,
-      builder: (context) => const _ApiModelPickerDialog(),
+      builder: (context) =>
+          const _ThreadMutationRouteGuard(child: _ApiModelPickerDialog()),
     );
     if (option == null || !mounted) return;
     final selection = applyApiModelOption(
@@ -2318,7 +2356,7 @@ class _Transcript extends StatelessWidget {
     final canOpenSubAgents =
         state.activeAgentCapabilities.subAgents &&
         !state.loading &&
-        (state.screen == AppScreen.agentWork ||
+        (state.isThreadReadOnly ||
             (!state.submitting && state.approvalQueue.isEmpty));
     String? latestFileChangeId;
     for (final entry in entries.reversed) {
@@ -2338,7 +2376,7 @@ class _Transcript extends StatelessWidget {
           onOpenRemoteFile: onOpenRemoteFile,
           onOpenDiff: onOpenDiff,
           canReview:
-              state.screen != AppScreen.agentWork &&
+              !state.isThreadReadOnly &&
               entry.kind == TimelineKind.fileChange &&
               entry.changes.isNotEmpty &&
               state.activeAgentCapabilities.reviewChanges &&
@@ -2346,7 +2384,7 @@ class _Transcript extends StatelessWidget {
               !state.submitting &&
               !state.running,
           canRollback:
-              state.screen != AppScreen.agentWork &&
+              !state.isThreadReadOnly &&
               entry.id == latestFileChangeId &&
               entry.changes.isNotEmpty &&
               state.activeAgentCapabilities.rollbackThread &&
@@ -5151,29 +5189,37 @@ class _Composer extends StatelessWidget {
                               itemBuilder: (context) => const [
                                 PopupMenuItem(
                                   value: 'camera',
-                                  child: ListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    leading: Icon(Icons.photo_camera_outlined),
-                                    title: Text('拍照'),
+                                  child: _ThreadMutationRouteGuard(
+                                    child: ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: Icon(
+                                        Icons.photo_camera_outlined,
+                                      ),
+                                      title: Text('拍照'),
+                                    ),
                                   ),
                                 ),
                                 PopupMenuItem(
                                   value: 'image',
-                                  child: ListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    leading: Icon(Icons.image_outlined),
-                                    title: Text('上传图片'),
+                                  child: _ThreadMutationRouteGuard(
+                                    child: ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: Icon(Icons.image_outlined),
+                                      title: Text('上传图片'),
+                                    ),
                                   ),
                                 ),
                                 PopupMenuItem(
                                   value: 'file',
-                                  child: ListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    leading: Icon(Icons.folder_open_outlined),
-                                    title: Text('上传文件'),
+                                  child: _ThreadMutationRouteGuard(
+                                    child: ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: Icon(Icons.folder_open_outlined),
+                                      title: Text('上传文件'),
+                                    ),
                                   ),
                                 ),
                               ],
@@ -5424,6 +5470,121 @@ class _Composer extends StatelessWidget {
   }
 }
 
+class _ExternallyOwnedThreadBanner extends StatelessWidget {
+  const _ExternallyOwnedThreadBanner({
+    required this.loading,
+    required this.onRetry,
+  });
+
+  final bool loading;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    top: false,
+    minimum: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+    child: Semantics(
+      liveRegion: true,
+      child: Container(
+        key: const Key('work-thread-read-only-banner'),
+        padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
+        decoration: BoxDecoration(
+          color: _workPopupSurface,
+          border: Border.all(color: const Color(0xFF505050)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.lock_outline, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    '已在另一个应用中打开',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '请先在那边关闭会话，才能在这里继续。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 6),
+            TextButton.icon(
+              key: const Key('retry-active-thread'),
+              onPressed: loading ? null : () => unawaited(onRetry()),
+              icon: loading
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh, size: 16),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Closes only the mutating surface that owns this guard when access changes.
+class _ThreadMutationRouteGuard extends ConsumerStatefulWidget {
+  const _ThreadMutationRouteGuard({required this.child});
+
+  final Widget child;
+
+  @override
+  ConsumerState<_ThreadMutationRouteGuard> createState() =>
+      _ThreadMutationRouteGuardState();
+}
+
+class _ThreadMutationRouteGuardState
+    extends ConsumerState<_ThreadMutationRouteGuard> {
+  late final (String?, AgentKind, String?) _scope;
+  bool _closing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = ref.read(appControllerProvider);
+    _scope = (
+      state.selectedProfileId,
+      state.activeAgent,
+      state.activeThread?.id,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(appControllerProvider);
+    final blocked =
+        state.isThreadReadOnly ||
+        _scope !=
+            (
+              state.selectedProfileId,
+              state.activeAgent,
+              state.activeThread?.id,
+            );
+    if (blocked && !_closing) {
+      _closing = true;
+      final route = ModalRoute.of(context);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (route?.isActive == true) route!.navigator!.removeRoute(route);
+      });
+    }
+    return IgnorePointer(ignoring: blocked, child: widget.child);
+  }
+}
+
 class _WorkPopupMenuRow extends StatelessWidget {
   const _WorkPopupMenuRow({required this.icon, required this.label});
 
@@ -5432,21 +5593,23 @@ class _WorkPopupMenuRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Row(
-        children: [
-          Icon(icon, size: 24),
-          const SizedBox(width: 12),
-          Flexible(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyLarge,
+    return _ThreadMutationRouteGuard(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 24),
+            const SizedBox(width: 12),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -5459,14 +5622,16 @@ class _ComposerPopupMenuRow extends StatelessWidget {
   final String label;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Icon(icon, size: 22),
-      const SizedBox(width: 12),
-      Flexible(
-        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-      ),
-    ],
+  Widget build(BuildContext context) => _ThreadMutationRouteGuard(
+    child: Row(
+      children: [
+        Icon(icon, size: 22),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
+      ],
+    ),
   );
 }
 

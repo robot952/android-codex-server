@@ -6,6 +6,48 @@ import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('recognizes only a matching Codex writer collision', () {
+    CodexRpcException rpcError(String message, {int code = -32600}) =>
+        CodexRpcException(
+          id: const CodexRequestId.number(1),
+          generation: 1,
+          error: CodexRpcError(code: code, message: message),
+        );
+    for (final message in [
+      'thread root already has an active writer',
+      'thread root already has a live local writer',
+    ]) {
+      expect(isCodexThreadOwnershipError(rpcError(message)), isTrue);
+      expect(
+        isCodexThreadOwnershipError(rpcError(message), threadId: 'root'),
+        isTrue,
+      );
+      expect(
+        isCodexThreadOwnershipError(rpcError(message), threadId: 'other'),
+        isFalse,
+      );
+      expect(
+        isCodexThreadOwnershipError(rpcError(message, code: -32603)),
+        isFalse,
+      );
+    }
+    for (final message in [
+      'thread root is running',
+      'thread root not found',
+      'thread root is already loaded',
+      'failed to acquire thread writer lock: permission denied',
+      'already has an active writer',
+    ]) {
+      expect(isCodexThreadOwnershipError(rpcError(message)), isFalse);
+    }
+    expect(
+      isCodexThreadOwnershipError(
+        StateError('thread root already has an active writer'),
+      ),
+      isFalse,
+    );
+  });
+
   group('Codex JSONL encoding', () {
     test('encodes the initialize handshake and sequential numeric ids', () {
       final generation = CodexProtocolSession().beginGeneration();

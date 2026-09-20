@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/codex_agent_client.dart';
+import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/agent/opencode_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
 import 'package:codex_remote/src/domain/model_catalog.dart';
@@ -227,6 +228,181 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  test(
+    'writer collision reads bounded history and retry reacquires input',
+    () async {
+      var occupied = true;
+      final session = _FakeCodexSession(
+        replyFor: (request) {
+          switch (request['method']) {
+            case 'thread/resume':
+              return occupied
+                  ? {
+                      'error': {
+                        'code': -32600,
+                        'message': 'thread root already has an active writer',
+                      },
+                    }
+                  : {
+                      'result': {
+                        'thread': {
+                          'id': 'root',
+                          'status': {'type': 'idle'},
+                        },
+                      },
+                    };
+            case 'thread/read':
+              return {
+                'result': {
+                  'thread': {
+                    'id': 'root',
+                    'status': {'type': 'notLoaded'},
+                  },
+                },
+              };
+            case 'thread/turns/list':
+              return {
+                'result': {
+                  'data': [
+                    {
+                      'id': 'root-turn',
+                      'items': [
+                        {
+                          'id': 'answer',
+                          'type': 'agentMessage',
+                          'text': 'Existing conversation',
+                        },
+                      ],
+                      'status': 'completed',
+                    },
+                  ],
+                  'nextCursor': 'older',
+                },
+              };
+            default:
+              return {'result': <String, Object?>{}};
+          }
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      final readOnly = await client.resumeThread('root');
+      expect(readOnly.thread.isExternallyOwned, isTrue);
+      expect(readOnly.timeline.single.text, 'Existing conversation');
+      expect(readOnly.nextTurnsCursor, 'older');
+      final requests = session.writes
+          .map(jsonDecode)
+          .where(
+            (x) =>
+                x['method'] == 'thread/resume' ||
+                x['method'] == 'thread/read' ||
+                x['method'] == 'thread/turns/list',
+          )
+          .toList();
+      expect(requests.map((x) => x['method']), [
+        'thread/resume',
+        'thread/read',
+        'thread/turns/list',
+      ]);
+      expect(requests[1]['params'], {
+        'threadId': 'root',
+        'includeTurns': false,
+      });
+      expect(requests[2]['params'], {
+        'threadId': 'root',
+        'limit': 4,
+        'sortDirection': 'desc',
+        'itemsView': 'full',
+      });
+      occupied = false;
+      final resumed = await client.resumeThread('root');
+      expect(resumed.thread.isExternallyOwned, isFalse);
+    },
+  );
+
+  test(
+    'writer collision survives a read failure as a typed ownership error',
+    () async {
+      final session = _FakeCodexSession(
+        replyFor: (request) => switch (request['method']) {
+          'thread/resume' => {
+            'error': {
+              'code': -32600,
+              'message': 'thread root already has an active writer',
+            },
+          },
+          'thread/read' => {
+            'error': {'code': -32603, 'message': 'history unavailable'},
+          },
+          _ => {'result': <String, Object?>{}},
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await expectLater(
+        client.resumeThread('root'),
+        throwsA(
+          isA<CodexThreadOwnedException>()
+              .having((x) => x.threadId, 'thread', 'root')
+              .having(
+                (x) => isCodexThreadOwnershipError(x, threadId: 'root'),
+                'ownership retained',
+                isTrue,
+              )
+              .having(
+                (x) => x.readError,
+                'underlying read error',
+                isA<CodexRpcException>(),
+              ),
+        ),
+      );
+    },
+  );
+
+  test(
+    'unrelated resume failures do not switch to read-only history',
+    () async {
+      final session = _FakeCodexSession(
+        replyFor: (request) => request['method'] == 'thread/resume'
+            ? {
+                'error': {'code': -32600, 'message': 'thread root not found'},
+              }
+            : {'result': <String, Object?>{}},
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await expectLater(
+        client.resumeThread('root'),
+        throwsA(isA<CodexRpcException>()),
+      );
+      expect(
+        session.writes.map(jsonDecode).any((x) => x['method'] == 'thread/read'),
+        isFalse,
+      );
+    },
+  );
+
   test(
     'reads an unloaded real child snapshot without resuming parent or child',
     () async {

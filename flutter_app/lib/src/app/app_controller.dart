@@ -1191,7 +1191,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> selectApprovalMode(ApprovalMode mode) async {
     await _ensureInitialized();
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly) return;
     final profileId = state.selectedProfileId;
     if (profileId == null || state.approvalMode == mode) return;
     final profiles = state.profiles
@@ -2428,7 +2428,7 @@ class AppController extends StateNotifier<AppUiState> {
     Iterable<LocalAttachmentUpload> uploads,
   ) async {
     await _ensureInitialized();
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly || state.loading) return;
     final items = uploads.toList(growable: false);
     final profileId = state.selectedProfileId;
     final threadId = state.activeThread?.id;
@@ -2451,7 +2451,11 @@ class AppController extends StateNotifier<AppUiState> {
     Object? firstError;
     try {
       for (final item in items) {
-        if (!mounted || !_isActiveThread(key, threadId)) return;
+        if (!mounted ||
+            !_isActiveThread(key, threadId) ||
+            state.isThreadReadOnly) {
+          return;
+        }
         try {
           final isText = item.textContent != null;
           final maxBytes = isText
@@ -2467,7 +2471,11 @@ class AppController extends StateNotifier<AppUiState> {
             item.bytes,
             maxBytes: maxBytes,
           );
-          if (!mounted || !_isActiveThread(key, threadId)) return;
+          if (!mounted ||
+              !_isActiveThread(key, threadId) ||
+              state.isThreadReadOnly) {
+            return;
+          }
           state = state.copyWith(
             attachments: [
               ...state.attachments,
@@ -2500,6 +2508,7 @@ class AppController extends StateNotifier<AppUiState> {
   /// operation that submits them to the active conversation.
   Future<void> addDebugLogAttachments(Iterable<String> logIds) async {
     await _ensureInitialized();
+    if (state.isThreadReadOnly) return;
     final ids = logIds
         .map((id) => id.trim())
         .where((id) => id.isNotEmpty)
@@ -2537,6 +2546,7 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   void removeAttachment(String remotePath) {
+    if (state.isThreadReadOnly) return;
     if (!mounted || remotePath.trim().isEmpty) return;
     state = state.copyWith(
       attachments: state.attachments
@@ -2616,6 +2626,33 @@ class AppController extends StateNotifier<AppUiState> {
     unawaited(_openThread(thread));
   }
 
+  Future<void> retryActiveThread() async {
+    final thread = state.activeThread;
+    final profileId = state.selectedProfileId;
+    if (thread == null ||
+        profileId == null ||
+        state.loading ||
+        state.submitting ||
+        !thread.isExternallyOwned ||
+        state.screen == AppScreen.agentWork) {
+      return;
+    }
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    if (!_isHostAndAgentConnected(key)) {
+      state = state.copyWith(error: '服务器连接已断开，请重新连接后重试');
+      return;
+    }
+    await _openThreadInternal(
+      thread: thread,
+      targetScreen: AppScreen.work,
+      agentName: null,
+      navigationGeneration: _advanceSessionNavigation(key),
+    );
+  }
+
   /// Opens a thread referenced by a completion-notification payload.  The
   /// notification may arrive for an inactive server/agent lane, so selection
   /// and data hydration are serialized before the normal thread opener runs.
@@ -2689,8 +2726,7 @@ class AppController extends StateNotifier<AppUiState> {
       state = state.copyWith(error: '当前操作尚未完成，请稍后打开智能体');
       return;
     }
-    if (current.screen != AppScreen.agentWork &&
-        current.approvalQueue.isNotEmpty) {
+    if (!current.isThreadReadOnly && current.approvalQueue.isNotEmpty) {
       state = state.copyWith(error: '请先处理当前审批请求');
       return;
     }
@@ -2827,8 +2863,7 @@ class AppController extends StateNotifier<AppUiState> {
       state = state.copyWith(error: '当前操作尚未完成，请稍后返回');
       return;
     }
-    if (current.screen != AppScreen.agentWork &&
-        current.approvalQueue.isNotEmpty) {
+    if (!current.isThreadReadOnly && current.approvalQueue.isNotEmpty) {
       state = state.copyWith(error: '请先处理当前审批请求');
       return;
     }
@@ -3116,7 +3151,7 @@ class AppController extends StateNotifier<AppUiState> {
   /// debounce so rotating the screen or leaving the thread does not lose
   /// partially typed input without issuing a storage write for every key.
   void setComposerDraft(String value) {
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly) return;
     if (!mounted || state.composerDraft == value) return;
     state = state.copyWith(composerDraft: value);
     final profileId = state.selectedProfileId;
@@ -3164,7 +3199,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> sendMessage({String? text}) async {
     await _ensureInitialized();
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly || state.loading) return;
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     if (profileId == null ||
@@ -3252,6 +3287,7 @@ class AppController extends StateNotifier<AppUiState> {
     );
     try {
       await _agents.connect(profile, key.agent);
+      if (!_isActiveThread(key, thread.id) || state.isThreadReadOnly) return;
       late final String turnId;
       final steering = steeringTurnId?.isNotEmpty == true;
       if (steering) {
@@ -3344,6 +3380,9 @@ class AppController extends StateNotifier<AppUiState> {
           composerClearNonce: state.composerClearNonce + 1,
           error: _message(error, '发送消息失败'),
         );
+        if (isCodexThreadOwnershipError(error, threadId: thread.id)) {
+          _markThreadExternallyOwned(key, thread.id);
+        }
         unawaited(
           _persist(
             (stored) => stored.copyWith(
@@ -3360,7 +3399,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> stopMessage() async {
     await _ensureInitialized();
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly || state.loading) return;
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     final turnId = state.activeTurnId;
@@ -3458,6 +3497,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> compactActiveThread() async {
     await _ensureInitialized();
+    if (state.isThreadReadOnly) return;
     final thread = state.activeThread;
     final profileId = state.selectedProfileId;
     if (!state.activeAgentCapabilities.compactThread ||
@@ -3512,6 +3552,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> rollbackActiveThread() async {
     await _ensureInitialized();
+    if (state.isThreadReadOnly) return;
     final thread = state.activeThread;
     final profileId = state.selectedProfileId;
     if (!state.activeAgentCapabilities.rollbackThread ||
@@ -3570,6 +3611,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> archiveActiveThread() async {
     await _ensureInitialized();
+    if (state.isThreadReadOnly) return;
     final thread = state.activeThread;
     final profileId = state.selectedProfileId;
     if (!state.activeAgentCapabilities.archiveThread ||
@@ -3772,6 +3814,10 @@ class AppController extends StateNotifier<AppUiState> {
         state = state.copyWith(activeGoal: goal);
       }
     } catch (error) {
+      if (isCodexThreadOwnershipError(error, threadId: thread.id)) {
+        _setThreadMutationError(key, thread.id, error, '更新目标失败');
+        return;
+      }
       final detail = _message(error, '更新目标失败');
       final display =
           detail.toLowerCase().contains('method not found') ||
@@ -3785,7 +3831,7 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   bool _beginThreadMutation(AgentConnectionKey key, String threadId) {
-    if (state.screen == AppScreen.agentWork ||
+    if (state.isThreadReadOnly ||
         state.loading ||
         state.submitting ||
         !_isActiveThread(key, threadId) ||
@@ -3810,8 +3856,24 @@ class AppController extends StateNotifier<AppUiState> {
     String fallback,
   ) {
     if (mounted && _isActiveThread(key, threadId)) {
+      if (isCodexThreadOwnershipError(error, threadId: threadId)) {
+        _markThreadExternallyOwned(key, threadId);
+        return;
+      }
       state = state.copyWith(error: _message(error, fallback));
     }
+  }
+
+  void _markThreadExternallyOwned(AgentConnectionKey key, String threadId) {
+    if (!mounted || !_isActiveThread(key, threadId)) return;
+    _flushPendingDraft();
+    state = state.copyWith(
+      activeThread: state.activeThread!.copyWith(isExternallyOwned: true),
+      submitting: false,
+      loading: false,
+      error: null,
+    );
+    _cacheActiveThreadSession(key, expectedThreadId: threadId);
   }
 
   Future<void> answerApproval(
@@ -3820,7 +3882,7 @@ class AppController extends StateNotifier<AppUiState> {
     ApprovalPrompt? expectedPrompt,
   }) async {
     await _ensureInitialized();
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly || state.loading) return;
     final profileId = state.selectedProfileId;
     final prompt = state.approval;
     final activeThreadId = _approvalThreadId(state.activeThread?.id);
@@ -3862,6 +3924,10 @@ class AppController extends StateNotifier<AppUiState> {
           submitting: false,
           error: _message(error, '回复审批失败'),
         );
+        if (_isActiveThread(key, activeThreadId) &&
+            isCodexThreadOwnershipError(error, threadId: activeThreadId)) {
+          _markThreadExternallyOwned(key, activeThreadId);
+        }
       }
     }
   }
@@ -4108,7 +4174,7 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   void selectThreadModel(String model, {String? effort}) {
-    if (state.screen == AppScreen.agentWork) return;
+    if (state.isThreadReadOnly) return;
     if (!state.activeAgentCapabilities.models) return;
     final profileId = state.selectedProfileId;
     final threadId = state.activeThread?.id;
@@ -4561,6 +4627,14 @@ class AppController extends StateNotifier<AppUiState> {
             snapshotSequence: -1,
           );
           _cacheActiveThreadSession(key, expectedThreadId: thread.id);
+        }
+        if (isCodexThreadOwnershipError(error, threadId: thread.id)) {
+          _markThreadExternallyOwned(key, thread.id);
+          if (error is CodexThreadOwnedException) {
+            state = state.copyWith(diagnostic: '暂时无法读取最新内容，请稍后重试');
+          }
+          onResumed?.call();
+          return;
         }
         final handled = onResumeFailure?.call(error) ?? false;
         if (!handled && mounted) {

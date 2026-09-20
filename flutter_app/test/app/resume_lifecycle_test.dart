@@ -47,6 +47,201 @@ const _threadB = AgentThread(
 );
 
 void main() {
+  test(
+    'confirmed ownership remains read only when history cannot be read',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => harness.controller.state.loading);
+      first.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'cached',
+              kind: TimelineKind.agentMessage,
+              text: 'Cached history',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+      final blocked = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => harness.controller.state.loading);
+      blocked.completeError(
+        CodexThreadOwnedException(
+          threadId: _threadA.id,
+          ownershipError: const CodexRpcException(
+            id: CodexRequestId.number(42),
+            generation: 1,
+            error: CodexRpcError(
+              code: -32600,
+              message: 'thread thread-a already has an active writer',
+            ),
+          ),
+          readError: StateError('history unavailable'),
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.isThreadReadOnly, isTrue);
+      expect(harness.controller.state.timeline.single.text, 'Cached history');
+      expect(harness.controller.state.error, isNull);
+      expect(harness.controller.state.diagnostic, contains('无法读取最新内容'));
+    },
+  );
+
+  test(
+    'occupied threads preserve history and reject all work mutations',
+    () async {
+      final occupied = _threadAActive.copyWith(isExternallyOwned: true);
+      final agent = _ResumeAgent(threads: [occupied, _threadB]);
+      final draftKey = threadPreferenceKey(
+        _profile.id,
+        AgentKind.codex,
+        occupied.id,
+      );
+      final harness = await _createHarness(
+        agent,
+        storedProfiles: StoredProfiles(
+          profiles: const [_profile],
+          selectedProfileId: _profile.id,
+          composerDrafts: {draftKey: 'Keep my draft'},
+        ),
+      );
+      final resume = agent.gateNextResume(occupied.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => harness.controller.state.loading);
+      resume.complete(
+        AgentSession(
+          thread: occupied,
+          timeline: const [
+            TimelineEntry(
+              id: 'answer',
+              kind: TimelineKind.agentMessage,
+              text: 'History from the other app',
+              turnId: 'turn-a',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+
+      final controller = harness.controller;
+      expect(controller.state.screen, AppScreen.work);
+      expect(controller.state.isThreadReadOnly, isTrue);
+      expect(controller.state.running, isTrue);
+      expect(
+        controller.state.timeline.single.text,
+        'History from the other app',
+      );
+      controller.setComposerDraft('must not replace draft');
+      controller.selectThreadModel('must-not-select');
+      await controller.selectApprovalMode(ApprovalMode.fullAccess);
+      await controller.sendMessage(text: 'must not send');
+      await controller.stopMessage();
+      await controller.compactActiveThread();
+      await controller.rollbackActiveThread();
+      await controller.archiveActiveThread();
+      await controller.renameActiveThread('must not rename');
+      await controller.reviewChanges();
+      await controller.setActiveGoal('must not set goal');
+      await controller.answerApproval(true);
+      expect(controller.state.composerDraft, 'Keep my draft');
+      expect(
+        controller.state.timeline.single.text,
+        'History from the other app',
+      );
+      expect(controller.state.selectedModel, isNull);
+      expect(controller.state.approvalMode, ApprovalMode.requestApproval);
+      expect(controller.state.error, isNull);
+      expect(controller.state.running, isTrue);
+      expect(controller.state.activeThread!.title, _threadA.title);
+      expect(controller.state.submitting, isFalse);
+    },
+  );
+
+  test(
+    'occupied retry stays locked until a successful resume and preserves draft',
+    () async {
+      final occupied = _threadA.copyWith(isExternallyOwned: true);
+      final agent = _ResumeAgent(threads: [occupied, _threadB]);
+      final draftKey = threadPreferenceKey(
+        _profile.id,
+        AgentKind.codex,
+        occupied.id,
+      );
+      final harness = await _createHarness(
+        agent,
+        storedProfiles: StoredProfiles(
+          profiles: const [_profile],
+          selectedProfileId: _profile.id,
+          composerDrafts: {draftKey: 'Unsent draft'},
+        ),
+      );
+      final controller = harness.controller;
+      controller.openThread(_threadA);
+      await _waitUntil(
+        () =>
+            controller.state.screen == AppScreen.work &&
+            !controller.state.loading,
+      );
+      expect(controller.state.isThreadReadOnly, isTrue);
+      final blocked = agent.gateNextResume(occupied.id);
+      await controller.retryActiveThread();
+      expect(controller.state.loading, isTrue);
+      expect(controller.state.isThreadReadOnly, isTrue);
+      blocked.complete(AgentSession(thread: occupied, timeline: const []));
+      await _waitUntil(() => !controller.state.loading);
+      expect(controller.state.isThreadReadOnly, isTrue);
+
+      final released = agent.gateNextResume(occupied.id);
+      await controller.retryActiveThread();
+      await controller.retryActiveThread();
+      expect(controller.state.isThreadReadOnly, isTrue);
+      released.complete(const AgentSession(thread: _threadA, timeline: []));
+      await _waitUntil(() => !controller.state.loading);
+      expect(controller.state.isThreadReadOnly, isFalse);
+      expect(controller.state.composerDraft, 'Unsent draft');
+      controller.backToThreadList();
+      final inspect = agent.gateNextResume(occupied.id);
+      controller.openThread(_threadA);
+      await _waitUntil(() => controller.state.loading);
+      expect(controller.state.isThreadReadOnly, isFalse);
+      inspect.complete(const AgentSession(thread: _threadA, timeline: []));
+      await _waitUntil(() => !controller.state.loading);
+    },
+  );
+
+  test('late occupied retry never locks the next conversation', () async {
+    final occupied = _threadA.copyWith(isExternallyOwned: true);
+    final agent = _ResumeAgent(threads: [occupied, _threadB]);
+    final harness = await _createHarness(agent);
+    final controller = harness.controller;
+    controller.openThread(occupied);
+    await _waitUntil(
+      () =>
+          controller.state.screen == AppScreen.work &&
+          !controller.state.loading,
+    );
+    final retry = agent.gateNextResume(occupied.id);
+    await controller.retryActiveThread();
+    controller.backToThreadList();
+    controller.openThread(_threadB);
+    await _waitUntil(
+      () =>
+          controller.state.activeThread?.id == _threadB.id &&
+          !controller.state.loading,
+    );
+    retry.complete(AgentSession(thread: occupied, timeline: const []));
+    await _drainAsyncWork();
+    expect(controller.state.activeThread!.id, _threadB.id);
+    expect(controller.state.isThreadReadOnly, isFalse);
+  });
+
   test('returning to the list silently refreshes thread recency', () async {
     final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
     final harness = await _createHarness(agent);

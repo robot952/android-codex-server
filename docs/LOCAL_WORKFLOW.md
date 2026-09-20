@@ -287,6 +287,12 @@ CODEX_USER_INPUT_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-user-i
 子 Agent 详情现在只读：设备测试验证底部无输入/停止/模型/审批入口、名称和身份图标、父向消息仅作记录，
 以及子历史排除父回合、返回重进和多层导航。子页使用 `thread/read` + 有界分页，不能用直接恢复子线程替代读取。
 
+跨端主会话占用回归使用 `test/ui/thread_ownership_workflow_test.dart` 及
+`integration_test/thread_ownership_workflow_test.dart`。覆盖手机与 VS Code/另一手机使用的同一原生 writer
+冲突协议、只读读取、历史失败仍锁定、重试解锁和草稿恢复。设备对端为受控 JSONL，不消耗模型额度；
+真正的 writer 互斥通过两个独立 Codex app-server 共享临时 HOME 验证，不能用普通 active 状态伪造占用。
+不得为了释放占用终止用户的 app-server、调用 interrupt 或清理会话文件；返回列表不保证立即释放 writer。
+
 只有用户授权真实 API 消耗后才运行：
 
 ```bash

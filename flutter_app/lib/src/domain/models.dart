@@ -342,6 +342,7 @@ abstract class AgentThread with _$AgentThread {
     @Default(0) int updatedAt,
     @Default('') String cliVersion,
     String? activeTurnId,
+    @Default(false) bool isExternallyOwned,
   }) = _AgentThread;
 }
 
@@ -824,6 +825,11 @@ abstract class AppUiState with _$AppUiState {
     @Default(false) bool codexVersionsLoading,
     String? codexVersionsError,
   }) = _AppUiState;
+}
+
+extension ThreadAccessState on AppUiState {
+  bool get isThreadReadOnly =>
+      screen == AppScreen.agentWork || activeThread?.isExternallyOwned == true;
 }
 
 String sessionKey(String profileId, AgentKind agent) =>

@@ -196,6 +196,35 @@ final class CodexRpcException implements Exception {
       'CodexRpcException($code, $message, id: ${id.wireValue})';
 }
 
+/// Writer collisions are distinct from missing, busy, or disconnected threads.
+bool isCodexThreadOwnershipError(Object error, {String? threadId}) {
+  if (error is CodexThreadOwnedException) {
+    return threadId == null || error.threadId == threadId;
+  }
+  if (error is! CodexRpcException || error.code != -32600) return false;
+  final match = RegExp(
+    r'^thread (\S+) already has (?:an active|a live local) writer\.?$',
+    caseSensitive: false,
+  ).firstMatch(error.message.trim());
+  return match != null && (threadId == null || match.group(1) == threadId);
+}
+
+/// The server confirmed another writer, but its read-only history was unavailable.
+final class CodexThreadOwnedException implements Exception {
+  const CodexThreadOwnedException({
+    required this.threadId,
+    required this.ownershipError,
+    required this.readError,
+  });
+
+  final String threadId;
+  final CodexRpcException ownershipError;
+  final Object readError;
+
+  @override
+  String toString() => '此对话已在另一个应用中打开，暂时无法读取历史。';
+}
+
 sealed class CodexInboundMessage {
   const CodexInboundMessage({
     required this.generation,

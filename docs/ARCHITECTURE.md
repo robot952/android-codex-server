@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.114+244，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.115+245，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -460,6 +460,10 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 
 - 打开会话先从 `ThreadSessionCache` 显示最近快照，再以 `thread/resume` 校准；请求按
   `profileId + AgentKind + threadId` 去重，超时可保留过期快照作为回退；
+- Codex 明确报告其他进程持有同一线程的 writer 时，改用有界 `thread/read` + `thread/turns/list`，
+  保留主会话标题与历史，底部显示“已在另一个应用中打开”和重试。该状态由
+  `AgentThread.isExternallyOwned` 随 lane 内线程缓存维护，不持久化、不依据运行状态猜测占用；
+  页面和控制器共同阻止发送、停止、审批、权限/模型及会话修改，草稿保留。重试成功恢复输入，失败仍只读。
 - Composer 发送时先插入 optimistic user row，`turn/start` 返回稳定 turn ID 后合并；活动回合中再次
   发送且 Agent 支持时走 `turn/steer`，运行中显示停止图标且停止需要确认；事件 reducer 会合并消息
   delta、命令输出、文件修改、思考/计划和完成状态；
@@ -1224,6 +1228,9 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     分块写入并清理失败半成品，内部链接不得泄露给外部浏览器（当前已接入，仍需真机回归）。
 30. Codex 模型列表请求必须包含 `includeHidden: true`，展示服务端默认隐藏的所有模型，不仅限于 GPT-6。
     模型思考档位以服务端元数据为准，同 ID 的自定义模型继承这些能力；用户在 App 中主动隐藏的选择继续保留。
+31. 两台手机 App 或手机与 VS Code 打开同一 Codex 对话时，先持有服务端写入权的一端继续工作，后打开
+    的一端只读并显示占用提示/重试；不得自动抢占、停止另一端回合或关闭服务进程。只读仍允许查看、复制、
+    分页、图片/差异及子 Agent 导航。占用解除以服务端恢复成功为准，返回列表不等于服务端立即释放 writer。
 
 ## 15. 修改影响图和顺序
 
@@ -2329,6 +2336,17 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   “已完成”。用户主动停止产生的 `stopped=true` 计时仍保留本地停止语义。
 - WebSocket 到 HTTPS 的内部回退只写入诊断日志，不再向对话时间线插入用户无法理解的内部提示；真实错误仍正常展示。
 - 新增 reducer、恢复流程和 Widget 回归，覆盖最终答案后的迟到命令、过期计时、主动停止和隐藏回退提示。
+
+### 17.76 跨端对话占用只读
+
+- `1.8.115+245`：识别 Codex `-32600` 和准确线程 ID 的 `already has an active writer` /
+  `already has a live local writer`，通过现有有界只读历史链路降级；其他恢复失败不伪装成占用。
+- 已确认占用但历史读取失败时保留缓存和只读限制；重试/切页使用原导航代次隔离，迟到结果不能锁住其他会话。
+  只读时关闭所属修改弹层和问题弹窗，不关闭图片/差异预览。子 Agent 仍使用空底部，不显示主会话占用条。
+- 真实 Codex `0.154.0` 与插件版 `0.154.0-alpha.6.2` 的两个独立 app-server、共享临时 HOME
+  已验证原生 writer 冲突、只读历史和退出测试 owner 后恢复；仅本地 shell 测试回合，无真实模型 API 消耗。
+  `thread/unsubscribe` 不立即释放 writer，不主动调用它或终止进程来抢占对话。验收边界见
+  [跨端只读验收](THREAD_OWNERSHIP_VALIDATION.md)。
 
 ## 18. 文档维护规则
 

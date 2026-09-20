@@ -41,6 +41,7 @@ class SubAgentSession implements CodexSession {
   final responses = <Map<String, dynamic>>[];
   final threads = <String, Map<String, Object?>>{};
   final failNextResume = <String>{};
+  final externallyOwnedThreads = <String>{};
   final _questions = <Object, String>{};
   @override
   Stream<Uint8List> get stdout => _stdout.stream;
@@ -186,6 +187,17 @@ class SubAgentSession implements CodexSession {
     requests.add(request);
     final params = request['params'] as Map? ?? const {};
     final threadId = params['threadId'] as String? ?? '';
+    if (request['method'] == 'thread/resume' &&
+        externallyOwnedThreads.contains(threadId)) {
+      emit({
+        'id': request['id'],
+        'error': {
+          'code': -32600,
+          'message': 'thread $threadId already has an active writer',
+        },
+      });
+      return;
+    }
     if ((request['method'] == 'thread/resume' ||
             request['method'] == 'thread/read') &&
         failNextResume.remove(threadId)) {
