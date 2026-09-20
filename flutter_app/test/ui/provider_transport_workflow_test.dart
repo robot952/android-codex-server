@@ -32,7 +32,7 @@ void main({bool device = false}) {
       });
     }
     await pumpSubAgentEvents(tester);
-    expect(find.text('模型连接中断，正在切换到 HTTPS 重试。'), findsOneWidget);
+    expect(find.text('模型连接中断，正在切换到 HTTPS 重试。'), findsNothing);
     expect(find.textContaining('Falling back'), findsNothing);
     expect(h.controller.state.running, isTrue);
     expect(h.controller.state.error, isNull);

@@ -360,6 +360,85 @@ void main() {
     expect(resumedTiming, isNot(completedTiming));
   });
 
+  test(
+    'active resume overrides a non-stopped completed timing for the same turn',
+    () async {
+      final storageKey = threadPreferenceKey(
+        _profile.id,
+        AgentKind.codex,
+        _threadA.id,
+      );
+      const staleTiming = TurnTiming(
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        startedAtMillis: 100,
+        completedAtMillis: 200,
+      );
+      final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
+      final harness = await _createHarness(
+        agent,
+        storedProfiles: StoredProfiles(
+          profiles: const [_profile],
+          selectedProfileId: _profile.id,
+          completedTurnTimings: {storageKey: staleTiming},
+        ),
+      );
+      final resume = agent.gateNextResume(_threadA.id);
+
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => harness.controller.state.loading);
+      resume.complete(
+        const AgentSession(thread: _threadAActive, timeline: <TimelineEntry>[]),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+
+      expect(harness.controller.state.running, isTrue);
+      expect(harness.controller.state.activeTurnId, 'turn-a');
+      expect(harness.controller.state.turnTiming?.completedAtMillis, isNull);
+      expect(harness.controller.state.turnTiming?.stopped, isFalse);
+    },
+  );
+
+  test(
+    'active resume keeps an explicitly stopped timing settled for the same turn',
+    () async {
+      final storageKey = threadPreferenceKey(
+        _profile.id,
+        AgentKind.codex,
+        _threadA.id,
+      );
+      const stoppedTiming = TurnTiming(
+        threadId: 'thread-a',
+        turnId: 'turn-a',
+        startedAtMillis: 100,
+        completedAtMillis: 200,
+        stopped: true,
+      );
+      final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
+      final harness = await _createHarness(
+        agent,
+        storedProfiles: StoredProfiles(
+          profiles: const [_profile],
+          selectedProfileId: _profile.id,
+          completedTurnTimings: {storageKey: stoppedTiming},
+        ),
+      );
+      final resume = agent.gateNextResume(_threadA.id);
+
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => harness.controller.state.loading);
+      resume.complete(
+        const AgentSession(thread: _threadAActive, timeline: <TimelineEntry>[]),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+
+      expect(harness.controller.state.running, isFalse);
+      expect(harness.controller.state.activeTurnId, isNull);
+      expect(harness.controller.state.activeThread?.status, 'idle');
+      expect(harness.controller.state.turnTiming, stoppedTiming);
+    },
+  );
+
   test('active resume rejects mismatched incomplete turn timing', () async {
     final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
     final harness = await _createHarness(agent);

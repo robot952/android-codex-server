@@ -2,17 +2,6 @@ import '../domain/models.dart';
 import 'codex_protocol.dart';
 import 'provider_transport_notice.dart';
 
-bool isTerminalAgentMessageNotification(CodexRpcNotification notification) {
-  if (notification.method != 'item/completed') return false;
-  final item = _map(notification.params['item']);
-  if (_string(item, const ['type']) != 'agentMessage') return false;
-  final phase = _string(item, const [
-    'phase',
-    'status',
-  ]).toLowerCase().replaceAll(RegExp(r'[^a-z]'), '');
-  return phase == 'finalanswer';
-}
-
 AppUiState settleActiveTurnLocally(
   AppUiState state, {
   required String threadId,
@@ -313,15 +302,11 @@ AppUiState reduceCodexNotification(
         entry,
         allowEmptyOptimisticUserMatch: method == 'item/started',
       );
-      final next = state.copyWith(timeline: timeline);
-      if (!isTerminalAgentMessageNotification(notification)) return next;
-      return settleActiveTurnLocally(
-        next,
-        threadId: activeThreadId ?? threadId,
-        turnId: entry.turnId,
-        stopped: false,
-        nowMillis: now,
-      );
+      // An agentMessage with phase=final_answer is content, not a lifecycle
+      // event. Codex may still emit commands, tool results, or a later
+      // turn/completed after this item; only explicit lifecycle events may
+      // clear the running state.
+      return state.copyWith(timeline: timeline);
 
     case 'item/agentMessage/delta':
       if (!appliesToActive) return state;
@@ -453,14 +438,10 @@ AppUiState reduceCodexNotification(
       ]).ifEmpty(() => _string(_map(params['error']), const ['message']));
       if (message.isEmpty || !appliesToActive) return state;
       if (method == 'warning' && isProviderWebSocketFallback(message)) {
-        final turnId = _turnId(params).ifEmpty(() => state.activeTurnId ?? '');
-        final row = TimelineEntry(
-          id: 'provider-websocket-fallback:$turnId',
-          kind: TimelineKind.notice,
-          text: providerWebSocketFallbackLabel(message),
-          turnId: turnId,
-        );
-        return state.copyWith(timeline: _upsertTimeline(state.timeline, row));
+        // This is an internal model-transport fallback. The Agent client
+        // already records the raw detail in diagnostics; it is not useful
+        // conversation content and must not look like a user-visible error.
+        return state;
       }
       return state.copyWith(
         timeline: [

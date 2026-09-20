@@ -6120,8 +6120,7 @@ class AppController extends StateNotifier<AppUiState> {
         }
         if (routedMessage.method == 'turn/started' ||
             routedMessage.method == 'turn/completed' ||
-            routedMessage.method == 'thread/status/changed' ||
-            isTerminalAgentMessageNotification(routedMessage)) {
+            routedMessage.method == 'thread/status/changed') {
           final timing = state.turnTiming;
           if (timing != null) {
             unawaited(
@@ -7124,6 +7123,7 @@ bool _completedTimingMatchesTurn(
 ) {
   if (timing == null ||
       timing.completedAtMillis == null ||
+      !timing.stopped ||
       timing.threadId != threadId) {
     return false;
   }
@@ -7133,8 +7133,7 @@ bool _completedTimingMatchesTurn(
 }
 
 bool _isCompletionNotification(CodexRpcNotification message) {
-  if (message.method == 'turn/completed' ||
-      isTerminalAgentMessageNotification(message)) {
+  if (message.method == 'turn/completed') {
     return true;
   }
   if (message.method != 'thread/status/changed') return false;
@@ -7156,7 +7155,6 @@ bool _isCompletionNotification(CodexRpcNotification message) {
 }
 
 String? _subAgentTerminalStatusFromCompletion(CodexRpcNotification message) {
-  if (isTerminalAgentMessageNotification(message)) return 'completed';
   final method = message.method;
   final params = message.params;
   final turn = _notificationMap(params['turn']);

@@ -28,51 +28,43 @@ AppUiState _state() => AppUiState(
 );
 
 void main() {
-  test(
-    'provider fallback is one Chinese notice per turn without settling it',
-    () {
-      var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
-      const message =
-          'Falling back from WebSockets to HTTPS transport. stream disconnected before completion: websocket closed by server before response.completed';
-      for (var i = 0; i < 3; i++) {
-        state = reduceCodexNotification(
-          state,
-          _notification('warning', {
-            'threadId': 'thread-1',
-            'message': message,
-          }),
-          nowMillis: i,
-        );
-      }
-      expect(state.timeline, hasLength(1));
-      expect(state.timeline.single.text, '模型连接中断，正在切换到 HTTPS 重试。');
-      expect(state.running, isTrue);
-      expect(state.activeTurnId, 'turn-1');
-      expect(state.error, isNull);
-      final other = reduceCodexNotification(
-        state,
-        _notification('warning', {'threadId': 'thread-2', 'message': message}),
-      );
-      expect(other, state);
+  test('provider fallback is diagnostic-only without settling the turn', () {
+    var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
+    const message =
+        'Falling back from WebSockets to HTTPS transport. stream disconnected before completion: websocket closed by server before response.completed';
+    for (var i = 0; i < 3; i++) {
       state = reduceCodexNotification(
         state,
-        _notification('error', {
-          'threadId': 'thread-1',
-          'error': {'message': 'Authentication failed'},
-        }),
+        _notification('warning', {'threadId': 'thread-1', 'message': message}),
+        nowMillis: i,
       );
-      expect(state.timeline.last.text, 'Authentication failed');
-      state = reduceCodexNotification(
-        state.copyWith(activeTurnId: 'turn-2'),
-        _notification('warning', {
-          'threadId': 'thread-1',
-          'message': '$message: no available account',
-        }),
-      );
-      expect(state.timeline.last.text, '模型接口暂无可用账号，正在切换到 HTTPS 重试。');
-      expect(state.timeline, hasLength(3));
-    },
-  );
+    }
+    expect(state.timeline, isEmpty);
+    expect(state.running, isTrue);
+    expect(state.activeTurnId, 'turn-1');
+    expect(state.error, isNull);
+    final other = reduceCodexNotification(
+      state,
+      _notification('warning', {'threadId': 'thread-2', 'message': message}),
+    );
+    expect(other, state);
+    state = reduceCodexNotification(
+      state,
+      _notification('error', {
+        'threadId': 'thread-1',
+        'error': {'message': 'Authentication failed'},
+      }),
+    );
+    expect(state.timeline.single.text, 'Authentication failed');
+    state = reduceCodexNotification(
+      state.copyWith(activeTurnId: 'turn-2'),
+      _notification('warning', {
+        'threadId': 'thread-1',
+        'message': '$message: no available account',
+      }),
+    );
+    expect(state.timeline.single.text, 'Authentication failed');
+  });
 
   test('reduces turn lifecycle and streamed agent text', () {
     var state = _state();
@@ -206,7 +198,7 @@ void main() {
     expect(next.turnTiming?.stopped, isTrue);
   });
 
-  test('settles a final answer when turn completion is missing', () {
+  test('keeps running after a final answer until turn completion arrives', () {
     final state = _state().copyWith(
       running: true,
       activeTurnId: 'turn-1',
@@ -238,12 +230,73 @@ void main() {
       nowMillis: 200,
     );
 
-    expect(next.running, isFalse);
-    expect(next.activeTurnId, isNull);
-    expect(next.activeThread?.status, 'idle');
-    expect(next.turnTiming?.completedAtMillis, 200);
+    expect(next.running, isTrue);
+    expect(next.activeTurnId, 'turn-1');
+    expect(next.activeThread?.status, 'active');
+    expect(next.turnTiming?.completedAtMillis, isNull);
     expect(next.timeline.single.text, '完成了');
+
+    final completed = reduceCodexNotification(
+      next,
+      _notification('turn/completed', {
+        'threadId': 'thread-1',
+        'turn': {'id': 'turn-1', 'status': 'completed'},
+      }),
+      nowMillis: 300,
+    );
+    expect(completed.running, isFalse);
+    expect(completed.activeTurnId, isNull);
+    expect(completed.turnTiming?.completedAtMillis, 300);
   });
+
+  test(
+    'late command output remains visible while the final answer is streaming',
+    () {
+      var state = _state().copyWith(
+        running: true,
+        activeTurnId: 'turn-1',
+        activeThread: const AgentThread(
+          id: 'thread-1',
+          title: '任务',
+          status: 'active',
+          activeTurnId: 'turn-1',
+        ),
+        turnTiming: const TurnTiming(
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          startedAtMillis: 100,
+        ),
+      );
+      state = reduceCodexNotification(
+        state,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'answer-1',
+            'type': 'agentMessage',
+            'phase': 'final_answer',
+            'text': '先回答，后续还有命令',
+          },
+        }),
+      );
+      state = reduceCodexNotification(
+        state,
+        _notification('item/started', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'command-1',
+            'type': 'commandExecution',
+            'status': 'inProgress',
+            'command': '继续检查',
+          },
+        }),
+      );
+      expect(state.running, isTrue);
+      expect(state.timeline.any((entry) => entry.id == 'command-1'), isTrue);
+    },
+  );
 
   test('ignores a late start after a locally settled turn', () {
     final state = _state().copyWith(

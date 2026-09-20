@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.113+243，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.114+244，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2014,9 +2014,9 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ### 17.43 回合终态与停止状态收敛（2026-08-15）
 
-- 应用版本：`1.8.73+200`。Codex 先返回 `agentMessage` 的 `final_answer`、但因异常 custom tool
-  output 没有继续返回 `turn/completed` 时，客户端现在按明确的最终答案事件结束本地回合并持久化计时，
-  不再在回答已经显示后持续显示“处理中”。
+- 历史版本 `1.8.73+200` 曾把 `agentMessage` 的 `final_answer` 当作缺失
+  `turn/completed` 时的本地终态；该假设已在 `1.8.114+244` 修正。最终答案是内容事件，不能证明
+  回合已经结束。
 - 点击停止先立即结束本地运行态、清理当前审批和后台 Agent 活动；远端 `turn/interrupt` 失败或请求
   generation 已失效时仍保持可继续发送，并给出可见的远端失败提示。重连或迟到的旧 `turn/started` 不会
   重新点亮旧回合的 spinner。
@@ -2320,6 +2320,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   不自动更换 Provider 或破坏已有会话。自定义 Provider 的 `supports_websockets=false` 路径仍有效。
 - 真实探测发现成功握手后 `1013 / no available account`，另有 HTTP 流不完整和超时；服务端账号调度
   尚未修复，不归结为网站完全不支持 WebSocket。范围和证据见 [传输验收](PROVIDER_TRANSPORT_VALIDATION.md)。
+
+### 17.75 回合运行态与恢复一致性（2026-09-20）
+
+- 应用版本：`1.8.114+244`。`agentMessage` 的 `final_answer` 仅更新时间线，不再提前清除
+  `running`、`activeTurnId` 或计时；后续命令、工具结果和明确的 `turn/completed` 可以按顺序到达。
+- 恢复详情页时，服务端明确的 active 回合优先于旧的普通完成计时，避免列表显示“运行中”而详情页显示
+  “已完成”。用户主动停止产生的 `stopped=true` 计时仍保留本地停止语义。
+- WebSocket 到 HTTPS 的内部回退只写入诊断日志，不再向对话时间线插入用户无法理解的内部提示；真实错误仍正常展示。
+- 新增 reducer、恢复流程和 Widget 回归，覆盖最终答案后的迟到命令、过期计时、主动停止和隐藏回退提示。
 
 ## 18. 文档维护规则
 

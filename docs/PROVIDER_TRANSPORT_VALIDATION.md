@@ -40,7 +40,7 @@ App 保持现有自定义 Provider 传输选项，不自动迁移 Provider，避
 
 ## 客户端修正
 
-- 已识别的 WebSocket 回退提示使用简短中文，同一线程/回合同一提示合并，详情仍进入有界诊断日志。
+- 已识别的 WebSocket 回退仅进入有界诊断日志，不再把内部传输细节插入对话时间线；回退不会结束或重启回合。
 - 提示不会被解释为 SSH 断线、回合完成或自动重发用户任务；其他错误保留，嵌套 error.message 正确读取。
 - 设置按钮明确标为 HTTP API 测试；HTTP 成功不代表 WebSocket 通过。
 - 连接测试检查响应正文及结束状态，防止 HTTP 200 的错误页、未完成 JSON 或提前断开的 SSE 假报成功。
@@ -50,7 +50,7 @@ App 保持现有自定义 Provider 传输选项，不自动迁移 Provider，避
 
 ## 验收与交付
 
-- App `1.8.113+243`，Flutter 全量 `572` 项和 analyze 通过；HTTP 完整性定向 `22` 项通过。
+- App `1.8.114+244`，Flutter 全量和 analyze 通过；HTTP 完整性定向 `22` 项通过。
 - 真实 Codex + 本地模型 fixture 的七组配置对照通过。Android 14、`1220x2712` 上的生产
   adapter/controller/WorkScreen 测试验证回退去重、后台线程隔离、不会重发任务和回退后正常完成；
   该设备测试使用受控 JSONL 对端，不代表真实网关已经恢复。Windows 共享校验器已编译检查，未运行 Windows 实机。
