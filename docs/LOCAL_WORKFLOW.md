@@ -302,6 +302,17 @@ node scripts/test-codex-subagents-live.cjs --live
 只复制 Provider 配置和认证到临时目录，禁止把 URL/Key 加进命令参数或测试 APK。测试结束销毁临时目录，
 只在 `.workflow-cache/subagent-live-*.json` 留存脱敏的测试事件与可用 token 统计；该统计不等于账单金额。
 
+模型 API 传输配置的离线对照（已安装 Codex `0.154.0`，不调用真实模型）：
+
+```bash
+CODEX_PROVIDER_TRANSPORT_TEST_BIN=/absolute/path/to/codex \
+node scripts/test-codex-provider-transport.cjs
+```
+
+脚本隔离 HOME/认证，验证内置 Provider、旧 feature 开关、被拒绝的内置 Provider 覆盖和自定义 Provider
+的 HTTP-only 路径。真实接口探测不能只看 HTTP 200 或 WebSocket 握手，必须确认完整响应；失败重试
+会消耗模型额度，优先使用本地 fixture。已知诊断与未解决的服务端边界见 `PROVIDER_TRANSPORT_VALIDATION.md`。
+
 ## 6. SSH 测试主机
 
 长期测试主机只准备一次：

@@ -732,26 +732,30 @@ class WindowsLocalServerClient
             ? 'responses'
             : 'chat/completions';
         final body = protocol == ModelApiProtocol.responses
-            ? <String, Object>{'model': model, 'input': 'ping'}
+            ? <String, Object>{
+                'model': model,
+                'input': 'Reply only OK.',
+                'stream': true,
+              }
             : <String, Object>{
                 'model': model,
                 'messages': <Object>[
                   <String, Object>{'role': 'user', 'content': 'ping'},
                 ],
               };
-        final status = await _httpStatus(
+        final result = await _httpTestResponse(
           Uri.parse('$base/$endpoint'),
           key,
           proxy,
           body,
         );
+        final status = result.status;
         if (status >= 200 && status < 300) {
-          final label = protocol == ModelApiProtocol.responses
-              ? 'Responses'
-              : 'Chat Completions';
-          return AgentConnectionTestResult(
-            successful: true,
-            message: '模型 $model 可用（$label）（HTTP $status）',
+          return validateCodexConnectionTestResponse(
+            bytes: result.bytes,
+            protocol: protocol,
+            model: model,
+            httpStatus: status,
           );
         }
         if (status == 401 || status == 403) {
@@ -776,6 +780,21 @@ class WindowsLocalServerClient
       return const AgentConnectionTestResult(
         successful: false,
         message: '无法连接 API 服务，请检查模型 URL、代理或本机网络',
+      );
+    } on _ApiTestBodyTooLarge {
+      return const AgentConnectionTestResult(
+        successful: false,
+        message: 'API 测试响应过大，无法安全校验',
+      );
+    } on HandshakeException {
+      return const AgentConnectionTestResult(
+        successful: false,
+        message: 'API 服务 TLS 证书或握手失败',
+      );
+    } on HttpException {
+      return const AgentConnectionTestResult(
+        successful: false,
+        message: 'API 响应传输中断，请检查网络或上游服务',
       );
     }
     return const AgentConnectionTestResult(
@@ -1592,7 +1611,7 @@ HttpClient _httpClient(String proxy) {
   return client;
 }
 
-Future<int> _httpStatus(
+Future<({int status, Uint8List bytes})> _httpTestResponse(
   Uri uri,
   String apiKey,
   String proxy,
@@ -1600,18 +1619,31 @@ Future<int> _httpStatus(
 ) async {
   final client = _httpClient(proxy);
   try {
-    final request = await client
-        .postUrl(uri)
-        .timeout(const Duration(seconds: 15));
-    request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $apiKey');
-    request.headers.contentType = ContentType.json;
-    request.write(jsonEncode(body));
-    final response = await request.close().timeout(const Duration(seconds: 25));
-    await response.drain<void>();
-    return response.statusCode;
+    return await (() async {
+      final request = await client.postUrl(uri);
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $apiKey');
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode(body));
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return (status: response.statusCode, bytes: Uint8List(0));
+      }
+      final builder = BytesBuilder(copy: false);
+      await for (final chunk in response) {
+        if (builder.length + chunk.length > codexConnectionTestMaxBodyBytes) {
+          throw const _ApiTestBodyTooLarge();
+        }
+        builder.add(chunk);
+      }
+      return (status: response.statusCode, bytes: builder.takeBytes());
+    })().timeout(const Duration(seconds: 25));
   } finally {
     client.close(force: true);
   }
+}
+
+final class _ApiTestBodyTooLarge implements Exception {
+  const _ApiTestBodyTooLarge();
 }
 
 Future<Uint8List> _boundedResponse(

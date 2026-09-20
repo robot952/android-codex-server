@@ -9,6 +9,8 @@ const _modelListPrefix = '__CODEX_API_MODEL_LIST_';
 const _defaultOpenAiBaseUrl = 'https://api.openai.com/v1';
 const _maxModelListResponseBytes = 256 * 1024;
 const _modelListChunkWidth = 4096;
+const codexConnectionTestMaxBodyBytes = 1024 * 1024;
+const codexConnectionTestMaxOutputBytes = 1450 * 1024;
 
 const codexWebSocketPolicyAuto = 'auto';
 const codexWebSocketPolicyEnabled = 'enabled';
@@ -654,7 +656,8 @@ String buildTestCodexGlobalSettingsScript({
   final normalizedProxy = normalizeCodexProxyUrl(proxyUrl);
   final normalizedModel = normalizeCodexModel(testModel, '测试模型');
   final baseEndpoint = normalizedBaseUrl.replaceFirst(RegExp(r'/+$'), '');
-  final responsesBody = '{"model":"$normalizedModel","input":"ping"}';
+  final responsesBody =
+      '{"model":"$normalizedModel","input":"Reply only OK.","stream":true}';
   final chatBody =
       '{"model":"$normalizedModel","messages":[{"role":"user","content":"ping"}]}';
   final apiMode = switch (apiProtocol) {
@@ -674,10 +677,15 @@ RESPONSES_ENDPOINT=@@RESPONSES_ENDPOINT@@
 CHAT_ENDPOINT=@@CHAT_ENDPOINT@@
 RESPONSES_BODY=@@RESPONSES_BODY@@
 CHAT_BODY=@@CHAT_BODY@@
+MAX_BODY_BYTES=@@MAX_BODY_BYTES@@
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 
 if [ -z "$API_KEY" ]; then
   printf '__CODEX_CONNECTION_TEST_STATUS=MISSING_API_KEY\n'
+  exit 0
+fi
+if ! command -v base64 >/dev/null 2>&1 || ! command -v fold >/dev/null 2>&1; then
+  printf '__CODEX_CONNECTION_TEST_STATUS=ENCODER_UNAVAILABLE\n'
   exit 0
 fi
 if [ -z "$TEST_MODEL" ]; then
@@ -703,9 +711,14 @@ CHAT_FILE="$(mktemp "${TMPDIR:-/tmp}/codex-api-chat.XXXXXX" 2>/dev/null)" || {
   printf '__CODEX_CONNECTION_TEST_STATUS=TEMPORARY_FILE_ERROR\n'
   exit 0
 }
-cleanup() { rm -f "$HEADER_FILE" "$RESPONSES_FILE" "$CHAT_FILE"; }
+BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/codex-api-result.XXXXXX" 2>/dev/null)" || {
+  rm -f "$HEADER_FILE" "$RESPONSES_FILE" "$CHAT_FILE"
+  printf '__CODEX_CONNECTION_TEST_STATUS=TEMPORARY_FILE_ERROR\n'
+  exit 0
+}
+cleanup() { rm -f "$HEADER_FILE" "$RESPONSES_FILE" "$CHAT_FILE" "$BODY_FILE"; }
 trap cleanup EXIT HUP INT TERM
-if ! chmod 600 "$HEADER_FILE" "$RESPONSES_FILE" "$CHAT_FILE" 2>/dev/null ||
+if ! chmod 600 "$HEADER_FILE" "$RESPONSES_FILE" "$CHAT_FILE" "$BODY_FILE" 2>/dev/null ||
    ! printf 'Authorization: Bearer %s\n' "$API_KEY" > "$HEADER_FILE" ||
    ! printf '%s' "$RESPONSES_BODY" > "$RESPONSES_FILE" ||
    ! printf '%s' "$CHAT_BODY" > "$CHAT_FILE"; then
@@ -713,21 +726,25 @@ if ! chmod 600 "$HEADER_FILE" "$RESPONSES_FILE" "$CHAT_FILE" 2>/dev/null ||
   exit 0
 fi
 
-run_request() {
+run_request() (
   endpoint="$1"
   body_file="$2"
+  # Bound disk writes even on older curl versions without streaming size checks.
+  ulimit -f 2048 || exit 73
   if [ -n "$PROXY_URL" ]; then
-    curl --disable --silent --output /dev/null --write-out '%{http_code}' \
+    curl --disable --silent --output "$BODY_FILE" --write-out '%{http_code}' \
+      --max-filesize "$MAX_BODY_BYTES" \
       --connect-timeout 10 --max-time 25 --proxy "$PROXY_URL" --request POST \
       --header "@$HEADER_FILE" --header 'Content-Type: application/json' \
       --data-binary "@$body_file" "$endpoint" 2>/dev/null
   else
-    curl --disable --silent --output /dev/null --write-out '%{http_code}' \
+    curl --disable --silent --output "$BODY_FILE" --write-out '%{http_code}' \
+      --max-filesize "$MAX_BODY_BYTES" \
       --connect-timeout 10 --max-time 25 --request POST --header "@$HEADER_FILE" \
       --header 'Content-Type: application/json' --data-binary "@$body_file" \
       "$endpoint" 2>/dev/null
   fi
-}
+)
 
 if [ "$TEST_API_MODE" = 'chat/completions' ]; then
   TEST_API=chat/completions
@@ -769,6 +786,14 @@ printf '__CODEX_CONNECTION_TEST_MODEL=%s\n' "$TEST_MODEL"
 printf '__CODEX_CONNECTION_TEST_API=%s\n' "$TEST_API"
 printf '__CODEX_CONNECTION_TEST_HTTP_STATUS=%s\n' "$HTTP_STATUS"
 printf '__CODEX_CONNECTION_TEST_CURL_EXIT=%s\n' "$CURL_EXIT_CODE"
+BODY_SIZE="$(wc -c < "$BODY_FILE" | tr -d '[:space:]')"
+if [ "$BODY_SIZE" -gt "$MAX_BODY_BYTES" ] || [ "$CURL_EXIT_CODE" -eq 63 ]; then
+  printf '__CODEX_CONNECTION_TEST_STATUS=BODY_TOO_LARGE\n'
+elif [ "$TEST_STATUS" = SUCCESS ]; then
+  base64 "$BODY_FILE" | tr -d '\n' | fold -w 4096 | while IFS= read -r CHUNK || [ -n "$CHUNK" ]; do
+    printf '__CODEX_CONNECTION_TEST_DATA=%s\n' "$CHUNK"
+  done
+fi
 ''',
     {
       'API_KEY': _shellQuote(normalizedApiKey),
@@ -779,11 +804,18 @@ printf '__CODEX_CONNECTION_TEST_CURL_EXIT=%s\n' "$CURL_EXIT_CODE"
       'CHAT_ENDPOINT': _shellQuote('$baseEndpoint/chat/completions'),
       'RESPONSES_BODY': _shellQuote(responsesBody),
       'CHAT_BODY': _shellQuote(chatBody),
+      'MAX_BODY_BYTES': '$codexConnectionTestMaxBodyBytes',
     },
   );
 }
 
 AgentConnectionTestResult parseCodexConnectionTest(String output) {
+  if (output.length > codexConnectionTestMaxOutputBytes) {
+    return const AgentConnectionTestResult(
+      successful: false,
+      message: 'API 测试响应过大，无法安全校验',
+    );
+  }
   final values = _prefixedValues(output, _testPrefix);
   final statusCode = values['HTTP_STATUS'];
   final httpStatus =
@@ -791,11 +823,6 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
       ? statusCode
       : null;
   final model = _nonEmpty(values['MODEL']) ?? '请求';
-  final api = switch (values['API']) {
-    'responses' => 'Responses',
-    'chat/completions' => 'Chat Completions',
-    _ => '',
-  };
   final networkError = switch (values['CURL_EXIT']) {
     '6' => '无法解析 API 域名，请检查本机 Linux 的 DNS',
     '7' => '无法连接 API 服务端口，请检查地址、代理或网络',
@@ -804,11 +831,7 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
     _ => '无法连接 API 服务，请检查模型 URL、代理或服务器网络',
   };
   return switch (values['STATUS']) {
-    'SUCCESS' => AgentConnectionTestResult(
-      successful: true,
-      message:
-          '模型 $model 可用${api.isEmpty ? '' : '（$api）'}${httpStatus == null ? '' : '（HTTP $httpStatus）'}',
-    ),
+    'SUCCESS' => _parseCodexConnectionTestBody(output, values, model),
     'MISSING_API_KEY' => const AgentConnectionTestResult(
       successful: false,
       message: '请输入 API 密钥后再测试',
@@ -825,6 +848,14 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
       successful: false,
       message: '无法安全准备 API 测试请求',
     ),
+    'ENCODER_UNAVAILABLE' => const AgentConnectionTestResult(
+      successful: false,
+      message: '服务器缺少 base64 或 fold，无法校验 API 响应',
+    ),
+    'BODY_TOO_LARGE' => const AgentConnectionTestResult(
+      successful: false,
+      message: 'API 测试响应过大，无法安全校验',
+    ),
     'NETWORK_ERROR' => AgentConnectionTestResult(
       successful: false,
       message: networkError,
@@ -839,6 +870,132 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
     ),
     _ => throw StateError('API 测试未返回可识别的结果'),
   };
+}
+
+AgentConnectionTestResult _parseCodexConnectionTestBody(
+  String output,
+  Map<String, String> values,
+  String model,
+) {
+  final encoded = const LineSplitter()
+      .convert(output)
+      .where((line) => line.startsWith('${_testPrefix}DATA='))
+      .map((line) => line.substring('${_testPrefix}DATA='.length))
+      .join();
+  try {
+    return validateCodexConnectionTestResponse(
+      bytes: base64.decode(encoded),
+      protocol: values['API'] == 'responses'
+          ? ModelApiProtocol.responses
+          : ModelApiProtocol.chatCompletions,
+      model: model,
+      httpStatus: int.tryParse(values['HTTP_STATUS'] ?? '') ?? 0,
+    );
+  } on FormatException {
+    return const AgentConnectionTestResult(
+      successful: false,
+      message: 'API 返回的数据无法解析',
+    );
+  }
+}
+
+/// Shared by SSH curl and the native desktop client. No server text is echoed.
+AgentConnectionTestResult validateCodexConnectionTestResponse({
+  required List<int> bytes,
+  required ModelApiProtocol protocol,
+  required String model,
+  required int httpStatus,
+}) {
+  AgentConnectionTestResult failure(String message) =>
+      AgentConnectionTestResult(successful: false, message: message);
+  if (httpStatus < 200 || httpStatus >= 300) {
+    return failure('API 服务返回异常（HTTP $httpStatus）');
+  }
+  if (bytes.length > codexConnectionTestMaxBodyBytes) {
+    return failure('API 测试响应过大，无法安全校验');
+  }
+  try {
+    final body = utf8.decode(bytes);
+    if (protocol == ModelApiProtocol.responses) {
+      var completed = false;
+      var receivedEvent = false;
+      final data = <String>[];
+      for (final line in const LineSplitter().convert(body)) {
+        if (line.startsWith('data:')) {
+          final value = line.substring(5);
+          data.add(value.startsWith(' ') ? value.substring(1) : value);
+        } else if (line.isEmpty && data.isNotEmpty) {
+          final payload = data.join('\n');
+          data.clear();
+          if (payload == '[DONE]') continue;
+          final event = jsonDecode(payload);
+          if (event is! Map<String, dynamic>) {
+            return failure('API 返回的流式响应格式无效');
+          }
+          receivedEvent = true;
+          final type = event['type'];
+          if (type == 'error' ||
+              type == 'response.failed' ||
+              type == 'response.incomplete' ||
+              event['error'] != null) {
+            return failure('API 未完成模型响应，请检查上游服务或模型配额');
+          }
+          if (type == 'response.completed') {
+            final response = event['response'];
+            if (response is! Map<String, dynamic> ||
+                response['status'] != 'completed' ||
+                response['error'] != null) {
+              return failure('API 返回的完成事件无效');
+            }
+            completed = true;
+          }
+        }
+      }
+      if (!receivedEvent) return failure('API 未返回有效的 Responses 流式响应');
+      if (!completed || data.isNotEmpty) {
+        return failure('API 响应提前结束，未收到完整结束事件');
+      }
+    } else {
+      final response = jsonDecode(body);
+      if (response is! Map<String, dynamic> || response['error'] != null) {
+        return failure('API 返回了错误或无效的模型响应');
+      }
+      final choices = response['choices'];
+      if (choices is! List || choices.isEmpty) {
+        return failure('API 未返回有效的 Chat Completions 结果');
+      }
+      for (final choice in choices) {
+        if (choice is! Map<String, dynamic> ||
+            !const {
+              'stop',
+              'tool_calls',
+              'function_call',
+            }.contains(choice['finish_reason']) ||
+            choice['message'] is! Map<String, dynamic>) {
+          return failure('API 未完成 Chat Completions 响应');
+        }
+        final message = choice['message'] as Map<String, dynamic>;
+        final content = message['content'];
+        final refusal = message['refusal'];
+        final calls = message['tool_calls'];
+        if (!(content is String && content.isNotEmpty) &&
+            !(refusal is String && refusal.isNotEmpty) &&
+            !(calls is List && calls.isNotEmpty) &&
+            message['function_call'] is! Map<String, dynamic>) {
+          return failure('API 未返回有效的 Chat Completions 内容');
+        }
+      }
+    }
+  } on FormatException {
+    return failure('API 返回的数据无法解析');
+  }
+  final api = protocol == ModelApiProtocol.responses
+      ? 'Responses'
+      : 'Chat Completions';
+  return AgentConnectionTestResult(
+    successful: true,
+    message: '模型 $model 已完整响应（$api，HTTP $httpStatus）。此测试不验证 WebSocket。',
+  );
 }
 
 String normalizeCodexBaseUrl(String value) {

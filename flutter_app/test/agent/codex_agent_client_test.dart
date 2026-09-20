@@ -833,6 +833,40 @@ void main() {
     );
   });
 
+  test('retains provider fallback detail without closing the Agent', () async {
+    final session = _FakeCodexSession();
+    final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    final events = <RemoteAgentEvent>[];
+    final subscription = client.events.listen(events.add);
+    addTearDown(subscription.cancel);
+    addTearDown(client.disconnect);
+    await client.connect(
+      const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+      _FakeCodexHost(),
+    );
+    const warning =
+        'Falling back from WebSockets to HTTPS transport. '
+        'websocket closed by server before response.completed';
+    session._stdout.add(
+      Uint8List.fromList(
+        utf8.encode(
+          '${jsonEncode({
+            'method': 'warning',
+            'params': {'threadId': 'thread-1', 'message': warning},
+          })}\n',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(events.whereType<RemoteAgentDiagnostic>().last.message, warning);
+    expect(events.whereType<RemoteAgentDiagnostic>().last.isStderr, isTrue);
+    expect(session.terminated, isFalse);
+    expect(
+      events.whereType<RemoteAgentNotification>().last.message.method,
+      'warning',
+    );
+  });
+
   test('reports the dedicated SSH transport close reason', () async {
     final session = _FakeCodexSession();
     final dedicatedHost = _FakeCodexHost(connected: false);

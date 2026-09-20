@@ -11,6 +11,7 @@ import '../ssh/ssh_server_client.dart';
 import 'codex_global_settings.dart';
 import 'codex_host_capabilities.dart';
 import 'codex_protocol.dart';
+import 'provider_transport_notice.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
 
@@ -1387,8 +1388,8 @@ class CodexAgentClient
         testModel: testModel,
         apiProtocol: apiProtocol,
       ),
-      timeout: const Duration(seconds: 30),
-      maxOutputBytes: 64 * 1024,
+      timeout: const Duration(seconds: 55),
+      maxOutputBytes: codexConnectionTestMaxOutputBytes,
     );
     return parseCodexConnectionTest(output);
   }
@@ -1661,6 +1662,12 @@ class CodexAgentClient
           pending.complete(message);
         }
       case CodexRpcNotification():
+        final warning = message.params['message'];
+        if (message.method == 'warning' &&
+            warning is String &&
+            isProviderWebSocketFallback(warning)) {
+          _emitDiagnostic(warning, isStderr: true);
+        }
         if (message.method == 'serverRequest/resolved') {
           final id = CodexRequestId.tryParse(message.params['requestId']);
           final pendingRequest = _serverRequests[id];

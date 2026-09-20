@@ -28,6 +28,52 @@ AppUiState _state() => AppUiState(
 );
 
 void main() {
+  test(
+    'provider fallback is one Chinese notice per turn without settling it',
+    () {
+      var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
+      const message =
+          'Falling back from WebSockets to HTTPS transport. stream disconnected before completion: websocket closed by server before response.completed';
+      for (var i = 0; i < 3; i++) {
+        state = reduceCodexNotification(
+          state,
+          _notification('warning', {
+            'threadId': 'thread-1',
+            'message': message,
+          }),
+          nowMillis: i,
+        );
+      }
+      expect(state.timeline, hasLength(1));
+      expect(state.timeline.single.text, '模型连接中断，正在切换到 HTTPS 重试。');
+      expect(state.running, isTrue);
+      expect(state.activeTurnId, 'turn-1');
+      expect(state.error, isNull);
+      final other = reduceCodexNotification(
+        state,
+        _notification('warning', {'threadId': 'thread-2', 'message': message}),
+      );
+      expect(other, state);
+      state = reduceCodexNotification(
+        state,
+        _notification('error', {
+          'threadId': 'thread-1',
+          'error': {'message': 'Authentication failed'},
+        }),
+      );
+      expect(state.timeline.last.text, 'Authentication failed');
+      state = reduceCodexNotification(
+        state.copyWith(activeTurnId: 'turn-2'),
+        _notification('warning', {
+          'threadId': 'thread-1',
+          'message': '$message: no available account',
+        }),
+      );
+      expect(state.timeline.last.text, '模型接口暂无可用账号，正在切换到 HTTPS 重试。');
+      expect(state.timeline, hasLength(3));
+    },
+  );
+
   test('reduces turn lifecycle and streamed agent text', () {
     var state = _state();
     state = reduceCodexNotification(

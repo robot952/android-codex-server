@@ -658,7 +658,7 @@ class _SettingsForm extends StatelessWidget {
           ),
           const SizedBox(height: 5),
           Text(
-            '仅影响当前自定义 Provider；中转站不支持 WebSocket 时选择“仅 HTTPS”。',
+            '仅影响当前自定义 Provider；WebSocket 连接不稳定时可选择“仅 HTTPS”。',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -763,7 +763,7 @@ class _SettingsForm extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.network_check, size: 18),
-            label: Text(testing ? '正在测试' : '测试连接'),
+            label: Text(testing ? '正在测试' : '测试 HTTP API'),
           ),
         ),
         if (testFeedback != null) ...[

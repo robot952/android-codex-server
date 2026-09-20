@@ -1,5 +1,6 @@
 import '../domain/models.dart';
 import 'codex_protocol.dart';
+import 'provider_transport_notice.dart';
 
 bool isTerminalAgentMessageNotification(CodexRpcNotification notification) {
   if (notification.method != 'item/completed') return false;
@@ -446,8 +447,21 @@ AppUiState reduceCodexNotification(
       );
 
     case 'error' || 'warning' || 'deprecationNotice' || 'guardianWarning':
-      final message = _string(params, const ['message', 'error']);
+      final message = _string(params, const [
+        'message',
+        'error',
+      ]).ifEmpty(() => _string(_map(params['error']), const ['message']));
       if (message.isEmpty || !appliesToActive) return state;
+      if (method == 'warning' && isProviderWebSocketFallback(message)) {
+        final turnId = _turnId(params).ifEmpty(() => state.activeTurnId ?? '');
+        final row = TimelineEntry(
+          id: 'provider-websocket-fallback:$turnId',
+          kind: TimelineKind.notice,
+          text: providerWebSocketFallbackLabel(message),
+          turnId: turnId,
+        );
+        return state.copyWith(timeline: _upsertTimeline(state.timeline, row));
+      }
       return state.copyWith(
         timeline: [
           ...state.timeline,

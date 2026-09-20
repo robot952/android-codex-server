@@ -424,6 +424,7 @@ supports_websockets = false
         expect(parsed.successful, isTrue);
         expect(parsed.message, contains('Responses'));
         expect(parsed.message, contains(model));
+        expect(parsed.message, contains('不验证 WebSocket'));
       },
     );
 
@@ -586,6 +587,111 @@ supports_websockets = false
       }
     });
 
+    test(
+      'rejects a successful HTTP status without a complete response',
+      () async {
+        for (final mode in ['responses_truncated', 'html', 'oversized']) {
+          final home = await _apiFixtureHome(
+            apiKey: 'fixture-key',
+            model: 'test',
+          );
+          final result = await _runShell(
+            buildTestCodexGlobalSettingsScript(
+              baseUrl: 'https://gateway.example.com/v1',
+              apiKey: 'fixture-key',
+              proxyUrl: '',
+              testModel: 'test',
+            ),
+            home: home,
+            environment: _fakeCurlEnvironment(home, mode),
+          );
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            parseCodexConnectionTest(result.stdout).successful,
+            isFalse,
+            reason: mode,
+          );
+          expect(
+            await File('${home.path}/curl-endpoints').readAsString(),
+            'https://gateway.example.com/v1/responses\n',
+          );
+        }
+      },
+    );
+
+    test(
+      'validates SSE framing, terminal status and bounded response bodies',
+      () {
+        AgentConnectionTestResult validate(
+          String body, [
+          ModelApiProtocol protocol = ModelApiProtocol.responses,
+        ]) => validateCodexConnectionTestResponse(
+          bytes: utf8.encode(body),
+          protocol: protocol,
+          model: 'test',
+          httpStatus: 200,
+        );
+        const completed =
+            '{"type":"response.completed","response":{"status":"completed"}}';
+        expect(
+          validate(
+            'event: response.completed\r\ndata:$completed\r\n\r\n',
+          ).successful,
+          isTrue,
+        );
+        expect(validate('data: $completed').successful, isFalse);
+        expect(
+          validate(
+            'data: $completed\n\n'
+            'data: {"type":"response.failed"}\n\n',
+          ).successful,
+          isFalse,
+        );
+        for (final body in [
+          '',
+          '<html>OK</html>',
+          '{"status":"completed"}',
+          'data: {"type":"response.created"}\n\n',
+          'data: [DONE]\n\n',
+          'data: {"type":"response.completed","response":{"status":"in_progress"}}\n\n',
+          'data: {"type":"response.incomplete"}\n\n',
+          'data: {"error":{"message":"private upstream details"}}\n\n',
+          'data: invalid\n\n',
+        ]) {
+          expect(validate(body).successful, isFalse, reason: body);
+        }
+        expect(
+          validate(' ' * (codexConnectionTestMaxBodyBytes + 1)).successful,
+          isFalse,
+        );
+        for (final body in [
+          '{}',
+          '{"error":{"message":"private details"}}',
+          '{"choices":[]}',
+          '{"choices":[{"finish_reason":null,"message":{"content":"OK"}}]}',
+          '{"choices":[{"finish_reason":"length","message":{"content":"OK"}}]}',
+        ]) {
+          expect(
+            validate(body, ModelApiProtocol.chatCompletions).successful,
+            isFalse,
+          );
+        }
+        expect(
+          validate(
+            '{"choices":[{"finish_reason":"stop","message":{"content":"OK"}}]}',
+            ModelApiProtocol.chatCompletions,
+          ).successful,
+          isTrue,
+        );
+        expect(
+          parseCodexConnectionTest(
+            '__CODEX_CONNECTION_TEST_STATUS=SUCCESS\n',
+          ).successful,
+          isFalse,
+        );
+      },
+    );
+
     test('maps local preparation errors and rejects unknown output', () {
       expect(
         parseCodexConnectionTest(
@@ -604,6 +710,66 @@ supports_websockets = false
         throwsStateError,
       );
     });
+
+    test(
+      'real curl rejects truncated and oversized chunked HTTP responses',
+      () async {
+        final home = await Directory.systemTemp.createTemp(
+          'codex-api-http-test-',
+        );
+        addTearDown(() => home.delete(recursive: true));
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        var mode = 'complete';
+        final seenBodies = <Map<String, dynamic>>[];
+        server.listen((request) async {
+          seenBodies.add(
+            jsonDecode(await utf8.decoder.bind(request).join())
+                as Map<String, dynamic>,
+          );
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+          );
+          if (mode == 'large') {
+            request.response.write('x' * (codexConnectionTestMaxBodyBytes + 1));
+          } else {
+            request.response.write(
+              'data: {"type":"response.output_text.delta","delta":"OK"}\n\n',
+            );
+            if (mode == 'complete') {
+              request.response.write(
+                'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+              );
+            }
+          }
+          await request.response.close();
+        });
+        for (final testMode in ['complete', 'truncated', 'large']) {
+          mode = testMode;
+          final result = await _runShell(
+            buildTestCodexGlobalSettingsScript(
+              baseUrl: 'http://127.0.0.1:${server.port}/v1',
+              apiKey: 'local-fixture-only',
+              proxyUrl: '',
+              testModel: 'local-fixture',
+              apiProtocol: ModelApiProtocol.responses,
+            ),
+            home: home,
+            environment: {'TMPDIR': home.path},
+          );
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            parseCodexConnectionTest(result.stdout).successful,
+            testMode == 'complete',
+            reason: testMode,
+          );
+          expect(await home.list().toList(), isEmpty);
+        }
+        expect(seenBodies, hasLength(3));
+        expect(seenBodies.every((body) => body['stream'] == true), isTrue);
+      },
+    );
   });
 
   group('Codex API model list', () {
@@ -707,7 +873,7 @@ Future<Directory> _apiFixtureHome({
   ).writeAsString('Authorization: Bearer $apiKey\n');
   await File(
     '${home.path}/expected-responses',
-  ).writeAsString('{"model":"$model","input":"ping"}');
+  ).writeAsString('{"model":"$model","input":"Reply only OK.","stream":true}');
   await File('${home.path}/expected-chat').writeAsString(
     '{"model":"$model","messages":[{"role":"user","content":"ping"}]}',
   );

@@ -4,6 +4,8 @@ set -u
 endpoint=
 header_file=
 body_file=
+output_file=
+previous_argument=
 expected_key="$(cat "$HOME/expected-key")"
 
 file_mode() {
@@ -15,6 +17,8 @@ file_mode() {
 }
 
 for argument in "$@"; do
+  if [ "$previous_argument" = --output ]; then output_file="$argument"; fi
+  previous_argument="$argument"
   printf '%s\n' "$argument" >> "$HOME/curl-arguments"
   case "$argument" in
     *"$expected_key"*) exit 90 ;;
@@ -50,9 +54,25 @@ case "$endpoint" in
 esac
 cmp -s "$body_file" "$expected_body" || exit 98
 printf '%s\n' "$endpoint" >> "$HOME/curl-endpoints"
+[ -n "$output_file" ] || exit 89
+[ "$(file_mode "$output_file")" = 600 ] || exit 88
+case "$api" in
+  responses)
+    printf 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n' > "$output_file"
+    ;;
+  chat)
+    printf '{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"OK"}}]}' > "$output_file"
+    ;;
+esac
 
 case "$FAKE_CURL_MODE:$api" in
-  responses_success:responses) printf '204' ;;
+  responses_success:responses) printf '200' ;;
+  responses_truncated:responses)
+    printf 'data: {"type":"response.output_text.delta","delta":"OK"}\n\n' > "$output_file"
+    printf '200'
+    ;;
+  html:responses) printf '<html>not an API</html>' > "$output_file"; printf '200' ;;
+  oversized:responses) printf '200'; exit 63 ;;
   fallback:responses) printf '404' ;;
   fallback:chat) printf '200' ;;
   unauthorized:responses) printf '401' ;;

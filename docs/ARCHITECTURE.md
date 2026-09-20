@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.112+242，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.113+243，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2311,6 +2311,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 实际 `0.154.0` 样本在重启前后只含子内容，没有复现 root 混入；缺时间戳、同秒父回合和缓存污染由受控回归复现。真实测试发现重启后直接 child resume 被拒绝，而 thread/read 成功。
 - 发送给父线程的协作记录不进入子任务索引、不提供操作入口。普通父会话的输入、审批和返回后的草稿保持可用。
 - Android 14 `1220x2712` 模拟器五组交互已通过；该设备测试使用生产 adapter/controller 和受控对端，真实 API 样本单独留作脱敏回放。详见 [本轮验收](SUBAGENT_READONLY_VALIDATION.md)。
+
+### 17.74 模型 API 传输诊断
+
+- `1.8.113+243`：模型 API WebSocket 回退提示改为中文并按线程/回合去重；原始详情保留在诊断日志，
+  不误触 SSH 重连或将回合判为完成。HTTP 连接测试检查完整响应，不以 HTTP 200 代替模型调用成功。
+- 本机 Codex `0.154.0` 对照证实旧 WebSocket feature 开关无效，内置 `openai` Provider 不允许覆盖；
+  不自动更换 Provider 或破坏已有会话。自定义 Provider 的 `supports_websockets=false` 路径仍有效。
+- 真实探测发现成功握手后 `1013 / no available account`，另有 HTTP 流不完整和超时；服务端账号调度
+  尚未修复，不归结为网站完全不支持 WebSocket。范围和证据见 [传输验收](PROVIDER_TRANSPORT_VALIDATION.md)。
 
 ## 18. 文档维护规则
 

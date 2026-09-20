@@ -47,9 +47,10 @@ void main() {
       expect(find.text('默认思考强度：高'), findsOneWidget);
       expect(find.text('模型 API 传输'), findsOneWidget);
       expect(
-        find.text('仅影响当前自定义 Provider；中转站不支持 WebSocket 时选择“仅 HTTPS”。'),
+        find.text('仅影响当前自定义 Provider；WebSocket 连接不稳定时可选择“仅 HTTPS”。'),
         findsOneWidget,
       );
+      expect(find.text('测试 HTTP API'), findsOneWidget);
       expect(
         find.text('修改模型 URL 只会更新当前 Provider；Provider 名称保持不变。'),
         findsOneWidget,
