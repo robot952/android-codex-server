@@ -2,7 +2,7 @@
 
 ## 行为
 
-版本 `1.8.116+246`。同一个 Codex HOME 内的同一线程已由另一 app-server 持有 writer 时，
+版本 `1.8.117+248`。同一个 Codex HOME 内的同一线程已由另一 app-server 持有 writer 时，
 第二个客户端通过原生冲突错误进入只读，不抢占。适用于两台手机 App，以及手机 App 与 VS Code；
 不同服务器/Unix 用户/Codex HOME 的独立会话不合并。
 
@@ -41,12 +41,12 @@
 
 ## 本轮交付
 
-- 全量 Flutter `596` 项、analyze、Debug/Release 构建通过；Android 14 的两组占用/恢复设备流程通过，
+- 全量 Flutter `597` 项、analyze、Debug/Release 构建通过；Android 14 的两组占用/恢复设备流程通过，
   `1220x2712` 只读截图已核对，正常 Release 已重新覆盖安装并启动。
 - 本地 publish 一次通过，共 `5m30.471s`：测试 `56.617s`、Debug `45.159s`、Release `148.606s`、
   安装检查 `22.039s`、发布回验 `35.577s`；Server/OpenCode 门禁和发布前校验命中缓存，没有云端构建或真实模型调用。
 - 本轮发布回验完成于 `2026-09-21T04:33:01Z`；包含全量测试、模拟器安装启动和 APK 下载校验，不是云端编译耗时。
-- APK `dist/Agent-1.8.116.apk`，SHA-256：
-  `662956c9eb03e738f458732c4bdff31d0fc47ab214275a6bfb56be5e0aa09e3d`。
+- APK `dist/Agent-1.8.117.apk`，SHA-256：
+  `409a11ab3abbb4f37c3e16406918343d20434060a25790cac4ea7e35cc32c633`。
 - 稳定签名证书 SHA-256：`72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 - 内外网完整下载与构建包一致：`http://192.168.8.107/codex.apk`、`http://frp.asdb.top:18080/codex.apk`。

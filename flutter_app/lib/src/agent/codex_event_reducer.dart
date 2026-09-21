@@ -74,6 +74,18 @@ AppUiState reduceCodexNotification(
               activeThreadId.isEmpty));
   final now = nowMillis ?? DateTime.now().millisecondsSinceEpoch;
 
+  bool isLateSettledEvent([String? eventTurnId]) {
+    if (!appliesToActive) return false;
+    final turnId = (eventTurnId ?? _turnId(params)).trim();
+    if (turnId.isEmpty) return false;
+    final timing = state.turnTiming;
+    final visibleThreadId = activeThreadId ?? threadId;
+    return state.activeTurnId?.trim().isNotEmpty != true &&
+        timing?.threadId == visibleThreadId &&
+        timing?.turnId?.trim() == turnId &&
+        timing?.completedAtMillis != null;
+  }
+
   AppUiState updateRuntime(
     AppUiState current, {
     required String status,
@@ -259,6 +271,7 @@ AppUiState reduceCodexNotification(
 
     case 'item/started' || 'item/completed':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       final item = _map(params['item']);
       if (item == null) return state;
       final itemType = _string(item, const ['type']);
@@ -310,6 +323,7 @@ AppUiState reduceCodexNotification(
 
     case 'item/agentMessage/delta':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       final id = _string(params, const ['itemId', 'item_id']);
       if (id.isEmpty) return state;
       final turn = _turnId(params);
@@ -343,12 +357,14 @@ AppUiState reduceCodexNotification(
         'item/reasoning/summaryTextDelta' ||
         'item/reasoning/textDelta':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       return state.copyWith(
         timeline: _reduceReasoningDelta(state.timeline, params),
       );
 
     case 'item/plan/delta':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       return state.copyWith(
         timeline: _reduceTextDelta(
           state.timeline,
@@ -360,6 +376,7 @@ AppUiState reduceCodexNotification(
 
     case 'item/commandExecution/outputDelta':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       final id = _string(params, const ['itemId', 'item_id']);
       if (id.isEmpty) return state;
       final turn = _turnId(params);
@@ -390,6 +407,7 @@ AppUiState reduceCodexNotification(
 
     case 'item/fileChange/patchUpdated':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       final id = _string(params, const ['itemId', 'item_id']);
       if (id.isEmpty) return state;
       final changes = params['changes'];
@@ -423,6 +441,7 @@ AppUiState reduceCodexNotification(
 
     case 'turn/diff/updated':
       if (!appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       return state.copyWith(
         aggregateDiff: _bounded(
           _string(params, const ['diff']),
@@ -437,6 +456,7 @@ AppUiState reduceCodexNotification(
         'error',
       ]).ifEmpty(() => _string(_map(params['error']), const ['message']));
       if (message.isEmpty || !appliesToActive) return state;
+      if (isLateSettledEvent()) return state;
       if (method == 'warning' && isProviderWebSocketFallback(message)) {
         // This is an internal model-transport fallback. The Agent client
         // already records the raw detail in diagnostics; it is not useful
@@ -489,7 +509,9 @@ List<AgentThread> _replaceThread(
 String _turnId(Map<String, Object?> params) {
   final direct = _string(params, const ['turnId', 'turn_id']);
   if (direct.isNotEmpty) return direct;
-  return _string(_map(params['turn']), const ['id', 'turnId', 'turn_id']);
+  final turn = _string(_map(params['turn']), const ['id', 'turnId', 'turn_id']);
+  if (turn.isNotEmpty) return turn;
+  return _string(_map(params['item']), const ['turnId', 'turn_id']);
 }
 
 String _listedTurnId(AppUiState state, String threadId) =>

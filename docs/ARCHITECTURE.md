@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.116+246，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.117+248，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2361,6 +2361,14 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   该按钮，子 Agent 继续只读且底部留空。
 - 子 Agent 的协议 path、thread ID 和去重身份保持原样，用户可见的叶子名称在 presentation 层将连续下划线
   转为空格，例如 `force_takeover__design` 显示为 `force takeover design`。
+
+### 17.78 已完成回合的迟到事件隔离
+
+- `1.8.117+248`：`turn/completed` 或等价的 idle 状态已结算当前 `turnId` 后，后到的同回合 item、assistant
+  delta、命令输出、文件差异、计划、思考和通知不再追加到当前时间线。这样不会出现页面先显示完成、随后又冒出
+  一段命令失败或旧回答的瞬态内容。
+- 该过滤只作用于当前可见线程和已确认完成的同一回合；新的 `turnId`、后台线程和重新进入时服务端返回的正式历史
+  不受影响。恢复期间的迟到事件也会按同一规则丢弃，避免本地缓存与服务端快照分叉。
 
 ## 18. 文档维护规则
 

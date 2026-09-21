@@ -198,6 +198,86 @@ void main() {
     expect(next.turnTiming?.stopped, isTrue);
   });
 
+  test('ignores late timeline events after the same turn completed', () {
+    final state = _state().copyWith(
+      running: false,
+      activeTurnId: null,
+      activeThread: const AgentThread(
+        id: 'thread-1',
+        title: '任务',
+        status: 'idle',
+      ),
+      turnTiming: const TurnTiming(
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        startedAtMillis: 100,
+        completedAtMillis: 200,
+      ),
+    );
+
+    final lateCommand = reduceCodexNotification(
+      state,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'late-command',
+          'type': 'commandExecution',
+          'status': 'failed',
+          'command': 'late command',
+        },
+      }),
+    );
+    final lateText = reduceCodexNotification(
+      lateCommand,
+      _notification('item/agentMessage/delta', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'itemId': 'late-answer',
+        'delta': '迟到回答',
+      }),
+    );
+    final lateOutput = reduceCodexNotification(
+      lateText,
+      _notification('item/commandExecution/outputDelta', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'itemId': 'late-command',
+        'delta': '迟到输出',
+      }),
+    );
+    final lateInnerTurnItem = reduceCodexNotification(
+      lateOutput,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'item': <String, Object?>{
+          'id': 'late-inner-turn',
+          'turnId': 'turn-1',
+          'type': 'commandExecution',
+          'status': 'failed',
+          'command': 'late inner turn',
+        },
+      }),
+    );
+    final lateNotice = reduceCodexNotification(
+      lateInnerTurnItem,
+      _notification('error', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'message': '迟到错误',
+      }),
+    );
+
+    expect(identical(lateCommand, state), isTrue);
+    expect(identical(lateText, state), isTrue);
+    expect(identical(lateOutput, state), isTrue);
+    expect(identical(lateInnerTurnItem, state), isTrue);
+    expect(identical(lateNotice, state), isTrue);
+    expect(lateNotice.timeline, isEmpty);
+    expect(lateNotice.running, isFalse);
+    expect(lateNotice.activeTurnId, isNull);
+  });
+
   test('keeps running after a final answer until turn completion arrives', () {
     final state = _state().copyWith(
       running: true,
