@@ -187,6 +187,10 @@ class AppController extends StateNotifier<AppUiState> {
   _pendingApprovalsByThread = {};
   Timer? _threadSearchTimer;
   Timer? _draftPersistTimer;
+  Timer? _externallyOwnedRefreshTimer;
+  AgentConnectionKey? _externallyOwnedRefreshKey;
+  String? _externallyOwnedRefreshThreadId;
+  bool _externallyOwnedRefreshInFlight = false;
   String? _pendingDraftKey;
   String? _pendingDraftValue;
   int _workspaceRequestId = 0;
@@ -3095,6 +3099,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   void backToThreadList() {
     _flushPendingDraft();
+    _stopExternallyOwnedRefresh();
     final profileId = state.selectedProfileId;
     if (profileId != null) {
       final key = AgentConnectionKey(
@@ -3932,6 +3937,104 @@ class AppController extends StateNotifier<AppUiState> {
       error: null,
     );
     _cacheActiveThreadSession(key, expectedThreadId: threadId);
+    _startExternallyOwnedRefresh(key, threadId);
+  }
+
+  void _startExternallyOwnedRefresh(AgentConnectionKey key, String threadId) {
+    _stopExternallyOwnedRefresh();
+    if (!mounted || !_isActiveThread(key, threadId)) return;
+    _externallyOwnedRefreshKey = key;
+    _externallyOwnedRefreshThreadId = threadId;
+    _externallyOwnedRefreshTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_refreshExternallyOwnedThread(key, threadId)),
+    );
+    unawaited(_refreshExternallyOwnedThread(key, threadId));
+  }
+
+  void _stopExternallyOwnedRefresh() {
+    _externallyOwnedRefreshTimer?.cancel();
+    _externallyOwnedRefreshTimer = null;
+    _externallyOwnedRefreshKey = null;
+    _externallyOwnedRefreshThreadId = null;
+    _externallyOwnedRefreshInFlight = false;
+  }
+
+  Future<void> _refreshExternallyOwnedThread(
+    AgentConnectionKey key,
+    String threadId,
+  ) async {
+    if (_externallyOwnedRefreshInFlight ||
+        !mounted ||
+        !_isActiveThread(key, threadId) ||
+        state.screen == AppScreen.agentWork ||
+        state.activeThread?.isExternallyOwned != true ||
+        state.loading ||
+        state.submitting) {
+      return;
+    }
+    _externallyOwnedRefreshInFlight = true;
+    try {
+      final session = await _agents.readThread(key, threadId);
+      if (!mounted ||
+          !_isActiveThread(key, threadId) ||
+          _externallyOwnedRefreshKey != key ||
+          _externallyOwnedRefreshThreadId != threadId) {
+        return;
+      }
+      final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
+      final cachedSnapshot = cache.getStale(threadId);
+      final refreshedTimeline = _isolateSubAgentTimeline(
+        key,
+        session.thread,
+        session.timeline,
+      );
+      final reconciled = reconcileResumedTimeline(
+        cachedTimeline: cachedSnapshot == null
+            ? null
+            : _isolateSubAgentTimeline(
+                key,
+                cachedSnapshot.thread,
+                cachedSnapshot.timeline,
+              ),
+        cachedNextCursor: cachedSnapshot?.nextTurnsCursor,
+        refreshedTimeline: refreshedTimeline,
+        refreshedNextCursor: refreshedTimeline.length == session.timeline.length
+            ? session.nextTurnsCursor
+            : null,
+        refreshedTurnIds: session.turnIds,
+        cachedThreadUpdatedAt: _knownRevision(cachedSnapshot?.thread.updatedAt),
+        refreshedThreadUpdatedAt: _knownRevision(session.thread.updatedAt),
+        refreshedItemsView: session.itemsView,
+      );
+      final resolvedSession = AgentSession(
+        thread: session.thread.copyWith(isExternallyOwned: true),
+        timeline: _isolateSubAgentTimeline(
+          key,
+          session.thread,
+          reconciled.timeline,
+        ),
+        nextTurnsCursor: reconciled.nextCursor,
+        tokenUsage: session.tokenUsage ?? cachedSnapshot?.tokenUsage,
+        responseSequence: session.responseSequence,
+        activeTurnStartedAtMillis: session.activeTurnStartedAtMillis,
+        turnIds: session.turnIds,
+        itemsView: session.itemsView,
+      );
+      _showThreadSnapshot(
+        key,
+        resolvedSession,
+        loading: false,
+        activeGoal: state.activeGoal,
+        targetScreen: AppScreen.work,
+      );
+      _cacheActiveThreadSession(key, expectedThreadId: threadId);
+    } catch (_) {
+      // Keep the last snapshot visible. The next tick retries transient SSH
+      // or app-server read failures without interrupting the user's view.
+    } finally {
+      _externallyOwnedRefreshInFlight = false;
+    }
   }
 
   Future<void> answerApproval(
@@ -4282,6 +4385,9 @@ class AppController extends StateNotifier<AppUiState> {
     bool subAgentBackNavigation = false,
     _SessionSnapshot? initialSnapshot,
   }) {
+    if (targetScreen != AppScreen.work || !snapshot.thread.isExternallyOwned) {
+      _stopExternallyOwnedRefresh();
+    }
     if (targetScreen == AppScreen.agentWork) {
       _subAgentThreadRegistry.remember(key, snapshot.thread.id);
     }
@@ -4648,6 +4754,10 @@ class AppController extends StateNotifier<AppUiState> {
           subAgentBackNavigation: subAgentBackNavigation,
           initialSnapshot: initialSnapshot,
         );
+        if (resolvedSession.thread.isExternallyOwned &&
+            targetScreen == AppScreen.work) {
+          _startExternallyOwnedRefresh(key, thread.id);
+        }
         if (session.itemsView == 'notLoaded') {
           state = state.copyWith(diagnostic: '最近一个回合内容过大，已跳过详情；会话仍可继续使用');
         }
@@ -6886,6 +6996,7 @@ class AppController extends StateNotifier<AppUiState> {
     _retainedAgentConnections.clear();
     _threadSearchTimer?.cancel();
     _draftPersistTimer?.cancel();
+    _stopExternallyOwnedRefresh();
     _agentThreadNextCursors.clear();
     _agentThreadCursorSearches.clear();
     _agentThreadPageRequests.clear();

@@ -1466,6 +1466,7 @@ abstract final class CodexPayloadParser {
           ], maxChars: codexMaxTimelineTextChars),
         ),
         status: _firstString(item, const <String>['phase', 'status']),
+        questions: _parseAsyncQuestions(item, id),
         turnId: boundedTurnId,
       ),
       'reasoning' => _parseReasoningItem(
@@ -1571,6 +1572,41 @@ abstract final class CodexPayloadParser {
                 turnId: boundedTurnId,
               ),
     };
+  }
+
+  static List<InputQuestion> _parseAsyncQuestions(
+    Map<String, Object?> item,
+    String itemId,
+  ) {
+    final raw = _asList(item['questions'], maxItems: 16);
+    return List<InputQuestion>.unmodifiable(
+      raw
+          .map(_asObjectMap)
+          .whereType<Map<String, Object?>>()
+          .toList()
+          .asMap()
+          .entries
+          .map((entry) {
+            final value = entry.value;
+            final title = _firstString(value, const <String>[
+              'title',
+              'question',
+            ], maxChars: codexMaxTimelineTextChars);
+            final options = _asList(value['options'], maxItems: 24)
+                .map((option) => option is String ? option : '')
+                .where((option) => option.trim().isNotEmpty)
+                .map((option) => InputOption(label: _bounded(option, 4096, '')))
+                .toList(growable: false);
+            return InputQuestion(
+              id: 'async:$itemId:${entry.key}',
+              header: '需要回答',
+              question: title,
+              options: options,
+              isOther: true,
+            );
+          })
+          .where((question) => question.question.trim().isNotEmpty),
+    );
   }
 }
 

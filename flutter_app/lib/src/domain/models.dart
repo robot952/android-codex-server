@@ -493,6 +493,7 @@ abstract class TimelineEntry with _$TimelineEntry {
     @Default('') String subAgentActivity,
     @Default(<String>[]) List<String> reasoningSummary,
     @Default(<String>[]) List<String> reasoningContent,
+    @Default(<InputQuestion>[]) List<InputQuestion> questions,
   }) = _TimelineEntry;
 }
 

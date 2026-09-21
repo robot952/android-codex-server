@@ -216,6 +216,45 @@ void main() {
     },
   );
 
+  test(
+    'occupied thread refreshes its read-only transcript while open',
+    () async {
+      final occupied = _threadAActive.copyWith(isExternallyOwned: true);
+      final agent = _ResumeAgent(threads: [occupied, _threadB]);
+      final harness = await _createHarness(agent);
+      final resume = agent.gateNextResume(occupied.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => harness.controller.state.loading);
+      resume.complete(
+        AgentSession(
+          thread: occupied,
+          timeline: [
+            TimelineEntry(
+              id: 'before-refresh',
+              kind: TimelineKind.agentMessage,
+              text: '旧进度',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.isThreadReadOnly, isTrue);
+
+      agent.readSessions[occupied.id] = AgentSession(
+        thread: occupied.copyWith(updatedAt: 11),
+        timeline: [
+          TimelineEntry(
+            id: 'after-refresh',
+            kind: TimelineKind.agentMessage,
+            text: '新进度',
+          ),
+        ],
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      expect(harness.controller.state.timeline.single.text, '新进度');
+    },
+  );
+
   test('late occupied retry never locks the next conversation', () async {
     final occupied = _threadA.copyWith(isExternallyOwned: true);
     final agent = _ResumeAgent(threads: [occupied, _threadB]);
@@ -1069,7 +1108,11 @@ class _Host implements RemoteServerClient {
   }
 }
 
-class _ResumeAgent implements RemoteAgentClient, RemoteAgentGenerationClient {
+class _ResumeAgent
+    implements
+        RemoteAgentClient,
+        RemoteAgentGenerationClient,
+        RemoteAgentThreadInspectionClient {
   _ResumeAgent({required this.threads});
 
   List<AgentThread> threads;
@@ -1077,6 +1120,7 @@ class _ResumeAgent implements RemoteAgentClient, RemoteAgentGenerationClient {
   final StreamController<RemoteAgentEvent> _events =
       StreamController<RemoteAgentEvent>.broadcast(sync: true);
   final Map<String, List<Completer<AgentSession>>> _resumeGates = {};
+  final Map<String, AgentSession> readSessions = {};
   bool connected = false;
 
   @override
@@ -1134,6 +1178,13 @@ class _ResumeAgent implements RemoteAgentClient, RemoteAgentGenerationClient {
     }
     final thread = threads.firstWhere((candidate) => candidate.id == threadId);
     return AgentSession(thread: thread, timeline: const <TimelineEntry>[]);
+  }
+
+  @override
+  Future<AgentSession> readThread(String threadId) async {
+    final session = readSessions[threadId];
+    if (session == null) throw UnsupportedError('test read not configured');
+    return session;
   }
 
   @override

@@ -539,6 +539,27 @@ void main() {
       expect(snapshot?.timeline.single.text, 'done');
     });
 
+    test('parses asynchronous question choices from an agent message', () {
+      final entry = CodexPayloadParser.parseItem(<String, Object?>{
+        'id': 'async-question',
+        'type': 'agentMessage',
+        'delivery': 'async',
+        'text': '请选择处理方式',
+        'questions': <Object?>[
+          <String, Object?>{
+            'title': '处理方式',
+            'options': <Object?>['快速', '完整'],
+          },
+        ],
+      }, turnId: 'turn-1');
+
+      expect(entry?.questions.single.question, '处理方式');
+      expect(entry?.questions.single.options.map((option) => option.label), [
+        '快速',
+        '完整',
+      ]);
+    });
+
     test('parses standard and compatible thread goals with a fallback id', () {
       final standard = CodexPayloadParser.parseThreadGoal(<String, Object?>{
         'threadId': 'thread-standard',

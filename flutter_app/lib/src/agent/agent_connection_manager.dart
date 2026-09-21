@@ -361,6 +361,37 @@ class AgentConnectionManager {
     return result;
   }
 
+  /// Reads an existing thread without resuming it or taking writer ownership.
+  /// Externally-owned pages use this method for live, read-only refreshes.
+  Future<AgentSession> readThread(
+    AgentConnectionKey key,
+    String threadId, {
+    bool externallyOwned = true,
+  }) async {
+    final entry = _requireConnected(key);
+    final generation = entry.generation;
+    final client = entry.client;
+    if (client is! RemoteAgentThreadInspectionClient) {
+      throw UnsupportedError('${key.agent.label} 不支持只读会话读取');
+    }
+    final result = await (client as RemoteAgentThreadInspectionClient)
+        .readThread(threadId);
+    if (!_isCurrent(key, entry) || entry.generation != generation) {
+      throw StateError('Agent 只读会话读取请求已失效');
+    }
+    if (!externallyOwned) return result;
+    return AgentSession(
+      thread: result.thread.copyWith(isExternallyOwned: true),
+      timeline: result.timeline,
+      nextTurnsCursor: result.nextTurnsCursor,
+      tokenUsage: result.tokenUsage,
+      responseSequence: result.responseSequence,
+      activeTurnStartedAtMillis: result.activeTurnStartedAtMillis,
+      turnIds: result.turnIds,
+      itemsView: result.itemsView,
+    );
+  }
+
   Future<AgentTurnsPage> loadOlderTurns(
     AgentConnectionKey key, {
     required String threadId,

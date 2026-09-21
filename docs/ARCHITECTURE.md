@@ -464,12 +464,16 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   保留主会话标题与历史，底部显示“已在另一个应用中打开”和重试。该状态由
   `AgentThread.isExternallyOwned` 随 lane 内线程缓存维护，不持久化、不依据运行状态猜测占用；
   页面和控制器共同阻止发送、停止、审批、权限/模型及会话修改，草稿保留。重试成功恢复输入，失败仍只读。
+  只读页面保持当前路由并以有界轮询读取最新元数据和回合历史，不能要求用户返回列表后再进入才能看到进度；轮询不得恢复
+  writer，也不得因为暂时读取失败覆盖最后一份可见快照。
 - Composer 发送时先插入 optimistic user row，`turn/start` 返回稳定 turn ID 后合并；活动回合中再次
   发送且 Agent 支持时走 `turn/steer`，运行中显示停止图标且停止需要确认；事件 reducer 会合并消息
   delta、命令输出、文件修改、思考/计划和完成状态；
 - 命令、文件修改和权限保留底部审批面板；`item/tool/requestUserInput`（兼容 `tool/requestUserInput`）
   使用独立提问弹窗，显示多问题、选项说明、`isOther` 自定义回答和 `isSecret` 私密输入。
   全部问题填写后才可提交，不默认选择或自动发送答案；跳过回复空 answers 映射。
+  `agentMessage` 携带 `delivery: async` 和 `questions` 时显示可点击选项及自由输入卡片；提交按当前回合使用
+  `turn/steer` 普通用户输入，回合已结束时使用 `turn/start`，不能伪造同步提问的 RPC 回复。
   弹窗适配竖屏、放大字体与软键盘，失败保留草稿供重试；服务器 `serverRequest/resolved`、断线或离开
   目标会话会关闭对应弹窗，不误关其他路由。权限 sheet 提供
   请求批准、替我审批、完全访问，启用完全访问需要二次确认；审批队列按

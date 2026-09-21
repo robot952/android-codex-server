@@ -38,7 +38,9 @@ List<TimelineEntry> normalizeTimelineEntriesForDisplay(
 
 TimelineEntry? _normalizeAgentMessage(TimelineEntry entry) {
   final text = _removeThinkingDrafts(entry.text);
-  if (text.isEmpty && entry.attachments.isEmpty) return null;
+  if (text.isEmpty && entry.attachments.isEmpty && entry.questions.isEmpty) {
+    return null;
+  }
   return text == entry.text ? entry : entry.copyWith(text: text);
 }
 
