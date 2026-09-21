@@ -1409,9 +1409,9 @@ void main() {
     expect(find.text('3 个后台智能体'), findsOneWidget);
     await tester.tap(find.byKey(const Key('background-agents-toggle')));
     await tester.pumpAndSettle();
-    expect(find.text('check_workspace'), findsWidgets);
-    expect(find.text('check_time'), findsWidgets);
-    expect(find.text('check_system'), findsWidgets);
+    expect(find.text('check workspace'), findsWidgets);
+    expect(find.text('check time'), findsWidgets);
+    expect(find.text('check system'), findsWidgets);
     expect(find.text('已完成'), findsNWidgets(6));
     expect(tester.takeException(), isNull);
   });

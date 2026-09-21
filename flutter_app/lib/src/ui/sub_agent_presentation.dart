@@ -271,7 +271,7 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
 
 SubAgentPresentation _toSubAgentPresentation(TimelineEntry entry, int index) {
   final path = entry.subAgentPath.trim();
-  final name = _leafName(path);
+  final name = _displayAgentName(_leafName(path));
   final threadId = entry.subAgentThreadId.trim();
   return SubAgentPresentation(
     threadId: threadId,
@@ -296,6 +296,16 @@ String _leafName(String path) {
     trimmed.lastIndexOf('\\'),
   ].reduce((left, right) => left > right ? left : right);
   return (separator < 0 ? trimmed : trimmed.substring(separator + 1)).trim();
+}
+
+/// Agent paths are stable protocol values, but their leaf names are user-facing.
+/// Keep the wire/path identity intact while making generated snake_case names
+/// readable in activity rows, the background list, and the child page title.
+String _displayAgentName(String value) {
+  return value
+      .replaceAll(RegExp(r'_+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 }
 
 SubAgentDisplayStatus _toDisplayStatus(TimelineEntry entry) {
@@ -344,7 +354,7 @@ SubAgentPresentation _mergeWith(
   final path = next.path.isEmpty ? current.path : next.path;
   // Collaboration status updates often omit agentPath. The shortened thread id
   // is only a fallback, not a rename of an already named collaborator.
-  final name = path.isNotEmpty ? _leafName(path) : next.name;
+  final name = path.isNotEmpty ? _displayAgentName(_leafName(path)) : next.name;
   final summary = next.summary.isEmpty ? current.summary : next.summary;
   final explicitlyRestarts =
       next.activity == 'sendInput' || next.activity == 'resumeAgent';

@@ -2017,6 +2017,42 @@ rmdir "\$lockdir" 2>/dev/null || true
   );
 }
 
+/// Returns a bounded, current-SSH-user-only cleanup script for an explicit
+/// takeover. Codex has no RPC that releases another app-server's writer;
+/// callers must warn that this interrupts every matching Codex app-server.
+String buildCodexForceTakeoverScript() => r'''
+set -u
+terminated=0
+
+is_codex_app_server() {
+  candidate="$1"
+  [ -r "/proc/$candidate/cmdline" ] || return 1
+  command_line="$(tr '\000' ' ' <"/proc/$candidate/cmdline" 2>/dev/null || true)"
+  printf '%s' "$command_line" | grep -E 'app-server' >/dev/null 2>&1 || return 1
+  printf '%s' "$command_line" | grep -E '(^|/)(codex|codex-cli)(\.js)?( |$)|@openai/codex' >/dev/null 2>&1 || return 1
+  printf '%s' "$command_line" | grep -Ei 'opencode|codex-remote-opencode-bridge' >/dev/null 2>&1 && return 1
+  return 0
+}
+
+terminate_matching() {
+  for proc in /proc/[0-9]*; do
+    pid="${proc##*/}"
+    [ "$pid" = "$$" ] && continue
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    if is_codex_app_server "$pid"; then
+      if kill "$1" "$pid" 2>/dev/null; then
+        [ "${2:-0}" = 1 ] && terminated=$((terminated + 1))
+      fi
+    fi
+  done
+}
+
+terminate_matching -TERM 1
+sleep 0.3
+terminate_matching -KILL 0
+printf 'CODEX_TAKEOVER|terminated|%s\n' "$terminated"
+''';
+
 String _durablePathsScript(String key) =>
     '''
 base=\${XDG_RUNTIME_DIR:-/tmp/codex-remote-\$(id -u)}

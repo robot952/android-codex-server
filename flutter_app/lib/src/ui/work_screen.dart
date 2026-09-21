@@ -319,6 +319,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                 _ExternallyOwnedThreadBanner(
                   loading: state.loading,
                   onRetry: controller.retryActiveThread,
+                  allowTakeover: state.activeAgent == AgentKind.codex,
+                  onTakeover: () => _confirmForceTakeover(controller),
                 ),
               if (!readOnly)
                 _Composer(
@@ -647,6 +649,38 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       ),
     );
     return result == true;
+  }
+
+  Future<void> _confirmForceTakeover(AppController controller) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.power_settings_new),
+        title: const Text('强制接管会话？'),
+        content: const Text(
+          '这会终止当前 SSH 用户下的全部 Codex app-server 回合，可能中断其他会话。'
+          '不会终止 OpenCode 或 SSH。确定后将重新连接并尝试接管当前对话。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(
+              '终止并接管',
+              style: TextStyle(
+                color: Theme.of(dialogContext).colorScheme.error,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await controller.forceTakeoverActiveThread();
+    }
   }
 
   Future<void> _pickAttachments({required bool imagesOnly}) async {
@@ -5474,10 +5508,14 @@ class _ExternallyOwnedThreadBanner extends StatelessWidget {
   const _ExternallyOwnedThreadBanner({
     required this.loading,
     required this.onRetry,
+    required this.allowTakeover,
+    required this.onTakeover,
   });
 
   final bool loading;
   final Future<void> Function() onRetry;
+  final bool allowTakeover;
+  final Future<void> Function() onTakeover;
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -5493,41 +5531,70 @@ class _ExternallyOwnedThreadBanner extends StatelessWidget {
           border: Border.all(color: const Color(0xFF505050)),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.lock_outline, size: 20),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.lock_outline, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        '已在另一个应用中打开',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '请先在那边关闭会话，才能在这里继续。',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: Wrap(
+                spacing: 2,
+                runSpacing: 0,
+                alignment: WrapAlignment.end,
                 children: [
-                  const Text(
-                    '已在另一个应用中打开',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  TextButton.icon(
+                    key: const Key('retry-active-thread'),
+                    onPressed: loading ? null : () => unawaited(onRetry()),
+                    icon: loading
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh, size: 16),
+                    label: const Text('重试'),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '请先在那边关闭会话，才能在这里继续。',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  if (allowTakeover)
+                    TextButton.icon(
+                      key: const Key('takeover-active-thread'),
+                      onPressed: loading
+                          ? null
+                          : () => unawaited(onTakeover()),
+                      icon: const Icon(Icons.power_settings_new, size: 16),
+                      label: const Text('强制接管'),
                     ),
-                  ),
                 ],
               ),
-            ),
-            const SizedBox(width: 6),
-            TextButton.icon(
-              key: const Key('retry-active-thread'),
-              onPressed: loading ? null : () => unawaited(onRetry()),
-              icon: loading
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 16),
-              label: const Text('重试'),
             ),
           ],
         ),

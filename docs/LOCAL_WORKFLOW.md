@@ -291,7 +291,9 @@ CODEX_USER_INPUT_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-user-i
 `integration_test/thread_ownership_workflow_test.dart`。覆盖手机与 VS Code/另一手机使用的同一原生 writer
 冲突协议、只读读取、历史失败仍锁定、重试解锁和草稿恢复。设备对端为受控 JSONL，不消耗模型额度；
 真正的 writer 互斥通过两个独立 Codex app-server 共享临时 HOME 验证，不能用普通 active 状态伪造占用。
-不得为了释放占用终止用户的 app-server、调用 interrupt 或清理会话文件；返回列表不保证立即释放 writer。
+默认回归不得为了释放占用终止用户的 app-server、调用 interrupt 或清理会话文件；产品中的“强制接管”是
+单独的破坏性用户操作，仅允许在二次确认后按当前 SSH 用户匹配 Codex app-server，且必须验证脚本完成标记，
+不能声称只终止某一个线程。返回列表不保证立即释放 writer。
 
 只有用户授权真实 API 消耗后才运行：
 

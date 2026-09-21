@@ -122,6 +122,24 @@ void main() {
   });
 
   test(
+    'formats generated snake case names for display without changing paths',
+    () {
+      final agent = <TimelineEntry>[
+        _agent(
+          'agent',
+          'child-thread',
+          'turn',
+          'running',
+          path: 'team/force_takeover__design',
+        ),
+      ].toSubAgentPresentations().single;
+
+      expect(agent.name, 'force takeover design');
+      expect(agent.path, 'team/force_takeover__design');
+    },
+  );
+
+  test(
     'a later active update cannot revive a terminal state in the same turn',
     () {
       final agent = <TimelineEntry>[

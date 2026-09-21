@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:synchronized/synchronized.dart';
 
 import '../agent/agent_connection_manager.dart';
+import '../agent/codex_agent_client.dart';
 import '../agent/codex_global_settings.dart';
 import '../agent/codex_version_catalog.dart';
 import '../agent/codex_event_reducer.dart';
@@ -2651,6 +2652,63 @@ class AppController extends StateNotifier<AppUiState> {
       agentName: null,
       navigationGeneration: _advanceSessionNavigation(key),
     );
+  }
+
+  Future<void> forceTakeoverActiveThread() async {
+    await _ensureInitialized();
+    final thread = state.activeThread;
+    final profileId = state.selectedProfileId;
+    if (thread == null ||
+        profileId == null ||
+        !thread.isExternallyOwned ||
+        state.activeAgent != AgentKind.codex ||
+        state.screen == AppScreen.agentWork ||
+        state.loading ||
+        state.submitting) {
+      return;
+    }
+    final profile = state.profiles.firstWhereOrNull(
+      (candidate) => candidate.id == profileId,
+    );
+    final host = profile == null ? null : _connections.client(profileId);
+    if (profile == null || host is! RemoteServerScriptClient) {
+      state = state.copyWith(error: '当前服务器不支持安全的 Codex 接管');
+      return;
+    }
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: AgentKind.codex,
+    );
+    _flushPendingDraft();
+    state = state.copyWith(loading: true, submitting: true, error: null);
+    try {
+      // Close this app's lane first, then terminate only matching Codex
+      // app-server processes owned by the authenticated SSH user.
+      await _agents.disconnect(profileId, agent: AgentKind.codex);
+      final output = await (host as RemoteServerScriptClient).runShellScript(
+        buildCodexForceTakeoverScript(),
+        timeout: const Duration(seconds: 15),
+        maxOutputBytes: 64 * 1024,
+      );
+      if (!RegExp(r'CODEX_TAKEOVER\|terminated\|[1-9]').hasMatch(output)) {
+        throw StateError('未找到可接管的 Codex app-server，仍保持只读');
+      }
+      final generation = _advanceSessionNavigation(key);
+      await _openThreadInternal(
+        thread: thread,
+        targetScreen: AppScreen.work,
+        agentName: null,
+        navigationGeneration: generation,
+      );
+    } catch (error) {
+      if (mounted && _isActiveThread(key, thread.id)) {
+        state = state.copyWith(
+          loading: false,
+          submitting: false,
+          error: _message(error, '强制接管失败，仍保持只读'),
+        );
+      }
+    }
   }
 
   /// Opens a thread referenced by a completion-notification payload.  The

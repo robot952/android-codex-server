@@ -145,6 +145,24 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('force takeover requires an explicit destructive confirmation', (
+    tester,
+  ) async {
+    await _pump(tester, _state());
+
+    await tester.tap(find.byKey(const Key('takeover-active-thread')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('强制接管会话？'), findsOneWidget);
+    expect(find.textContaining('全部 Codex app-server'), findsOneWidget);
+    expect(find.text('终止并接管'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.text('强制接管会话？'), findsNothing);
+    expect(find.byType(TextField), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('ownership change closes open action and attachment menus', (
     tester,
   ) async {

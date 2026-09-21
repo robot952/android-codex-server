@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.115+245，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.116+246，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1229,8 +1229,10 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 30. Codex 模型列表请求必须包含 `includeHidden: true`，展示服务端默认隐藏的所有模型，不仅限于 GPT-6。
     模型思考档位以服务端元数据为准，同 ID 的自定义模型继承这些能力；用户在 App 中主动隐藏的选择继续保留。
 31. 两台手机 App 或手机与 VS Code 打开同一 Codex 对话时，先持有服务端写入权的一端继续工作，后打开
-    的一端只读并显示占用提示/重试；不得自动抢占、停止另一端回合或关闭服务进程。只读仍允许查看、复制、
-    分页、图片/差异及子 Agent 导航。占用解除以服务端恢复成功为准，返回列表不等于服务端立即释放 writer。
+    的一端只读并显示占用提示/重试；默认不得自动抢占、停止另一端回合或关闭服务进程。Codex 主会话的只读
+    页面可由用户明确确认“强制接管”，此操作只在当前 SSH 用户范围内匹配并终止 Codex app-server，可能中断
+    该用户的其他 Codex 对话；不会终止 OpenCode、SSH 或其他 Unix 用户进程。只读仍允许查看、复制、分页、
+    图片/差异及子 Agent 导航。占用解除以服务端恢复成功为准，返回列表不等于服务端立即释放 writer。
 
 ## 15. 修改影响图和顺序
 
@@ -2345,8 +2347,20 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   只读时关闭所属修改弹层和问题弹窗，不关闭图片/差异预览。子 Agent 仍使用空底部，不显示主会话占用条。
 - 真实 Codex `0.154.0` 与插件版 `0.154.0-alpha.6.2` 的两个独立 app-server、共享临时 HOME
   已验证原生 writer 冲突、只读历史和退出测试 owner 后恢复；仅本地 shell 测试回合，无真实模型 API 消耗。
-  `thread/unsubscribe` 不立即释放 writer，不主动调用它或终止进程来抢占对话。验收边界见
+  `thread/unsubscribe` 不立即释放 writer；默认重试不调用它或终止进程来抢占对话，显式接管的破坏性范围见
   [跨端只读验收](THREAD_OWNERSHIP_VALIDATION.md)。
+
+### 17.77 跨端会话显式接管与子 Agent 名称
+
+- `1.8.116+246`：主 Codex 会话的占用提示增加“强制接管”。按钮只在用户二次确认后执行，先断开本 App
+  的 Codex lane，再通过当前 SSH 用户运行带 `CODEX_TAKEOVER|terminated|N` 完成标记的清理脚本，匹配
+  `app-server` 且命令行属于 Codex 的进程，并排除 OpenCode。脚本只发送 `TERM`，等待后再发送 `KILL`，
+  不使用 `sudo`、不触碰 SSH 和其他 Unix 用户。它是用户主动的粗粒度接管，不能保证只终止占用当前线程的那个
+  进程；确认文案明确提示可能中断同一 SSH 用户的其他 Codex 回合，找不到匹配进程时仍保持只读。
+- 接管成功后通过新的导航代次重连并重新读取当前线程；失败保留只读页和草稿。OpenCode 和子 Agent 页不展示
+  该按钮，子 Agent 继续只读且底部留空。
+- 子 Agent 的协议 path、thread ID 和去重身份保持原样，用户可见的叶子名称在 presentation 层将连续下划线
+  转为空格，例如 `force_takeover__design` 显示为 `force takeover design`。
 
 ## 18. 文档维护规则
 

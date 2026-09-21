@@ -813,6 +813,27 @@ void main() {
     expect(supportsDurableCodexAppServer('bridge --listen stdio://'), isFalse);
   });
 
+  test(
+    'force takeover cleanup script has valid shell syntax and narrow markers',
+    () async {
+      final script = buildCodexForceTakeoverScript();
+      expect(script, contains('CODEX_TAKEOVER|terminated|'));
+      expect(script, contains('opencode'));
+      expect(script, contains('app-server'));
+      final directory = await Directory.systemTemp.createTemp(
+        'codex-force-takeover-test-',
+      );
+      final file = File('${directory.path}/takeover.sh');
+      try {
+        await file.writeAsString(script);
+        final syntax = await Process.run('sh', <String>['-n', file.path]);
+        expect(syntax.exitCode, 0, reason: syntax.stderr.toString());
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
   test('bridges JSONL over a masked WebSocket text frame', () async {
     const key = 'dGhlIHNhbXBsZSBub25jZQ==';
     final socket = _FakeSshSocket();
