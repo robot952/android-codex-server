@@ -560,6 +560,26 @@ void main() {
       ]);
     });
 
+    test('only async delivery exposes agent message questions', () {
+      for (final delivery in <String?>[null, 'sync', 'unknown']) {
+        final entry = CodexPayloadParser.parseItem(<String, Object?>{
+          'id': 'ordinary-message',
+          'type': 'agentMessage',
+          'delivery': ?delivery,
+          'text': '普通消息',
+          'questions': <Object?>[
+            <String, Object?>{
+              'title': '处理方式',
+              'options': <Object?>['快速', '完整'],
+            },
+          ],
+        }, turnId: 'turn-1');
+
+        expect(entry?.text, '普通消息');
+        expect(entry?.questions, isEmpty, reason: 'delivery=$delivery');
+      }
+    });
+
     test('parses standard and compatible thread goals with a fallback id', () {
       final standard = CodexPayloadParser.parseThreadGoal(<String, Object?>{
         'threadId': 'thread-standard',

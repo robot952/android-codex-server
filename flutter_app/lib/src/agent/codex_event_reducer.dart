@@ -744,6 +744,9 @@ TimelineEntry mergeCodexTimelineEntry(
     reasoningContent: incoming.reasoningContent.isEmpty
         ? previous.reasoningContent
         : incoming.reasoningContent,
+    questions: incoming.questions.isEmpty
+        ? previous.questions
+        : incoming.questions,
   );
 }
 

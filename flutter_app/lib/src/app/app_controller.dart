@@ -19,6 +19,7 @@ import '../agent/resume_notification_buffer.dart';
 import '../agent/thread_session_cache.dart';
 import '../domain/model_catalog.dart';
 import '../domain/models.dart';
+import '../domain/async_question_reply.dart';
 import 'profile_scoped_back_stack.dart';
 import '../persistence/profile_store.dart';
 import '../platform/background_connection_bridge.dart';
@@ -3261,37 +3262,128 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   Future<void> sendMessage({String? text}) async {
+    await _sendMessage(text: text);
+  }
+
+  /// Answers a non-blocking question without consuming the main composer's
+  /// draft or attachments. The originating question remains bound to its
+  /// profile, Agent, thread and navigation generation across reconnects.
+  Future<bool> answerAsyncQuestion({
+    required String profileId,
+    required AgentKind agent,
+    required String threadId,
+    required TimelineEntry entry,
+    required Map<String, String> answers,
+  }) async {
     await _ensureInitialized();
-    if (state.isThreadReadOnly || state.loading) return;
+    final key = AgentConnectionKey(profileId: profileId, agent: agent);
+    final navigationGeneration = _sessionNavigationGenerations[key] ?? 0;
+    bool isCurrent() {
+      if (!mounted ||
+          state.screen != AppScreen.work ||
+          state.isThreadReadOnly ||
+          !_isActiveThread(key, threadId) ||
+          (_sessionNavigationGenerations[key] ?? 0) != navigationGeneration ||
+          entry.id.isEmpty ||
+          entry.kind != TimelineKind.agentMessage ||
+          entry.questions.isEmpty) {
+        return false;
+      }
+      final current = state.timeline.firstWhereOrNull(
+        (candidate) =>
+            candidate.id == entry.id &&
+            candidate.turnId == entry.turnId &&
+            candidate.kind == TimelineKind.agentMessage,
+      );
+      if (current == null ||
+          current.questions.length != entry.questions.length) {
+        return false;
+      }
+      for (var index = 0; index < entry.questions.length; index++) {
+        if (current.questions[index] != entry.questions[index]) return false;
+      }
+      return true;
+    }
+
+    if (!isCurrent() ||
+        answers.keys.any(
+          (id) => !entry.questions.any((question) => question.id == id),
+        )) {
+      return false;
+    }
+    final replies = <Map<String, Object?>>[];
+    for (var index = 0; index < entry.questions.length; index++) {
+      final question = entry.questions[index];
+      final answer = answers[question.id]?.trim() ?? '';
+      if (answer.isEmpty) continue;
+      replies.add({
+        'questionItemId': asyncQuestionItemId(entry, index),
+        'question': question.question,
+        'answer': answer,
+      });
+    }
+    if (replies.isEmpty) return false;
+    return _sendMessage(
+      text:
+          '<send_user_message_question_reply>\n'
+          '${jsonEncode(replies)}\n'
+          '</send_user_message_question_reply>',
+      preserveComposer: true,
+      isCurrent: isCurrent,
+    );
+  }
+
+  Future<bool> _sendMessage({
+    String? text,
+    bool preserveComposer = false,
+    bool Function()? isCurrent,
+  }) async {
+    await _ensureInitialized();
+    if (!mounted ||
+        state.isThreadReadOnly ||
+        state.loading ||
+        isCurrent?.call() == false) {
+      return false;
+    }
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     if (profileId == null ||
         thread == null ||
         state.submitting ||
-        state.attachmentUploading) {
-      return;
+        (!preserveComposer && state.attachmentUploading)) {
+      return false;
     }
     final profile = state.profiles.firstWhereOrNull(
       (candidate) => candidate.id == profileId,
     );
-    if (profile == null) return;
+    if (profile == null) return false;
     final draftBeforeSend = text ?? state.composerDraft;
     final content = draftBeforeSend.trimRight();
-    if (content.trim().isEmpty && state.attachments.isEmpty) return;
+    final attachments = preserveComposer
+        ? const <PendingAttachment>[]
+        : List<PendingAttachment>.unmodifiable(state.attachments);
+    if (content.trim().isEmpty && attachments.isEmpty) return false;
     final steeringTurnId = state.running ? state.activeTurnId?.trim() : null;
     if (state.running && (steeringTurnId == null || steeringTurnId.isEmpty)) {
       state = state.copyWith(error: '当前回合仍在运行，尚未收到回合 ID，请稍后再试');
-      return;
+      return false;
     }
     if (steeringTurnId?.isNotEmpty == true &&
         !state.activeAgentCapabilities.steerTurn) {
       state = state.copyWith(error: '${state.activeAgent.label} 不支持连续发送');
-      return;
+      return false;
     }
     final key = AgentConnectionKey(
       profileId: profileId,
       agent: state.activeAgent,
     );
+    final sendNavigationGeneration = _sessionNavigationGenerations[key] ?? 0;
+    bool canApplyToCurrentThread() =>
+        mounted &&
+        _isActiveThread(key, thread.id) &&
+        (!preserveComposer ||
+            (_sessionNavigationGenerations[key] ?? 0) ==
+                sendNavigationGeneration);
     final modelSettings = profile.modelSettings(state.activeAgent);
     final model = state.selectedModel?.trim().isNotEmpty == true
         ? state.selectedModel
@@ -3303,7 +3395,6 @@ class AppController extends StateNotifier<AppUiState> {
         : modelSettings.preferredEffort.trim().isEmpty
         ? null
         : modelSettings.preferredEffort.trim();
-    final attachments = List<PendingAttachment>.unmodifiable(state.attachments);
     _diagnostics.info(
       'Message',
       'send_requested profile=$profileId agent=${state.activeAgent.name} '
@@ -3327,11 +3418,35 @@ class AppController extends StateNotifier<AppUiState> {
           .toList(growable: false),
       turnId: state.activeTurnId ?? '',
     );
+    final runningBeforeSend = state.running;
+    bool hasCompleted(String? turnId) =>
+        turnId != null &&
+        state.turnTiming?.threadId == thread.id &&
+        state.turnTiming?.turnId == turnId &&
+        state.turnTiming?.completedAtMillis != null;
+    void discardUnsentQuestion() {
+      // Reconnecting can invalidate navigation without changing the visible
+      // thread. Remove only our unsent row, even after that generation changes.
+      if (!preserveComposer ||
+          !mounted ||
+          !_isActiveThread(key, thread.id) ||
+          !state.timeline.any((entry) => entry.id == optimisticId)) {
+        return;
+      }
+      state = state.copyWith(
+        timeline: state.timeline
+            .where((entry) => entry.id != optimisticId)
+            .toList(growable: false),
+        submitting: false,
+        running: state.activeTurnId == null ? runningBeforeSend : state.running,
+      );
+    }
+
     state = state.copyWith(
       timeline: [...state.timeline, optimistic],
-      composerDraft: '',
-      attachments: const <PendingAttachment>[],
-      composerClearNonce: state.composerClearNonce + 1,
+      composerDraft: preserveComposer ? state.composerDraft : '',
+      attachments: preserveComposer ? state.attachments : const [],
+      composerClearNonce: state.composerClearNonce + (preserveComposer ? 0 : 1),
       submitting: true,
       running: true,
       error: null,
@@ -3341,16 +3456,24 @@ class AppController extends StateNotifier<AppUiState> {
       state.activeAgent,
       thread.id,
     );
-    unawaited(
-      _persist(
-        (stored) => stored.copyWith(
-          composerDrafts: {...stored.composerDrafts, draftKey: ''},
+    if (!preserveComposer) {
+      unawaited(
+        _persist(
+          (stored) => stored.copyWith(
+            composerDrafts: {...stored.composerDrafts, draftKey: ''},
+          ),
         ),
-      ),
-    );
+      );
+    }
     try {
       await _agents.connect(profile, key.agent);
-      if (!_isActiveThread(key, thread.id) || state.isThreadReadOnly) return;
+      if (!mounted ||
+          !_isActiveThread(key, thread.id) ||
+          state.isThreadReadOnly ||
+          isCurrent?.call() == false) {
+        discardUnsentQuestion();
+        return false;
+      }
       late final String turnId;
       final steering = steeringTurnId?.isNotEmpty == true;
       if (steering) {
@@ -3379,6 +3502,10 @@ class AppController extends StateNotifier<AppUiState> {
             requireConnected: true,
           );
         }
+        if (isCurrent?.call() == false) {
+          discardUnsentQuestion();
+          return false;
+        }
         turnId = await _agents.startTurn(
           key,
           threadId: thread.id,
@@ -3393,17 +3520,21 @@ class AppController extends StateNotifier<AppUiState> {
               : profile.workspace,
         );
       }
-      if (mounted && _isActiveThread(key, thread.id)) {
+      if (canApplyToCurrentThread()) {
         _diagnostics.info(
           'Message',
           'send_accepted profile=$profileId agent=${key.agent.name} '
               'thread=${thread.id} turn=$turnId',
         );
         final startedAt = DateTime.now().millisecondsSinceEpoch;
+        final preserveTurnState =
+            preserveComposer &&
+            (hasCompleted(turnId) ||
+                (steering && state.activeTurnId != steeringTurnId));
         state = state.copyWith(
           submitting: false,
-          running: true,
-          activeTurnId: turnId,
+          running: preserveTurnState ? state.running : true,
+          activeTurnId: preserveTurnState ? state.activeTurnId : turnId,
           timeline: state.timeline
               .map(
                 (entry) => entry.id == optimisticId
@@ -3411,11 +3542,13 @@ class AppController extends StateNotifier<AppUiState> {
                     : entry,
               )
               .toList(growable: false),
-          activeThread: state.activeThread?.copyWith(
-            status: 'active',
-            activeTurnId: turnId,
-          ),
-          turnTiming: steering
+          activeThread: preserveTurnState
+              ? state.activeThread
+              : state.activeThread?.copyWith(
+                  status: 'active',
+                  activeTurnId: turnId,
+                ),
+          turnTiming: steering || preserveTurnState
               ? state.turnTiming
               : TurnTiming(
                   threadId: thread.id,
@@ -3424,6 +3557,7 @@ class AppController extends StateNotifier<AppUiState> {
                 ),
         );
       }
+      return true;
     } catch (error, stack) {
       _diagnostics.warn(
         'Message',
@@ -3431,32 +3565,43 @@ class AppController extends StateNotifier<AppUiState> {
         error,
         stack,
       );
-      if (mounted && _isActiveThread(key, thread.id)) {
+      if (canApplyToCurrentThread()) {
         state = state.copyWith(
           submitting: false,
-          running: steeringTurnId?.isNotEmpty == true,
+          running:
+              preserveComposer &&
+                  (hasCompleted(steeringTurnId) ||
+                      state.activeTurnId != steeringTurnId)
+              ? state.running
+              : steeringTurnId?.isNotEmpty == true,
           timeline: state.timeline
               .where((entry) => entry.id != optimisticId)
               .toList(growable: false),
-          composerDraft: draftBeforeSend,
-          attachments: attachments,
-          composerClearNonce: state.composerClearNonce + 1,
+          composerDraft: preserveComposer
+              ? state.composerDraft
+              : draftBeforeSend,
+          attachments: preserveComposer ? state.attachments : attachments,
+          composerClearNonce:
+              state.composerClearNonce + (preserveComposer ? 0 : 1),
           error: _message(error, '发送消息失败'),
         );
         if (isCodexThreadOwnershipError(error, threadId: thread.id)) {
           _markThreadExternallyOwned(key, thread.id);
         }
-        unawaited(
-          _persist(
-            (stored) => stored.copyWith(
-              composerDrafts: {
-                ...stored.composerDrafts,
-                draftKey: draftBeforeSend,
-              },
+        if (!preserveComposer) {
+          unawaited(
+            _persist(
+              (stored) => stored.copyWith(
+                composerDrafts: {
+                  ...stored.composerDrafts,
+                  draftKey: draftBeforeSend,
+                },
+              ),
             ),
-          ),
-        );
+          );
+        }
       }
+      return false;
     }
   }
 

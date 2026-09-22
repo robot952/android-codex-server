@@ -1578,6 +1578,7 @@ abstract final class CodexPayloadParser {
     Map<String, Object?> item,
     String itemId,
   ) {
+    if (item['delivery'] != 'async') return const <InputQuestion>[];
     final raw = _asList(item['questions'], maxItems: 16);
     return List<InputQuestion>.unmodifiable(
       raw

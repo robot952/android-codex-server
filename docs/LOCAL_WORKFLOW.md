@@ -258,6 +258,10 @@ UI 验收推荐使用约 1.5K 画布：
 
 提问弹窗的设备回归：在 SDK/Gradle 缓存环境已设置后执行
 `./scripts/flutter-tool.sh --no-version-check test integration_test/user_input_dialog_test.dart -d emulator-5554`。
+非阻塞提问另由 `test/ui/async_question_dialog_test.dart` 覆盖折叠入口、首次弹出、关闭/跳过、历史恢复、
+只读和切换会话；回答需保留主输入草稿及附件，关闭和跳过不得发起请求或停止回合。
+设备入口为 `integration_test/async_question_dialog_test.dart`，覆盖自动弹出、收起后点击重开、
+真实软键盘避让和跳过不发请求；同样使用内存协议 fixture，结束后覆盖安装正常 APK。
 它使用真实 JSONL adapter、AppController 和 WorkScreen，但协议对端与 Profile 存储均为内存 fixture，
 不登录真实 SSH、不调用模型、不消耗云端额度。测试包会替换模拟器 APK；结束后必须安装正常发布包，
 保留既有 App 数据，不把测试包交付给用户。普通分支推送仍不得创建标签触发云端构建。

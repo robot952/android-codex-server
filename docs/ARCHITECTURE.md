@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.117+248，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.119+250，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -472,8 +472,12 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 - 命令、文件修改和权限保留底部审批面板；`item/tool/requestUserInput`（兼容 `tool/requestUserInput`）
   使用独立提问弹窗，显示多问题、选项说明、`isOther` 自定义回答和 `isSecret` 私密输入。
   全部问题填写后才可提交，不默认选择或自动发送答案；跳过回复空 answers 映射。
-  `agentMessage` 携带 `delivery: async` 和 `questions` 时显示可点击选项及自由输入卡片；提交按当前回合使用
-  `turn/steer` 普通用户输入，回合已结束时使用 `turn/start`，不能伪造同步提问的 RPC 回复。
+  `agentMessage` 携带 `delivery: async` 和 `questions` 时，时间线只显示标题与紧凑的“回答问题”入口，
+  选项及自由输入放独立弹窗。新实时问题首次弹出一次，历史恢复不自动弹；关闭、返回或跳过只在本地收起，
+  不发空消息、不停止模型，保留入口及填写草稿。只读和子 Agent 不可回答。提交使用带问题 ID 的
+  `send_user_message_question_reply` envelope，经 `turn/steer` 或结束后的 `turn/start` 发送；
+  不伪造同步提问 RPC 回复，不清空主输入框草稿、不携带其附件。失败保留弹窗输入，跨会话提交拒绝。
+  历史回复显示问题与答案，隐藏原始 envelope 标签。
   弹窗适配竖屏、放大字体与软键盘，失败保留草稿供重试；服务器 `serverRequest/resolved`、断线或离开
   目标会话会关闭对应弹窗，不误关其他路由。权限 sheet 提供
   请求批准、替我审批、完全访问，启用完全访问需要二次确认；审批队列按
@@ -1237,6 +1241,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     页面可由用户明确确认“强制接管”，此操作只在当前 SSH 用户范围内匹配并终止 Codex app-server，可能中断
     该用户的其他 Codex 对话；不会终止 OpenCode、SSH 或其他 Unix 用户进程。只读仍允许查看、复制、分页、
     图片/差异及子 Agent 导航。占用解除以服务端恢复成功为准，返回列表不等于服务端立即释放 writer。
+32. 非阻塞提问不在对话中展开选项或输入框；显示“回答问题”入口，新实时提问首次可弹出，之后用户点击再打开。
+    用户可关闭或跳过，模型继续工作；历史恢复不得反复弹出，同一问题的状态按服务器、Agent、线程和条目隔离。
 
 ## 15. 修改影响图和顺序
 
@@ -2373,6 +2379,25 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   一段命令失败或旧回答的瞬态内容。
 - 该过滤只作用于当前可见线程和已确认完成的同一回合；新的 `turnId`、后台线程和重新进入时服务端返回的正式历史
   不受影响。恢复期间的迟到事件也会按同一规则丢弃，避免本地缓存与服务端快照分叉。
+
+### 17.79 非阻塞提问折叠入口（2026-09-22）
+
+- `1.8.119+250`：异步提问改为标题和“回答问题”按钮，选项及自定义回答在独立可关闭弹窗中显示。
+  新实时问题自动提示一次，历史不自动提示；关闭保留草稿，跳过不发送请求。呈现记忆有界并按 profile、
+  Agent、thread、turn、item 隔离。载荷改变时关闭旧表单，清除无效选项后可从入口重开。
+- 回答使用结构化问题 ID 和标题，通过现有 start/steer 发送；主输入框草稿及附件保持不变。重连取消时
+  精确删除未发送临时消息，发送结果不能复活已经结束的回合。同步阻塞提问保持原有 RPC 流程。
+- Flutter 全量 `627` 项、analyze 和本地 check 通过。Android 14 模拟器协议 fixture 验证首次弹出、
+  关闭、点击重开、真实键盘避让和跳过不发请求；不是付费模型或真机端到端测试。随后覆盖安装正常
+  Release，稳定签名和两个下载地址的整包哈希均通过。
+- check 用时 `2m27.534s`；设备测试编译 `49.2s`、执行 `12s`；publish 用时 `5m32.489s`，其中测试
+  `1m01.794s`、Debug `24.334s`、Release `2m31.793s`、安装检查 `30.430s`、发布回验 `36.167s`。
+  服务器/OpenCode 门禁和发布前 Release 校验复用缓存；设备测试替换 Debug APK，导致普通构建的 APK
+  哈希 stamp 失效，publish 重新验证。首轮 analyze 有一处冗余空值判断，修正后通过。
+- 从首次修改 `06:31 UTC` 至验证和文档收尾约 `1h54m`，包含会话中断及前期执行流程反复；这个时长
+  不是编译耗时。全程没有触发云端流水线或调用真实付费模型。
+- APK SHA-256：`4221cc54ba5d247849fd566ed5dd879a087db60b978d355338a4ed4b657c3e43`；
+  稳定证书 SHA-256：`72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 
 ## 18. 文档维护规则
 

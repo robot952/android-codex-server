@@ -1,4 +1,5 @@
 import '../domain/models.dart';
+import '../domain/async_question_reply.dart';
 
 /// Codex may emit this English guidance as a separate assistant item after
 /// context compaction. The timeline already shows the localized compaction
@@ -29,11 +30,22 @@ List<TimelineEntry> normalizeTimelineEntriesForDisplay(
     final normalized = switch (entry.kind) {
       TimelineKind.agentMessage => _normalizeAgentMessage(entry),
       TimelineKind.reasoning => _normalizeReasoning(entry),
+      TimelineKind.userMessage => _normalizeQuestionReply(entry),
       _ => entry,
     };
     if (normalized != null) result.add(normalized);
   }
   return List<TimelineEntry>.unmodifiable(result);
+}
+
+TimelineEntry _normalizeQuestionReply(TimelineEntry entry) {
+  final replies = parseAsyncQuestionReplies(entry.text);
+  if (replies.isEmpty) return entry;
+  return entry.copyWith(
+    text: replies
+        .map((reply) => '${reply.question}\n${reply.answer}')
+        .join('\n\n'),
+  );
 }
 
 TimelineEntry? _normalizeAgentMessage(TimelineEntry entry) {

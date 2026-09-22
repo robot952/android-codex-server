@@ -114,6 +114,85 @@ void main() {
     expect(state.activeThread?.status, 'idle');
   });
 
+  test(
+    'retains async questions across sparse updates and accepts new choices',
+    () {
+      var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
+      state = reduceCodexNotification(
+        state,
+        _notification('item/started', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'question-1',
+            'type': 'agentMessage',
+            'delivery': 'async',
+            'text': '目标输出',
+            'questions': [
+              {
+                'title': '处理范围',
+                'options': ['仅审查', '直接修改'],
+              },
+            ],
+          },
+        }),
+      );
+      final originalQuestions = state.timeline.single.questions;
+      expect(originalQuestions.single.question, '处理范围');
+
+      state = reduceCodexNotification(
+        state,
+        _notification('item/agentMessage/delta', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'question-1',
+          'delta': '：请选择',
+        }),
+      );
+      state = reduceCodexNotification(
+        state,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'question-1',
+            'type': 'agentMessage',
+            'text': '目标输出：请选择',
+          },
+        }),
+      );
+      expect(state.timeline.single.questions, originalQuestions);
+      expect(state.timeline.single.text, '目标输出：请选择');
+      expect(state.running, isTrue);
+      expect(state.approval, isNull);
+
+      state = reduceCodexNotification(
+        state,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': {
+            'id': 'question-1',
+            'type': 'agentMessage',
+            'delivery': 'async',
+            'questions': [
+              {
+                'title': '处理范围',
+                'options': ['生成报告', '修复问题'],
+              },
+            ],
+          },
+        }),
+      );
+      expect(
+        state.timeline.single.questions.single.options.map(
+          (option) => option.label,
+        ),
+        ['生成报告', '修复问题'],
+      );
+    },
+  );
+
   test('ignores raw web search JSON in streamed text', () {
     const raw =
         '{"type":"webSearch","id":"exec-1","query":"","results":[{"type":"text_result","ref_id":"turn0search1","snippet":"x"}]}';

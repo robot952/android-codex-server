@@ -15,6 +15,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app/app_controller.dart';
 import '../domain/models.dart';
 import '../platform/local_file_exporter.dart';
+import 'async_question_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'markdown_links.dart';
 import 'model_selection_presentation.dart';
@@ -284,9 +285,6 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   onOpenRemoteFile: _downloadRemoteFile,
                   onOpenDiff: _openDiff,
                   onOpenSubAgent: controller.openSubAgentThread,
-                  onAnswerAsyncQuestion: state.isThreadReadOnly
-                      ? null
-                      : (answer) => controller.sendMessage(text: answer),
                   onRefresh:
                       state.olderTurnsCursor == null ||
                           state.loading ||
@@ -360,7 +358,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         ],
       ),
     );
-    return isAgentWork ? page : UserInputPromptHost(child: page);
+    return isAgentWork
+        ? page
+        : UserInputPromptHost(child: AsyncQuestionPromptHost(child: page));
   }
 
   Future<void> _handleWorkAction(
@@ -2352,7 +2352,6 @@ class _Transcript extends StatelessWidget {
     required this.onOpenRemoteFile,
     required this.onOpenDiff,
     required this.onOpenSubAgent,
-    required this.onAnswerAsyncQuestion,
     required this.onRefresh,
     required this.onRefreshStart,
     required this.onScrollNotification,
@@ -2374,7 +2373,6 @@ class _Transcript extends StatelessWidget {
   final Future<void> Function(String path) onOpenRemoteFile;
   final ValueChanged<FileChange> onOpenDiff;
   final void Function(String threadId, String agentName) onOpenSubAgent;
-  final Future<void> Function(String answer)? onAnswerAsyncQuestion;
   final Future<void> Function()? onRefresh;
   final VoidCallback onRefreshStart;
   final ValueChanged<ScrollNotification> onScrollNotification;
@@ -2411,7 +2409,6 @@ class _Transcript extends StatelessWidget {
         TimelineEntryRenderRow(:final entry) => _TimelineCard(
           entry: entry,
           onOpenImage: onOpenImage,
-          onAnswerAsyncQuestion: onAnswerAsyncQuestion,
           imageLoadingPath: imageLoadingPath,
           onOpenRemoteFile: onOpenRemoteFile,
           onOpenDiff: onOpenDiff,
@@ -3283,7 +3280,6 @@ class _TimelineCard extends StatelessWidget {
   const _TimelineCard({
     required this.entry,
     required this.onOpenImage,
-    required this.onAnswerAsyncQuestion,
     required this.imageLoadingPath,
     required this.onOpenRemoteFile,
     required this.onOpenDiff,
@@ -3296,7 +3292,6 @@ class _TimelineCard extends StatelessWidget {
 
   final TimelineEntry entry;
   final _OpenRemoteImage onOpenImage;
-  final Future<void> Function(String answer)? onAnswerAsyncQuestion;
   final String? imageLoadingPath;
   final Future<void> Function(String path) onOpenRemoteFile;
   final ValueChanged<FileChange> onOpenDiff;
@@ -3318,11 +3313,20 @@ class _TimelineCard extends StatelessWidget {
     }
     if (entry.kind == TimelineKind.agentMessage) {
       if (entry.questions.isNotEmpty) {
-        return _AsyncQuestionCard(
-          entry: entry,
-          enabled: onAnswerAsyncQuestion != null,
-          onAnswer: onAnswerAsyncQuestion,
-          onTextSelectionChanged: onTextSelectionChanged,
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _MarkdownMessage(
+              entry.text.trim().isNotEmpty
+                  ? entry.text
+                  : entry.questions.map((q) => q.question).join('\n\n'),
+              onOpenRemoteFile: onOpenRemoteFile,
+              onOpenRemoteImage: onOpenImage,
+              onSelectionChanged: onTextSelectionChanged,
+            ),
+            const SizedBox(height: 6),
+            AsyncQuestionButton(entry: entry),
+          ],
         );
       }
       return _MarkdownMessage(
@@ -3382,123 +3386,6 @@ class _TimelineCard extends StatelessWidget {
       ),
       _ => const SizedBox.shrink(),
     };
-  }
-}
-
-class _AsyncQuestionCard extends StatefulWidget {
-  const _AsyncQuestionCard({
-    required this.entry,
-    required this.enabled,
-    required this.onAnswer,
-    required this.onTextSelectionChanged,
-  });
-
-  final TimelineEntry entry;
-  final bool enabled;
-  final Future<void> Function(String answer)? onAnswer;
-  final VoidCallback onTextSelectionChanged;
-
-  @override
-  State<_AsyncQuestionCard> createState() => _AsyncQuestionCardState();
-}
-
-class _AsyncQuestionCardState extends State<_AsyncQuestionCard> {
-  final Map<String, String> _answers = <String, String>{};
-  final Map<String, TextEditingController> _fields =
-      <String, TextEditingController>{};
-  bool _sending = false;
-
-  @override
-  void dispose() {
-    for (final field in _fields.values) {
-      field.dispose();
-    }
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    if (_sending || !widget.enabled || widget.onAnswer == null) return;
-    final answer = widget.entry.questions
-        .map((question) => _answers[question.id]?.trim() ?? '')
-        .where((value) => value.isNotEmpty)
-        .join('\n');
-    if (answer.isEmpty) return;
-    setState(() => _sending = true);
-    try {
-      await widget.onAnswer!(answer);
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final questions = widget.entry.questions;
-    return Card(
-      key: Key('async-question-card-${widget.entry.id}'),
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (widget.entry.text.trim().isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(widget.entry.text),
-              ),
-            for (final question in questions) ...[
-              Text(question.question),
-              const SizedBox(height: 4),
-              for (final option in question.options)
-                Padding(
-                  padding: const EdgeInsets.only(right: 6, bottom: 5),
-                  child: ChoiceChip(
-                    label: Text(option.label),
-                    selected: _answers[question.id] == option.label,
-                    onSelected: widget.enabled && !_sending
-                        ? (selected) {
-                            if (selected) {
-                              setState(
-                                () => _answers[question.id] = option.label,
-                              );
-                            }
-                          }
-                        : null,
-                  ),
-                ),
-              if (question.isOther || question.options.isEmpty)
-                TextField(
-                  controller: _fields.putIfAbsent(
-                    question.id,
-                    TextEditingController.new,
-                  ),
-                  enabled: widget.enabled && !_sending,
-                  decoration: const InputDecoration(
-                    labelText: '输入回答',
-                    isDense: true,
-                  ),
-                  onChanged: (value) => _answers[question.id] = value,
-                  onTap: widget.onTextSelectionChanged,
-                ),
-            ],
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton(
-                onPressed: widget.enabled && !_sending ? _submit : null,
-                child: _sending
-                    ? const SizedBox.square(
-                        dimension: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('提交回答'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
