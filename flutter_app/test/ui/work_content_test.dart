@@ -52,6 +52,23 @@ void main() {
     expect(entries.every((entry) => !entry.text.contains('<think')), isTrue);
   });
 
+  test('drops whitespace-only agent messages that would create blank gaps', () {
+    final entries = normalizeTimelineEntriesForDisplay(const <TimelineEntry>[
+      TimelineEntry(
+        id: 'blank-agent',
+        kind: TimelineKind.agentMessage,
+        text: '\n\n  \n',
+      ),
+      TimelineEntry(
+        id: 'visible-agent',
+        kind: TimelineKind.agentMessage,
+        text: '实际回复',
+      ),
+    ]);
+
+    expect(entries.map((entry) => entry.id), <String>['visible-agent']);
+  });
+
   test('removes several thinking drafts while preserving visible prose', () {
     final entries = normalizeTimelineEntriesForDisplay(const <TimelineEntry>[
       TimelineEntry(

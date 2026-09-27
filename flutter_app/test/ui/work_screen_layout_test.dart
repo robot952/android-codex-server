@@ -2156,6 +2156,49 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('keeps consecutive collapsed command cards tightly spaced', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      AppUiState(
+        screen: AppScreen.work,
+        activeThread: const AgentThread(id: 'thread-command-spacing'),
+        timeline: [
+          for (var index = 0; index < 4; index += 1)
+            TimelineEntry(
+              id: 'command-spacing-$index',
+              kind: TimelineKind.command,
+              status: 'completed',
+              command: 'echo $index',
+            ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final cards = find.text('运行了命令');
+    expect(cards, findsNWidgets(4));
+    final rects = [
+      for (var index = 0; index < 4; index += 1)
+        tester.getRect(cards.at(index)),
+    ]..sort((left, right) => left.top.compareTo(right.top));
+    for (var index = 1; index < rects.length; index += 1) {
+      expect(rects[index].top - rects[index - 1].top, lessThanOrEqualTo(110));
+    }
+  });
+
   testWidgets('renders original file-change cards and opens the full diff', (
     tester,
   ) async {

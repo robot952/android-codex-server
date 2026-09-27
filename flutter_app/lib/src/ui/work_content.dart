@@ -50,7 +50,9 @@ TimelineEntry _normalizeQuestionReply(TimelineEntry entry) {
 
 TimelineEntry? _normalizeAgentMessage(TimelineEntry entry) {
   final text = _removeThinkingDrafts(entry.text);
-  if (text.isEmpty && entry.attachments.isEmpty && entry.questions.isEmpty) {
+  if (text.trim().isEmpty &&
+      entry.attachments.isEmpty &&
+      entry.questions.isEmpty) {
     return null;
   }
   return text == entry.text ? entry : entry.copyWith(text: text);
