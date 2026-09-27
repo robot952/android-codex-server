@@ -157,9 +157,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             actions: [
               if (session?.phase == TerminalPhase.connected) ...[
                 IconButton(
-                  tooltip: '复制终端文字',
+                  tooltip: _copyMode ? '拖动选择文字，松手后复制' : '选择并复制终端文字',
                   onPressed: _copySelection,
-                  icon: const Icon(Icons.content_copy),
+                  icon: Icon(_copyMode ? Icons.select_all : Icons.content_copy),
                 ),
                 IconButton(
                   tooltip: '粘贴到终端',
@@ -398,6 +398,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       _copyMode = true;
       _copyModeHadSelection = false;
       _terminalFocus.unfocus();
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('请在终端中拖动选择文字，松手后自动复制'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        setState(() {});
+      }
       return;
     }
     _copyMode = false;
@@ -417,6 +428,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
     _copyModeHadSelection = true;
     unawaited(_writeSelectionToClipboard(selection, clearSelection: false));
+    if (mounted) setState(() {});
   }
 
   Future<void> _writeSelectionToClipboard(
@@ -426,7 +438,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final value = _terminal.buffer.getText(selection);
     if (value.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: value));
-    if (clearSelection) _terminalController.clearSelection();
+    if (clearSelection) {
+      _terminalController.clearSelection();
+      if (mounted) setState(() {});
+    }
   }
 
   Future<void> _pasteClipboard() async {
