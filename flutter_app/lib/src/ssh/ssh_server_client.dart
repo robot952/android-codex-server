@@ -258,7 +258,9 @@ class DartSshServerClient
       if (identical(_pendingClient, client)) _pendingClient = null;
       if (identical(_pendingSocket, socket)) _pendingSocket = null;
       client.close();
-      await client.done.catchError((_) {});
+      await client.done
+          .timeout(const Duration(seconds: 2), onTimeout: () {})
+          .catchError((_) {});
     }
     if (operation != _operationGeneration) {
       throw StateError('SSH 指纹探测已取消');
@@ -334,7 +336,9 @@ class DartSshServerClient
       if (client == null) {
         socket.destroy();
       } else {
-        await client.done.catchError((_) {});
+        await client.done
+            .timeout(const Duration(seconds: 2), onTimeout: () {})
+            .catchError((_) {});
       }
       if (mismatchedFingerprint != null) {
         throw HostKeyMismatchException(expected, mismatchedFingerprint!);

@@ -16,10 +16,12 @@ class ServerConnectionManager {
   ServerConnectionManager({
     RemoteServerClientFactory? clientFactory,
     this.profiledClientFactory,
+    this.connectionTimeout = const Duration(seconds: 30),
   }) : _clientFactory = clientFactory ?? DartSshServerClient.new;
 
   final RemoteServerClientFactory _clientFactory;
   final ProfiledRemoteServerClientFactory? profiledClientFactory;
+  final Duration connectionTimeout;
   final Map<String, _ServerEntry> _entries = {};
   final Map<String, ConnectionState> _states = {};
   final Map<String, ServerMetrics> _serverMetrics = {};
@@ -88,8 +90,10 @@ class ServerConnectionManager {
     if (entry == null || !identical(entry.client, client)) {
       throw StateError('服务器指纹探测已失效');
     }
-    return entry.lock.synchronized(() async {
-      if (!_isCurrent(profile.id, entry)) {
+    final requestedGeneration = entry.generation;
+    final operation = entry.lock.synchronized(() async {
+      if (!_isCurrent(profile.id, entry) ||
+          entry.generation != requestedGeneration) {
         throw StateError('服务器指纹探测已失效');
       }
       final generation = ++entry.generation;
@@ -103,7 +107,9 @@ class ServerConnectionManager {
         ),
       );
       try {
-        final fingerprint = await client.probeFingerprint(profile);
+        final fingerprint = await client
+            .probeFingerprint(profile)
+            .timeout(connectionTimeout);
         if (!_isCurrent(profile.id, entry) || generation != entry.generation) {
           throw StateError('服务器指纹探测已失效');
         }
@@ -122,6 +128,20 @@ class ServerConnectionManager {
         rethrow;
       }
     });
+    try {
+      return await operation.timeout(connectionTimeout);
+    } on TimeoutException {
+      entry.generation++;
+      entry.client.close();
+      _setState(
+        profile.id,
+        const ConnectionState(
+          phase: ConnectionPhase.failed,
+          message: '读取 SSH 指纹超时，请检查地址和网络',
+        ),
+      );
+      throw TimeoutException('读取 SSH 指纹超时，请检查地址和网络');
+    }
   }
 
   Future<void> connect(ServerProfile profile) async {
@@ -130,8 +150,12 @@ class ServerConnectionManager {
     if (entry == null || !identical(entry.client, client)) {
       throw StateError('服务器连接已失效');
     }
-    await entry.lock.synchronized(() async {
-      if (!_isCurrent(profile.id, entry)) return;
+    final requestedGeneration = entry.generation;
+    final operation = entry.lock.synchronized(() async {
+      if (!_isCurrent(profile.id, entry) ||
+          entry.generation != requestedGeneration) {
+        return;
+      }
       if (entry.client.isConnected) {
         _setState(
           profile.id,
@@ -155,7 +179,7 @@ class ServerConnectionManager {
       );
       final generation = ++entry.generation;
       try {
-        await entry.client.connect(profile);
+        await entry.client.connect(profile).timeout(connectionTimeout);
         if (!_isCurrent(profile.id, entry) || generation != entry.generation) {
           entry.client.close();
           throw StateError('服务器连接配置已更新');
@@ -183,6 +207,31 @@ class ServerConnectionManager {
         rethrow;
       }
     });
+    try {
+      await operation.timeout(connectionTimeout);
+    } on TimeoutException {
+      entry.generation++;
+      entry.client.close();
+      _setState(
+        profile.id,
+        const ConnectionState(
+          phase: ConnectionPhase.failed,
+          message: 'SSH 连接超时，请检查地址、端口和网络',
+        ),
+      );
+      throw TimeoutException('SSH 连接超时，请检查地址、端口和网络');
+    }
+  }
+
+  /// Cancels a pending probe or connection without waiting for its lock.
+  /// The in-flight operation will observe the client generation change and
+  /// cannot publish a late connected state.
+  void cancelConnection(String profileId) {
+    final entry = _entries[profileId];
+    if (entry == null) return;
+    entry.generation++;
+    entry.client.close();
+    _setState(profileId, const ConnectionState());
   }
 
   Future<void> disconnect(String profileId) async {
@@ -192,7 +241,10 @@ class ServerConnectionManager {
       entry.generation++;
       entry.metricsRequest = null;
       _clearServerMetrics(profileId);
-      await entry.client.disconnect();
+      await entry.client.disconnect().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => entry.client.close(),
+      );
       if (_isCurrent(profileId, entry)) {
         _setState(profileId, const ConnectionState());
       }

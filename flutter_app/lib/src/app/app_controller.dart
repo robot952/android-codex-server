@@ -156,6 +156,7 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
   final Map<AgentConnectionKey, int> _agentLoadRevisions = {};
   final Set<String> _retainedHostConnections = <String>{};
+  final Set<String> _cancelledConnectionProfiles = <String>{};
   final Set<AgentConnectionKey> _retainedAgentConnections =
       <AgentConnectionKey>{};
   final Map<String, int> _connectionRecoveryRevisions = <String, int>{};
@@ -731,6 +732,15 @@ class AppController extends StateNotifier<AppUiState> {
   Future<void> requestConnect(ServerProfile profile) =>
       _requestConnect(profile);
 
+  void cancelConnection(String profileId) {
+    _cancelledConnectionProfiles.add(profileId);
+    _invalidateConnectionRecovery(profileId);
+    _connections.cancelConnection(profileId);
+    if (mounted && state.selectedProfileId == profileId) {
+      state = state.copyWith(loading: false, error: null);
+    }
+  }
+
   Future<void> _requestConnect(
     ServerProfile profile, {
     bool localLinuxPrepared = false,
@@ -770,6 +780,7 @@ class AppController extends StateNotifier<AppUiState> {
         final fingerprint = await _connections.probeFingerprint(profile);
         _stageFingerprintConfirmation(profile, fingerprint);
       } catch (error) {
+        if (_cancelledConnectionProfiles.remove(profile.id)) return;
         _setError(error, '读取 SSH 指纹失败');
       }
       return;
@@ -841,6 +852,7 @@ class AppController extends StateNotifier<AppUiState> {
       }
     }
     _invalidateConnectionRecovery(profile.id);
+    _cancelledConnectionProfiles.remove(profile.id);
     _clearSubAgentNavigationForProfile(profile.id);
     final connectionKind = isLocalWindowsProfile(profile) ? 'Host' : 'SSH';
     _diagnostics.info(
@@ -888,6 +900,7 @@ class AppController extends StateNotifier<AppUiState> {
         state = state.copyWith(loading: false);
       }
     } catch (error, stack) {
+      if (_cancelledConnectionProfiles.remove(profile.id)) return;
       _diagnostics.warn(
         connectionKind,
         'connect_failed profile=${profile.id}',

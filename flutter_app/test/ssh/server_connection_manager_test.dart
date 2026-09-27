@@ -81,6 +81,11 @@ class _FakeClient implements RemoteServerClient {
   }
 }
 
+class _HangingConnectClient extends _FakeClient {
+  @override
+  Future<void> connect(ServerProfile profile) => Completer<void>().future;
+}
+
 class _FakeImageClient extends _FakeClient implements RemoteServerImageClient {
   _FakeImageClient(this.imageResult);
 
@@ -994,6 +999,21 @@ void main() {
     expect(manager.states['first']?.phase, ConnectionPhase.failed);
     expect(manager.states['first']?.message, contains('认证失败'));
     expect(manager.states['second']?.phase, ConnectionPhase.connected);
+    await manager.close();
+  });
+
+  test('times out a connection and closes the client', () async {
+    final client = _HangingConnectClient();
+    final manager = ServerConnectionManager(
+      clientFactory: () => client,
+      connectionTimeout: const Duration(milliseconds: 20),
+    );
+
+    await expectLater(manager.connect(first), throwsA(isA<TimeoutException>()));
+
+    expect(client.wasClosed, isTrue);
+    expect(manager.states['first']?.phase, ConnectionPhase.failed);
+    expect(manager.states['first']?.message, contains('超时'));
     await manager.close();
   });
 

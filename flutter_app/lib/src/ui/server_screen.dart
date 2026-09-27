@@ -168,7 +168,14 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                     ),
             ),
           ),
-          if (blocking != null) _ConnectionOverlay(connection: blocking),
+          if (blocking != null)
+            _ConnectionOverlay(
+              profileName: blocking.profileName,
+              connection: blocking.connection,
+              onCancel: () => ref
+                  .read(appControllerProvider.notifier)
+                  .cancelConnection(blocking.profileId),
+            ),
         ],
       ),
     );
@@ -1910,9 +1917,15 @@ class _ServerEditor extends StatelessWidget {
 }
 
 class _ConnectionOverlay extends StatelessWidget {
-  const _ConnectionOverlay({required this.connection});
+  const _ConnectionOverlay({
+    required this.profileName,
+    required this.connection,
+    required this.onCancel,
+  });
 
+  final String profileName;
   final ConnectionState connection;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1922,7 +1935,7 @@ class _ConnectionOverlay extends StatelessWidget {
         container: true,
         scopesRoute: true,
         explicitChildNodes: true,
-        label: '连接进行中',
+        label: '$profileName：${connection.message}',
         child: Stack(
           children: [
             ModalBarrier(
@@ -1951,10 +1964,32 @@ class _ConnectionOverlay extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const SizedBox(
+                    SizedBox(
                       width: 28,
                       height: 28,
                       child: CircularProgressIndicator(strokeWidth: 2.2),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      profileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      connection.message,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton.icon(
+                      onPressed: onCancel,
+                      icon: const Icon(Icons.close, size: 17),
+                      label: const Text('取消连接'),
                     ),
                   ],
                 ),
@@ -1967,31 +2002,27 @@ class _ConnectionOverlay extends StatelessWidget {
   }
 }
 
-ConnectionState? _blockingConnection(AppUiState state) {
-  for (final connection in state.connectionStates.values) {
-    if ({
-      ConnectionPhase.probing,
-      ConnectionPhase.connecting,
-      ConnectionPhase.installing,
-    }.contains(connection.phase)) {
-      return connection;
-    }
+({String profileId, String profileName, ConnectionState connection})?
+_blockingConnection(AppUiState state) {
+  final profileId = state.selectedProfileId;
+  if (profileId == null) return null;
+  final profile = state.profiles.firstWhereOrNull(
+    (candidate) => candidate.id == profileId,
+  );
+  final connection = state.connectionStates[profileId] ?? state.connection;
+  if (profile == null ||
+      !{
+        ConnectionPhase.probing,
+        ConnectionPhase.connecting,
+        ConnectionPhase.installing,
+      }.contains(connection.phase)) {
+    return null;
   }
-  // Agent runtime loading happens after the SSH host is connected. It must
-  // not keep the server-page modal visible with the stale "SSH 已连接"
-  // message when the user has already returned to the server list.
-  if (state.loading && state.selectedProfileId != null) {
-    final connection = state.connectionStates[state.selectedProfileId];
-    if (connection != null &&
-        {
-          ConnectionPhase.probing,
-          ConnectionPhase.connecting,
-          ConnectionPhase.installing,
-        }.contains(connection.phase)) {
-      return connection;
-    }
-  }
-  return null;
+  return (
+    profileId: profileId,
+    profileName: profile.name,
+    connection: connection,
+  );
 }
 
 String _connectionLabel(ConnectionPhase phase) => switch (phase) {
