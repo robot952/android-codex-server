@@ -51,6 +51,442 @@ const _threadB = AgentThread(
 
 void main() {
   test(
+    'updated latest user-only page retains overlapping older context',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadA]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      first.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'earlier-answer',
+              kind: TimelineKind.agentMessage,
+              text: 'earlier context',
+              turnId: 'turn-earlier',
+            ),
+            TimelineEntry(
+              id: 'latest-question',
+              kind: TimelineKind.userMessage,
+              text: 'latest question',
+              turnId: 'turn-a',
+            ),
+          ],
+          nextTurnsCursor: 'before-earlier',
+          turnIds: ['turn-earlier', 'turn-a'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+
+      final updated = _threadAActive.copyWith(updatedAt: 11);
+      final latest = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(updated);
+      await _waitUntil(() => agent.resumeCalls.length == 2);
+      latest.complete(
+        AgentSession(
+          thread: updated,
+          timeline: const [
+            TimelineEntry(
+              id: 'latest-question',
+              kind: TimelineKind.userMessage,
+              text: 'latest question',
+              turnId: 'turn-a',
+            ),
+          ],
+          nextTurnsCursor: 'fresh-before-a',
+          turnIds: const ['turn-a'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      await _drainAsyncWork();
+
+      expect(harness.controller.state.timeline.map((entry) => entry.text), [
+        'earlier context',
+        'latest question',
+      ]);
+      expect(harness.controller.state.olderTurnsCursor, 'fresh-before-a');
+      expect(harness.controller.state.running, isTrue);
+      expect(agent.olderCalls, isEmpty);
+    },
+  );
+
+  test(
+    'cold user-only history opens before one automatic older page',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadAActive]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      final older = agent.gateNextOlderTurns(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      first.complete(
+        const AgentSession(
+          thread: _threadAActive,
+          timeline: [
+            TimelineEntry(
+              id: 'latest-question',
+              kind: TimelineKind.userMessage,
+              text: 'latest question',
+              turnId: 'turn-a',
+            ),
+          ],
+          nextTurnsCursor: 'before-a',
+          turnIds: ['turn-a'],
+        ),
+      );
+      await _waitUntil(
+        () => !harness.controller.state.loading && agent.olderCalls.length == 1,
+      );
+
+      expect(harness.controller.state.screen, AppScreen.work);
+      expect(harness.controller.state.timeline.single.text, 'latest question');
+      expect(harness.controller.state.olderTurnsLoading, isTrue);
+      expect(harness.controller.state.running, isTrue);
+      expect(agent.olderCalls.single, (
+        threadId: _threadA.id,
+        cursor: 'before-a',
+      ));
+      older.complete(
+        const AgentTurnsPage(
+          timeline: [
+            TimelineEntry(
+              id: 'earlier-question',
+              kind: TimelineKind.userMessage,
+              text: 'earlier question',
+              turnId: 'turn-earlier',
+            ),
+          ],
+          nextCursor: 'before-earlier',
+          turnIds: ['turn-earlier'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.olderTurnsLoading);
+      await _drainAsyncWork();
+
+      expect(harness.controller.state.timeline.map((entry) => entry.text), [
+        'earlier question',
+        'latest question',
+      ]);
+      expect(harness.controller.state.olderTurnsCursor, 'before-earlier');
+      expect(
+        agent.olderCalls,
+        hasLength(1),
+        reason:
+            'automatic backfill must remain bounded even if all rows are users',
+      );
+    },
+  );
+
+  test(
+    'automatic older-page failure keeps history and permits manual retry',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadAActive]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      final older = agent.gateNextOlderTurns(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      first.complete(
+        const AgentSession(
+          thread: _threadAActive,
+          timeline: [
+            TimelineEntry(
+              id: 'latest-question',
+              kind: TimelineKind.userMessage,
+              text: 'latest question',
+              turnId: 'turn-a',
+            ),
+          ],
+          nextTurnsCursor: 'before-a',
+          turnIds: ['turn-a'],
+        ),
+      );
+      await _waitUntil(() => agent.olderCalls.length == 1);
+      older.completeError(StateError('temporary history failure'));
+      await _waitUntil(() => !harness.controller.state.olderTurnsLoading);
+      await _drainAsyncWork();
+
+      expect(harness.controller.state.loading, isFalse);
+      expect(harness.controller.state.timeline.single.text, 'latest question');
+      expect(harness.controller.state.olderTurnsCursor, 'before-a');
+      expect(harness.controller.state.error, isNull);
+      expect(agent.olderCalls, hasLength(1));
+
+      final retry = agent.gateNextOlderTurns(_threadA.id);
+      final retryFuture = harness.controller.loadOlderTurns();
+      await _waitUntil(() => agent.olderCalls.length == 2);
+      expect(agent.olderCalls.last, (
+        threadId: _threadA.id,
+        cursor: 'before-a',
+      ));
+      retry.complete(
+        const AgentTurnsPage(
+          timeline: [
+            TimelineEntry(
+              id: 'earlier-answer',
+              kind: TimelineKind.agentMessage,
+              text: 'earlier context',
+              turnId: 'turn-earlier',
+            ),
+          ],
+          turnIds: ['turn-earlier'],
+        ),
+      );
+      await retryFuture;
+      expect(harness.controller.state.timeline.map((entry) => entry.text), [
+        'earlier context',
+        'latest question',
+      ]);
+      expect(harness.controller.state.olderTurnsCursor, isNull);
+      expect(harness.controller.state.olderTurnsLoading, isFalse);
+    },
+  );
+
+  test(
+    'same-thread reentry discards an earlier pending history backfill',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadAActive]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      final oldPage = agent.gateNextOlderTurns(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      first.complete(
+        const AgentSession(
+          thread: _threadAActive,
+          timeline: [
+            TimelineEntry(
+              id: 'latest-question',
+              kind: TimelineKind.userMessage,
+              text: 'latest question',
+              turnId: 'turn-a',
+            ),
+          ],
+          nextTurnsCursor: 'before-a',
+          turnIds: ['turn-a'],
+        ),
+      );
+      await _waitUntil(() => agent.olderCalls.length == 1);
+      harness.controller.backToThreadList();
+
+      final second = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 2);
+      second.complete(
+        AgentSession(
+          thread: _threadAActive.copyWith(updatedAt: 11),
+          timeline: const [
+            TimelineEntry(
+              id: 'latest-question',
+              kind: TimelineKind.userMessage,
+              text: 'latest question',
+              turnId: 'turn-a',
+            ),
+            TimelineEntry(
+              id: 'new-answer',
+              kind: TimelineKind.agentMessage,
+              text: 'new answer',
+              turnId: 'turn-a',
+            ),
+          ],
+          nextTurnsCursor: 'before-a',
+          turnIds: const ['turn-a'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.olderTurnsLoading, isFalse);
+      final currentTimeline = harness.controller.state.timeline;
+
+      oldPage.complete(
+        const AgentTurnsPage(
+          timeline: [
+            TimelineEntry(
+              id: 'obsolete-answer',
+              kind: TimelineKind.agentMessage,
+              text: 'obsolete history',
+              turnId: 'turn-obsolete',
+            ),
+          ],
+          nextCursor: 'obsolete-cursor',
+          turnIds: ['turn-obsolete'],
+        ),
+      );
+      await _drainAsyncWork();
+      expect(harness.controller.state.timeline, currentTimeline);
+      expect(harness.controller.state.olderTurnsCursor, 'before-a');
+      expect(harness.controller.state.olderTurnsLoading, isFalse);
+
+      harness.controller.backToThreadList();
+      final inspectCache = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 3);
+      expect(harness.controller.state.timeline, currentTimeline);
+      inspectCache.complete(
+        AgentSession(
+          thread: _threadAActive,
+          timeline: currentTimeline,
+          nextTurnsCursor: 'before-a',
+          turnIds: const ['turn-a'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+    },
+  );
+
+  test(
+    'reconnect replaces pending history loading without stale completion',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadAActive]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      final obsoletePage = agent.gateNextOlderTurns(_threadA.id);
+      const latestSession = AgentSession(
+        thread: _threadAActive,
+        timeline: [
+          TimelineEntry(
+            id: 'latest-question',
+            kind: TimelineKind.userMessage,
+            text: 'latest question',
+            turnId: 'turn-a',
+          ),
+        ],
+        nextTurnsCursor: 'before-a',
+        turnIds: ['turn-a'],
+      );
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      first.complete(latestSession);
+      await _waitUntil(() => agent.olderCalls.length == 1);
+      expect(harness.controller.state.olderTurnsLoading, isTrue);
+
+      final reconnectResume = agent.gateNextResume(_threadA.id);
+      final currentPage = agent.gateNextOlderTurns(_threadA.id);
+      agent.emitLoss('Codex channel closed');
+      await _waitUntil(() => agent.resumeCalls.length == 2);
+      expect(harness.controller.state.screen, AppScreen.work);
+      expect(harness.controller.state.loading, isTrue);
+      expect(harness.controller.state.olderTurnsLoading, isFalse);
+      reconnectResume.complete(latestSession);
+      await _waitUntil(() => agent.olderCalls.length == 2);
+      expect(harness.controller.state.loading, isFalse);
+      expect(harness.controller.state.olderTurnsLoading, isTrue);
+
+      obsoletePage.complete(
+        const AgentTurnsPage(
+          timeline: [
+            TimelineEntry(
+              id: 'obsolete-history',
+              kind: TimelineKind.agentMessage,
+              text: 'must not be applied',
+              turnId: 'turn-obsolete',
+            ),
+          ],
+          nextCursor: 'obsolete-cursor',
+          turnIds: ['turn-obsolete'],
+        ),
+      );
+      await _drainAsyncWork();
+      expect(harness.controller.state.timeline, latestSession.timeline);
+      expect(harness.controller.state.olderTurnsCursor, 'before-a');
+      expect(harness.controller.state.olderTurnsLoading, isTrue);
+      expect(harness.controller.state.error, isNull);
+
+      currentPage.complete(
+        const AgentTurnsPage(
+          timeline: [
+            TimelineEntry(
+              id: 'earlier-answer',
+              kind: TimelineKind.agentMessage,
+              text: 'earlier context',
+              turnId: 'turn-earlier',
+            ),
+          ],
+          nextCursor: 'before-earlier',
+          turnIds: ['turn-earlier'],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.olderTurnsLoading);
+      expect(harness.controller.state.timeline.map((entry) => entry.text), [
+        'earlier context',
+        'latest question',
+      ]);
+      expect(harness.controller.state.olderTurnsCursor, 'before-earlier');
+      expect(harness.controller.state.running, isTrue);
+    },
+  );
+
+  test('live newer item wins an overlapping delayed older page', () async {
+    final agent = _ResumeAgent(threads: const [_threadAActive]);
+    final harness = await _createHarness(agent);
+    final first = agent.gateNextResume(_threadA.id);
+    harness.controller.openThread(_threadAActive);
+    await _waitUntil(() => agent.resumeCalls.length == 1);
+    first.complete(
+      const AgentSession(
+        thread: _threadAActive,
+        timeline: [
+          TimelineEntry(
+            id: 'answer',
+            kind: TimelineKind.agentMessage,
+            text: 'initial',
+            turnId: 'turn-a',
+          ),
+        ],
+        nextTurnsCursor: 'before-a',
+        turnIds: ['turn-a'],
+      ),
+    );
+    await _waitUntil(() => !harness.controller.state.loading);
+    final older = agent.gateNextOlderTurns(_threadA.id);
+    final loading = harness.controller.loadOlderTurns();
+    await _waitUntil(() => agent.olderCalls.length == 1);
+    agent.emit(
+      _notification(
+        'item/agentMessage/delta',
+        threadId: _threadA.id,
+        turnId: 'turn-a',
+        itemId: 'answer',
+        delta: ' latest',
+        sequence: 1,
+      ),
+    );
+    await _waitUntil(
+      () => harness.controller.state.timeline.single.text == 'initial latest',
+    );
+    older.complete(
+      const AgentTurnsPage(
+        timeline: [
+          TimelineEntry(
+            id: 'older-answer',
+            kind: TimelineKind.agentMessage,
+            text: 'older context',
+            turnId: 'turn-earlier',
+          ),
+          TimelineEntry(
+            id: 'answer',
+            kind: TimelineKind.agentMessage,
+            text: 'initial',
+            turnId: 'turn-a',
+          ),
+        ],
+        nextCursor: 'before-earlier',
+        turnIds: ['turn-earlier', 'turn-a'],
+      ),
+    );
+    await loading;
+    expect(harness.controller.state.timeline.map((entry) => entry.text), [
+      'older context',
+      'initial latest',
+    ]);
+    expect(harness.controller.state.olderTurnsCursor, 'before-earlier');
+    expect(harness.controller.state.running, isTrue);
+  });
+
+  test(
     'warm history preserves start time across another conversation',
     () async {
       final agent = _ReusableResumeAgent(
@@ -1665,9 +2101,11 @@ class _ResumeAgent
   int listThreadsCount = 0;
   Completer<AgentThreadPage>? listGate;
   final List<String> resumeCalls = [];
+  final List<({String threadId, String cursor})> olderCalls = [];
   final StreamController<RemoteAgentEvent> _events =
       StreamController<RemoteAgentEvent>.broadcast(sync: true);
   final Map<String, List<Completer<AgentSession>>> _resumeGates = {};
+  final Map<String, List<Completer<AgentTurnsPage>>> _olderGates = {};
   final Map<String, AgentSession> readSessions = {};
   bool connected = false;
   int remoteGeneration = 1;
@@ -1690,6 +2128,12 @@ class _ResumeAgent
   Completer<AgentSession> gateNextResume(String threadId) {
     final result = Completer<AgentSession>();
     (_resumeGates[threadId] ??= <Completer<AgentSession>>[]).add(result);
+    return result;
+  }
+
+  Completer<AgentTurnsPage> gateNextOlderTurns(String threadId) {
+    final result = Completer<AgentTurnsPage>();
+    (_olderGates[threadId] ??= <Completer<AgentTurnsPage>>[]).add(result);
     return result;
   }
 
@@ -1743,7 +2187,14 @@ class _ResumeAgent
     required String threadId,
     required String cursor,
     int? subAgentCreatedAt,
-  }) async => const AgentTurnsPage(timeline: <TimelineEntry>[]);
+  }) async {
+    olderCalls.add((threadId: threadId, cursor: cursor));
+    final gates = _olderGates[threadId];
+    if (gates != null && gates.isNotEmpty) {
+      return gates.removeAt(0).future;
+    }
+    return const AgentTurnsPage(timeline: <TimelineEntry>[]);
+  }
 
   @override
   Future<void> disconnect() async => connected = false;

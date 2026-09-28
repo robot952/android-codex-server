@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
@@ -30,6 +31,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late final Terminal _terminal;
   late final TerminalController _terminalController;
   late final FocusNode _terminalFocus;
+  final _terminalViewKey = GlobalKey<TerminalViewState>();
+  final _terminalSurfaceKey = GlobalKey();
+  final _terminalScrollController = ScrollController();
   late final TerminalManager _manager;
   StreamSubscription<TerminalOutputEvent>? _outputSubscription;
   int? _attachedGeneration;
@@ -37,7 +41,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   bool _controlEnabled = false;
   bool _altEnabled = false;
   bool _copyMode = false;
-  bool _copyModeHadSelection = false;
+  bool _selectionRefreshScheduled = false;
+  CellAnchor? _selectionDragFixedAnchor;
+  Offset? _selectionDragOffset;
   double _terminalFontSize = _defaultFontSize;
   final Map<int, Offset> _terminalTouchPoints = <int, Offset>{};
   double? _pinchStartDistance;
@@ -49,7 +55,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _manager = ref.read(terminalManagerProvider);
     _terminal = Terminal(maxLines: 5000);
     _terminalController = TerminalController();
-    _terminalController.addListener(_copySelectionWhenReady);
+    _terminalController.addListener(_onSelectionChanged);
+    _terminalScrollController.addListener(_refreshVisibleSelection);
+    _terminal.addListener(_refreshVisibleSelection);
     _terminalFocus = FocusNode();
     _terminal.onOutput = _sendTerminalInput;
     _terminal.onResize = (columns, rows, pixelWidth, pixelHeight) {
@@ -69,7 +77,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   @override
   void dispose() {
     unawaited(_outputSubscription?.cancel() ?? Future<void>.value());
-    _terminalController.removeListener(_copySelectionWhenReady);
+    _selectionDragFixedAnchor?.dispose();
+    _terminal.removeListener(_refreshVisibleSelection);
+    _terminalScrollController.removeListener(_refreshVisibleSelection);
+    _terminalScrollController.dispose();
+    _terminalController.removeListener(_onSelectionChanged);
     _terminalController.dispose();
     _terminalFocus.dispose();
     super.dispose();
@@ -82,7 +94,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 
   void _ensureAttached(TerminalSessionState? session) {
-    if (session == null || session.phase != TerminalPhase.connected) return;
+    if (session == null || session.phase != TerminalPhase.connected) {
+      if (_attachedGeneration != null) {
+        _attachedGeneration = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted &&
+              _manager.stateFor(widget.profileId)?.phase !=
+                  TerminalPhase.connected) {
+            _dismissSelection();
+          }
+        });
+      }
+      return;
+    }
     if (_attachedGeneration == session.generation || _attachScheduled) return;
     _attachScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -94,6 +118,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           current.generation == _attachedGeneration) {
         return;
       }
+      _dismissSelection();
       _terminal.buffer.clear();
       _terminal.setCursor(0, 0);
       _attachedGeneration = current.generation;
@@ -157,7 +182,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             actions: [
               if (session?.phase == TerminalPhase.connected) ...[
                 IconButton(
-                  tooltip: _copyMode ? '拖动选择文字，松手后复制' : '选择并复制终端文字',
+                  tooltip: _copyMode ? '长按并拖动选择文字' : '选择并复制终端文字',
                   onPressed: _copySelection,
                   icon: Icon(_copyMode ? Icons.select_all : Icons.content_copy),
                 ),
@@ -208,6 +233,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final phase = session?.phase ?? TerminalPhase.disconnected;
     if (phase == TerminalPhase.connected) {
       return Stack(
+        key: _terminalSurfaceKey,
         children: [
           Positioned.fill(
             child: Listener(
@@ -218,7 +244,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               onPointerCancel: _onTerminalPointerEnd,
               child: TerminalView(
                 _terminal,
+                key: _terminalViewKey,
                 controller: _terminalController,
+                scrollController: _terminalScrollController,
                 focusNode: _terminalFocus,
                 theme: _legacyTerminalTheme,
                 textStyle: TerminalStyle(
@@ -230,6 +258,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
               ),
             ),
           ),
+          ..._selectionControls(context),
           if (_pinchStartDistance != null)
             Positioned(
               top: 12,
@@ -319,6 +348,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   void _onTerminalPointerDown(PointerDownEvent event) {
     _terminalTouchPoints[event.pointer] = event.localPosition;
     if (_terminalTouchPoints.length != 2) return;
+    _dismissSelection();
     _pinchStartDistance = _terminalTouchDistance();
     _pinchStartFontSize = _terminalFontSize;
     setState(() {});
@@ -378,6 +408,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 
   void _sendTerminalInput(String value) {
+    _dismissSelection();
     final bytes = encodeTerminalShortcut(
       value,
       control: _controlEnabled,
@@ -396,14 +427,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final selection = _terminalController.selection;
     if (selection == null) {
       _copyMode = true;
-      _copyModeHadSelection = false;
       _terminalFocus.unfocus();
       if (mounted) {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
           ..showSnackBar(
             const SnackBar(
-              content: Text('请在终端中拖动选择文字，松手后自动复制'),
+              content: Text('长按文字后拖动选择，再点击复制'),
               duration: Duration(seconds: 2),
             ),
           );
@@ -411,36 +441,250 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       }
       return;
     }
-    _copyMode = false;
-    _copyModeHadSelection = false;
     await _writeSelectionToClipboard(selection);
   }
 
-  void _copySelectionWhenReady() {
-    if (!_copyMode) return;
-    final selection = _terminalController.selection;
-    if (selection == null) {
-      if (_copyModeHadSelection) {
-        _copyMode = false;
-        _copyModeHadSelection = false;
+  void _onSelectionChanged() {
+    if (_terminalController.selection == null) _copyMode = false;
+    _refreshSelection();
+  }
+
+  void _refreshVisibleSelection() {
+    if (_terminalController.selection != null) _refreshSelection();
+  }
+
+  void _refreshSelection() {
+    if (!mounted || _selectionRefreshScheduled) return;
+    _selectionRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _selectionRefreshScheduled = false;
+      if (mounted) setState(() {});
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _dismissSelection() {
+    _copyMode = false;
+    _selectionDragFixedAnchor?.dispose();
+    _selectionDragFixedAnchor = null;
+    _selectionDragOffset = null;
+    _terminalController.clearSelection();
+  }
+
+  List<Widget> _selectionControls(BuildContext context) {
+    final selection = _terminalController.selection?.normalized;
+    final view = _terminalViewKey.currentState;
+    final surface = _terminalSurfaceKey.currentContext?.findRenderObject();
+    if (selection == null ||
+        selection.isCollapsed ||
+        view == null ||
+        surface is! RenderBox ||
+        !surface.hasSize ||
+        _pinchStartDistance != null) {
+      return const [];
+    }
+    final render = view.renderTerminal;
+    if (!render.hasSize) return const [];
+    Offset point(CellOffset cell) => surface.globalToLocal(
+      render.localToGlobal(
+        render.getOffset(cell) + Offset(0, render.lineHeight),
+      ),
+    );
+    final start = point(selection.begin);
+    final end = point(selection.end);
+    final bounds = Offset.zero & surface.size;
+    final visibleStart = bounds.contains(start);
+    final visibleEnd = bounds.contains(end);
+    if (!visibleStart &&
+        !visibleEnd &&
+        (end.dy < 0 || start.dy > bounds.height)) {
+      return const [];
+    }
+    final aboveSelection = start.dy - render.lineHeight - 48;
+    final toolbarY = (aboveSelection >= 4 ? aboveSelection : end.dy + 30).clamp(
+      4.0,
+      (bounds.height - 48).clamp(4.0, double.infinity),
+    );
+    return [
+      Positioned(
+        top: toolbarY,
+        left: 8,
+        right: 8,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: Material(
+            key: const ValueKey('terminal-selection-toolbar'),
+            color: const Color(0xFF303030),
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(onPressed: _copySelection, child: const Text('复制')),
+                TextButton(onPressed: _selectAll, child: const Text('全选')),
+                IconButton(
+                  tooltip: '取消选择',
+                  onPressed: _dismissSelection,
+                  icon: const Icon(Icons.close, size: 18),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      if (visibleStart) _selectionHandle(context, start, true, surface.size),
+      if (visibleEnd) _selectionHandle(context, end, false, surface.size),
+    ];
+  }
+
+  Widget _selectionHandle(
+    BuildContext context,
+    Offset point,
+    bool isStart,
+    Size viewport,
+  ) {
+    final handleSize = materialTextSelectionControls.getHandleSize(0);
+    final placeLeft = isStart
+        ? point.dx >= handleSize.width
+        : point.dx + handleSize.width > viewport.width;
+    final type = placeLeft
+        ? TextSelectionHandleType.left
+        : TextSelectionHandleType.right;
+    final anchor = materialTextSelectionControls.getHandleAnchor(type, 0);
+    const touchPadding = 10.0;
+    final touchSize =
+        handleSize + const Offset(touchPadding * 2, touchPadding * 2);
+    final placeBelow = point.dy + handleSize.height <= viewport.height;
+    final handleTop = placeBelow ? point.dy : point.dy - handleSize.height;
+    final left = (point.dx - anchor.dx - touchPadding).clamp(
+      0.0,
+      (viewport.width - touchSize.width).clamp(0.0, double.infinity),
+    );
+    final top = (handleTop - touchPadding).clamp(
+      0.0,
+      (viewport.height - touchSize.height).clamp(0.0, double.infinity),
+    );
+    return Positioned(
+      left: left,
+      top: top,
+      child: GestureDetector(
+        key: ValueKey('terminal-selection-${isStart ? 'start' : 'end'}'),
+        behavior: HitTestBehavior.opaque,
+        dragStartBehavior: DragStartBehavior.down,
+        onPanStart: (details) {
+          final range = _terminalController.selection?.normalized;
+          final view = _terminalViewKey.currentState;
+          if (range == null || view == null) return;
+          _selectionDragFixedAnchor?.dispose();
+          _selectionDragFixedAnchor = _terminal.buffer.createAnchorFromOffset(
+            isStart ? range.end : range.begin,
+          );
+          final render = view.renderTerminal;
+          final moving = isStart ? range.begin : range.end;
+          _selectionDragOffset =
+              details.globalPosition -
+              render.localToGlobal(
+                render.getOffset(moving) + Offset(0, render.lineHeight / 2),
+              );
+        },
+        onPanUpdate: (details) {
+          final fixed = _selectionDragFixedAnchor;
+          final offset = _selectionDragOffset;
+          final view = _terminalViewKey.currentState;
+          if (fixed == null ||
+              !fixed.attached ||
+              offset == null ||
+              view == null) {
+            return;
+          }
+          final render = view.renderTerminal;
+          final local = render.globalToLocal(details.globalPosition - offset);
+          final row = render.getCellOffset(local).y;
+          final lineStart = render.getOffset(CellOffset(0, row));
+          // Handles represent boundaries, including the exclusive column after
+          // the last cell; xterm's hit-test method only returns cell indices.
+          final column = ((local.dx - lineStart.dx) / render.cellSize.width)
+              .round()
+              .clamp(0, _terminal.viewWidth);
+          final position = CellOffset(column, row);
+          if (isStart
+              ? !position.isBefore(fixed.offset)
+              : !fixed.offset.isBefore(position)) {
+            return;
+          }
+          _terminalController.setSelection(
+            _terminal.buffer.createAnchorFromOffset(
+              isStart ? position : fixed.offset,
+            ),
+            _terminal.buffer.createAnchorFromOffset(
+              isStart ? fixed.offset : position,
+            ),
+            mode: SelectionMode.line,
+          );
+        },
+        onPanEnd: (_) => _endSelectionDrag(),
+        onPanCancel: _endSelectionDrag,
+        child: SizedBox.fromSize(
+          size: touchSize,
+          child: Stack(
+            children: [
+              Positioned(
+                left: point.dx - anchor.dx - left,
+                top: handleTop - top,
+                child: Transform.flip(
+                  flipY: !placeBelow,
+                  child: materialTextSelectionControls.buildHandle(
+                    context,
+                    type,
+                    0,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _endSelectionDrag() {
+    _selectionDragFixedAnchor?.dispose();
+    _selectionDragFixedAnchor = null;
+    _selectionDragOffset = null;
+  }
+
+  void _selectAll() {
+    final lines = _terminal.buffer.lines;
+    if (lines.length == 0) return;
+    var last = lines.length - 1;
+    while (last > 0 && lines[last].getText().trimRight().isEmpty) {
+      last--;
+    }
+    _terminalController.setSelection(
+      _terminal.buffer.createAnchor(0, 0),
+      _terminal.buffer.createAnchor(_terminal.viewWidth, last),
+      mode: SelectionMode.line,
+    );
+  }
+
+  Future<void> _writeSelectionToClipboard(BufferRange selection) async {
+    final value = _terminal.buffer.getText(selection);
+    if (value.isEmpty) return;
+    final generation = _attachedGeneration;
+    try {
+      await Clipboard.setData(ClipboardData(text: value));
+    } on PlatformException {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('复制失败，请重试')));
       }
       return;
     }
-    _copyModeHadSelection = true;
-    unawaited(_writeSelectionToClipboard(selection, clearSelection: false));
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _writeSelectionToClipboard(
-    BufferRange selection, {
-    bool clearSelection = true,
-  }) async {
-    final value = _terminal.buffer.getText(selection);
-    if (value.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: value));
-    if (clearSelection) {
-      _terminalController.clearSelection();
-      if (mounted) setState(() {});
+    if (mounted &&
+        _attachedGeneration == generation &&
+        _terminalController.selection == selection) {
+      _dismissSelection();
     }
   }
 
@@ -448,6 +692,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (!mounted || data?.text == null || data!.text!.isEmpty) return;
     final value = data.text!;
+    _dismissSelection();
     final bytes = limitTerminalInput(value, TerminalManager.maxInputBytes);
     if (bytes.length < utf8.encode(value).length) {
       ScaffoldMessenger.of(
@@ -681,7 +926,8 @@ const _terminalKeyFlexes = <int>[10, 10, 11, 11, 11, 10, 10, 10];
 
 const _legacyTerminalTheme = TerminalTheme(
   cursor: Color(0xFF00FF00),
-  selection: Color(0xFF2F5F2F),
+  // xterm paints selection over the glyphs; an opaque color hides the text.
+  selection: Color(0x665E8FDC),
   foreground: Color(0xFF00FF00),
   background: Color(0xFF000000),
   black: Color(0xFF000000),

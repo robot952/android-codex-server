@@ -35,7 +35,7 @@ void main() {
       },
     );
 
-    test('drops cached pages when the thread revision changes', () {
+    test('keeps bounded cached history when the thread revision changes', () {
       TimelineEntry entry(String turnId) => TimelineEntry(
         id: turnId,
         kind: TimelineKind.agentMessage,
@@ -55,9 +55,137 @@ void main() {
         refreshedThreadUpdatedAt: 11,
       );
 
-      expect(result.timeline, refreshed);
+      expect(result.timeline, <TimelineEntry>[cached.first, ...refreshed]);
       expect(result.nextCursor, 'fresh-cursor');
     });
+
+    test(
+      'keeps a complete same-revision cache when the newest page is bounded',
+      () {
+        TimelineEntry entry(String turnId) => TimelineEntry(
+          id: turnId,
+          kind: TimelineKind.agentMessage,
+          text: turnId,
+          turnId: turnId,
+        );
+        final cached = <TimelineEntry>[entry('turn-1'), entry('turn-2')];
+
+        final result = reconcileResumedTimeline(
+          cachedTimeline: cached,
+          cachedNextCursor: null,
+          refreshedTimeline: <TimelineEntry>[cached.last],
+          refreshedNextCursor: 'after-turn-2',
+          refreshedTurnIds: const <String>['turn-2'],
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 10,
+        );
+
+        expect(result.timeline, cached);
+        expect(result.nextCursor, isNull);
+      },
+    );
+
+    test(
+      'bounded rollback keeps the prefix but drops cached turns after it',
+      () {
+        TimelineEntry entry(String turnId) => TimelineEntry(
+          id: turnId,
+          kind: TimelineKind.agentMessage,
+          text: turnId,
+          turnId: turnId,
+        );
+        final cached = <TimelineEntry>[
+          for (var index = 1; index <= 4; index += 1) entry('turn-$index'),
+        ];
+        final refreshed = cached[2].copyWith(text: 'remaining final answer');
+
+        final result = reconcileResumedTimeline(
+          cachedTimeline: cached,
+          cachedNextCursor: 'old-before-turn-1',
+          refreshedTimeline: <TimelineEntry>[refreshed],
+          refreshedNextCursor: 'fresh-before-turn-3',
+          refreshedTurnIds: const <String>['turn-3'],
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 11,
+        );
+
+        expect(result.timeline, <TimelineEntry>[
+          cached[0],
+          cached[1],
+          refreshed,
+        ]);
+        expect(
+          result.timeline.any((entry) => entry.turnId == 'turn-4'),
+          isFalse,
+        );
+        expect(result.nextCursor, 'fresh-before-turn-3');
+      },
+    );
+
+    test('changed full snapshot discards an absent cached prefix', () {
+      const old = TimelineEntry(
+        id: 'old-answer',
+        kind: TimelineKind.agentMessage,
+        text: 'removed old history',
+        turnId: 'turn-1',
+      );
+      const retained = TimelineEntry(
+        id: 'retained-answer',
+        kind: TimelineKind.agentMessage,
+        text: 'retained history',
+        turnId: 'turn-2',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[old, retained],
+        cachedNextCursor: 'old-cursor',
+        refreshedTimeline: const <TimelineEntry>[retained],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-2'],
+        cachedThreadUpdatedAt: 10,
+        refreshedThreadUpdatedAt: 11,
+      );
+
+      expect(result.timeline, const <TimelineEntry>[retained]);
+      expect(result.nextCursor, isNull);
+    });
+
+    test(
+      'does not append disjoint bounded pages without a verified overlap',
+      () {
+        const cached = <TimelineEntry>[
+          TimelineEntry(
+            id: 'cached-answer',
+            kind: TimelineKind.agentMessage,
+            text: 'unverified older history',
+            turnId: 'turn-1',
+          ),
+        ];
+        const refreshed = <TimelineEntry>[
+          TimelineEntry(
+            id: 'fresh-user',
+            kind: TimelineKind.userMessage,
+            text: 'latest question',
+            turnId: 'turn-2',
+          ),
+        ];
+
+        for (final refreshedRevision in <int>[10, 11]) {
+          final result = reconcileResumedTimeline(
+            cachedTimeline: cached,
+            cachedNextCursor: 'old-cursor',
+            refreshedTimeline: refreshed,
+            refreshedNextCursor: 'fresh-cursor',
+            refreshedTurnIds: const <String>['turn-2'],
+            cachedThreadUpdatedAt: 10,
+            refreshedThreadUpdatedAt: refreshedRevision,
+          );
+
+          expect(result.timeline, refreshed);
+          expect(result.nextCursor, 'fresh-cursor');
+        }
+      },
+    );
 
     test(
       'keeps cached command details for refreshed turns after revision changes',

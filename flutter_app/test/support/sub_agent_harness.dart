@@ -239,7 +239,12 @@ class SubAgentSession implements CodexSession {
 }
 
 class SubAgentHarness {
-  final session = SubAgentSession()..addThread('parent', title: '协作测试');
+  SubAgentHarness({SubAgentSession? session})
+    : session = session ?? SubAgentSession() {
+    this.session.addThread('parent', title: '协作测试');
+  }
+
+  final SubAgentSession session;
   final hosts = ServerConnectionManager(clientFactory: QuestionHost.new);
   late final client = CodexAgentClient(sessionOpener: (_, _) async => session);
   late final agents = AgentConnectionManager(

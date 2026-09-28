@@ -327,6 +327,16 @@ node scripts/test-codex-provider-transport.cjs
 
 ## 6. SSH 测试主机
 
+历史恢复专项：`test/app/resumed_timeline_reconciliation_test.dart`、
+`test/app/older_timeline_merge_test.dart` 和 `test/app/resume_lifecycle_test.dart` 覆盖有界页重叠、
+回退、重复分页顺序、自动补读一页、失败重试及快速重进的迟到结果；
+`integration_test/history_reopen_workflow_test.dart` 使用生产 JSONL adapter/controller/WorkScreen
+与受控分页对端验证旧回答不会被最新提问覆盖，不调用真实模型或操作用户会话。
+终端专项 `integration_test/terminal_selection_test.dart` 使用受控 PTY、真实 Android 软键盘和剪贴板，
+验证长按、跨行手柄拖动、显式复制及取消后继续输入；与历史专项可通过
+`integration_test/terminal_and_history_test.dart` 一次设备构建执行。测试结束须覆盖安装正常 Release，
+不能将测试包交付为正式安装包。
+
 缓存专项：`test/persistence/thread_snapshot_store_test.dart` 验证压缩加密、限额、损坏及删除竞态；
 `test/app/resume_lifecycle_test.dart` 验证快速重进、磁盘预览与网络响应竞争、只读及连接失效。
 `integration_test/thread_snapshot_store_test.dart` 在 Android 使用真实安全存储插件和缓存目录，

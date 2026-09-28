@@ -21,6 +21,7 @@ import '../agent/thread_session_cache.dart';
 import '../domain/model_catalog.dart';
 import '../domain/models.dart';
 import '../domain/async_question_reply.dart';
+import 'older_timeline_merge.dart';
 import 'profile_scoped_back_stack.dart';
 import '../persistence/profile_store.dart';
 import '../persistence/thread_snapshot_store.dart';
@@ -187,6 +188,7 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, ResumeNotificationBuffer>
   _resumeNotificationBuffers = {};
   final Map<String, _ThreadOpenRequest> _threadOpenRequests = {};
+  int _olderTurnsRequestId = 0;
   ({AgentConnectionKey key, String threadId, int generation})?
   _startingThreadOpen;
   final ProfileScopedBackStack<_SubAgentNavigationFrame>
@@ -3210,21 +3212,38 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(screen: AppScreen.threads);
   }
 
-  Future<void> loadOlderTurns() async {
-    await _ensureInitialized();
+  Future<void> loadOlderTurns() => _loadOlderTurns();
+
+  Future<void> _loadOlderTurns({bool automatic = false}) async {
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     final cursor = state.olderTurnsCursor;
     if (profileId == null ||
         thread == null ||
         cursor == null ||
-        state.olderTurnsLoading) {
+        state.olderTurnsLoading ||
+        state.loading ||
+        (state.screen != AppScreen.work &&
+            state.screen != AppScreen.agentWork)) {
       return;
     }
     final key = AgentConnectionKey(
       profileId: profileId,
       agent: state.activeAgent,
     );
+    final navigationGeneration = _sessionNavigationGenerations[key] ?? 0;
+    final connectionGeneration = _agents.generation(key);
+    final remoteGeneration = _agents.remoteGeneration(key);
+    final requestId = ++_olderTurnsRequestId;
+    bool isCurrent() =>
+        mounted &&
+        _olderTurnsRequestId == requestId &&
+        _isCurrentSessionNavigation(key, navigationGeneration, thread.id) &&
+        _agents.generation(key) == connectionGeneration &&
+        _agents.remoteGeneration(key) == remoteGeneration &&
+        state.olderTurnsCursor == cursor;
+    await _ensureInitialized();
+    if (!isCurrent() || state.olderTurnsLoading) return;
     final profile = state.profiles.firstWhereOrNull(
       (candidate) => candidate.id == profileId,
     );
@@ -3237,15 +3256,19 @@ class AppController extends StateNotifier<AppUiState> {
         cursor: cursor,
         subAgentCreatedAt: _subAgentThreadCreatedAt(thread),
       );
-      if (!mounted || !_isActiveThread(key, thread.id)) return;
+      if (!isCurrent()) return;
       final childPage = _isolateSubAgentTimeline(key, thread, page.timeline);
       final nextCursor = childPage.length == page.timeline.length
           ? page.nextCursor
           : null;
+      // A fresh cursor can revisit cached turns. Their live entries are newer
+      // than this page and must win while missing older rows are prepended.
       final merged = _isolateSubAgentTimeline(
         key,
         thread,
-        _mergeTimeline(childPage, state.timeline),
+        _normalizeResumedTimeline(
+          mergeOlderTimelinePage(older: childPage, current: state.timeline),
+        ),
       );
       state = state.copyWith(
         timeline: merged,
@@ -3260,11 +3283,14 @@ class AppController extends StateNotifier<AppUiState> {
         tokenUsage: state.tokenUsage,
       );
     } catch (error) {
-      if (mounted && _isActiveThread(key, thread.id)) {
+      if (isCurrent()) {
         state = state.copyWith(
           olderTurnsLoading: false,
-          error: _message(error, '读取更早历史失败'),
+          error: automatic ? state.error : _message(error, '读取更早历史失败'),
         );
+        if (automatic) {
+          _diagnostics.warn('Thread', 'recent_history_backfill_failed', error);
+        }
       }
     }
   }
@@ -4177,6 +4203,7 @@ class AppController extends StateNotifier<AppUiState> {
         state.screen == AppScreen.agentWork ||
         state.activeThread?.isExternallyOwned != true ||
         state.loading ||
+        state.olderTurnsLoading ||
         state.submitting) {
       return;
     }
@@ -4186,7 +4213,8 @@ class AppController extends StateNotifier<AppUiState> {
       if (!mounted ||
           !_isActiveThread(key, threadId) ||
           _externallyOwnedRefreshKey != key ||
-          _externallyOwnedRefreshThreadId != threadId) {
+          _externallyOwnedRefreshThreadId != threadId ||
+          state.olderTurnsLoading) {
         return;
       }
       final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
@@ -4592,6 +4620,7 @@ class AppController extends StateNotifier<AppUiState> {
     bool subAgentBackNavigation = false,
     _SessionSnapshot? initialSnapshot,
   }) {
+    _olderTurnsRequestId++;
     if (targetScreen != AppScreen.work || !snapshot.thread.isExternallyOwned) {
       _stopExternallyOwnedRefresh();
     }
@@ -4742,6 +4771,7 @@ class AppController extends StateNotifier<AppUiState> {
       activeAgentName: resolvedAgentName,
       activeGoal: sameInitialThread ? initialSnapshot!.activeGoal : activeGoal,
       timeline: timeline,
+      olderTurnsLoading: false,
       olderTurnsCursor: timeline.length == snapshot.timeline.length
           ? snapshot.nextTurnsCursor
           : null,
@@ -5071,6 +5101,18 @@ class AppController extends StateNotifier<AppUiState> {
           }
         }
         onResumed?.call();
+        if (_isCurrentSessionNavigation(key, navigationGeneration, thread.id) &&
+            targetScreen == AppScreen.work &&
+            (session.itemsView == 'full' || session.itemsView == 'cached') &&
+            state.olderTurnsCursor != null &&
+            state.timeline.isNotEmpty &&
+            state.timeline.every(
+              (entry) => entry.kind == TimelineKind.userMessage,
+            )) {
+          // A new turn may contain only the user's prompt. Populate one older
+          // page in the background so this does not look like lost history.
+          unawaited(_loadOlderTurns(automatic: true));
+        }
       } else if (resumeBuffer != null) {
         _releaseResumeNotifications(
           key,
@@ -8047,18 +8089,6 @@ String _notificationString(Map<String, Object?>? value, List<String> keys) {
   return '';
 }
 
-List<TimelineEntry> _mergeTimeline(
-  List<TimelineEntry> older,
-  List<TimelineEntry> newer,
-) {
-  final result = <TimelineEntry>[];
-  final ids = <(String, TimelineKind, String)>{};
-  for (final entry in [...older, ...newer]) {
-    if (ids.add(_timelineIdentity(entry))) result.add(entry);
-  }
-  return List<TimelineEntry>.unmodifiable(result);
-}
-
 final class ResumedTimelineMerge {
   const ResumedTimelineMerge({required this.timeline, this.nextCursor});
 
@@ -8117,6 +8147,10 @@ ResumedTimelineMerge reconcileResumedTimeline({
       cachedNextCursor != null || refreshedNextCursor == null;
   final hasVerifiedOverlap =
       overlapIndex >= 0 && revisionUnchanged && cachedBoundaryUsable;
+  // updatedAt changes during ordinary progress, not just history mutations.
+  // An overlapping bounded page still proves its older cached prefix exists;
+  // only cached turns after the server's latest turns must be discarded.
+  final hasPagedOverlap = overlapIndex >= 0 && refreshedNextCursor != null;
   final unchangedSummary =
       normalizedCachedTimeline != null &&
       revisionUnchanged &&
@@ -8141,7 +8175,7 @@ ResumedTimelineMerge reconcileResumedTimeline({
       normalizedCachedTimeline,
       normalizedRefreshedTimeline,
     );
-  } else if (hasVerifiedOverlap) {
+  } else if (hasVerifiedOverlap || hasPagedOverlap) {
     timeline = <TimelineEntry>[...retainedPrefix, ...refreshedDetails];
   } else if (overlapIndex >= 0) {
     timeline = refreshedDetails;
@@ -8150,6 +8184,7 @@ ResumedTimelineMerge reconcileResumedTimeline({
   }
   final retainCursor =
       hasVerifiedOverlap ||
+      (hasPagedOverlap && revisionUnchanged) ||
       unchangedSummary ||
       unchangedNotLoaded ||
       unchangedEmptyPage;
