@@ -170,8 +170,6 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
           ),
           if (blocking != null)
             _ConnectionOverlay(
-              profileName: blocking.profileName,
-              connection: blocking.connection,
               onCancel: () => ref
                   .read(appControllerProvider.notifier)
                   .cancelConnection(blocking.profileId),
@@ -1917,14 +1915,8 @@ class _ServerEditor extends StatelessWidget {
 }
 
 class _ConnectionOverlay extends StatelessWidget {
-  const _ConnectionOverlay({
-    required this.profileName,
-    required this.connection,
-    required this.onCancel,
-  });
+  const _ConnectionOverlay({required this.onCancel});
 
-  final String profileName;
-  final ConnectionState connection;
   final VoidCallback onCancel;
 
   @override
@@ -1935,7 +1927,7 @@ class _ConnectionOverlay extends StatelessWidget {
         container: true,
         scopesRoute: true,
         explicitChildNodes: true,
-        label: '$profileName：${connection.message}',
+        label: '连接中',
         child: Stack(
           children: [
             ModalBarrier(
@@ -1943,55 +1935,55 @@ class _ConnectionOverlay extends StatelessWidget {
               color: Colors.black.withValues(alpha: 0.58),
             ),
             Center(
-              child: Container(
-                constraints: const BoxConstraints(minWidth: 190, maxWidth: 300),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 20,
-                ),
-                decoration: BoxDecoration(
-                  color: codexRaised,
-                  border: Border.all(color: codexBorder),
-                  borderRadius: BorderRadius.circular(8),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Colors.black54,
-                      blurRadius: 18,
-                      offset: Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 28,
-                      height: 28,
-                      child: CircularProgressIndicator(strokeWidth: 2.2),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      profileName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
+              child: MediaQuery.withClampedTextScaling(
+                maxScaleFactor: 1.35,
+                child: Container(
+                  key: const ValueKey('connection-overlay-content'),
+                  constraints: const BoxConstraints(
+                    minWidth: 190,
+                    maxWidth: 240,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    color: codexRaised,
+                    border: Border.all(color: codexBorder),
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black54,
+                        blurRadius: 18,
+                        offset: Offset(0, 6),
                       ),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      connection.message,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.white70),
-                    ),
-                    const SizedBox(height: 12),
-                    TextButton.icon(
-                      onPressed: onCancel,
-                      icon: const Icon(Icons.close, size: 17),
-                      label: const Text('取消连接'),
-                    ),
-                  ],
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: CircularProgressIndicator(strokeWidth: 2.2),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '连接中',
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      TextButton(
+                        onPressed: onCancel,
+                        child: const Text('取消连接', maxLines: 1),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -2002,8 +1994,7 @@ class _ConnectionOverlay extends StatelessWidget {
   }
 }
 
-({String profileId, String profileName, ConnectionState connection})?
-_blockingConnection(AppUiState state) {
+({String profileId})? _blockingConnection(AppUiState state) {
   final profileId = state.selectedProfileId;
   if (profileId == null) return null;
   final profile = state.profiles.firstWhereOrNull(
@@ -2018,11 +2009,7 @@ _blockingConnection(AppUiState state) {
       }.contains(connection.phase)) {
     return null;
   }
-  return (
-    profileId: profileId,
-    profileName: profile.name,
-    connection: connection,
-  );
+  return (profileId: profileId);
 }
 
 String _connectionLabel(ConnectionPhase phase) => switch (phase) {

@@ -229,6 +229,20 @@ void main() {
       expect(tester.getTopLeft(overlay), Offset.zero);
       expect(tester.getSize(overlay), const Size(1220 / 2.75, 2712 / 2.75));
       expect(find.text('测试服务器'), findsWidgets);
+      expect(
+        find.descendant(of: overlay, matching: find.text('连接中')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: overlay, matching: find.text('测试服务器')),
+        findsNothing,
+      );
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('connection-overlay-content')))
+            .height,
+        lessThanOrEqualTo(170),
+      );
       expect(find.text('取消连接'), findsOneWidget);
 
       await tester.binding.handlePopRoute();
