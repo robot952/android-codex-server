@@ -327,6 +327,14 @@ node scripts/test-codex-provider-transport.cjs
 
 ## 6. SSH 测试主机
 
+缓存专项：`test/persistence/thread_snapshot_store_test.dart` 验证压缩加密、限额、损坏及删除竞态；
+`test/app/resume_lifecycle_test.dart` 验证快速重进、磁盘预览与网络响应竞争、只读及连接失效。
+`integration_test/thread_snapshot_store_test.dart` 在 Android 使用真实安全存储插件和缓存目录，
+以 140 条合成历史做跨实例读写；结束仅删除该测试作用域，再按发布流程覆盖安装正常 APK。
+原生 Codex 无模型消耗回归可运行
+`CODEX_CACHED_RESUME_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-cached-resume.cjs`，
+它用临时 HOME 验证 `excludeTurns` 响应大小和另一 app-server 的 writer 冲突，不读取真实认证。
+
 长期测试主机只准备一次：
 
 ```bash
@@ -408,6 +416,7 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 | 密码/私钥连接 | 指纹首次确认；变化时显示旧/新指纹；取消保留旧值；确认替换后重连；失败不影响其他服务器 |
 | 多服务器 | A、B 可同时保持独立连接，切换不串状态 |
 | 会话打开 | 列表刷新期间可打开已显示的会话；重复点击去重，快速切换只显示最后目标，旧列表加载不解锁正在恢复的输入框；首屏只取最近完整回合，旧历史游标可连续下拉 |
+| 会话缓存 | 快速重进共享在途恢复；同代有效订阅以小型 metadata 请求校验 writer 后使用内存历史；冷启动压缩加密预览保持输入锁定；过期、损坏、断线、占用、Provider/身份变化和子会话不能误用授权 |
 | 连接遮罩 | 连接/指纹阶段半透明阻塞；连接弹窗只有圆环和下方“取消连接”按钮，无服务器名或状态文字；取消可退出，完成后直接进入占位会话页 |
 | 返回和竖屏适配 | 页面动画可用；目标竖屏、大字体无溢出；IME 不遮挡表单 |
 | 进程重建 | 加密 Profile 可恢复；断线状态不伪装成已连接 |

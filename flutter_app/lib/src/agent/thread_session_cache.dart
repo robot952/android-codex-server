@@ -55,6 +55,11 @@ class ThreadSessionCache {
   final LinkedHashMap<String, _WeightedSnapshot> _entries = LinkedHashMap();
   final LinkedHashMap<String, TokenUsage> _contextUsages = LinkedHashMap();
   int _currentWeightChars = 0;
+  int _invalidationRevision = 0;
+
+  /// A removed transcript can be rebuilt from only live deltas. It must then
+  /// be revalidated before it can be reused as complete history.
+  int get invalidationRevision => _invalidationRevision;
 
   int get length => _entries.length;
 
@@ -93,9 +98,12 @@ class ThreadSessionCache {
     }
 
     final weight = _snapshotWeight(thread, timeline, nextTurnsCursor);
-    if (weight > maxWeightChars) return;
+    if (weight > maxWeightChars) {
+      _removeSnapshot(thread.id);
+      return;
+    }
 
-    _removeSnapshot(thread.id);
+    _removeSnapshot(thread.id, invalidate: false);
     final snapshot = ThreadSessionSnapshot(
       thread: thread,
       timeline: timeline,
@@ -214,6 +222,7 @@ class ThreadSessionCache {
   }.contains(status);
 
   void clear() {
+    _invalidationRevision++;
     _entries.clear();
     _contextUsages.clear();
     _currentWeightChars = 0;
@@ -230,9 +239,12 @@ class ThreadSessionCache {
     return latest == null ? snapshot : snapshot.copyWith(tokenUsage: latest);
   }
 
-  void _removeSnapshot(String threadId) {
+  void _removeSnapshot(String threadId, {bool invalidate = true}) {
     final removed = _entries.remove(threadId);
-    if (removed != null) _currentWeightChars -= removed.weightChars;
+    if (removed != null) {
+      _currentWeightChars -= removed.weightChars;
+      if (invalidate) _invalidationRevision++;
+    }
   }
 
   int _snapshotWeight(

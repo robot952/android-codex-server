@@ -64,6 +64,20 @@ class AgentConnectionManager {
 
   int generation(AgentConnectionKey key) => _entries[key]?.generation ?? -1;
 
+  bool canReuseThread(
+    AgentConnectionKey key,
+    String threadId,
+    ApprovalMode mode,
+  ) {
+    final entry = _entries[key];
+    final client = entry?.client;
+    return _states[key]?.phase == ConnectionPhase.connected &&
+        client is RemoteAgentThreadReuseClient &&
+        client != null &&
+        client.isConnected &&
+        (client as RemoteAgentThreadReuseClient).canReuseThread(threadId, mode);
+  }
+
   bool isCurrentGeneration(AgentConnectionKey key, int generation) =>
       _entries[key]?.generation == generation;
 
@@ -346,19 +360,57 @@ class AgentConnectionManager {
     String threadId, {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
     bool readOnly = false,
+    AgentSession? cachedSession,
   }) async {
     final entry = _requireConnected(key);
     final generation = entry.generation;
     final client = entry.client;
-    final result = readOnly && client is RemoteAgentThreadInspectionClient
-        ? await (client as RemoteAgentThreadInspectionClient).readThread(
-            threadId,
-          )
-        : await client.resumeThread(threadId, approvalMode: approvalMode);
-    if (!_isCurrent(key, entry) || entry.generation != generation) {
-      throw StateError('Agent 会话恢复请求已失效');
-    }
-    return result;
+    final remote = remoteGeneration(key);
+    final requestKey = (
+      generation: generation,
+      remoteGeneration: remote,
+      threadId: threadId,
+      approvalMode: approvalMode,
+      readOnly: readOnly,
+      cached: cachedSession != null,
+    );
+    // Navigation can change while the same server fetch is still pending.
+    // Share only that fetch, never a settled snapshot or another connection.
+    entry.resumeRequests.removeWhere(
+      (candidate, _) =>
+          candidate.generation != generation ||
+          candidate.remoteGeneration != remote,
+    );
+    final pending = entry.resumeRequests[requestKey];
+    if (pending != null) return pending;
+    late final Future<AgentSession> request;
+    request =
+        Future<AgentSession>.sync(() async {
+          final result = readOnly && client is RemoteAgentThreadInspectionClient
+              ? await (client as RemoteAgentThreadInspectionClient).readThread(
+                  threadId,
+                )
+              : cachedSession != null && client is RemoteAgentThreadReuseClient
+              ? await (client as RemoteAgentThreadReuseClient)
+                    .resumeCachedThread(
+                      cachedSession,
+                      approvalMode: approvalMode,
+                    )
+              : await client.resumeThread(threadId, approvalMode: approvalMode);
+          if (!_isCurrent(key, entry) ||
+              entry.generation != generation ||
+              remoteGeneration(key) != remote ||
+              !client.isConnected) {
+            throw StateError('Agent 会话恢复请求已失效');
+          }
+          return result;
+        }).whenComplete(() {
+          if (identical(entry.resumeRequests[requestKey], request)) {
+            entry.resumeRequests.remove(requestKey);
+          }
+        });
+    entry.resumeRequests[requestKey] = request;
+    return request;
   }
 
   /// Reads an existing thread without resuming it or taking writer ownership.
@@ -822,6 +874,7 @@ class AgentConnectionManager {
       if (_isCurrent(key, entry) && !_eventController.isClosed) {
         _eventController.add(AgentEventEnvelope(key: key, event: event));
         if (event is RemoteAgentConnectionLost) {
+          entry.resumeRequests.clear();
           _setState(
             key,
             ConnectionState(
@@ -1002,6 +1055,7 @@ class AgentConnectionManager {
       isHostCurrent();
 
   Future<void> _disconnectClient(_AgentEntry entry) {
+    entry.resumeRequests.clear();
     final pending = entry.disconnectRequest;
     if (pending != null) return pending;
     late final Future<void> request;
@@ -1057,6 +1111,7 @@ class AgentConnectionManager {
     final entry = _entries.remove(key);
     if (entry == null) return;
     entry.generation++;
+    entry.resumeRequests.clear();
     unawaited(entry.eventSubscription.cancel());
     // Profile replacement/removal can happen without the explicit disconnect
     // action. Give durable Codex sessions a bounded chance to stop remotely
@@ -1096,6 +1151,15 @@ class AgentConnectionManager {
   }
 }
 
+typedef _ThreadResumeRequestKey = ({
+  int generation,
+  int? remoteGeneration,
+  String threadId,
+  ApprovalMode approvalMode,
+  bool readOnly,
+  bool cached,
+});
+
 class _AgentEntry {
   _AgentEntry(this.profile, this.client, this.eventSubscription);
 
@@ -1104,6 +1168,7 @@ class _AgentEntry {
   final StreamSubscription<RemoteAgentEvent> eventSubscription;
   final Lock lock = Lock();
   Future<void>? disconnectRequest;
+  final Map<_ThreadResumeRequestKey, Future<AgentSession>> resumeRequests = {};
   int generation = 0;
   int? runtimeOperationGeneration;
   String? runtimeCommand;

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:synchronized/synchronized.dart';
 
@@ -22,6 +23,7 @@ import '../domain/models.dart';
 import '../domain/async_question_reply.dart';
 import 'profile_scoped_back_stack.dart';
 import '../persistence/profile_store.dart';
+import '../persistence/thread_snapshot_store.dart';
 import '../platform/background_connection_bridge.dart';
 import '../platform/diagnostic_logger.dart';
 import '../platform/local_linux_manager.dart';
@@ -34,6 +36,10 @@ import '../ssh/terminal_manager.dart';
 final profileStoreProvider = Provider<ProfileStore>((ref) {
   return SecureProfileStore();
 });
+
+final threadSnapshotStoreProvider = Provider<ThreadSnapshotStore>(
+  (ref) => EncryptedThreadSnapshotStore(),
+);
 
 final serverConnectionManagerProvider = Provider<ServerConnectionManager>((
   ref,
@@ -73,6 +79,8 @@ final appControllerProvider = StateNotifierProvider<AppController, AppUiState>((
     null,
     ref.watch(backgroundRestoreIntentProvider),
     ref.watch(localLinuxControllerProvider.notifier),
+    null,
+    ref.watch(threadSnapshotStoreProvider),
   );
 });
 
@@ -96,6 +104,7 @@ class AppController extends StateNotifier<AppUiState> {
     BackgroundConnectionIntent? backgroundRestoreIntent,
     LocalLinuxRuntime? localLinuxRuntime,
     CodexVersionCatalog? codexVersionCatalog,
+    ThreadSnapshotStore? threadSnapshotStore,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
        _reconnectDelays = List<Duration>.unmodifiable(
@@ -108,6 +117,8 @@ class AppController extends StateNotifier<AppUiState> {
        _codexVersionCatalog =
            codexVersionCatalog ?? const CodexVersionCatalog(),
        _ownsAgentConnections = agentConnections == null,
+       _threadSnapshotStore =
+           threadSnapshotStore ?? const NoopThreadSnapshotStore(),
        super(const AppUiState(loading: true)) {
     _connectionSubscription = _connections.stateChanges.listen(
       _applyConnectionStates,
@@ -133,6 +144,9 @@ class AppController extends StateNotifier<AppUiState> {
   final LocalLinuxRuntime _localLinuxRuntime;
   final CodexVersionCatalog _codexVersionCatalog;
   final bool _ownsAgentConnections;
+  final ThreadSnapshotStore _threadSnapshotStore;
+  final LinkedHashMap<String, (int, int?, int, int?)> _liveThreadSnapshots =
+      LinkedHashMap();
   late final StreamSubscription<Map<String, ConnectionState>>
   _connectionSubscription;
   late final StreamSubscription<Map<String, ServerMetrics>>
@@ -426,6 +440,10 @@ class AppController extends StateNotifier<AppUiState> {
         (existing.remoteCommand.trim() != normalized.remoteCommand.trim() ||
             existing.workspace.trim() != normalized.workspace.trim() ||
             existing.codexVersion.trim() != normalized.codexVersion.trim());
+    if (existing != null &&
+        (connectionIdentityChanged || agentLaunchIdentityChanged)) {
+      _removeStoredProfileSnapshots(existing);
+    }
     if (connectionIdentityChanged) {
       _forgetRetainedConnection(normalized.id);
       _clearSetupStates(normalized.id);
@@ -599,6 +617,10 @@ class AppController extends StateNotifier<AppUiState> {
       );
     }
     _agents.remove(profileId);
+    final removedProfile = state.profiles.firstWhereOrNull(
+      (p) => p.id == profileId,
+    );
+    if (removedProfile != null) _removeStoredProfileSnapshots(removedProfile);
     _connections.remove(profileId);
     final profiles = state.profiles
         .where((profile) => profile.id != profileId)
@@ -1472,6 +1494,7 @@ class AppController extends StateNotifier<AppUiState> {
     )..remove(key);
     _clearAgentThreadPagination(key);
     _threadCaches.remove(key);
+    unawaited(_threadSnapshotStore.removeScope(_snapshotScope(profile, agent)));
     _clearSubAgentHistory(threadPreferenceKey(key.profileId, key.agent, ''));
     _subAgentTurns.removeWhere(
       (storageKey, _) => storageKey.startsWith(
@@ -3818,7 +3841,8 @@ class AppController extends StateNotifier<AppUiState> {
         threadId: thread.id,
         approvalMode: state.approvalMode,
       );
-      if (!mounted || !_isActiveThread(key, thread.id)) return;
+      if (!mounted) return;
+      _removeStoredThread(key, thread);
       final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
       cache
         ..remove(thread.id)
@@ -3828,6 +3852,7 @@ class AppController extends StateNotifier<AppUiState> {
           nextTurnsCursor: session.nextTurnsCursor,
           tokenUsage: session.tokenUsage,
         );
+      if (!_isActiveThread(key, thread.id)) return;
       final lists = _replaceLaneThread(
         state.agentThreadLists,
         key,
@@ -3874,13 +3899,15 @@ class AppController extends StateNotifier<AppUiState> {
     if (!_beginThreadMutation(key, thread.id)) return;
     try {
       await _agents.archiveThread(key, threadId: thread.id);
+      if (!mounted) return;
+      _threadCaches[key]?.remove(thread.id);
+      _removeStoredThread(key, thread);
       if (!mounted || !_isActiveThread(key, thread.id)) return;
       final storageKey = threadPreferenceKey(
         key.profileId,
         key.agent,
         thread.id,
       );
-      _threadCaches[key]?.remove(thread.id);
       _threadGoals.remove(storageKey);
       final approvalBuckets = _pendingApprovalsByThread[key];
       approvalBuckets?.remove(_approvalThreadId(thread.id));
@@ -4782,7 +4809,27 @@ class AppController extends StateNotifier<AppUiState> {
     final effectiveRequestKey =
         requestKey ?? threadPreferenceKey(profileId, key.agent, thread.id);
     final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
-    final cached = cache.get(thread.id) ?? cache.getStale(thread.id);
+    final freshCached = cache.get(thread.id);
+    final cached = freshCached ?? cache.getStale(thread.id);
+    final proof = _liveThreadSnapshots[effectiveRequestKey];
+    final canReuse =
+        freshCached != null &&
+        freshCached.timeline.isNotEmpty &&
+        !freshCached.thread.isExternallyOwned &&
+        targetScreen == AppScreen.work &&
+        !isSubAgentThreadSource(thread.source) &&
+        !_subAgentThreadRegistry.contains(key, thread.id) &&
+        freshCached.thread.modelProvider == thread.modelProvider &&
+        thread.updatedAt <= freshCached.thread.updatedAt &&
+        _threadIsRunning(thread) == _threadIsRunning(freshCached.thread) &&
+        (thread.activeTurnId == null ||
+            thread.activeTurnId == freshCached.thread.activeTurnId) &&
+        _isHostAndAgentConnected(key) &&
+        proof != null &&
+        proof.$1 == _agents.generation(key) &&
+        proof.$2 == _agents.remoteGeneration(key) &&
+        proof.$3 == cache.invalidationRevision &&
+        _agents.canReuseThread(key, thread.id, state.approvalMode);
     _diagnostics.info(
       'Thread',
       'open_requested profile=${key.profileId} agent=${key.agent.name} '
@@ -4806,6 +4853,7 @@ class AppController extends StateNotifier<AppUiState> {
             timeline: cached.timeline,
             nextTurnsCursor: cached.nextTurnsCursor,
             tokenUsage: rememberedTokenUsage,
+            activeTurnStartedAtMillis: canReuse ? proof.$4 : null,
           );
     _showThreadSnapshot(
       key,
@@ -4817,6 +4865,14 @@ class AppController extends StateNotifier<AppUiState> {
       subAgentBackNavigation: subAgentBackNavigation,
       initialSnapshot: initialSnapshot,
     );
+    // Pending verification must not refresh an old proof via navigation/cache
+    // writes. Only its successfully applied result can establish a new one.
+    _liveThreadSnapshots.remove(effectiveRequestKey);
+    if (cached == null && initialSnapshot == null) {
+      unawaited(
+        _hydrateStoredThread(key, profile, thread, cache, navigationGeneration),
+      );
+    }
     final pending = _threadOpenRequests[effectiveRequestKey];
     if (pending != null && pending.generation == navigationGeneration) {
       return true;
@@ -4835,6 +4891,7 @@ class AppController extends StateNotifier<AppUiState> {
           initialSnapshot: initialSnapshot,
           onResumed: onResumed,
           onResumeFailure: onResumeFailure,
+          reuseCachedHistory: canReuse,
         ).whenComplete(() {
           if (identical(_threadOpenRequests[effectiveRequestKey], request)) {
             _threadOpenRequests.remove(effectiveRequestKey);
@@ -4857,6 +4914,7 @@ class AppController extends StateNotifier<AppUiState> {
     required _SessionSnapshot? initialSnapshot,
     void Function()? onResumed,
     bool Function(Object error)? onResumeFailure,
+    bool reuseCachedHistory = false,
   }) async {
     ResumeNotificationBuffer? resumeBuffer;
     final startedAt = Stopwatch()..start();
@@ -4890,7 +4948,23 @@ class AppController extends StateNotifier<AppUiState> {
           remoteGeneration,
         );
       }
-      final session = await _resumeExpectedThread(key, thread.id);
+      final reusable = reuseCachedHistory ? cache.get(thread.id) : null;
+      final session = await _resumeExpectedThread(
+        key,
+        thread.id,
+        cachedSession: reusable == null
+            ? null
+            : AgentSession(
+                thread: reusable.thread,
+                timeline: reusable.timeline,
+                nextTurnsCursor: reusable.nextTurnsCursor,
+                tokenUsage: reusable.tokenUsage,
+                activeTurnStartedAtMillis:
+                    state.turnTiming?.threadId == thread.id
+                    ? state.turnTiming?.startedAtMillis
+                    : null,
+              ),
+      );
       final cachedSnapshot = cache.getStale(thread.id);
       final refreshedTimeline = _isolateSubAgentTimeline(
         key,
@@ -4941,6 +5015,7 @@ class AppController extends StateNotifier<AppUiState> {
           'Thread',
           'open_ready profile=${key.profileId} agent=${key.agent.name} '
               'thread=${thread.id} elapsedMs=${startedAt.elapsedMilliseconds} '
+              'source=${session.itemsView == 'cached' ? 'live_cache' : 'server'} '
               'entries=${resolvedSession.timeline.length}',
         );
         _showThreadSnapshot(
@@ -4975,6 +5050,26 @@ class AppController extends StateNotifier<AppUiState> {
           );
         }
         _cacheActiveThreadSession(key, expectedThreadId: thread.id);
+        final snapshotKey = threadPreferenceKey(
+          key.profileId,
+          key.agent,
+          thread.id,
+        );
+        _liveThreadSnapshots.remove(snapshotKey);
+        if (!resolvedSession.thread.isExternallyOwned &&
+            (session.itemsView == 'full' || session.itemsView == 'cached') &&
+            cache.getStale(thread.id) != null &&
+            resumeBuffer?.overflowed != true) {
+          _liveThreadSnapshots[snapshotKey] = (
+            _agents.generation(key),
+            _agents.remoteGeneration(key),
+            cache.invalidationRevision,
+            state.turnTiming?.startedAtMillis,
+          );
+          while (_liveThreadSnapshots.length > 64) {
+            _liveThreadSnapshots.remove(_liveThreadSnapshots.keys.first);
+          }
+        }
         onResumed?.call();
       } else if (resumeBuffer != null) {
         _releaseResumeNotifications(
@@ -5039,14 +5134,16 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<AgentSession> _resumeExpectedThread(
     AgentConnectionKey key,
-    String threadId,
-  ) async {
+    String threadId, {
+    AgentSession? cachedSession,
+  }) async {
     final readOnly = _subAgentThreadRegistry.contains(key, threadId);
     final first = await _agents.resumeThread(
       key,
       threadId,
       approvalMode: state.approvalMode,
       readOnly: readOnly,
+      cachedSession: readOnly ? null : cachedSession,
     );
     if (first.thread.id == threadId) return first;
     final retry = await _agents.resumeThread(
@@ -5128,6 +5225,120 @@ class AppController extends StateNotifier<AppUiState> {
       _isolateSubAgentTimeline(key, activeThread, state.timeline),
       nextTurnsCursor: state.olderTurnsCursor,
       tokenUsage: state.tokenUsage,
+    );
+    if (!state.loading) _saveStoredThread(key, activeThread.id);
+  }
+
+  String _snapshotScope(ServerProfile profile, AgentKind agent) => sha256
+      .convert(
+        utf8.encode(
+          jsonEncode([
+            profile.id,
+            agent.name,
+            profile.host,
+            profile.port,
+            profile.username,
+            profile.authMode.name,
+            profile.password,
+            profile.privateKeyPem,
+            profile.privateKeyPassphrase,
+            profile.hostFingerprint,
+            profile.remoteCommand,
+            profile.workspace,
+            profile.codexVersion,
+          ]),
+        ),
+      )
+      .toString();
+
+  void _removeStoredProfileSnapshots(ServerProfile profile) {
+    for (final agent in AgentKind.values) {
+      unawaited(
+        _threadSnapshotStore.removeScope(_snapshotScope(profile, agent)),
+      );
+    }
+    _liveThreadSnapshots.removeWhere(
+      (key, _) => key.startsWith('${profile.id}\u0000'),
+    );
+  }
+
+  void _saveStoredThread(AgentConnectionKey key, String threadId) {
+    if (_threadSnapshotStore is NoopThreadSnapshotStore) return;
+    final profile = state.profiles.firstWhereOrNull(
+      (p) => p.id == key.profileId,
+    );
+    final snapshot = _threadCaches[key]?.getStale(threadId);
+    if (profile == null) return;
+    if (snapshot == null || snapshot.timeline.isEmpty) {
+      unawaited(
+        _threadSnapshotStore.remove(
+          _snapshotScope(profile, key.agent),
+          threadId,
+        ),
+      );
+      return;
+    }
+    unawaited(
+      _threadSnapshotStore.write(_snapshotScope(profile, key.agent), snapshot),
+    );
+  }
+
+  void _removeStoredThread(AgentConnectionKey key, AgentThread thread) {
+    final profile = state.profiles.firstWhereOrNull(
+      (p) => p.id == key.profileId,
+    );
+    if (profile != null) {
+      unawaited(
+        _threadSnapshotStore.remove(
+          _snapshotScope(profile, key.agent),
+          thread.id,
+        ),
+      );
+    }
+    _liveThreadSnapshots.remove(
+      threadPreferenceKey(key.profileId, key.agent, thread.id),
+    );
+  }
+
+  Future<void> _hydrateStoredThread(
+    AgentConnectionKey key,
+    ServerProfile profile,
+    AgentThread thread,
+    ThreadSessionCache cache,
+    int generation,
+  ) async {
+    final watch = Stopwatch()..start();
+    final snapshot = await _threadSnapshotStore.read(
+      _snapshotScope(profile, key.agent),
+      thread.id,
+    );
+    if (snapshot == null ||
+        !mounted ||
+        !_isCurrentSessionNavigation(key, generation, thread.id) ||
+        !state.loading ||
+        state.timeline.isNotEmpty ||
+        snapshot.thread.id != thread.id ||
+        snapshot.thread.modelProvider != thread.modelProvider) {
+      return;
+    }
+    final timeline = _isolateSubAgentTimeline(key, thread, snapshot.timeline);
+    cache.put(
+      snapshot.thread,
+      timeline,
+      nextTurnsCursor: snapshot.nextTurnsCursor,
+      tokenUsage: snapshot.tokenUsage,
+    );
+    // Only paint cached content. Status, ownership, approvals and input remain
+    // governed by the live resume; a late disk read cannot replace its response.
+    state = state.copyWith(
+      timeline: timeline,
+      olderTurnsCursor: snapshot.nextTurnsCursor,
+      tokenUsage: snapshot.tokenUsage,
+    );
+    _diagnostics.info(
+      'Thread',
+      'cache_visible profile=${key.profileId} agent=${key.agent.name} '
+          'thread=${thread.id} source=disk elapsedMs=${watch.elapsedMilliseconds} entries=${timeline.length}',
     );
   }
 
@@ -5903,6 +6114,13 @@ class AppController extends StateNotifier<AppUiState> {
       // A Provider switch changes the server's thread namespace. Do not let a
       // stale transcript be used when the new Provider reuses a thread ID.
       _threadCaches[key]?.clear();
+      unawaited(
+        _threadSnapshotStore.removeScope(_snapshotScope(profile, key.agent)),
+      );
+      _liveThreadSnapshots.removeWhere(
+        (id, _) =>
+            id.startsWith(threadPreferenceKey(key.profileId, key.agent, '')),
+      );
       _clearSubAgentHistory(threadPreferenceKey(key.profileId, key.agent, ''));
       _subAgentTurns.removeWhere(
         (storageKey, _) => storageKey.startsWith(
@@ -6421,6 +6639,11 @@ class AppController extends StateNotifier<AppUiState> {
           state = state.copyWith(diagnostic: message);
         }
       case RemoteAgentConnectionLost(:final message):
+        _liveThreadSnapshots.removeWhere(
+          (id, _) => id.startsWith(
+            threadPreferenceKey(envelope.key.profileId, envelope.key.agent, ''),
+          ),
+        );
         _diagnostics.info(
           'Agent',
           'connection_lost profile=${envelope.key.profileId} '
@@ -6491,6 +6714,20 @@ class AppController extends StateNotifier<AppUiState> {
           ),
         );
         final eventThreadId = _notificationThreadId(routedMessage);
+        if (const {
+              'thread/archived',
+              'thread/deleted',
+              'thread/reverted',
+              'thread/compacted',
+            }.contains(message.method) &&
+            eventThreadId.isNotEmpty) {
+          final cached = _threadCaches[envelope.key]?.getStale(eventThreadId);
+          _removeStoredThread(
+            envelope.key,
+            cached?.thread ?? AgentThread(id: eventThreadId),
+          );
+          _threadCaches[envelope.key]?.remove(eventThreadId);
+        }
         if (_subAgentThreadRegistry.contains(envelope.key, eventThreadId)) {
           final turn = _notificationMap(routedMessage.params['turn']);
           final turnId = _notificationString(routedMessage.params, const [
@@ -6581,6 +6818,9 @@ class AppController extends StateNotifier<AppUiState> {
             nextTurnsCursor: state.olderTurnsCursor,
             tokenUsage: state.tokenUsage,
           );
+          if (routedMessage.method == 'turn/completed') {
+            _saveStoredThread(envelope.key, activeThread.id);
+          }
         }
         if (routedMessage.method == 'turn/started' ||
             routedMessage.method == 'turn/completed' ||
@@ -6766,6 +7006,7 @@ class AppController extends StateNotifier<AppUiState> {
         nextTurnsCursor: reduced.olderTurnsCursor,
         tokenUsage: reduced.tokenUsage,
       );
+      if (message.method == 'turn/completed') _saveStoredThread(key, threadId);
     }
     if (message.method == 'thread/goal/updated') {
       final goal = reduced.activeGoal;

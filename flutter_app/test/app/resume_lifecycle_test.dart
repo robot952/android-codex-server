@@ -4,9 +4,11 @@ import 'package:codex_remote/src/agent/agent_connection_manager.dart';
 import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_bootstrap.dart';
+import 'package:codex_remote/src/agent/thread_session_cache.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/persistence/thread_snapshot_store.dart';
 import 'package:codex_remote/src/platform/turn_completion_notifications.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
@@ -48,6 +50,372 @@ const _threadB = AgentThread(
 );
 
 void main() {
+  test(
+    'warm history preserves start time across another conversation',
+    () async {
+      final agent = _ReusableResumeAgent(
+        threads: const [_threadAActive, _threadB],
+      );
+      final harness = await _createHarness(agent);
+      final startedAt = DateTime.now().millisecondsSinceEpoch - 60000;
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+      first.complete(
+        AgentSession(
+          thread: _threadAActive,
+          timeline: const [
+            TimelineEntry(
+              id: 'm',
+              kind: TimelineKind.agentMessage,
+              text: 'running',
+              turnId: 'turn-a',
+            ),
+          ],
+          activeTurnStartedAtMillis: startedAt,
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+      harness.controller.openThread(_threadB);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _threadB.id &&
+            !harness.controller.state.loading,
+      );
+      harness.controller.backToThreadList();
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _threadA.id &&
+            !harness.controller.state.loading,
+      );
+      expect(harness.controller.state.turnTiming?.startedAtMillis, startedAt);
+      expect(harness.controller.state.running, isTrue);
+      expect(agent.resumeCalls.where((id) => id == _threadA.id).length, 1);
+    },
+  );
+
+  test(
+    'revalidation left mid-flight cannot revive an older reuse proof',
+    () async {
+      final agent = _ReusableResumeAgent(threads: const [_threadA]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+      first.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'm',
+              kind: TimelineKind.agentMessage,
+              text: 'old history',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+      agent.reusable = false;
+      final revalidation = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.length == 2);
+      harness.controller.backToThreadList();
+      agent.reusable = true;
+      revalidation.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'm',
+              kind: TimelineKind.agentMessage,
+              text: 'new history',
+            ),
+          ],
+        ),
+      );
+      await _drainAsyncWork();
+      final last = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.length == 3);
+      last.complete(const AgentSession(thread: _threadA, timeline: []));
+      await _waitUntil(() => !harness.controller.state.loading);
+    },
+  );
+
+  for (final wrongThread in [false, true]) {
+    test(
+      'disk preview rejects ${wrongThread ? 'another thread' : 'another provider'}',
+      () async {
+        final snapshots = _SnapshotStore();
+        final agent = _ResumeAgent(threads: const [_threadA]);
+        final harness = await _createHarness(agent, snapshots: snapshots);
+        final resume = agent.gateNextResume(_threadA.id);
+        harness.controller.openThread(_threadA);
+        await _waitUntil(() => snapshots.reads.isNotEmpty);
+        snapshots.reads.first.complete(
+          ThreadSessionSnapshot(
+            thread: wrongThread
+                ? _threadB
+                : _threadA.copyWith(modelProvider: 'different'),
+            timeline: const [
+              TimelineEntry(
+                id: 'old',
+                kind: TimelineKind.agentMessage,
+                text: 'must not leak',
+              ),
+            ],
+            savedAtEpochMillis: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+        await _drainAsyncWork();
+        expect(harness.controller.state.timeline, isEmpty);
+        expect(harness.controller.state.loading, isTrue);
+        resume.complete(const AgentSession(thread: _threadA, timeline: []));
+        await _waitUntil(() => !harness.controller.state.loading);
+      },
+    );
+  }
+
+  test(
+    'memory snapshot after connection generation changes must resume',
+    () async {
+      final agent = _ReusableResumeAgent(threads: const [_threadA]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+      first.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'm',
+              kind: TimelineKind.agentMessage,
+              text: 'before reconnect',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+      agent.remoteGeneration++;
+      final second = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.length == 2);
+      expect(harness.controller.state.loading, isTrue);
+      expect(harness.controller.state.timeline.single.text, 'before reconnect');
+      second.complete(const AgentSession(thread: _threadA, timeline: []));
+      await _waitUntil(() => !harness.controller.state.loading);
+    },
+  );
+
+  test(
+    'rapid leave and reopen shares pending fetch and keeps latest route',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent);
+      final resume = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      for (var i = 0; i < 3; i++) {
+        harness.controller.backToThreadList();
+        harness.controller.openThread(_threadA);
+        await _drainAsyncWork();
+      }
+      expect(agent.resumeCalls, [_threadA.id]);
+      resume.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'answer',
+              kind: TimelineKind.agentMessage,
+              text: 'latest',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.screen, AppScreen.work);
+      expect(harness.controller.state.timeline.single.text, 'latest');
+    },
+  );
+
+  test(
+    'live warm cache avoids another fetch and includes background output',
+    () async {
+      final agent = _ReusableResumeAgent(threads: const [_threadAActive]);
+      final harness = await _createHarness(agent);
+      final resume = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+      resume.complete(
+        const AgentSession(
+          thread: _threadAActive,
+          timeline: [
+            TimelineEntry(
+              id: 'answer',
+              kind: TimelineKind.agentMessage,
+              text: 'hello',
+              turnId: 'turn-a',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      harness.controller.backToThreadList();
+      agent.emit(
+        _notificationWithParams('item/agentMessage/delta', {
+          'threadId': _threadA.id,
+          'turnId': 'turn-a',
+          'itemId': 'answer',
+          'delta': ' world',
+        }),
+      );
+      await _drainAsyncWork();
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => harness.controller.state.screen == AppScreen.work);
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.loading, isFalse);
+      expect(agent.resumeCalls, [_threadA.id]);
+      expect(harness.controller.state.timeline.single.text, 'hello world');
+      expect(harness.controller.state.running, isTrue);
+      // Loss of the actual subscription forces verification even with a snapshot.
+      harness.controller.backToThreadList();
+      agent.reusable = false;
+      final recheck = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 2);
+      expect(harness.controller.state.loading, isTrue);
+      recheck.complete(
+        AgentSession(
+          thread: _threadA.copyWith(isExternallyOwned: true),
+          timeline: const [],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.isThreadReadOnly, isTrue);
+    },
+  );
+
+  test(
+    'disk snapshot paints before server but cannot unlock or replace fresh reply',
+    () async {
+      final snapshots = _SnapshotStore();
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent, snapshots: snapshots);
+      final resume = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => snapshots.reads.length == 1);
+      snapshots.reads.single.complete(
+        ThreadSessionSnapshot(
+          thread: _threadA,
+          timeline: const [
+            TimelineEntry(
+              id: 'saved',
+              kind: TimelineKind.agentMessage,
+              text: 'cached',
+            ),
+          ],
+          savedAtEpochMillis: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      await _waitUntil(() => harness.controller.state.timeline.isNotEmpty);
+      expect(harness.controller.state.loading, isTrue);
+      expect(harness.controller.state.approvalQueue, isEmpty);
+      resume.complete(
+        AgentSession(
+          thread: _threadA.copyWith(isExternallyOwned: true),
+          timeline: const [
+            TimelineEntry(
+              id: 'saved',
+              kind: TimelineKind.agentMessage,
+              text: 'fresh',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.isThreadReadOnly, isTrue);
+      expect(harness.controller.state.timeline.single.text, 'fresh');
+
+      harness.controller.backToThreadList();
+      final next = agent.gateNextResume(_threadB.id);
+      harness.controller.openThread(_threadB);
+      await _waitUntil(() => snapshots.reads.length == 2);
+      next.complete(
+        const AgentSession(
+          thread: _threadB,
+          timeline: [
+            TimelineEntry(
+              id: 'new',
+              kind: TimelineKind.agentMessage,
+              text: 'new server data',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      snapshots.reads.last.complete(
+        ThreadSessionSnapshot(
+          thread: _threadB,
+          timeline: const [
+            TimelineEntry(
+              id: 'old',
+              kind: TimelineKind.agentMessage,
+              text: 'old disk',
+            ),
+          ],
+          savedAtEpochMillis: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      await _drainAsyncWork();
+      expect(harness.controller.state.timeline.single.text, 'new server data');
+    },
+  );
+
+  test(
+    'disk read finishing after navigation cannot paint another thread',
+    () async {
+      final snapshots = _SnapshotStore();
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent, snapshots: snapshots);
+      final resume = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => snapshots.reads.isNotEmpty);
+      harness.controller.backToThreadList();
+      harness.controller.openThread(_threadB);
+      await _waitUntil(
+        () => harness.controller.state.activeThread?.id == _threadB.id,
+      );
+      snapshots.reads.first.complete(
+        ThreadSessionSnapshot(
+          thread: _threadA,
+          timeline: const [
+            TimelineEntry(
+              id: 'old',
+              kind: TimelineKind.agentMessage,
+              text: 'wrong thread',
+            ),
+          ],
+          savedAtEpochMillis: 0,
+        ),
+      );
+      resume.complete(const AgentSession(thread: _threadA, timeline: []));
+      await _drainAsyncWork();
+      expect(harness.controller.state.activeThread?.id, _threadB.id);
+      expect(
+        harness.controller.state.timeline.any((e) => e.text == 'wrong thread'),
+        isFalse,
+      );
+      for (final read in snapshots.reads) {
+        if (!read.isCompleted) read.complete(null);
+      }
+    },
+  );
   test('double tapping a conversation starts only one resume', () async {
     final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
     final harness = await _createHarness(agent);
@@ -548,6 +916,9 @@ void main() {
     );
 
     final newA = agent.gateNextResume(_threadA.id);
+    // Same-generation A requests are now shared. Simulate a replacement
+    // transport to retain coverage for a truly obsolete A response.
+    agent.remoteGeneration++;
     harness.controller.openThread(_threadA);
     await _waitUntil(
       () =>
@@ -1148,6 +1519,7 @@ Future<_Harness> _createHarness(
   _ResumeAgent agent, {
   StoredProfiles? storedProfiles,
   bool waitForAgent = true,
+  ThreadSnapshotStore? snapshots,
 }) async {
   final store = _MemoryProfileStore(
     storedProfiles ??
@@ -1158,7 +1530,17 @@ Future<_Harness> _createHarness(
     connections,
     clientFactory: (_) => agent,
   );
-  final controller = AppController(store, connections, agents);
+  final controller = AppController(
+    store,
+    connections,
+    agents,
+    null,
+    null,
+    null,
+    null,
+    null,
+    snapshots,
+  );
   addTearDown(() async {
     controller.dispose();
     await agents.close();
@@ -1172,6 +1554,47 @@ Future<_Harness> _createHarness(
     () => controller.state.threads.length == agent.threads.length,
   );
   return _Harness(controller);
+}
+
+class _SnapshotStore implements ThreadSnapshotStore {
+  final reads = <Completer<ThreadSessionSnapshot?>>[];
+  final writes = <ThreadSessionSnapshot>[];
+  @override
+  Future<ThreadSessionSnapshot?> read(String scope, String id) {
+    final pending = Completer<ThreadSessionSnapshot?>();
+    reads.add(pending);
+    return pending.future;
+  }
+
+  @override
+  Future<void> write(String scope, ThreadSessionSnapshot snapshot) async =>
+      writes.add(snapshot);
+  @override
+  Future<void> remove(String scope, String id) async {}
+  @override
+  Future<void> removeScope(String scope) async {}
+}
+
+class _ReusableResumeAgent extends _ResumeAgent
+    implements RemoteAgentThreadReuseClient {
+  _ReusableResumeAgent({required super.threads});
+  bool reusable = true;
+  @override
+  bool canReuseThread(String threadId, ApprovalMode mode) =>
+      connected && reusable;
+  @override
+  Future<AgentSession> resumeCachedThread(
+    AgentSession snapshot, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async => AgentSession(
+    thread: snapshot.thread,
+    timeline: snapshot.timeline,
+    nextTurnsCursor: snapshot.nextTurnsCursor,
+    tokenUsage: snapshot.tokenUsage,
+    activeTurnStartedAtMillis: snapshot.activeTurnStartedAtMillis,
+    responseSequence: -1,
+    itemsView: 'cached',
+  );
 }
 
 class _MemoryProfileStore implements ProfileStore {
@@ -1247,6 +1670,7 @@ class _ResumeAgent
   final Map<String, List<Completer<AgentSession>>> _resumeGates = {};
   final Map<String, AgentSession> readSessions = {};
   bool connected = false;
+  int remoteGeneration = 1;
 
   @override
   AgentKind get kind => AgentKind.codex;
@@ -1258,7 +1682,7 @@ class _ResumeAgent
   bool get isConnected => connected;
 
   @override
-  int? get currentGeneration => connected ? 1 : null;
+  int? get currentGeneration => connected ? remoteGeneration : null;
 
   @override
   Stream<RemoteAgentEvent> get events => _events.stream;

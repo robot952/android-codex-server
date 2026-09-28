@@ -228,6 +228,172 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  test(
+    'warm resume checks writer without requesting history and retains progress',
+    () async {
+      final session = _FakeCodexSession(
+        results: const {
+          'thread/resume': {
+            'thread': {
+              'id': 'root',
+              'status': {'type': 'active'},
+            },
+          },
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await client.resumeThread('root');
+      const cached = AgentSession(
+        thread: AgentThread(id: 'root', status: 'active', activeTurnId: 'turn'),
+        timeline: [
+          TimelineEntry(
+            id: 'text',
+            kind: TimelineKind.agentMessage,
+            text: 'cached body',
+            turnId: 'turn',
+          ),
+        ],
+        tokenUsage: TokenUsage(modelContextWindow: 1000),
+        nextTurnsCursor: 'older-page',
+        activeTurnStartedAtMillis: 1234,
+      );
+      final checked = await client.resumeCachedThread(cached);
+      final requests = session.writes
+          .map(jsonDecode)
+          .where((r) => r['method'] == 'thread/resume')
+          .toList();
+      expect(requests, hasLength(2));
+      expect(requests.first['params']['initialTurnsPage'], isNotNull);
+      expect(requests.last['params']['initialTurnsPage'], isNull);
+      expect(requests.last['params']['excludeTurns'], isTrue);
+      expect(checked.timeline, cached.timeline);
+      expect(checked.nextTurnsCursor, cached.nextTurnsCursor);
+      expect(checked.thread.activeTurnId, 'turn');
+      expect(checked.activeTurnStartedAtMillis, 1234);
+      expect(checked.tokenUsage, cached.tokenUsage);
+      expect(checked.responseSequence, -1);
+    },
+  );
+
+  test('only a live writable full resume permits cache reuse', () async {
+    final session = _FakeCodexSession(
+      results: const {
+        'thread/resume': {
+          'thread': {'id': 'root', 'status': 'idle', 'turns': []},
+        },
+        'thread/read': {
+          'thread': {'id': 'child', 'status': 'idle', 'turns': []},
+        },
+        'thread/turns/list': {'data': [], 'nextCursor': null},
+      },
+    );
+    final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    addTearDown(client.close);
+    await client.connect(
+      const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+      _FakeCodexHost(),
+    );
+    expect(
+      client.canReuseThread('root', ApprovalMode.requestApproval),
+      isFalse,
+    );
+    await client.readThread('child');
+    expect(
+      client.canReuseThread('child', ApprovalMode.requestApproval),
+      isFalse,
+    );
+    await client.resumeThread('root');
+    expect(client.canReuseThread('root', ApprovalMode.requestApproval), isTrue);
+    expect(client.canReuseThread('root', ApprovalMode.fullAccess), isFalse);
+    for (final event in [
+      {
+        'method': 'thread/closed',
+        'params': {'threadId': 'root'},
+      },
+      {
+        'method': 'thread/archived',
+        'params': {'threadId': 'root'},
+      },
+      {
+        'method': 'thread/deleted',
+        'params': {'threadId': 'root'},
+      },
+      {
+        'method': 'thread/reverted',
+        'params': {'threadId': 'root'},
+      },
+      {
+        'method': 'thread/status/changed',
+        'params': {
+          'threadId': 'root',
+          'status': {'type': 'notLoaded'},
+        },
+      },
+      {
+        'method': 'thread/status/changed',
+        'params': {
+          'threadId': 'root',
+          'status': {'type': 'systemError'},
+        },
+      },
+    ]) {
+      session._stdout.add(
+        Uint8List.fromList(utf8.encode('${jsonEncode(event)}\n')),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        client.canReuseThread('root', ApprovalMode.requestApproval),
+        isFalse,
+        reason: event.toString(),
+      );
+      await client.resumeThread('root');
+    }
+    await client.disconnect();
+    expect(
+      client.canReuseThread('root', ApprovalMode.requestApproval),
+      isFalse,
+    );
+  });
+
+  test('ownership fallback never authorizes cache reuse', () async {
+    final session = _FakeCodexSession(
+      replyFor: (request) => switch (request['method']) {
+        'thread/resume' => {
+          'error': {
+            'code': -32600,
+            'message': 'thread root already has an active writer',
+          },
+        },
+        'thread/read' => {
+          'result': {
+            'thread': {'id': 'root', 'status': 'idle'},
+          },
+        },
+        'thread/turns/list' => {
+          'result': {'data': [], 'nextCursor': null},
+        },
+        _ => {'result': <String, Object?>{}},
+      },
+    );
+    final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    addTearDown(client.close);
+    await client.connect(
+      const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+      _FakeCodexHost(),
+    );
+    final result = await client.resumeThread('root');
+    expect(result.thread.isExternallyOwned, isTrue);
+    expect(
+      client.canReuseThread('root', ApprovalMode.requestApproval),
+      isFalse,
+    );
+  });
+
   for (final readOnly in [false, true]) {
     test(
       '${readOnly ? 'read-only' : 'resume'} opens newest complete turn and pages all older turns',

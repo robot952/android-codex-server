@@ -392,6 +392,7 @@ class CodexAgentClient
         RemoteAgentApiModelClient,
         RemoteAgentRuntimeClient,
         RemoteAgentGenerationClient,
+        RemoteAgentThreadReuseClient,
         RemoteAgentKeepAliveClient,
         RemoteAgentIndependentConnectionClient,
         RemoteAgentDurableSessionClient {
@@ -463,6 +464,16 @@ class CodexAgentClient
   bool _connectedHostIsLocal = false;
   String? _modelProvider;
   final Map<String, int> _subAgentCreatedAtByThread = <String, int>{};
+  final Map<String, ApprovalMode> _reusableThreads = {};
+  int _reuseRevision = 0;
+
+  @override
+  bool canReuseThread(String threadId, ApprovalMode approvalMode) =>
+      kind == AgentKind.codex &&
+      isConnected &&
+      !_lossEmitted &&
+      currentGeneration != null &&
+      _reusableThreads[threadId] == approvalMode;
 
   @override
   AgentKind get kind => AgentKind.codex;
@@ -733,6 +744,8 @@ class CodexAgentClient
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
   }) async {
     final scope = _requireScope();
+    _reusableThreads.remove(threadId);
+    final reuseRevision = _reuseRevision;
     final attempts = <({String itemsView, int limit})>[
       // A turn can contain many tool calls. Fetch only the newest complete
       // turn for first paint; the returned cursor keeps older turns available.
@@ -753,7 +766,22 @@ class CodexAgentClient
           ),
           timeout: threadRequestTimeout,
         );
-        return _sessionFromResponse(response, itemsView: attempt.itemsView);
+        final session = _sessionFromResponse(
+          response,
+          itemsView: attempt.itemsView,
+        );
+        if (scope.isCurrent &&
+            isConnected &&
+            reuseRevision == _reuseRevision &&
+            session.thread.id == threadId &&
+            !session.thread.isExternallyOwned &&
+            attempt.itemsView == 'full') {
+          if (_reusableThreads.length >= 32) {
+            _reusableThreads.remove(_reusableThreads.keys.first);
+          }
+          _reusableThreads[threadId] = approvalMode;
+        }
+        return session;
       } on CodexResponseTooLargeException {
         if (index == attempts.length - 1) rethrow;
       } on CodexRpcException catch (error) {
@@ -777,6 +805,76 @@ class CodexAgentClient
 
   @override
   Future<AgentSession> readThread(String threadId) => _readThread(threadId);
+
+  @override
+  Future<AgentSession> resumeCachedThread(
+    AgentSession snapshot, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async {
+    final threadId = snapshot.thread.id;
+    if (!canReuseThread(threadId, approvalMode)) {
+      return resumeThread(threadId, approvalMode: approvalMode);
+    }
+    final scope = _requireScope();
+    final revision = _reuseRevision;
+    try {
+      // Recheck the native writer every time, without downloading turn bodies
+      // already maintained by this connection's live subscription.
+      final response = await _request(
+        scope.request(
+          'thread/resume',
+          params: {
+            'threadId': threadId,
+            'approvalPolicy': approvalMode.approvalPolicy,
+            'excludeTurns': true,
+            if (_questionConfig != null) 'config': _questionConfig,
+          },
+        ),
+        timeout: threadRequestTimeout,
+      );
+      final checked = _sessionFromResponse(response, itemsView: 'cached');
+      if (!scope.isCurrent ||
+          revision != _reuseRevision ||
+          checked.thread.id != threadId ||
+          checked.thread.modelProvider != snapshot.thread.modelProvider) {
+        return resumeThread(threadId, approvalMode: approvalMode);
+      }
+      final active = const {
+        'active',
+        'running',
+        'working',
+        'inProgress',
+      }.contains(checked.thread.status);
+      return AgentSession(
+        thread: checked.thread.copyWith(
+          activeTurnId: active
+              ? checked.thread.activeTurnId ?? snapshot.thread.activeTurnId
+              : null,
+        ),
+        timeline: snapshot.timeline,
+        nextTurnsCursor: snapshot.nextTurnsCursor,
+        tokenUsage: snapshot.tokenUsage,
+        itemsView: 'cached',
+        activeTurnStartedAtMillis: active
+            ? snapshot.activeTurnStartedAtMillis
+            : null,
+        // This snapshot predates the small verification request. Replay every
+        // event buffered since it began, even those preceding the response.
+        responseSequence: -1,
+      );
+    } on CodexRpcException catch (error) {
+      if (!isCodexThreadOwnershipError(error, threadId: threadId)) rethrow;
+      try {
+        return await _readThread(threadId, externallyOwned: true);
+      } catch (readError) {
+        throw CodexThreadOwnedException(
+          threadId: threadId,
+          ownershipError: error,
+          readError: readError,
+        );
+      }
+    }
+  }
 
   Future<AgentSession> _readThread(
     String threadId, {
@@ -1064,6 +1162,7 @@ class CodexAgentClient
 
   @override
   Future<void> compactThread(String threadId) async {
+    _reusableThreads.remove(threadId);
     final scope = _requireScope();
     final response = await _request(
       scope.threadCompactStart(threadId: threadId),
@@ -1078,6 +1177,7 @@ class CodexAgentClient
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
     int turns = 1,
   }) async {
+    _reusableThreads.remove(threadId);
     // The mutation response contains the bounded, post-rollback snapshot. The
     // approval mode is accepted by the adapter contract for parity with the
     // native client; the app-server rollback RPC itself only needs the id and
@@ -1104,6 +1204,7 @@ class CodexAgentClient
 
   @override
   Future<void> archiveThread(String threadId) async {
+    _reusableThreads.remove(threadId);
     final scope = _requireScope();
     final response = await _request(
       scope.threadArchive(threadId: threadId),
@@ -1213,6 +1314,8 @@ class CodexAgentClient
 
   @override
   Future<void> disconnect() async {
+    _reuseRevision++;
+    _reusableThreads.clear();
     _settingsHost = null;
     _connectedProfile = null;
     _modelProvider = null;
@@ -1608,6 +1711,8 @@ class CodexAgentClient
     final hint = inspectCodexJsonRpcEnvelopePrefix(prefix);
     final id = hint.id;
     if (id == null) {
+      _reuseRevision++;
+      _reusableThreads.clear();
       _emitDiagnostic('${kind.label} 返回了超过 8 MiB 的通知，已丢弃');
       return;
     }
@@ -1671,6 +1776,12 @@ class CodexAgentClient
     if (message == null) return;
     switch (message) {
       case CodexRpcResponse():
+        if (message.error != null) {
+          // An ownership/authorization or mutation failure can arrive on a
+          // different RPC. Revalidate subscriptions before bypassing resume.
+          _reuseRevision++;
+          _reusableThreads.clear();
+        }
         final pending = _pending[message.id];
         if (pending == null) {
           _emitDiagnostic(
@@ -1680,6 +1791,26 @@ class CodexAgentClient
           pending.complete(message);
         }
       case CodexRpcNotification():
+        final params = message.params;
+        final threadObject = params['thread'];
+        final threadId =
+            params['threadId'] ??
+            params['thread_id'] ??
+            (threadObject is Map ? threadObject['id'] : null);
+        final status = params['status'];
+        final statusName = status is Map ? status['type'] : status;
+        if (const {
+              'thread/closed',
+              'thread/archived',
+              'thread/deleted',
+              'thread/reverted',
+              'thread/compacted',
+            }.contains(message.method) ||
+            (message.method == 'thread/status/changed' &&
+                const {'notLoaded', 'systemError'}.contains(statusName))) {
+          _reuseRevision++;
+          _reusableThreads.remove(threadId);
+        }
         final warning = message.params['message'];
         if (message.method == 'warning' &&
             warning is String &&
@@ -1709,6 +1840,8 @@ class CodexAgentClient
           unawaited(_replyUnknownRequest(message));
         }
       case CodexParseError():
+        _reuseRevision++;
+        _reusableThreads.clear();
         _emitDiagnostic('${kind.label} 返回格式异常：${message.message}');
     }
   }
@@ -1771,6 +1904,8 @@ class CodexAgentClient
   }
 
   void _emitConnectionLost(String message) {
+    _reuseRevision++;
+    _reusableThreads.clear();
     if (_lossEmitted) return;
     _lossEmitted = true;
     _emit(RemoteAgentConnectionLost(message));

@@ -63,6 +63,16 @@ abstract interface class RemoteAgentGenerationClient {
   int? get currentGeneration;
 }
 
+/// Only a live subscription established by a successful writable resume can
+/// authorize reuse. A disk snapshot or read-only inspection cannot do so.
+abstract interface class RemoteAgentThreadReuseClient {
+  bool canReuseThread(String threadId, ApprovalMode approvalMode);
+  Future<AgentSession> resumeCachedThread(
+    AgentSession snapshot, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  });
+}
+
 /// Optional transport heartbeat for Agent clients that own a dedicated SSH
 /// connection. Shared-host test clients and adapters can omit this capability.
 abstract interface class RemoteAgentKeepAliveClient {

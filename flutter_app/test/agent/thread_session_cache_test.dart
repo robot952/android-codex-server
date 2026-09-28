@@ -64,6 +64,21 @@ void main() {
     expect(second.get('shared')?.thread.title, 'second');
   });
 
+  test('oversized update removes stale history and invalidates live reuse', () {
+    final cache = ThreadSessionCache(maxWeightChars: 80, maxEntries: 1);
+    cache.put(thread('one'), [entry('message', 'before')]);
+    final revision = cache.invalidationRevision;
+    cache.put(thread('one'), [entry('message', 'after')]);
+    expect(cache.invalidationRevision, revision);
+    cache.put(thread('one'), [entry('message', 'x' * 100)]);
+    expect(cache.getStale('one'), isNull);
+    expect(cache.invalidationRevision, greaterThan(revision));
+    cache.put(thread('one'), [entry('message', 'partial delta')]);
+    final rebuilt = cache.invalidationRevision;
+    cache.put(thread('two'), [entry('message', 'other thread')]);
+    expect(cache.invalidationRevision, greaterThan(rebuilt));
+  });
+
   test('remove clears both transcript and context usage', () {
     final cache = ThreadSessionCache(nowEpochMillis: () => now);
     cache.put(

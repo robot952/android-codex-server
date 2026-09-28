@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.123+255，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.124+256，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -271,7 +271,8 @@ thread 导航；OpenCode 支持模型、两种 API 协议、effort、审批、�
 profileId + NUL + stable Agent key + NUL + threadId
 ~~~
 
-时间线正文、审批队列和 TokenUsage 不写入长期存储。任何新增会话级数据必须先确定隔离键，不能退化
+最近时间线及 TokenUsage 使用有界压缩加密文件缓存，审批队列和写入权限不持久化。
+缓存只能提前显示历史，不能凭磁盘记录恢复操作权限。任何新增会话级数据必须先确定隔离键，不能退化
 成所有服务器和会话共用的全局单值。
 
 ## 6. Profile 持久化和迁移
@@ -463,8 +464,10 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
   开启时显示，并与普通会话操作之间保留分隔线。
 - 当用户滚离最新消息时，跳转按钮居中悬浮在时间线和 Composer 之间；只在确实存在更新内容时显示，不能固定在右下角遮住命令卡片。
 
-- 打开会话先从 `ThreadSessionCache` 显示最近快照，再以 `thread/resume` 校准；请求按
-  `profileId + AgentKind + threadId` 去重，超时可保留过期快照作为回退；
+- 打开会话先显示内存或压缩加密的本地快照；已成功恢复且订阅、连接代次、权限模式和缓存均有效的
+  Codex 主会话通过不带历史正文的 `thread/resume` 校验 writer 后复用实时内存历史，否则完整恢复。
+  只读/子会话始终读取服务器；
+  进行中的同线程恢复请求跨页面进出复用，超时可保留过期快照作为回退；
 - Codex 明确报告其他进程持有同一线程的 writer 时，改用有界 `thread/read` + `thread/turns/list`，
   保留主会话标题与历史，底部显示“已在另一个应用中打开”和重试。该状态由
   `AgentThread.isExternallyOwned` 随 lane 内线程缓存维护，不持久化、不依据运行状态猜测占用；
@@ -629,8 +632,9 @@ bridge 即使保留兼容 RPC，也不能绕过 capability 在 UI 暴露未承�
 
 ### 9.4 会话缓存、分页和上下文（当前实现与缺口）
 
-`AppController._openThread` 先显示 lane 内的缓存快照，再发起 `thread/resume`；同一复合 thread key 的
-重复打开复用进行中的 Future。`ThreadSessionCache` 默认每 lane 最多 8 个 transcript、TTL 30 分钟、
+`AppController._openThread` 优先显示缓存。`AgentConnectionManager` 按 lane、管理器及远端连接代次、
+thread、权限模式与只读模式共享进行中的恢复请求；导航变更仅替换呈现，避免快速进出重复下载。
+`ThreadSessionCache` 默认每 lane 最多 8 个 transcript、TTL 30 分钟、
 约 2 MiB 字符权重，并额外保留有限的有效 TokenUsage。更早历史通过 cursor 获取，按
 `(turnId, kind, id)` 复合身份去重后前插并更新缓存。
 
@@ -639,7 +643,19 @@ resume 期间同 generation 的实时通知会进入有界 `ResumeNotificationBu
 sequence 重放快照之后的通知。缓冲区保留终态、合并相邻 delta，并在溢出时给出诊断。客户端对超大
 首屏恢复和只读响应依次尝试 `full/1 -> summary/1 -> notLoaded/1`；旧历史分页仍依次尝试
 `full/4 -> full/1 -> summary/1 -> notLoaded/1`，避免只提高内存和 timeout。首屏保留服务器游标，
-更早内容按需下拉加载。恢复仍验证服务端写入权，不以缓存替代跨端占用检查。
+更早内容按需下拉加载。只有 Codex 同连接成功的完整可写恢复可以建立实时复用资格；断线、关闭、归档、
+删除、回退、notLoaded/systemError、协议丢失/错误、权限变化或缓存淘汰后重新校准。磁盘快照、只读读取、
+子会话和 OpenCode 不建立可写复用资格，不能绕过跨端占用检查。有效内存缓存也必须通过小型 metadata
+恢复请求校验 writer，随后重放校验期间的全部通知；保留历史游标、上下文用量和当前回合起始时间。
+
+`EncryptedThreadSnapshotStore` 在应用私有缓存目录保存最近历史：JSON 经 gzip 后使用 AES-256-GCM，
+随机 nonce，作用域及线程 ID 参与认证；主密钥由系统安全存储单独保管。序列化、压缩和加解密在独立
+isolate 完成。默认最多 16 份/8 MiB、单份密文 1 MiB、展开 4 MiB、7 天过期；合并待写快照并限制队列
+正文权重，原子替换文件。损坏、过期、插件或存储失败当作缓存未命中，不阻塞服务器读取。
+作用域绑定服务器连接身份与 Agent，读取额外核对 Provider 和线程；身份变更、删除服务器、切换 Provider、
+归档/回退清除对应缓存。缓存与网络并行读取，迟到的本地结果不能覆盖新消息、另一页面或最新服务端响应。
+缓存写入点为恢复完成、离开会话和回合完成；不逐个流式 delta 写盘，也不保存审批队列或占用授权。
+这是本地历史缓存压缩，不改变模型上下文，也不修改现有 SSH/JSONL 传输格式。
 Work 页在时间线源列表不变时复用正文归一化和分组结果，消息卡片只在滚动视口需要时创建；
 输入草稿、加载状态和键盘尺寸更新不会重新解析整份历史。Debug 日志记录单次打开的缓存条目数、
 恢复耗时和失败原因，不记录对话正文，用于区分历史读取等待与网络心跳异常。
@@ -1210,6 +1226,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
    让 SSH/Agent 通道结束；强制停止或系统杀死整个进程也允许连接结束。
 6. 会话重进优先显示缓存，较大历史允许更长的后台恢复，不长期白屏（当前缓存 + 180 秒 thread timeout）。
    列表后台刷新不得阻塞打开已有会话、重探测已连接运行时或覆盖对话加载状态；快速点击只接受最新导航。
+   已验证的实时订阅可在轻量权限校验后复用内存历史；冷启动使用有界压缩加密预览，服务器确认写入权后才解锁输入。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
 8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
 9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方累计全部已确认 Agent，连续两轮各创建 3 个时总数显示 6。

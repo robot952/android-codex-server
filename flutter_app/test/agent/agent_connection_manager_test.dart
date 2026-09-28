@@ -113,6 +113,25 @@ class _ReadOnlyFakeAgent extends _FakeAgent
   }
 }
 
+class _GatedResumeAgent extends _ReadOnlyFakeAgent
+    implements RemoteAgentGenerationClient {
+  _GatedResumeAgent(super.kind);
+  int remoteGeneration = 1;
+  final calls =
+      <({String id, ApprovalMode mode, Completer<AgentSession> gate})>[];
+  @override
+  int? get currentGeneration => connected ? remoteGeneration : null;
+  @override
+  Future<AgentSession> resumeThread(
+    String threadId, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) {
+    final gate = Completer<AgentSession>();
+    calls.add((id: threadId, mode: approvalMode, gate: gate));
+    return gate.future;
+  }
+}
+
 class _DurableFakeAgent extends _FakeAgent
     implements RemoteAgentDurableSessionClient {
   _DurableFakeAgent(super.kind);
@@ -385,6 +404,73 @@ const _second = ServerProfile(
 );
 
 void main() {
+  test(
+    'pending resumes coalesce and retry after failure without sharing other scopes',
+    () async {
+      final hosts = ServerConnectionManager(clientFactory: _FakeHost.new);
+      late _GatedResumeAgent agent;
+      final manager = AgentConnectionManager(
+        hosts,
+        clientFactory: (kind) => agent = _GatedResumeAgent(kind),
+      );
+      addTearDown(() async {
+        await manager.close();
+        await hosts.close();
+      });
+      await hosts.connect(_first);
+      await manager.connect(_first, AgentKind.codex);
+      final key = AgentConnectionKey(
+        profileId: _first.id,
+        agent: AgentKind.codex,
+      );
+      final first = manager.resumeThread(key, 'a');
+      final duplicate = manager.resumeThread(key, 'a');
+      final otherThread = manager.resumeThread(key, 'b');
+      final otherMode = manager.resumeThread(
+        key,
+        'a',
+        approvalMode: ApprovalMode.fullAccess,
+      );
+      final read = manager.resumeThread(key, 'a', readOnly: true);
+      expect(agent.calls.length, 3);
+      expect((await read).thread.title, 'read only');
+      final failure = expectLater(first, throwsStateError);
+      final duplicateFailure = expectLater(duplicate, throwsStateError);
+      agent.calls[0].gate.completeError(StateError('temporary'));
+      await Future.wait([failure, duplicateFailure]);
+      final retry = manager.resumeThread(key, 'a');
+      expect(agent.calls.length, 4);
+      for (final call in agent.calls.skip(1)) {
+        call.gate.complete(
+          AgentSession(
+            thread: AgentThread(id: call.id),
+            timeline: const [],
+          ),
+        );
+      }
+      await Future.wait([retry, otherThread, otherMode]);
+
+      final old = manager.resumeThread(key, 'a');
+      final oldFailure = expectLater(old, throwsStateError);
+      agent.remoteGeneration++;
+      final replacement = manager.resumeThread(key, 'a');
+      expect(agent.calls.length, 6);
+      agent.calls.last.gate.complete(
+        const AgentSession(
+          thread: AgentThread(id: 'a'),
+          timeline: [],
+        ),
+      );
+      await replacement;
+      agent.calls[4].gate.complete(
+        const AgentSession(
+          thread: AgentThread(id: 'a'),
+          timeline: [],
+        ),
+      );
+      await oldFailure;
+    },
+  );
   test(
     'read-only inspection is opt-in and legacy adapters still resume',
     () async {
