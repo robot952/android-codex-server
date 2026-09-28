@@ -1968,16 +1968,6 @@ class _ConnectionOverlay extends StatelessWidget {
                         child: CircularProgressIndicator(strokeWidth: 2.2),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                        '连接中',
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
                       TextButton(
                         onPressed: onCancel,
                         child: const Text('取消连接', maxLines: 1),

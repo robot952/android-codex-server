@@ -197,63 +197,93 @@ void main() {
     expect(find.text('1 台服务器 · 0 台已连接'), findsNothing);
   });
 
-  testWidgets(
-    'connection overlay covers the full 1.5K viewport and blocks back',
-    (tester) async {
-      tester.view.devicePixelRatio = 2.75;
-      tester.view.physicalSize = const Size(1220, 2712);
-      addTearDown(tester.view.reset);
-      final client = _BlockingClient();
-      final manager = ServerConnectionManager(clientFactory: () => client);
-      addTearDown(manager.close);
+  for (final cancel in [false, true]) {
+    testWidgets(
+      'connection overlay only shows spinner and cancel; cancel=$cancel',
+      (tester) async {
+        tester.view.devicePixelRatio = 2.75;
+        tester.view.physicalSize = const Size(1220, 2712);
+        addTearDown(tester.view.reset);
+        final client = _BlockingClient();
+        final manager = ServerConnectionManager(clientFactory: () => client);
+        addTearDown(manager.close);
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            profileStoreProvider.overrideWithValue(
-              _MemoryStore(const StoredProfiles(profiles: [_profile])),
-            ),
-            serverConnectionManagerProvider.overrideWithValue(manager),
-          ],
-          child: const CodexRemoteApp(),
-        ),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('测试服务器'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, '连接'));
-      await tester.pump();
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              profileStoreProvider.overrideWithValue(
+                _MemoryStore(const StoredProfiles(profiles: [_profile])),
+              ),
+              serverConnectionManagerProvider.overrideWithValue(manager),
+            ],
+            child: const CodexRemoteApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('测试服务器'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, '连接'));
+        await tester.pump();
 
-      final overlay = find.byKey(const ValueKey('connection-overlay'));
-      expect(overlay, findsOneWidget);
-      expect(tester.getTopLeft(overlay), Offset.zero);
-      expect(tester.getSize(overlay), const Size(1220 / 2.75, 2712 / 2.75));
-      expect(find.text('测试服务器'), findsWidgets);
-      expect(
-        find.descendant(of: overlay, matching: find.text('连接中')),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(of: overlay, matching: find.text('测试服务器')),
-        findsNothing,
-      );
-      expect(
-        tester
-            .getSize(find.byKey(const ValueKey('connection-overlay-content')))
-            .height,
-        lessThanOrEqualTo(170),
-      );
-      expect(find.text('取消连接'), findsOneWidget);
+        final overlay = find.byKey(const ValueKey('connection-overlay'));
+        expect(overlay, findsOneWidget);
+        expect(tester.getTopLeft(overlay), Offset.zero);
+        expect(tester.getSize(overlay), const Size(1220 / 2.75, 2712 / 2.75));
+        expect(find.text('测试服务器'), findsWidgets);
+        expect(
+          find.descendant(
+            of: overlay,
+            matching: find.byType(CircularProgressIndicator),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widgetList<Text>(
+                find.descendant(of: overlay, matching: find.byType(Text)),
+              )
+              .map((text) => text.data),
+          ['取消连接'],
+        );
+        expect(
+          find.descendant(of: overlay, matching: find.text('测试服务器')),
+          findsNothing,
+        );
+        expect(
+          tester
+              .getSize(find.byKey(const ValueKey('connection-overlay-content')))
+              .height,
+          lessThanOrEqualTo(120),
+        );
+        expect(find.text('取消连接'), findsOneWidget);
 
-      await tester.binding.handlePopRoute();
-      await tester.pump();
-      expect(overlay, findsOneWidget);
+        await tester.binding.handlePopRoute();
+        await tester.pump();
+        expect(overlay, findsOneWidget);
 
-      client.connectGate.complete();
-      await tester.pumpAndSettle();
-      expect(overlay, findsNothing);
-    },
-  );
+        if (cancel) {
+          tester.platformDispatcher.textScaleFactorTestValue = 2;
+          addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+          expect(
+            tester
+                .getSize(
+                  find.byKey(const ValueKey('connection-overlay-content')),
+                )
+                .height,
+            lessThanOrEqualTo(120),
+          );
+          await tester.tap(find.text('取消连接'));
+        } else {
+          client.connectGate.complete();
+        }
+        await tester.pumpAndSettle();
+        expect(overlay, findsNothing);
+        expect(client.connected, !cancel);
+      },
+    );
+  }
 
   testWidgets('changed SSH fingerprint shows old and new values', (
     tester,
