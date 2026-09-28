@@ -84,6 +84,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   String? _syncedThreadId;
   int? _syncedComposerClearNonce;
   int? _timelineSignature;
+  List<TimelineEntry>? _displayTimelineSource;
+  List<TimelineEntry> _displayTimeline = const [];
+  List<TimelineRenderRow> _displayTimelineRows = const [];
   double _lastBottomInset = 0;
   String? _viewportThreadId;
   bool _initialBottomPending = true;
@@ -137,6 +140,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         ? '返回上级会话'
         : '返回会话列表';
     _syncDraft(state);
+    _syncDisplayTimeline(state.timeline);
     _syncViewport(state, MediaQuery.viewInsetsOf(context).bottom);
     final thread = state.activeThread;
     if (thread == null) {
@@ -278,6 +282,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
               Expanded(
                 child: _Transcript(
                   state: state,
+                  entries: _displayTimeline,
+                  rows: _displayTimelineRows,
                   controller: _scrollController,
                   onOpenImage: (path, {fileName}) =>
                       _openRemoteImage(path, fileName: fileName),
@@ -970,6 +976,16 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       text: value,
       selection: TextSelection.collapsed(offset: value.length),
     );
+  }
+
+  void _syncDisplayTimeline(List<TimelineEntry> timeline) {
+    // Freezed's list view preserves the source list's identity equality. Input,
+    // loading and viewport updates can therefore reuse display parsing without
+    // walking every historical message again. Timeline updates replace the list.
+    if (_displayTimelineSource == timeline) return;
+    _displayTimelineSource = timeline;
+    _displayTimeline = normalizeTimelineEntriesForDisplay(timeline);
+    _displayTimelineRows = _displayTimeline.toTimelineRenderRows();
   }
 
   void _syncViewport(AppUiState state, double bottomInset) {
@@ -2346,6 +2362,8 @@ class _ApprovalPanelState extends State<_ApprovalPanel> {
 class _Transcript extends StatelessWidget {
   const _Transcript({
     required this.state,
+    required this.entries,
+    required this.rows,
     required this.controller,
     required this.onOpenImage,
     required this.imageLoadingPath,
@@ -2367,6 +2385,8 @@ class _Transcript extends StatelessWidget {
   });
 
   final AppUiState state;
+  final List<TimelineEntry> entries;
+  final List<TimelineRenderRow> rows;
   final ScrollController controller;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
@@ -2388,8 +2408,6 @@ class _Transcript extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = normalizeTimelineEntriesForDisplay(state.timeline);
-    final rows = entries.toTimelineRenderRows();
     final canOpenSubAgents =
         state.activeAgentCapabilities.subAgents &&
         !state.loading &&
@@ -2402,60 +2420,59 @@ class _Transcript extends StatelessWidget {
         break;
       }
     }
-    final contentItems = <Widget>[];
+    Widget buildRow(TimelineRenderRow row) => switch (row) {
+      TimelineEntryRenderRow(:final entry) => _TimelineCard(
+        entry: entry,
+        onOpenImage: onOpenImage,
+        imageLoadingPath: imageLoadingPath,
+        onOpenRemoteFile: onOpenRemoteFile,
+        onOpenDiff: onOpenDiff,
+        canReview:
+            !state.isThreadReadOnly &&
+            entry.kind == TimelineKind.fileChange &&
+            entry.changes.isNotEmpty &&
+            state.activeAgentCapabilities.reviewChanges &&
+            !state.loading &&
+            !state.submitting &&
+            !state.running,
+        canRollback:
+            !state.isThreadReadOnly &&
+            entry.id == latestFileChangeId &&
+            entry.changes.isNotEmpty &&
+            state.activeAgentCapabilities.rollbackThread &&
+            !state.loading &&
+            !state.submitting &&
+            !state.running,
+        onReview: onReview,
+        onRollback: onRollback,
+        onTextSelectionChanged: onTextSelectionChanged,
+      ),
+      SubAgentTimelineRenderRow(:final entries) => _SubAgentActivityGroupBlock(
+        entries: entries,
+        enabled: canOpenSubAgents,
+        onOpenSubAgent: onOpenSubAgent,
+      ),
+    };
+
+    final rowKeys = <Key>[];
     final rowKeyCounts = <String, int>{};
     for (final row in rows) {
-      final child = switch (row) {
-        TimelineEntryRenderRow(:final entry) => _TimelineCard(
-          entry: entry,
-          onOpenImage: onOpenImage,
-          imageLoadingPath: imageLoadingPath,
-          onOpenRemoteFile: onOpenRemoteFile,
-          onOpenDiff: onOpenDiff,
-          canReview:
-              !state.isThreadReadOnly &&
-              entry.kind == TimelineKind.fileChange &&
-              entry.changes.isNotEmpty &&
-              state.activeAgentCapabilities.reviewChanges &&
-              !state.loading &&
-              !state.submitting &&
-              !state.running,
-          canRollback:
-              !state.isThreadReadOnly &&
-              entry.id == latestFileChangeId &&
-              entry.changes.isNotEmpty &&
-              state.activeAgentCapabilities.rollbackThread &&
-              !state.loading &&
-              !state.submitting &&
-              !state.running,
-          onReview: onReview,
-          onRollback: onRollback,
-          onTextSelectionChanged: onTextSelectionChanged,
-        ),
-        SubAgentTimelineRenderRow(:final entries) =>
-          _SubAgentActivityGroupBlock(
-            entries: entries,
-            enabled: canOpenSubAgents,
-            onOpenSubAgent: onOpenSubAgent,
-          ),
-      };
       final baseKey = '${state.activeThread?.id}:${row.stableKey}';
       final occurrence = rowKeyCounts.update(
         baseKey,
         (count) => count + 1,
         ifAbsent: () => 0,
       );
-      contentItems.add(
-        KeyedSubtree(key: ValueKey('$baseKey:$occurrence'), child: child),
-      );
+      rowKeys.add(ValueKey('$baseKey:$occurrence'));
     }
+    final trailingItems = <Widget>[];
     if (state.aggregateDiff.trim().isNotEmpty) {
       final aggregate = FileChange(
         path: '工作区差异',
         kind: 'diff',
         diff: state.aggregateDiff,
       );
-      contentItems.add(
+      trailingItems.add(
         _AggregateDiffTimelineCard(
           key: const ValueKey('aggregate-diff'),
           change: aggregate,
@@ -2469,7 +2486,7 @@ class _Transcript extends StatelessWidget {
         : null;
     final showTiming = state.running || timing?.completedAtMillis != null;
     if (showTiming) {
-      contentItems.add(
+      trailingItems.add(
         _TurnTimingFooter(
           key: const ValueKey('turn-timing-footer'),
           running: state.running,
@@ -2477,32 +2494,42 @@ class _Transcript extends StatelessWidget {
         ),
       );
     }
-    contentItems.add(
+    trailingItems.add(
       const KeyedSubtree(
         key: ValueKey('transcript-tail-spacer'),
         child: SizedBox(height: 6),
       ),
     );
-    final reversedItems = contentItems.reversed.toList(growable: false);
+    final itemCount = rows.length + trailingItems.length;
+    final itemKeys = <Key>[
+      ...rowKeys,
+      for (final item in trailingItems) item.key!,
+    ];
 
-    Widget buildItemsSliver(List<Widget> items) {
+    Widget buildItemsSliver() {
       final keyToIndex = <Key, int>{
-        for (var index = 0; index < items.length; index += 1)
-          if (items[index].key != null) items[index].key!: index,
+        for (var index = 0; index < itemCount; index += 1)
+          itemKeys[index]: itemCount - index - 1,
       };
       return SliverPadding(
         key: transcriptItemsSliverKey,
         padding: const EdgeInsets.symmetric(horizontal: 9),
         sliver: SliverList(
           delegate: SliverChildBuilderDelegate(
-            (context, index) => Padding(
-              padding: EdgeInsets.only(
-                top: index == items.length - 1 ? _transcriptVerticalPadding : 0,
-                bottom: index == 0 ? 0 : 10,
-              ),
-              child: items[index],
-            ),
-            childCount: items.length,
+            (context, index) {
+              final sourceIndex = itemCount - index - 1;
+              return Padding(
+                key: itemKeys[sourceIndex],
+                padding: EdgeInsets.only(
+                  top: index == itemCount - 1 ? _transcriptVerticalPadding : 0,
+                  bottom: index == 0 ? 0 : 10,
+                ),
+                child: sourceIndex < rows.length
+                    ? buildRow(rows[sourceIndex])
+                    : trailingItems[sourceIndex - rows.length],
+              );
+            },
+            childCount: itemCount,
             findChildIndexCallback: (childKey) => keyToIndex[childKey],
           ),
         ),
@@ -2527,7 +2554,7 @@ class _Transcript extends StatelessWidget {
           parent: AlwaysScrollableScrollPhysics(),
         ),
         slivers: [
-          buildItemsSliver(reversedItems),
+          buildItemsSliver(),
           SliverToBoxAdapter(child: SizedBox(height: bottomGap)),
           const SliverToBoxAdapter(
             key: _transcriptCenterSliverKey,

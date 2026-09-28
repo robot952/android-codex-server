@@ -568,6 +568,27 @@ void main() {
 
     expect(find.text('检查布局'), findsOneWidget);
     expect(find.textContaining('<thinking>'), findsNothing);
+
+    // Input/loading rebuilds may reuse parsed history, but an update to an
+    // existing message must still invalidate it even when item count is stable.
+    controller.showState(controller.state.copyWith(composerDraft: '草稿'));
+    await tester.pumpAndSettle();
+    expect(find.text('检查布局'), findsOneWidget);
+    controller.showState(
+      controller.state.copyWith(
+        timeline: [
+          for (final entry in controller.state.timeline)
+            if (entry.id == 'streaming-agent')
+              entry.copyWith(text: '<thinking>内部草稿</thinking>新的回复')
+            else
+              entry,
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('新的回复'), findsOneWidget);
+    expect(find.text('检查布局'), findsOneWidget);
+    expect(find.textContaining('内部草稿'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

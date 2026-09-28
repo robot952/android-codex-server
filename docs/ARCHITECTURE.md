@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.122+254，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.123+255，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -439,6 +439,10 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 不会重复运行时探测、Agent 握手或 `thread/list`；断线恢复同样保留已有列表，只有没有任何快照的首次加载、
 显式刷新和搜索变更才请求 `thread/list`。
 
+从对话返回列表仍在后台更新摘要和排序，但已连接的 Agent 直接复用运行时，不再探测并递增连接代次。
+列表刷新与对话恢复分别拥有加载/错误状态；列表请求尚未返回时可以打开已有会话，列表结果不能提前
+解锁输入框或覆盖对话错误。连续点击同一会话去重，不同会话只采用最后一次导航；取消或切页后的结果不能退回列表。
+
 齿轮菜单包含“选择工作目录”、“配置 Codex/OpenCode”和“文件管理”三项。配置项只在当前 Agent 已连接且声明
 `globalSettings` capability 时可用；打开后先读取远程实际配置。保存会二次确认、更新该服务器该 Agent
 的 `preferredModel/preferredEffort/testModel`，然后断开整台服务器；测试只发起真实最小模型请求，不会
@@ -633,7 +637,12 @@ bridge 即使保留兼容 RPC，也不能绕过 capability 在 UI 暴露未承�
 resume 期间同 generation 的实时通知会进入有界 `ResumeNotificationBuffer`；响应携带入站
 `responseSequence`，控制器先用 `reconcileResumedTimeline` 合并已缓存旧页与服务器快照，再按 wire
 sequence 重放快照之后的通知。缓冲区保留终态、合并相邻 delta，并在溢出时给出诊断。客户端对超大
-resume/历史响应依次尝试 `full/4 -> full/1 -> summary/1 -> notLoaded/1`，避免只提高内存和 timeout。
+首屏恢复和只读响应依次尝试 `full/1 -> summary/1 -> notLoaded/1`；旧历史分页仍依次尝试
+`full/4 -> full/1 -> summary/1 -> notLoaded/1`，避免只提高内存和 timeout。首屏保留服务器游标，
+更早内容按需下拉加载。恢复仍验证服务端写入权，不以缓存替代跨端占用检查。
+Work 页在时间线源列表不变时复用正文归一化和分组结果，消息卡片只在滚动视口需要时创建；
+输入草稿、加载状态和键盘尺寸更新不会重新解析整份历史。Debug 日志记录单次打开的缓存条目数、
+恢复耗时和失败原因，不记录对话正文，用于区分历史读取等待与网络心跳异常。
 子 Agent resume 仍会校验返回的 thread ID，错误 ID 连续重试一次后拒绝污染当前页面；导航 generation
 也会丢弃切页后的迟到结果。流式 delta、缓冲溢出、降级响应和列表分页游标失效仍必须重点回归。
 
@@ -1200,6 +1209,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
    或关闭 SSH。用户从最近任务列表明确划掉 APP 视为退出，会清除后台恢复意图、停止前台服务并销毁缓存引擎，
    让 SSH/Agent 通道结束；强制停止或系统杀死整个进程也允许连接结束。
 6. 会话重进优先显示缓存，较大历史允许更长的后台恢复，不长期白屏（当前缓存 + 180 秒 thread timeout）。
+   列表后台刷新不得阻塞打开已有会话、重探测已连接运行时或覆盖对话加载状态；快速点击只接受最新导航。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
 8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
 9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方累计全部已确认 Agent，连续两轮各创建 3 个时总数显示 6。

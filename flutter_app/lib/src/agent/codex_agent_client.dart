@@ -734,7 +734,8 @@ class CodexAgentClient
   }) async {
     final scope = _requireScope();
     final attempts = <({String itemsView, int limit})>[
-      (itemsView: 'full', limit: 4),
+      // A turn can contain many tool calls. Fetch only the newest complete
+      // turn for first paint; the returned cursor keeps older turns available.
       (itemsView: 'full', limit: 1),
       (itemsView: 'summary', limit: 1),
       (itemsView: 'notLoaded', limit: 1),
@@ -801,7 +802,6 @@ class CodexAgentClient
     final thread = Map<String, Object?>.from(result['thread'] as Map)
       ..remove('turns');
     const attempts = [
-      (view: 'full', limit: 4),
       (view: 'full', limit: 1),
       (view: 'summary', limit: 1),
       (view: 'notLoaded', limit: 1),

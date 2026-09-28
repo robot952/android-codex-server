@@ -173,6 +173,8 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, ResumeNotificationBuffer>
   _resumeNotificationBuffers = {};
   final Map<String, _ThreadOpenRequest> _threadOpenRequests = {};
+  ({AgentConnectionKey key, String threadId, int generation})?
+  _startingThreadOpen;
   final ProfileScopedBackStack<_SubAgentNavigationFrame>
   _subAgentNavigationStacks = ProfileScopedBackStack();
   final Map<AgentConnectionKey, int> _sessionNavigationGenerations = {};
@@ -2637,12 +2639,41 @@ class AppController extends StateNotifier<AppUiState> {
 
   void openThread(AgentThread thread) {
     final profileId = state.selectedProfileId;
-    if (profileId != null) {
-      _clearSubAgentNavigation(
-        AgentConnectionKey(profileId: profileId, agent: state.activeAgent),
-      );
+    if (profileId == null) return;
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    final currentGeneration = _sessionNavigationGenerations[key] ?? 0;
+    final starting = _startingThreadOpen;
+    final pending =
+        _threadOpenRequests[threadPreferenceKey(
+          profileId,
+          key.agent,
+          thread.id,
+        )];
+    if ((starting?.key == key &&
+            starting?.threadId == thread.id &&
+            starting?.generation == currentGeneration) ||
+        (pending?.generation == currentGeneration &&
+            _isActiveThread(key, thread.id))) {
+      return;
     }
-    unawaited(_openThread(thread));
+    // Capture the target before the first await. A second tap or a back action
+    // must invalidate this navigation without letting its completion pop the
+    // newly selected conversation.
+    _clearSubAgentNavigation(key);
+    final intent = (
+      key: key,
+      threadId: thread.id,
+      generation: _sessionNavigationGenerations[key]!,
+    );
+    _startingThreadOpen = intent;
+    unawaited(
+      _openThread(thread, key, intent.generation).whenComplete(() {
+        if (_startingThreadOpen == intent) _startingThreadOpen = null;
+      }),
+    );
   }
 
   Future<void> retryActiveThread() async {
@@ -3069,39 +3100,30 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(error: error);
   }
 
-  Future<void> _openThread(AgentThread thread) async {
+  Future<void> _openThread(
+    AgentThread thread,
+    AgentConnectionKey key,
+    int generation,
+  ) async {
     await _ensureInitialized();
-    _flushPendingDraft();
-    final profileId = state.selectedProfileId;
-    if (profileId == null) return;
-    final profile = state.profiles.firstWhereOrNull(
-      (candidate) => candidate.id == profileId,
-    );
-    if (profile == null) return;
-    final key = AgentConnectionKey(
-      profileId: profileId,
-      agent: state.activeAgent,
-    );
-    final requestKey = threadPreferenceKey(
-      profileId,
-      state.activeAgent,
-      thread.id,
-    );
-    final currentGeneration = _sessionNavigationGenerations[key] ?? 0;
-    final pending = _threadOpenRequests[requestKey];
-    if (pending != null && pending.generation == currentGeneration) {
-      await pending.future;
+    if (!_isActiveKey(key) ||
+        _sessionNavigationGenerations[key] != generation) {
       return;
     }
-    final generation = _advanceSessionNavigation(key);
+    _flushPendingDraft();
+    final requestKey = threadPreferenceKey(key.profileId, key.agent, thread.id);
     final accepted = await _openThreadInternal(
       thread: thread,
       targetScreen: AppScreen.work,
       agentName: null,
       navigationGeneration: generation,
       requestKey: requestKey,
+      expectedKey: key,
     );
-    if (!accepted && mounted && _isActiveKey(key)) {
+    if (!accepted &&
+        mounted &&
+        _isActiveKey(key) &&
+        _sessionNavigationGenerations[key] == generation) {
       state = state.copyWith(
         screen: AppScreen.threads,
         activeThread: null,
@@ -4732,6 +4754,7 @@ class AppController extends StateNotifier<AppUiState> {
     required String? agentName,
     required int navigationGeneration,
     String? requestKey,
+    AgentConnectionKey? expectedKey,
     _SessionSnapshot? initialSnapshot,
     bool subAgentBackNavigation = false,
     void Function()? onResumed,
@@ -4742,6 +4765,7 @@ class AppController extends StateNotifier<AppUiState> {
     } catch (_) {
       return false;
     }
+    if (expectedKey != null && !_isActiveKey(expectedKey)) return false;
     final profileId = state.selectedProfileId;
     if (profileId == null) return false;
     final key = AgentConnectionKey(
@@ -4759,6 +4783,11 @@ class AppController extends StateNotifier<AppUiState> {
         requestKey ?? threadPreferenceKey(profileId, key.agent, thread.id);
     final cache = _threadCaches.putIfAbsent(key, ThreadSessionCache.new);
     final cached = cache.get(thread.id) ?? cache.getStale(thread.id);
+    _diagnostics.info(
+      'Thread',
+      'open_requested profile=${key.profileId} agent=${key.agent.name} '
+          'thread=${thread.id} cachedEntries=${cached?.timeline.length ?? 0}',
+    );
     final rememberedTokenUsage =
         cache.contextUsage(thread.id) ??
         cached?.tokenUsage ??
@@ -4830,7 +4859,15 @@ class AppController extends StateNotifier<AppUiState> {
     bool Function(Object error)? onResumeFailure,
   }) async {
     ResumeNotificationBuffer? resumeBuffer;
+    final startedAt = Stopwatch()..start();
     try {
+      final preparingLane = _agentLoadRequests[key];
+      if (!_isHostAndAgentConnected(key) && preparingLane != null) {
+        await preparingLane;
+      }
+      if (!_isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
+        return;
+      }
       final initialRemoteGeneration = _agents.remoteGeneration(key);
       if (initialRemoteGeneration != null) {
         resumeBuffer = _installResumeNotificationBuffer(
@@ -4840,6 +4877,9 @@ class AppController extends StateNotifier<AppUiState> {
         );
       }
       await _agents.connect(profile, key.agent);
+      if (!_isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
+        return;
+      }
       final remoteGeneration = _agents.remoteGeneration(key);
       if (remoteGeneration != null &&
           (resumeBuffer == null ||
@@ -4897,6 +4937,12 @@ class AppController extends StateNotifier<AppUiState> {
       );
       if (mounted &&
           _isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
+        _diagnostics.info(
+          'Thread',
+          'open_ready profile=${key.profileId} agent=${key.agent.name} '
+              'thread=${thread.id} elapsedMs=${startedAt.elapsedMilliseconds} '
+              'entries=${resolvedSession.timeline.length}',
+        );
         _showThreadSnapshot(
           key,
           resolvedSession,
@@ -4964,6 +5010,12 @@ class AppController extends StateNotifier<AppUiState> {
         }
         final handled = onResumeFailure?.call(error) ?? false;
         if (!handled && mounted) {
+          _diagnostics.warn(
+            'Thread',
+            'open_failed profile=${key.profileId} agent=${key.agent.name} '
+                'thread=${thread.id} elapsedMs=${startedAt.elapsedMilliseconds}',
+            error,
+          );
           state = state.copyWith(
             loading: false,
             error: _message(error, '恢复会话失败'),
@@ -5420,7 +5472,9 @@ class AppController extends StateNotifier<AppUiState> {
     _agentThreadNextCursors[key] = null;
     if (!silent) _setAgentLoading(key, true);
     try {
-      final effectiveProfile = runtimePrepared
+      // Refreshing an already connected lane must not run a runtime operation:
+      // probing increments its generation and rejects concurrent thread opens.
+      final effectiveProfile = runtimePrepared || _isHostAndAgentConnected(key)
           ? profile
           : await _prepareRemoteRuntime(key, profile);
       if (effectiveProfile == null || !_isAgentLoadCurrent(key, loadRevision)) {
@@ -5510,14 +5564,22 @@ class AppController extends StateNotifier<AppUiState> {
         activeAgentCapabilities: active
             ? _agents.capabilities(key)
             : state.activeAgentCapabilities,
-        diagnostic: _agentLoadDiagnostic(threadError, modelError),
+        diagnostic: active && state.screen == AppScreen.threads
+            ? _agentLoadDiagnostic(threadError, modelError)
+            : state.diagnostic,
       );
-      if (!silent && threadError != null && threadPage == null) {
+      if (!silent &&
+          active &&
+          state.screen == AppScreen.threads &&
+          threadError != null &&
+          threadPage == null) {
         state = state.copyWith(error: _message(threadError!, '读取会话失败'));
       }
       _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
     } catch (error) {
-      if (_isAgentLoadCurrent(key, loadRevision) && _isActiveKey(key)) {
+      if (_isAgentLoadCurrent(key, loadRevision) &&
+          _isActiveKey(key) &&
+          state.screen == AppScreen.threads) {
         final message = _message(error, '${key.agent.label} 连接失败');
         state = silent
             ? state.copyWith(diagnostic: message)
@@ -5583,7 +5645,9 @@ class AppController extends StateNotifier<AppUiState> {
     values[key] = loading;
     state = state.copyWith(
       agentLoadingStates: Map.unmodifiable(values),
-      loading: _isActiveKey(key) ? loading : state.loading,
+      loading: _isActiveKey(key) && state.screen == AppScreen.threads
+          ? loading
+          : state.loading,
     );
   }
 

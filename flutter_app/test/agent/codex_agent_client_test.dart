@@ -228,6 +228,177 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  for (final readOnly in [false, true]) {
+    test(
+      '${readOnly ? 'read-only' : 'resume'} opens newest complete turn and pages all older turns',
+      () async {
+        final turns = List.generate(
+          7,
+          (index) => <String, Object?>{
+            'id': 'turn-$index',
+            'status': 'completed',
+            'items': [
+              {
+                'id': 'user-$index',
+                'type': 'userMessage',
+                'content': [
+                  {'type': 'text', 'text': 'Question $index'},
+                ],
+              },
+              {
+                'id': 'answer-$index',
+                'type': 'agentMessage',
+                'text': 'Complete answer $index',
+              },
+            ],
+          },
+        );
+        final pageRequests = <({int limit, String? cursor})>[];
+        final session = _FakeCodexSession(
+          replyFor: (request) {
+            final method = request['method'];
+            const thread = {'id': 'root', 'status': 'idle'};
+            if (method == 'thread/read') {
+              expect((request['params'] as Map)['includeTurns'], isFalse);
+              return {
+                'result': {'thread': thread},
+              };
+            }
+            if (method != 'thread/resume' && method != 'thread/turns/list') {
+              return {'result': <String, Object?>{}};
+            }
+            final params = request['params'] as Map;
+            final page = method == 'thread/resume'
+                ? params['initialTurnsPage'] as Map
+                : params;
+            expect(page['itemsView'], 'full');
+            expect(page['sortDirection'], 'desc');
+            final cursor = page['cursor'] as String?;
+            final offset = cursor == null
+                ? 0
+                : int.parse(cursor.substring('older:'.length));
+            final limit = page['limit'] as int;
+            pageRequests.add((limit: limit, cursor: cursor));
+            final selected = turns.reversed.skip(offset).take(limit).toList();
+            final nextOffset = offset + selected.length;
+            final payload = {
+              'data': selected,
+              'nextCursor': nextOffset < turns.length
+                  ? 'older:$nextOffset'
+                  : null,
+            };
+            return {
+              'result': method == 'thread/resume'
+                  ? {'thread': thread, 'initialTurnsPage': payload}
+                  : payload,
+            };
+          },
+        );
+        final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+        addTearDown(() async {
+          await client.disconnect();
+          client.close();
+        });
+        await client.connect(
+          const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+          _FakeCodexHost(),
+        );
+        final latest = readOnly
+            ? await client.readThread('root')
+            : await client.resumeThread('root');
+        expect(latest.turnIds, ['turn-6']);
+        expect(latest.timeline.map((item) => item.text), [
+          'Question 6',
+          'Complete answer 6',
+        ]);
+        expect(latest.nextTurnsCursor, 'older:1');
+        final timeline = latest.timeline.toList();
+        var cursor = latest.nextTurnsCursor;
+        while (cursor != null) {
+          final older = await client.loadOlderTurns(
+            threadId: 'root',
+            cursor: cursor,
+          );
+          timeline.insertAll(0, older.timeline);
+          cursor = older.nextCursor;
+        }
+        expect(pageRequests, [
+          (limit: 1, cursor: null),
+          (limit: 4, cursor: 'older:1'),
+          (limit: 4, cursor: 'older:5'),
+        ]);
+        expect(timeline.map((item) => item.text), [
+          for (var index = 0; index < turns.length; index++) ...[
+            'Question $index',
+            'Complete answer $index',
+          ],
+        ]);
+        expect(
+          session.writes
+              .map(jsonDecode)
+              .where((request) => request['method'] == 'thread/resume')
+              .length,
+          readOnly ? 0 : 1,
+        );
+      },
+    );
+  }
+
+  test(
+    'resume bounds an oversized newest turn without losing its cursor',
+    () async {
+      final session = _FakeCodexSession(
+        replyFor: (request) {
+          if (request['method'] != 'thread/resume') {
+            return {'result': <String, Object?>{}};
+          }
+          final page = (request['params'] as Map)['initialTurnsPage'] as Map;
+          return {
+            'result': page['itemsView'] == 'notLoaded'
+                ? {
+                    'thread': {'id': 'root'},
+                    'initialTurnsPage': {
+                      'data': [
+                        {'id': 'latest', 'items': []},
+                      ],
+                      'nextCursor': 'older',
+                    },
+                  }
+                : {'padding': 'x' * 2048},
+          };
+        },
+      );
+      final client = CodexAgentClient(
+        sessionOpener: (_, _) async => session,
+        maxLineChars: 1024,
+      );
+      addTearDown(() async {
+        await client.disconnect();
+        client.close();
+      });
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      final result = await client.resumeThread('root');
+      expect(result.itemsView, 'notLoaded');
+      expect(result.turnIds, ['latest']);
+      expect(result.nextTurnsCursor, 'older');
+      final pages = session.writes
+          .map(jsonDecode)
+          .where((request) => request['method'] == 'thread/resume')
+          .map(
+            (request) => (request['params'] as Map)['initialTurnsPage'] as Map,
+          );
+      expect(pages.map((page) => page['limit']), [1, 1, 1]);
+      expect(pages.map((page) => page['itemsView']), [
+        'full',
+        'summary',
+        'notLoaded',
+      ]);
+    },
+  );
+
   test(
     'writer collision reads bounded history and retry reacquires input',
     () async {
@@ -317,7 +488,7 @@ void main() {
       });
       expect(requests[2]['params'], {
         'threadId': 'root',
-        'limit': 4,
+        'limit': 1,
         'sortDirection': 'desc',
         'itemsView': 'full',
       });
@@ -460,7 +631,7 @@ void main() {
   );
 
   test(
-    'read-only history bounds oversized pages through all four views',
+    'read-only history bounds oversized newest turn through detail views',
     () async {
       final session = _FakeCodexSession(
         replyFor: (request) {
@@ -507,9 +678,8 @@ void main() {
           .map(jsonDecode)
           .where((x) => x['method'] == 'thread/turns/list')
           .toList();
-      expect(pages.map((x) => (x['params'] as Map)['limit']), [4, 1, 1, 1]);
+      expect(pages.map((x) => (x['params'] as Map)['limit']), [1, 1, 1]);
       expect(pages.map((x) => (x['params'] as Map)['itemsView']), [
-        'full',
         'full',
         'summary',
         'notLoaded',

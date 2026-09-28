@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:codex_remote/src/agent/agent_connection_manager.dart';
 import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
+import 'package:codex_remote/src/agent/remote_bootstrap.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
@@ -47,6 +48,126 @@ const _threadB = AgentThread(
 );
 
 void main() {
+  test('double tapping a conversation starts only one resume', () async {
+    final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+    final harness = await _createHarness(agent);
+    final resume = agent.gateNextResume(_threadA.id);
+    harness.controller.openThread(_threadA);
+    harness.controller.openThread(_threadA);
+    await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+    harness.controller.openThread(_threadA);
+    await Future<void>.delayed(Duration.zero);
+    expect(agent.resumeCalls, [_threadA.id]);
+    expect(harness.controller.state.loading, isTrue);
+    resume.complete(const AgentSession(thread: _threadA, timeline: []));
+    await _waitUntil(() => !harness.controller.state.loading);
+    expect(harness.controller.state.screen, AppScreen.work);
+    expect(harness.controller.state.activeThread?.id, _threadA.id);
+  });
+
+  test(
+    'opening during initial runtime preparation waits without failing',
+    () async {
+      final agent = _RuntimeResumeAgent(threads: const [_threadA, _threadB]);
+      agent.inspectGate = Completer<void>();
+      final harness = await _createHarness(agent, waitForAgent: false);
+      await _waitUntil(() => agent.inspectCalls == 1);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => harness.controller.state.screen == AppScreen.work);
+      expect(harness.controller.state.loading, isTrue);
+      expect(harness.controller.state.error, isNull);
+      expect(agent.resumeCalls, isEmpty);
+      agent.inspectGate!.complete();
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(harness.controller.state.screen, AppScreen.work);
+      expect(harness.controller.state.activeThread?.id, _threadA.id);
+      expect(harness.controller.state.error, isNull);
+      expect(agent.resumeCalls, [_threadA.id]);
+    },
+  );
+
+  test('rapid selection keeps only the latest navigation target', () async {
+    final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+    final harness = await _createHarness(agent);
+    final resume = agent.gateNextResume(_threadB.id);
+    harness.controller.openThread(_threadA);
+    harness.controller.openThread(_threadB);
+    await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+    expect(agent.resumeCalls, [_threadB.id]);
+    expect(harness.controller.state.activeThread?.id, _threadB.id);
+    expect(harness.controller.state.screen, AppScreen.work);
+    resume.complete(const AgentSession(thread: _threadB, timeline: []));
+    await _waitUntil(() => !harness.controller.state.loading);
+    expect(harness.controller.state.screen, AppScreen.work);
+    expect(harness.controller.state.activeThread?.id, _threadB.id);
+  });
+
+  test(
+    'leaving before an open starts never reopens the conversation',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent);
+      harness.controller.openThread(_threadA);
+      harness.controller.backToThreadList();
+      await Future<void>.delayed(Duration.zero);
+      expect(agent.resumeCalls, isEmpty);
+      expect(harness.controller.state.screen, AppScreen.threads);
+    },
+  );
+
+  for (final failList in [false, true]) {
+    test(
+      'list refresh does not block or unlock a pending resume; fail=$failList',
+      () async {
+        final agent = _RuntimeResumeAgent(threads: const [_threadA, _threadB]);
+        final harness = await _createHarness(agent);
+        expect(agent.inspectCalls, 1);
+        harness.controller.openThread(_threadA);
+        await _waitUntil(
+          () =>
+              harness.controller.state.screen == AppScreen.work &&
+              !harness.controller.state.loading,
+        );
+        harness.controller.backToThreadList();
+        if (failList) {
+          await harness.controller.refreshThreads(silent: true);
+        }
+        agent.listGate = Completer<AgentThreadPage>();
+        final refresh = harness.controller.refreshThreads();
+        if (failList) {
+          await _waitUntil(() => harness.controller.state.loading);
+        }
+        final resume = agent.gateNextResume(_threadB.id);
+        harness.controller.openThread(_threadB);
+        await _waitUntil(() => agent.resumeCalls.contains(_threadB.id));
+        expect(
+          agent.inspectCalls,
+          1,
+          reason: 'refresh must reuse the live runtime',
+        );
+        expect(harness.controller.state.loading, isTrue);
+        if (failList) {
+          agent.listGate!.completeError(StateError('list failed'));
+        } else {
+          agent.listGate!.complete(AgentThreadPage(threads: agent.threads));
+        }
+        await refresh;
+        expect(
+          harness.controller.state.loading,
+          isTrue,
+          reason: 'list completion must not enable the composer before resume',
+        );
+        expect(harness.controller.state.activeThread?.id, _threadB.id);
+        expect(harness.controller.state.diagnostic, isNull);
+        expect(harness.controller.state.error, isNull);
+        resume.complete(const AgentSession(thread: _threadB, timeline: []));
+        await _waitUntil(() => !harness.controller.state.loading);
+        expect(harness.controller.state.screen, AppScreen.work);
+        expect(harness.controller.state.error, isNull);
+      },
+    );
+  }
+
   test(
     'confirmed ownership remains read only when history cannot be read',
     () async {
@@ -1026,6 +1147,7 @@ class _Harness {
 Future<_Harness> _createHarness(
   _ResumeAgent agent, {
   StoredProfiles? storedProfiles,
+  bool waitForAgent = true,
 }) async {
   final store = _MemoryProfileStore(
     storedProfiles ??
@@ -1044,6 +1166,7 @@ Future<_Harness> _createHarness(
   });
   await _waitUntil(() => !controller.state.loading);
   await controller.requestConnect(_profile);
+  if (!waitForAgent) return _Harness(controller);
   await controller.ensureActiveAgent();
   await _waitUntil(
     () => controller.state.threads.length == agent.threads.length,
@@ -1117,6 +1240,8 @@ class _ResumeAgent
 
   List<AgentThread> threads;
   int listThreadsCount = 0;
+  Completer<AgentThreadPage>? listGate;
+  final List<String> resumeCalls = [];
   final StreamController<RemoteAgentEvent> _events =
       StreamController<RemoteAgentEvent>.broadcast(sync: true);
   final Map<String, List<Completer<AgentSession>>> _resumeGates = {};
@@ -1164,6 +1289,7 @@ class _ResumeAgent
   @override
   Future<AgentThreadPage> listThreads({String? searchTerm}) async {
     listThreadsCount += 1;
+    if (listGate != null) return listGate!.future;
     return AgentThreadPage(threads: threads);
   }
 
@@ -1172,6 +1298,7 @@ class _ResumeAgent
     String threadId, {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
   }) async {
+    resumeCalls.add(threadId);
     final gates = _resumeGates[threadId];
     if (gates != null && gates.isNotEmpty) {
       return gates.removeAt(0).future;
@@ -1209,6 +1336,36 @@ class _ResumeAgent
     }
     if (!_events.isClosed) unawaited(_events.close());
   }
+}
+
+class _RuntimeResumeAgent extends _ResumeAgent
+    implements RemoteAgentRuntimeClient {
+  _RuntimeResumeAgent({required super.threads});
+  int inspectCalls = 0;
+  Completer<void>? inspectGate;
+
+  @override
+  Future<AgentRuntimeInspection> inspectRuntime(
+    ServerProfile profile,
+    RemoteServerClient host,
+  ) async {
+    inspectCalls++;
+    await inspectGate?.future;
+    return AgentRuntimeInspection.bypass(profile.remoteCommand);
+  }
+
+  @override
+  Future<void> installRuntime(
+    ServerProfile profile,
+    RemoteServerClient host, {
+    required void Function(RemoteInstallProgress progress) onProgress,
+  }) async => throw UnsupportedError('not used');
+
+  @override
+  Future<void> uninstallRuntime(
+    ServerProfile profile,
+    RemoteServerClient host,
+  ) async => throw UnsupportedError('not used');
 }
 
 CodexRpcNotification _notification(
