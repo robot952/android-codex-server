@@ -84,6 +84,10 @@ assert_android_plan all 1 1 1 1 0 0 0 1
 assert_android_plan all 0 1 1 1 1 1 1 0
 [[ "$(workflow_format_duration_ms 292379)" == 4m52.379s ]]
 
+# The timer tests own their state directory; active developer tasks are preserved.
+bash "$ROOT_DIR/scripts/test-task-timing.sh"
+node --test "$ROOT_DIR/scripts/test-download-apk-verification.cjs"
+
 [[ "$(apk_version_name "$ROOT_DIR")" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]
 rg -q 'http://192\.168\.8\.107/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"
 rg -q 'http://frp\.asdb\.top:18080/codex\.apk' "$ROOT_DIR/scripts/publish-local-apk.sh"

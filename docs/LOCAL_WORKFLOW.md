@@ -42,7 +42,8 @@ unshare --mount --propagation private bash scripts/test-ci-android.sh --read-onl
 
 1. **定位但不改动**：运行 `git status --short --branch`；仓库有 `.codegraph/` 时先用
    `codegraph explore` 查调用链、现有测试和影响范围。此阶段不计入“开始修改到完成”的耗时。
-2. **开始修改计时**：第一次写文件前记录墙钟时间；明确本轮受影响文件、最近的定向测试和最终风险门禁。
+2. **开始修改计时**：第一次写文件前用 `task-timing.sh start` 建立任务，`begin/end` 记录人工修改阶段，
+   `run` 自动记录测试、构建及提交推送（示例见第 3 节）；明确本轮受影响文件、最近的定向测试和最终风险门禁。
 3. **最小实现与最近测试**：同步修改源码和相邻测试，不顺带重构无关模块。优先执行：
 
    ```bash
@@ -181,6 +182,31 @@ Flutter CLI 的探测顺序是 `CODEX_FLUTTER_BIN`、`PATH`、仓库同级
 
 历史记录最多保留 100 份。`orchestrationMs` 是缓存查询、状态判断和脚本调度耗时；具体 Flutter
 依赖解析、analyze、测试及 Debug/Release 构建耗时会由 `build-android.sh` 单独打印。
+
+跨越编码、评审、定向测试、门禁、打包、验签、下载回验和提交推送的任务级耗时使用
+`scripts/task-timing.sh`。它只记录阶段标签、状态、UTC 时间和毫秒数，不保存被执行命令的参数或输出；
+标签使用固定阶段名，不放入 URL、密钥、对话正文。失败返工会追加记录，不覆盖原失败：
+
+```bash
+task_id="mcp-collapse-$(date -u +%Y%m%dT%H%M%SZ)"
+task_id="$(./scripts/task-timing.sh start "$task_id")"
+edit_phase="$(./scripts/task-timing.sh begin "$task_id" 修改与评审)"
+# 完成当前源码修改和评审后结束这个阶段；暂停工作前也应结束，恢复后另开阶段。
+./scripts/task-timing.sh end "$task_id" "$edit_phase" 0
+./scripts/task-timing.sh run "$task_id" 定向测试 -- \
+  ./scripts/flutter-tool.sh test --no-pub test/ui/mcp_tool_card_test.dart
+CODEX_TASK_TIMING_ID="$task_id" ./scripts/dev-workflow.sh publish --reuse
+# 通过验证后，提交和两个远端推送也分别用 run 包装，保留实际退出码。
+./scripts/task-timing.sh finish "$task_id"
+```
+
+记录写入 `.workflow-cache/task-timings/`，活动任务可用 `./scripts/task-timing.sh status` 查看。自动门禁的
+`.workflow-cache/latest-workflow-timing.tsv` 仍是工作流分段记录。设置 `CODEX_TASK_TIMING_ID` 后，各工作流
+阶段自动追加到同一任务；Android 缓存命中单列并记录实际查询耗时，不重复运行已有成功 stamp。
+`run` 自动保留命令退出码，`begin/end` 用于跨工具的人工阶段；存在未结束阶段时禁止 `finish`。
+`phase TASK LABEL ELAPSED_MS STATUS` 仅导入已有日志的实测数值，标为 `imported`，起止时间标为
+`unknown`；没有证据的时长必须注明未测量，不填估计数或用零代替。重试分别保留，不把嵌套阶段重复相加。
+任务总时长含暂停和等待，阶段可并行，因此总时长与阶段求和不同。自测使用独立临时目录，不能清理活动任务。
 
 保持以下内容长期存在以换空间换时间：
 
@@ -396,8 +422,7 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
 脚本读取 `flutter_app/pubspec.yaml` 的版本，使用
 `keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/codex.apk`（同时保留
-`agent.apk` 兼容别名），然后用
-`curl --noproxy '*'` 校验：
+`agent.apk` 兼容别名），然后用独立的 Node HTTP(S) 下载器直接连接（不经过环境代理）校验：
 
 ```text
 内网：http://192.168.8.107/codex.apk
@@ -406,6 +431,15 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
 两个地址返回的 SHA-256 必须与 Release APK 相同。发布报告必须同时给出这两个完整地址；网络代理
 不通时先说明验证失败，不要给不完整或未经请求验证的 URL。
+
+下载回验先完整下载，默认 30 秒超时；仅临时网络错误或连接中断才改用最多 4 个并行 Range 分段。
+分段探测及每段必须返回准确的 `206`、范围、总大小和一致的强 ETag（若服务端提供）；最终拼接后仍核对
+整包大小、SHA-256、包名、版本和稳定证书。错误哈希、错误范围、鉴权失败或不支持 Range 会直接失败。
+Range 阶段默认共用 300 秒总时限，每段最多重试一次；不会按每段重置总时限。超时配置
+`CODEX_LOCAL_VERIFY_TIMEOUT` / `CODEX_LOCAL_RANGE_TIMEOUT` 的单位是秒，单项上限 900；
+`CODEX_LOCAL_RANGE_FALLBACK=0` 可关闭分段恢复。下载器输出模式及实际耗时，失败不留下未校验的输出文件。
+下载失败后的重试使用 `publish --reuse`，保留已验证 APK 和失败计时，不重新编译。下载器本地 HTTP
+fixture 随 `scripts/test-workflow.sh` 检查中断、超时、坏段、错误响应和取消，不依赖外网。
 
 稳定签名契约：
 

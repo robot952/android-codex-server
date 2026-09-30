@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.125+257，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.126+258，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -456,6 +456,8 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 - 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、
   完成状态和展开箭头的独立卡片，图片工具统一使用双眼睛图标、`查看了图片` 和单行远程路径。不要把所有时间线条目重新套成同一种消息卡片。
+- MCP 等普通工具默认折叠为名称、状态和箭头，点击标题展开或收起；流式输出和完成状态更新不改变用户
+  当前的展开选择。折叠时不创建正文组件，展开后沿用有界、可选择复制的详情；图片工具保持原有预览入口。
 - Composer 保持固定底部的一体化边框区域：输入框上方可显示附件，底部顺序固定为加号、更多、权限、上下文圆环、模型/思考强度、
   发送或停止圆形按钮。输入框最小高度稳定在约 72 dp，只有 Composer 外层 1 dp 边框，内部编辑区不得继承全局输入框填充或焦点边框；
   加号和更多按钮均固定 36 dp，权限按钮高 36 dp、最宽 64 dp，不能由 Material 默认 48 dp 点击区挤压右侧模型文字。IME 通过
@@ -1129,6 +1131,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
 | test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
 | test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和目标竖屏无溢出 |
+| test/ui/mcp_tool_card_test.dart | MCP 默认折叠、流式更新保留展开状态、条目/会话隔离、空输出、长按复制和窄屏大字体 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 `scripts/test-opencode-bridge-scheduling.cjs`、`scripts/test-opencode-bridge-question.cjs` 和
@@ -1255,6 +1258,9 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     验证，也不要重复执行已经由同指纹成功 stamp 证明的 analyze、全量测试或 APK 构建。第一次写文件前
     开始计时，收尾必须报告总耗时、各阶段耗时、缓存命中和失败返工。用户明确要求“推送到远端并出包”
     时视为已完成本地验收，跳过上述本地门禁，直接推送并只跟踪云端流水线和 Release。
+    编码到交付的人工/流程阶段可用 `scripts/task-timing.sh` 追加到同一任务 ledger；只记录阶段名、状态和
+    耗时，不记录命令参数、URL 凭据、密钥或对话正文。自动门禁仍以 `latest-workflow-timing.tsv` 为准，失败
+    返工保留为独立阶段，不覆盖原始失败。
 19. 代码修改必须创建中文 Git 提交，并在提交成功后立即将当前分支分别推送到 Gitee `origin` 和
     GitHub `github`；两个远端均成功才算完成，不能因为当前 upstream 指向 `origin` 就遗漏 GitHub。
     只有用户明确要求暂缓时才不推送。
@@ -1282,6 +1288,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     用户可关闭或跳过，模型继续工作；历史恢复不得反复弹出，同一问题的状态按服务器、Agent、线程和条目隔离。
 33. 服务器连接弹窗只显示转动圆环及下方“取消连接”按钮，不增加服务器名、“连接中”或阶段说明文字。
     保留连接超时与取消机制；读屏标签可保留，但不渲染成可见文案。
+34. MCP 工具调用默认折叠，用户点击后才显示详情；运行中、完成和失败均使用同一交互，状态更新不能自动展开。
 
 ## 15. 修改影响图和顺序
 
@@ -2454,6 +2461,19 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 内外网发布文件、完整外网分段回下载和构建 APK 的 SHA-256 一致：
   `0806ab535f7f4a037f882e0fa34df67e7629753bc1aa65bfef34bf0623593a69`；稳定证书未变化。
   分段补验约 `4m19s`，首次修改从 `14:41:56 UTC` 开始，含定位后的实现、测试返工与下载验证约 `53m`。
+
+### 17.81 MCP 工具折叠与任务计时（2026-09-30）
+
+- `1.8.126+258`：MCP 普通工具默认只显示名称、状态和展开箭头；展开后仍可选择复制，实时更新保留
+  当前选择。9 项新增 Widget 回归和全量 713 项 Flutter 测试、analyze、Debug/Release 构建通过。
+- 正常 Release 保留数据覆盖安装、Android 14 竖屏启动与截图检查、APK 原生运行库校验通过。
+  MCP 交互由 Widget 测试验证，本轮未执行真机或真实 MCP 服务端端到端测试。
+- 任务计时支持自动命令及跨工具人工阶段、并发、失败重试、缓存命中；工作流自测隔离活动任务，计时包装
+  保留命令原有权限和环境。下载回验采用有界并行 Range 恢复，25 项本地 HTTP 异常回归通过。
+- 首轮实测 `check=127.026s`、只补 Release 的 `full=153.983s`；流程改动后缓存衔接复验分别为
+  `1.904s / 1.484s`，未重复编译 APK。最终工作流自测 `5.870s`；早期实现含会话中断且未完整计时，
+  不推算净编码时间。首次外网回验超时与计时包装权限返工保留失败记录；后续阶段自动保存到
+  `.workflow-cache/task-timings/`，不以失败日志估算成功耗时。
 
 ## 18. 文档维护规则
 

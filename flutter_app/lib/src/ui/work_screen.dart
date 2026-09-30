@@ -3747,7 +3747,7 @@ class _AggregateDiffTimelineCard extends StatelessWidget {
   );
 }
 
-class _ToolTimelineCard extends StatelessWidget {
+class _ToolTimelineCard extends StatefulWidget {
   const _ToolTimelineCard({
     required this.entry,
     required this.onTextSelectionChanged,
@@ -3757,44 +3757,98 @@ class _ToolTimelineCard extends StatelessWidget {
   final VoidCallback onTextSelectionChanged;
 
   @override
+  State<_ToolTimelineCard> createState() => _ToolTimelineCardState();
+}
+
+class _ToolTimelineCardState extends State<_ToolTimelineCard> {
+  bool _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _ToolTimelineCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.entry.id != widget.entry.id ||
+        oldWidget.entry.turnId != widget.entry.turnId) {
+      _expanded = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final entry = widget.entry;
     final status = _commandStatus(entry.status);
     return Material(
+      key: ValueKey('tool-card-${entry.id}'),
       color: _workRaised,
-      borderRadius: BorderRadius.circular(6),
-      child: Padding(
-        padding: const EdgeInsets.all(11),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.code, size: 17),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    entry.title.trim().isEmpty ? '工具' : entry.title,
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: _workBorder),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Tooltip(
+            message: _expanded ? '收起工具详情' : '展开工具详情',
+            child: InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 9,
                 ),
-                if (status != null)
-                  Text(
-                    status.label,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: status.color),
-                  ),
-              ],
-            ),
-            if (entry.text.trim().isNotEmpty) ...[
-              const SizedBox(height: 7),
-              _BoundedSelectableText(
-                entry.text,
-                onSelectionChanged: onTextSelectionChanged,
+                child: Row(
+                  children: [
+                    const Icon(Icons.code, size: 17),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        entry.title.trim().isEmpty ? '工具' : entry.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                    ),
+                    if (status != null)
+                      Text(
+                        status.label,
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodySmall?.copyWith(color: status.color),
+                      ),
+                    const SizedBox(width: 4),
+                    AnimatedRotation(
+                      key: const Key('tool-expand-arrow'),
+                      turns: _expanded ? 0.5 : 0,
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      child: const Icon(Icons.keyboard_arrow_down, size: 18),
+                    ),
+                  ],
+                ),
               ),
-            ],
-          ],
-        ),
+            ),
+          ),
+          AnimatedSize(
+            key: const Key('tool-details-animation'),
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(11, 0, 11, 10),
+                    child: entry.text.trim().isEmpty
+                        ? const Text(
+                            '暂无工具详情',
+                            style: TextStyle(color: codexMuted),
+                          )
+                        : _BoundedSelectableText(
+                            entry.text,
+                            onSelectionChanged: widget.onTextSelectionChanged,
+                          ),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
       ),
     );
   }

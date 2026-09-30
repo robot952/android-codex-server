@@ -261,10 +261,14 @@ fi
 publish_committed=1
 
 IFS=',' read -r -a urls <<< "$verify_urls"
+download_for_verification() {
+    node "$ROOT_DIR/scripts/download-apk-verification.cjs" "$1" "$2" \
+        "$(stat -c '%s' "$artifact_path")" "$artifact_sha256"
+}
+
 for verify_url in "${urls[@]}"; do
     [[ -n "$verify_url" ]] || continue
-    curl --noproxy '*' --fail --location --silent --show-error --max-time 180 \
-        --output "$verify_file" "$verify_url"
+    download_for_verification "$verify_url" "$verify_file"
     verified_sha256="$(sha256sum "$verify_file" | awk '{print $1}')"
     if [[ "$verified_sha256" != "$artifact_sha256" ]]; then
         echo "Published APK verification failed for $verify_url" >&2

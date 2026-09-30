@@ -101,6 +101,10 @@ run_stage() {
     local ended_ns
     local elapsed_ms
     local status
+    local task_phase=""
+    if [[ -n "${CODEX_TASK_TIMING_ID:-}" ]]; then
+        task_phase="$("$ROOT_DIR/scripts/task-timing.sh" begin "$CODEX_TASK_TIMING_ID" "$name")"
+    fi
     started_ns="$(date +%s%N)"
     echo
     echo "==> $name"
@@ -115,6 +119,9 @@ run_stage() {
     workflow_stage_statuses+=("$status")
     workflow_stage_elapsed_ms+=("$elapsed_ms")
     echo "<== $name ($(workflow_format_duration_ms "$elapsed_ms"), status $status)"
+    if [[ -n "$task_phase" ]]; then
+        "$ROOT_DIR/scripts/task-timing.sh" end "$CODEX_TASK_TIMING_ID" "$task_phase" "$status"
+    fi
     return "$status"
 }
 
@@ -122,7 +129,18 @@ run_android_gate() {
     local stage_name="$1"
     local android_mode="$2"
     local emulator_status
+    local cache_started_ns
+    local cache_elapsed_ms
+    cache_started_ns="$(date +%s%N)"
     if [[ "$force" == 0 ]] && "$ROOT_DIR/scripts/build-android.sh" "$android_mode" --cache-status; then
+        cache_elapsed_ms=$(( ($(date +%s%N) - cache_started_ns) / 1000000 ))
+        workflow_stage_names+=("$stage_name (cached)")
+        workflow_stage_statuses+=(0)
+        workflow_stage_elapsed_ms+=("$cache_elapsed_ms")
+        if [[ -n "${CODEX_TASK_TIMING_ID:-}" ]]; then
+            "$ROOT_DIR/scripts/task-timing.sh" phase "$CODEX_TASK_TIMING_ID" \
+                "$stage_name (cached)" "$cache_elapsed_ms" 0
+        fi
         echo "Android $android_mode inputs are unchanged; keeping the emulator running"
         android_build_ran=0
         return 0
