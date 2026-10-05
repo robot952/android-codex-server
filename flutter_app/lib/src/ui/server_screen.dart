@@ -639,23 +639,25 @@ class _AppTitle extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Agent',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            Text(
-              subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
+        Flexible(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Agent',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -747,68 +749,80 @@ class _AppVersion extends ConsumerWidget {
         : '检查更新';
     return Padding(
       padding: const EdgeInsets.only(right: 10),
-      child: Center(
-        child: Tooltip(
-          message: description,
-          child: Semantics(
-            button: true,
-            label: description,
-            child: InkWell(
-              onTap: onTap,
-              borderRadius: BorderRadius.circular(5),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'v${updateState.installedVersion}',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        if (updateState.availableUpdate != null) ...[
-                          const SizedBox(width: 5),
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: const BoxDecoration(
-                              color: codexGreen,
-                              shape: BoxShape.circle,
+      // Reserve one stable slot for every update state so the promotion action
+      // beside it does not move when the version, badge or spinner changes.
+      child: SizedBox(
+        width: MediaQuery.textScalerOf(context).scale(76),
+        child: Center(
+          child: Tooltip(
+            message: description,
+            child: Semantics(
+              button: true,
+              label: description,
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(5),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 3,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              'v${updateState.installedVersion}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
-                        ],
-                      ],
-                    ),
-                    SizedBox(
-                      height: 16,
-                      child: updateState.checking
-                          ? const Align(
-                              alignment: Alignment.centerRight,
-                              child: SizedBox.square(
-                                dimension: 11,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.5,
-                                ),
+                          if (updateState.availableUpdate != null) ...[
+                            const SizedBox(width: 5),
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                color: codexGreen,
+                                shape: BoxShape.circle,
                               ),
-                            )
-                          : Text(
-                              updateState.availableUpdate == null
-                                  ? '检查更新'
-                                  : '有更新',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    color: updateState.availableUpdate == null
-                                        ? Theme.of(
-                                            context,
-                                          ).colorScheme.onSurfaceVariant
-                                        : codexGreen,
-                                  ),
                             ),
-                    ),
-                  ],
+                          ],
+                        ],
+                      ),
+                      SizedBox(
+                        height: 16,
+                        child: updateState.checking
+                            ? const Align(
+                                alignment: Alignment.centerRight,
+                                child: SizedBox.square(
+                                  dimension: 11,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 1.5,
+                                  ),
+                                ),
+                              )
+                            : Text(
+                                updateState.availableUpdate == null
+                                    ? '检查更新'
+                                    : '有更新',
+                                style: Theme.of(context).textTheme.labelSmall
+                                    ?.copyWith(
+                                      color: updateState.availableUpdate == null
+                                          ? Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant
+                                          : codexGreen,
+                                    ),
+                              ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

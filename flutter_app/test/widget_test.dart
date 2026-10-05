@@ -4,6 +4,7 @@ import 'package:codex_remote/src/app/codex_remote_app.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
+import 'package:codex_remote/src/platform/app_update_manager.dart';
 import 'package:codex_remote/src/platform/local_linux_manager.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
@@ -24,6 +25,14 @@ class _MemoryStore implements ProfileStore {
   Future<void> save(StoredProfiles value) async {
     this.value = value;
   }
+}
+
+class _ControllableAppUpdateController extends AppUpdateController {
+  _ControllableAppUpdateController() : super(autoCheck: false) {
+    emit(const AppUpdateState(installedVersion: '1.2.3'));
+  }
+
+  void emit(AppUpdateState value) => state = value;
 }
 
 class _BlockingClient implements RemoteServerClient {
@@ -168,6 +177,82 @@ void main() {
     expect(materialLocalizations.pasteButtonLabel, '粘贴');
     expect(materialLocalizations.selectAllButtonLabel, '全选');
   });
+
+  for (final textScale in [1.0, 2.0]) {
+    testWidgets(
+      'promotion action stays fixed across update states; textScale=$textScale',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = textScale == 1
+            ? const Size(390, 844)
+            : const Size(1220 / 2.75, 2712 / 2.75);
+        tester.platformDispatcher.textScaleFactorTestValue = textScale;
+        addTearDown(tester.view.reset);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        final updates = _ControllableAppUpdateController();
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              profileStoreProvider.overrideWithValue(_MemoryStore()),
+              appUpdateProvider.overrideWith((ref) => updates),
+            ],
+            child: const CodexRemoteApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final compact = textScale > 1.3;
+        final promotion = compact
+            ? find.widgetWithIcon(IconButton, Icons.open_in_new)
+            : find.ancestor(
+                of: find.text('低价中转站优选'),
+                matching: find.byType(InkWell),
+              );
+        expect(promotion, findsOneWidget);
+        expect(
+          find.text('ai2api.vip'),
+          compact ? findsNothing : findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+        final initialRect = tester.getRect(promotion);
+        final initialElement = tester.element(promotion);
+
+        const longVersion = '123.456.789-development.123456789';
+        const states = [
+          AppUpdateState(installedVersion: longVersion),
+          AppUpdateState(installedVersion: longVersion, checking: true),
+          AppUpdateState(
+            installedVersion: longVersion,
+            availableUpdate: AppUpdateInfo(versionName: '999.0.0', changes: []),
+          ),
+          AppUpdateState(installedVersion: '1.2.3'),
+        ];
+        for (final state in states) {
+          updates.emit(state);
+          // The checking state has a continuously animating progress indicator.
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 100));
+
+          expect(find.text('v${state.installedVersion}'), findsOneWidget);
+          expect(
+            find.byType(CircularProgressIndicator),
+            state.checking ? findsOneWidget : findsNothing,
+          );
+          if (state.availableUpdate != null) {
+            expect(find.text('有更新'), findsOneWidget);
+          }
+          expect(tester.takeException(), isNull);
+          expect(tester.element(promotion), same(initialElement));
+          expect(tester.getRect(promotion), initialRect);
+          expect(
+            find.text('ai2api.vip'),
+            compact ? findsNothing : findsOneWidget,
+          );
+        }
+      },
+    );
+  }
 
   testWidgets('local Linux profile is not duplicated as a normal server', (
     tester,

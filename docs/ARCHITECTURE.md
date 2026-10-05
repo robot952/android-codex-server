@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.127+259，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.128+260，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -400,7 +400,8 @@ SFTP stdout 混用。
   读取限制为 1 MiB，输入页使用 imePadding/可滚动布局。
 - Codex/Agent 标题连续点击 10 次开启 `debugModeEnabled` 并持久化 Debug 日志开关；Debug 日志入口支持
   预览、选择性复制、清空、脱敏导出和系统分享，关闭 Debug 会停止普通事件记录但仍保留崩溃记录。
-- 顶部版本区域显示当前 `PackageInfo` 版本；启动后自动检查 Gitee 稳定 Release，检查中显示小转圈，发现
+- 顶部版本区域使用随字体缩放的固定宽度，版本文字单行省略；检查中、版本长度和更新标记变化不得移动左侧推广按钮。
+  显示当前 `PackageInfo` 版本；启动后自动检查 Gitee 稳定 Release，检查中显示小转圈，发现
   更新显示绿色状态点。点击版本区域可手动检查或重开更新弹窗，网络/格式错误只显示短提示，不影响服务器连接。
 - https://ai2api.vip 通过 url_launcher 交给系统浏览器，不能改成内嵌 WebView。
 - 每个已连接服务器显示 CPU、内存、磁盘和上下行合计网速；指标位置在无数据时保持稳定，-- 表示尚无
@@ -1264,7 +1265,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 19. 代码修改必须创建中文 Git 提交，并在提交成功后立即将当前分支分别推送到 Gitee `origin` 和
     GitHub `github`；两个远端均成功才算完成，不能因为当前 upstream 指向 `origin` 就遗漏 GitHub。
     只有用户明确要求暂缓时才不推送。
-20. “低价中转站优选”显示 ai2api.vip，必须由系统浏览器打开 https://ai2api.vip，不可内嵌 WebView。
+20. “低价中转站优选”显示 ai2api.vip，必须由系统浏览器打开 https://ai2api.vip，不可内嵌 WebView；
+    按钮位置不能随右侧版本长度、检查更新状态或更新标记变化而左右移动。
 21. 非致命远端 stderr 去除 ANSI/控制字符后写入有界 Debug 日志，不覆盖会话页状态；真正断线、认证失败和不可恢复错误仍明确显示。
 22. Codex 配置修改当前远程 Unix 用户的全局模型 URL、密钥、HTTP/HTTPS 代理和自定义 Provider 的 `supports_websockets`，不改项目工作区（当前 Codex 已接入）。
 23. 配置页先读取服务器实际 Provider、默认模型、URL、代理、登录状态和 Key；自定义 Provider 不得误报未配置（当前 Codex 已接入）。
