@@ -22,7 +22,7 @@ import 'diagnostic_log_sheet.dart';
 import 'server_metrics_strip.dart';
 import 'theme.dart';
 
-const _promotionUrl = 'https://lowapi.button1.cn';
+const _promotionUrl = 'https://ai2api.vip';
 const _maxPrivateKeyBytes = 1024 * 1024;
 
 class ServerScreen extends ConsumerStatefulWidget {
@@ -680,7 +680,7 @@ class _PromotionAction extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: Tooltip(
-        message: '打开低价中转站优选：lowapi.button1.cn',
+        message: '打开低价中转站优选：ai2api.vip',
         child: InkWell(
           onTap: onOpen,
           borderRadius: BorderRadius.circular(7),
@@ -713,7 +713,7 @@ class _PromotionAction extends StatelessWidget {
                             ),
                       ),
                       Text(
-                        'lowapi.button1.cn',
+                        'ai2api.vip',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(
