@@ -160,6 +160,22 @@ class ThreadStore {
     if (!UUID.test(id || "")) throw new Error("Claude Code 回合编号无效");
     return this.read(path.join(this.directory(thread.id), id + ".json"), MAX_TURN);
   }
+  inferName(thread) {
+    if (String(thread.name || "").trim() || !thread.turnIds.length) return "";
+    try {
+      const turn = this.readTurn(thread, thread.turnIds[0]);
+      const user = Array.isArray(turn.items)
+        ? turn.items.find(item => item && item.type === "userMessage")
+        : null;
+      const text = Array.isArray(user?.content)
+        ? user.content.filter(item => item?.type === "text").map(item => item.text).join("\n")
+        : "";
+      return initialThreadName(text);
+    } catch (_) {
+      // A partially written or legacy turn should not make the whole list fail.
+      return "";
+    }
+  }
   create(cwd, model) {
     if (!path.isAbsolute(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error("工作目录不存在");
     const thread = { id: uuid(), cwd, model: modelArgument(model), createdAt: Date.now(), updatedAt: Date.now(), turnIds: [], status: "idle" };
@@ -175,7 +191,14 @@ class ThreadStore {
       let scanned = 0;
       while ((entry = directory.readSync()) && scanned++ < 10000) {
         if (!entry.isDirectory() || !UUID.test(entry.name)) continue;
-        try { all.push(this.get(entry.name)); } catch (_) { /* Isolate corrupt records. */ }
+        try {
+          const thread = this.get(entry.name);
+          // Older records predate the persistent name field. Infer their title
+          // from the first user turn for a stable list without writing during a
+          // refresh (which could race an active writer and clobber newer data).
+          if (!String(thread.name || "").trim()) thread.name = this.inferName(thread);
+          all.push(thread);
+        } catch (_) { /* Isolate corrupt records. */ }
       }
     } finally { directory.closeSync(); }
     return all;
@@ -213,7 +236,10 @@ class ThreadStore {
 
 function threadView(thread, active = false) {
   return {
-    id: thread.id, name: thread.name || thread.preview || "Claude Code",
+    // `preview` is intentionally updated on every turn. It is not a stable
+    // title fallback: using it here made unnamed conversations appear to
+    // rename themselves after each new prompt.
+    id: thread.id, name: String(thread.name || "").trim() || "Claude Code",
     preview: thread.preview || "", cwd: thread.cwd, model: thread.model,
     source: "claude-code", modelProvider: "anthropic",
     status: active ? "active" : "idle", activeTurnId: active ? thread.activeTurnId : null,
@@ -254,6 +280,15 @@ function prepareInput(input) {
   const displayTextChars = display.reduce((total, item) => total + (item.type === "text" ? item.text.length : 0), 0);
   if (displayTextChars > MAX_TEXT * 4 || jsonBytes(display) > MAX_TURN - OUTPUT_RESERVE) throw new Error("文本附件过大");
   return { content, display };
+}
+
+function initialThreadName(value) {
+  const line = String(value || "").split(/\r?\n/, 1)[0].trim();
+  if (!line) return "图片附件";
+  // Keep titles compact while preserving a complete Unicode code point.
+  if (line.length <= 160) return line;
+  const clipped = line.slice(0, 160);
+  return /[\uD800-\uDBFF]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
 }
 
 class ClaudeBridge {
@@ -454,7 +489,17 @@ class ClaudeBridge {
     if (value.type === "stream_event") {
       const event = value.event || {};
       if (event.type === "message_start") {
-        run.messageId = event.message?.id || uuid();
+        // Some Claude-compatible gateways omit message_start.message.id while
+        // the later assistant event still contains one. A random fallback
+        // makes the streamed text and final snapshot look like two messages.
+        // Keep a deterministic per-message key and reconcile final blocks to
+        // the item IDs emitted while streaming.
+        run.messageSequence += 1;
+        const streamMessageId = event.message?.id;
+        run.streamMessageIdProvided = typeof streamMessageId === "string" && streamMessageId.length > 0;
+        run.messageId = run.streamMessageIdProvided ? streamMessageId : `stream-${run.turn.id}-${run.messageSequence}`;
+        run.streamMessageKey = run.messageId;
+        run.streamedByIndex.clear();
         run.messageUsage = { ...event.message?.usage };
         run.messageModel = event.message?.model || run.actualModel;
         this.usage(run, run.messageId, run.messageUsage, run.messageModel);
@@ -463,15 +508,26 @@ class ClaudeBridge {
         run.messageUsage = { ...run.messageUsage, ...event.usage };
         this.usage(run, run.messageId, run.messageUsage, run.messageModel);
       }
-      const id = "assistant-" + (run.messageId || run.turn.id) + "-" + (event.index || 0);
+      const index = Number.isSafeInteger(event.index) && event.index >= 0 ? event.index : 0;
+      const id = "assistant-" + (run.streamMessageKey || run.messageId || run.turn.id) + "-" + index;
       if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+        run.streamedByIndex.set(index, id);
         run.streamed.add(id); this.appendText(run, id, event.delta.text);
       }
     } else if (value.type === "assistant" && Array.isArray(value.message?.content)) {
-      const messageId = value.message.id || run.messageId || run.turn.id;
+      const finalMessageId = value.message.id;
+      const finalMessageIdProvided = typeof finalMessageId === "string" && finalMessageId.length > 0;
+      const messageId = finalMessageIdProvided ? finalMessageId : run.messageId || run.turn.id;
+      // A later assistant snapshot can arrive without another message_start.
+      // Never let an old stream index swallow that independent response.
+      const canReuseStreamItems = !run.streamMessageIdProvided
+        || (finalMessageIdProvided && finalMessageId === run.messageId);
       this.usage(run, messageId, value.message.usage, value.message.model || run.actualModel);
       value.message.content.forEach((block, index) => {
-        const id = "assistant-" + messageId + "-" + index;
+        // Prefer the item already used by stream deltas when the message
+        // identity is compatible; mismatched IDs represent a new response.
+        const streamedId = canReuseStreamItems ? run.streamedByIndex.get(index) : null;
+        const id = streamedId || "assistant-" + (canReuseStreamItems ? (run.streamMessageKey || messageId) : messageId) + "-" + index;
         if (block.type === "text") {
           if (!run.streamed.has(id) && !run.completedMessages.has(id)) this.appendText(run, id, block.text);
           run.completedMessages.add(id);
@@ -514,6 +570,7 @@ class ClaudeBridge {
     let run;
     try {
       thread = this.store.get(thread.id);
+      if (!String(thread.name || "").trim()) thread.name = this.store.inferName(thread);
       if (thread.turnIds.length >= 10000) throw new Error("会话回合数量已达上限，请新建会话");
       const turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [{ id: uuid(), type: "userMessage", content: prepared.display }] };
       if (jsonBytes(turn) > MAX_TURN - OUTPUT_RESERVE) throw new Error("文本附件过大");
@@ -545,10 +602,14 @@ class ClaudeBridge {
       thread.model = model;
       thread.effort = effort || null;
       thread.turnIds.push(turn.id); thread.activeTurnId = turn.id; thread.updatedAt = Date.now(); thread.status = "active";
-      thread.preview = bounded(prepared.display.filter(item => item.type === "text").map(item => item.text).join("\n"), 1000) || "图片附件";
+      const previewText = prepared.display.filter(item => item.type === "text").map(item => item.text).join("\n");
+      thread.preview = bounded(previewText, 1000) || "图片附件";
+      // A conversation title is assigned once, from its first prompt. Keep
+      // the mutable preview separate so list refreshes cannot rename it.
+      if (!String(thread.name || "").trim()) thread.name = initialThreadName(previewText);
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-      run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), completedMessages: new Set(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
+      run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
       this.active.set(thread.id, run);
       this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
       this.notify("turn/started", { threadId: thread.id, turn: { id: turn.id, status: "inProgress" } });
@@ -636,4 +697,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { ClaudeBridge, ThreadStore, prepareInput, bounded, threadView, modelCatalog, usageBreakdown };
+module.exports = { ClaudeBridge, ThreadStore, prepareInput, bounded, threadView, initialThreadName, modelCatalog, usageBreakdown };

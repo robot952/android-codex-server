@@ -105,6 +105,13 @@ function fakeClaudeMain() {
       send({ type: "assistant", message: { id: "message-two", content: [{ type: "text", text: "Only snapshot" }] } });
       send({ type: "assistant", message: { id: "message-two", content: [{ type: "text", text: "Only snapshot" }] } });
       result("你好 Claude\nOnly snapshot");
+    } else if (scenario === "stream-no-id") {
+      // Claude-compatible gateways may omit the message ID on message_start
+      // but include one on the final assistant snapshot.
+      send({ type: "stream_event", event: { type: "message_start", message: {} } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "无 ID 仍只显示一次" } } });
+      send({ type: "assistant", message: { id: "message-no-id", content: [{ type: "text", text: "无 ID 仍只显示一次" }] } });
+      result("无 ID 仍只显示一次");
     } else if (scenario === "permission" || scenario === "question" || scenario === "cancel-approval") {
       request = scenario === "question"
         ? { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "fixture-tool", input: { questions: [
@@ -278,6 +285,50 @@ test("initialize, ordered handshake, Unicode streaming and duplicate snapshots",
   assert.equal(listed.data[0].id, id);
   assert.equal(listed.data[0].source, "claude-code");
   assert.equal(listed.data[0].modelProvider, "anthropic");
+});
+
+test("streamed text reconciles when message_start omits its ID", async ({ peer }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "stream-no-id");
+  await peer.complete(turn);
+  assert.deepEqual(assistantTexts((await peer.history(id))[0]), ["无 ID 仍只显示一次"]);
+  const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
+  assert.deepEqual(deltas.map(message => message.params.delta), ["无 ID 仍只显示一次"]);
+});
+
+test("thread list title remains the first prompt while preview follows the latest prompt", async ({ peer }) => {
+  const id = await peer.thread();
+  const first = await peer.turn(id, "first stable title");
+  await peer.complete(first);
+  let listed = await peer.ok("thread/list");
+  let row = listed.data.find(thread => thread.id === id);
+  assert.equal(row.name, "CASE:first stable title");
+  assert.equal(row.preview, "CASE:first stable title");
+
+  const second = await peer.turn(id, "second mutable preview");
+  await peer.complete(second);
+  listed = await peer.ok("thread/list");
+  row = listed.data.find(thread => thread.id === id);
+  assert.equal(row.name, "CASE:first stable title");
+  assert.equal(row.preview, "CASE:second mutable preview");
+});
+
+test("legacy thread list title is inferred from its first saved user turn", async ({ peer }) => {
+  const id = await peer.thread();
+  const first = await peer.turn(id, "legacy stable title");
+  await peer.complete(first);
+
+  // Simulate a record written before persistent thread names were introduced.
+  const store = new ThreadStore(peer.state);
+  const record = store.get(id);
+  delete record.name;
+  record.preview = "CASE:later mutable preview";
+  store.save(record);
+
+  const listed = await peer.ok("thread/list");
+  const row = listed.data.find(thread => thread.id === id);
+  assert.equal(row.name, "CASE:legacy stable title");
+  assert.equal(row.preview, "CASE:later mutable preview");
 });
 
 test("explicit Opus 5.5, supported efforts and server-default selection reach CLI", async ({ peer, root }) => {
