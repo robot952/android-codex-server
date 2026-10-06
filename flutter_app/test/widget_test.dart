@@ -10,6 +10,7 @@ import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -178,14 +179,19 @@ void main() {
     expect(materialLocalizations.selectAllButtonLabel, '全选');
   });
 
-  for (final textScale in [1.0, 2.0]) {
+  for (final (width, textScale) in [
+    (320.0, 1.0),
+    (360.0, 1.0),
+    (380.0, 1.0),
+    (390.0, 1.0),
+    (390.0, 1.2),
+    (1220 / 2.75, 2.0),
+  ]) {
     testWidgets(
-      'promotion action stays fixed across update states; textScale=$textScale',
+      'promotion keeps Agent visible and stays fixed; width=$width textScale=$textScale',
       (tester) async {
         tester.view.devicePixelRatio = 1;
-        tester.view.physicalSize = textScale == 1
-            ? const Size(390, 844)
-            : const Size(1220 / 2.75, 2712 / 2.75);
+        tester.view.physicalSize = Size(width, 2712 / 2.75);
         tester.platformDispatcher.textScaleFactorTestValue = textScale;
         addTearDown(tester.view.reset);
         addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
@@ -202,7 +208,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        final compact = textScale > 1.3;
+        final compact = textScale > 1.3 || width / textScale < 390;
         final promotion = compact
             ? find.widgetWithIcon(IconButton, Icons.open_in_new)
             : find.ancestor(
@@ -217,6 +223,10 @@ void main() {
         expect(tester.takeException(), isNull);
         final initialRect = tester.getRect(promotion);
         final initialElement = tester.element(promotion);
+        if (!compact) {
+          expect(initialRect.width, 108);
+          expect(initialRect.height, 36);
+        }
 
         const longVersion = '123.456.789-development.123456789';
         const states = [
@@ -245,6 +255,14 @@ void main() {
           expect(tester.takeException(), isNull);
           expect(tester.element(promotion), same(initialElement));
           expect(tester.getRect(promotion), initialRect);
+          final title = tester.renderObject<RenderParagraph>(
+            find.text('Agent'),
+          );
+          expect(title.didExceedMaxLines, isFalse);
+          expect(
+            tester.getRect(find.text('Agent')).right,
+            lessThanOrEqualTo(tester.getRect(promotion).left),
+          );
           expect(
             find.text('ai2api.vip'),
             compact ? findsNothing : findsOneWidget,

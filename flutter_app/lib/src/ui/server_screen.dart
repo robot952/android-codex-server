@@ -70,6 +70,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
             resizeToAvoidBottomInset: true,
             appBar: AppBar(
               toolbarHeight: 64,
+              titleSpacing: 8,
               leading: _editorVisible
                   ? IconButton(
                       tooltip: '返回服务器列表',
@@ -671,7 +672,9 @@ class _PromotionAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final compact = MediaQuery.textScalerOf(context).scale(1) > 1.3;
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final compact =
+        textScale > 1.3 || MediaQuery.sizeOf(context).width / textScale < 390;
     if (compact) {
       return IconButton(
         tooltip: '低价中转站优选',
@@ -687,9 +690,9 @@ class _PromotionAction extends StatelessWidget {
           onTap: onOpen,
           borderRadius: BorderRadius.circular(7),
           child: Container(
-            width: 148,
-            height: 42,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
+            width: 108,
+            height: 36,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
             decoration: BoxDecoration(
               color: codexAmber.withValues(alpha: 0.12),
               border: Border.all(color: codexAmber.withValues(alpha: 0.5)),
@@ -697,8 +700,6 @@ class _PromotionAction extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.open_in_new, size: 16, color: codexAmber),
-                const SizedBox(width: 6),
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
