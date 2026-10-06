@@ -581,22 +581,40 @@ class ClaudeBridge {
         || (finalMessageIdProvided && finalMessageId === run.messageId);
       this.usage(run, messageId, value.message.usage, value.message.model || run.actualModel);
       const nextAssistantBlocks = [];
+      // The CLI snapshots each content block of one message separately, and a
+      // replayed snapshot may drop or reorder a leading thinking block. The
+      // text then arrives under a different index than the deltas used, so an
+      // index lookup alone would show the same answer twice. Match the text
+      // against what this message already emitted before trusting the index.
+      const messageKey = canReuseStreamItems ? (run.streamMessageKey || messageId) : messageId;
+      const messagePrefix = "assistant-" + messageKey + "-";
+      const emittedRunText = (block, index) => {
+        const indexed = run.turn.items.find(
+          item => item.id === run.streamedByIndex.get(index) && item.type === "agentMessage");
+        if (block.type !== "text") return indexed || null;
+        const finalText = String(block.text || "");
+        const matches = item => item.type === "agentMessage" &&
+          (item.text === finalText || (finalText && finalText.startsWith(item.text)));
+        if (indexed && matches(indexed)) return indexed;
+        for (let at = run.turn.items.length - 1; at >= 0; at -= 1) {
+          const item = run.turn.items[at];
+          if (item.id.startsWith(messagePrefix) && matches(item)) return item;
+        }
+        return null;
+      };
       value.message.content.forEach((block, index) => {
         // Prefer the item already used by stream deltas when the message
         // identity is compatible; mismatched IDs represent a new response.
         const streamedId = canReuseStreamItems ? run.streamedByIndex.get(index) : null;
-        const indexedStreamId = run.streamedByIndex.get(index);
-        const streamItem = block.type === "text" && indexedStreamId
-          ? run.turn.items.find(item => item.id === indexedStreamId && item.type === "agentMessage")
-          : null;
+        const streamItem = emittedRunText(block, index);
         const finalText = block.type === "text" ? String(block.text || "") : "";
         // Reconcile a final snapshot with the item emitted by content_block
         // deltas even when the snapshot ID is missing or changed. If the
         // snapshot contains more text, emit only the unseen suffix.
         const streamPrefix = !!(streamItem && finalText && finalText.startsWith(streamItem.text));
-        const id = streamPrefix
+        const id = streamItem
           ? streamItem.id
-          : streamedId || "assistant-" + (canReuseStreamItems ? (run.streamMessageKey || messageId) : messageId) + "-" + index;
+          : streamedId || "assistant-" + messageKey + "-" + index;
         const fingerprint = assistantBlockFingerprint(block);
         const previous = run.lastAssistantBlocks[index];
         const duplicateBlock = !!(fingerprint && previous?.fingerprint === fingerprint);

@@ -136,6 +136,19 @@ function fakeClaudeMain() {
       send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "重复词" } } });
       send({ type: "assistant", message: { id: "tail-final", content: [{ type: "text", text: text + "重复词" }] } });
       result("STREAM_REPLAY_TAIL_SAFE_DONE");
+    } else if (scenario === "stream-thinking-dropped") {
+      // The CLI snapshots every content block of one message separately, and a
+      // replayed snapshot can drop the leading thinking block. The same text
+      // then arrives under a shifted content index, which used to emit a second
+      // assistant card holding the same answer.
+      const text = "我先看一下当前的配置和目录结构。";
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "think-message" } } });
+      send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "先看看环境" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text } } });
+      send({ type: "assistant", message: { id: "think-message", content: [{ type: "thinking", thinking: "先看看环境" }, { type: "text", text }] } });
+      send({ type: "assistant", message: { id: "think-message", content: [{ type: "text", text }] } });
+      result("STREAM_THINKING_DROPPED_DONE");
     } else if (scenario === "semantic-duplicate") {
       // Some gateways identify message_start but omit the ID on the first
       // assistant snapshot, then assign a different ID to a repeated snapshot.
@@ -360,6 +373,17 @@ test("replay mode preserves a legal short continuation matching the existing tai
   assert.deepEqual(assistantTexts(latest), ["重复词重复词重复词"]);
   const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
   assert.deepEqual(deltas.map(message => message.params.delta), ["重复词重复词", "重复词"]);
+});
+
+test("snapshot replay that drops the thinking block keeps one assistant item", async ({ peer }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "stream-thinking-dropped");
+  await peer.complete(turn);
+  const latest = (await peer.history(id))[0];
+  assert.deepEqual(assistantTexts(latest), ["我先看一下当前的配置和目录结构。"]);
+  const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
+  assert.deepEqual(deltas.map(message => message.params.delta), ["我先看一下当前的配置和目录结构。"]);
+  assert.equal(latest.items.filter(item => item.type === "agentMessage")[0].id, "assistant-think-message-1");
 });
 
 test("semantic per-index dedup reconciles mismatched message and tool IDs", async ({ peer }) => {
