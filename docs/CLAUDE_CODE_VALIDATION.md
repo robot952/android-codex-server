@@ -1,6 +1,6 @@
 # Claude Code 接入与验证
 
-当前目标版本：`1.8.131+263`。下方 `1.8.130` 的设备和发布记录是前一版本历史记录。
+当前目标版本：`1.8.135+267`。下方 `1.8.130` 的设备和发布记录是前一版本历史记录。
 
 ## 使用方式
 
@@ -36,6 +36,24 @@ UI Widget 测试和 Android integration test 复用受控 JSONL 对端，不启�
 该入口的实际执行记录为准，不能从 Widget 测试或模拟器启动检查推定。
 模拟器启动和受控交互检查不等于用户服务器认证、真实供应商 API、ARM64 本机 Linux 或厂商后台长时验收。
 本轮不支持的操作通过 capability 隐藏，不伪造上下文用量。
+
+## 重复回复修复与 1.8.135 交付（2026-10-06）
+
+CLI 会按内容块分别发送 assistant 快照，重放快照可能丢弃前导 thinking 块，同一段文本的内容下标随之
+位移；此前仅按内容下标查找已流式的条目，位移后命不中，同一回答被写成两个 agentMessage 条目，App 中
+显示两次。现在先按文本与该消息已发出的条目比对，命中即复用原条目 ID，下标只作首选依据。
+
+- `scripts/test-claude-code-bridge.cjs` 增至 26 个场景，新增场景复现上述位移序列；该场景在修复前
+  的提交上稳定失败（回答被列出两次），修复后通过。真实 CLI 2.1.150 与本地 Anthropic fixture 联调、
+  Claude 设置测试同样通过。
+- `./scripts/dev-workflow.sh publish` 全绿，主门禁耗时 `389.338s`；Release APK 在 Android 14
+  `emulator-5554` 冒烟通过，模拟器截图 `.workflow-cache/emulator/latest-release.png`。
+- 产物 `dist/Agent-1.8.135.apk`，大小 `31,671,302` 字节，`versionName=1.8.135`、
+  `versionCode=267`，稳定签名证书 SHA-256 仍为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+- 内网 `http://192.168.8.107/codex.apk` 整包直下与外网 `http://frp.asdb.top:18080/codex.apk`
+  有界 Range 分段回取均通过大小与 SHA-256 校验；APK SHA-256 为
+  `07d88ccde0e8e9e292c98df582e636b71958118d85be7653cbb769f5087a2b4c`。
 
 ## Opus 5.5 增量验证（2026-10-06）
 
