@@ -112,6 +112,30 @@ function fakeClaudeMain() {
       send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "无 ID 仍只显示一次" } } });
       send({ type: "assistant", message: { id: "message-no-id", content: [{ type: "text", text: "无 ID 仍只显示一次" }] } });
       result("无 ID 仍只显示一次");
+    } else if (scenario === "stream-replay-delta") {
+      // A reconnect may replay the last delta verbatim, then send a
+      // cumulative delta before continuing with fresh text. The bridge must
+      // retain one canonical item and emit only the unseen suffix.
+      const text = "重连后只保留一次，请继续";
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "replay-one" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "重连后只保留" } } });
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "replay-two" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "重连后只保留" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "重连后只保留一次" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "，请继续" } } });
+      send({ type: "assistant", message: { id: "replay-final", content: [{ type: "text", text }] } });
+      result("STREAM_REPLAY_DEDUP_DONE");
+    } else if (scenario === "stream-replay-tail-safe") {
+      // The next valid chunk can be a short phrase that matches the current
+      // text's prefix/suffix. It must not be treated as a replay unless the
+      // exact chunk was emitted before.
+      const text = "重复词重复词";
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "tail-one" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } });
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "tail-two" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "重复词" } } });
+      send({ type: "assistant", message: { id: "tail-final", content: [{ type: "text", text: text + "重复词" }] } });
+      result("STREAM_REPLAY_TAIL_SAFE_DONE");
     } else if (scenario === "semantic-duplicate") {
       // Some gateways identify message_start but omit the ID on the first
       // assistant snapshot, then assign a different ID to a repeated snapshot.
@@ -316,6 +340,26 @@ test("streamed text reconciles when message_start omits its ID", async ({ peer }
   assert.deepEqual(assistantTexts((await peer.history(id))[0]), ["无 ID 仍只显示一次"]);
   const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
   assert.deepEqual(deltas.map(message => message.params.delta), ["无 ID 仍只显示一次"]);
+});
+
+test("replayed stream deltas keep one item and append only unseen suffix", async ({ peer }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "stream-replay-delta");
+  await peer.complete(turn);
+  const latest = (await peer.history(id))[0];
+  assert.deepEqual(assistantTexts(latest), ["重连后只保留一次，请继续"]);
+  const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
+  assert.deepEqual(deltas.map(message => message.params.delta), ["重连后只保留", "一次", "，请继续"]);
+});
+
+test("replay mode preserves a legal short continuation matching the existing tail", async ({ peer }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "stream-replay-tail-safe");
+  await peer.complete(turn);
+  const latest = (await peer.history(id))[0];
+  assert.deepEqual(assistantTexts(latest), ["重复词重复词重复词"]);
+  const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
+  assert.deepEqual(deltas.map(message => message.params.delta), ["重复词重复词", "重复词"]);
 });
 
 test("semantic per-index dedup reconciles mismatched message and tool IDs", async ({ peer }) => {

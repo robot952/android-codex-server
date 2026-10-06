@@ -43,6 +43,19 @@ function assistantBlockFingerprint(block) {
   else return "";
   return crypto.createHash("sha256").update(value).digest("hex");
 }
+// A reconnect can replay text deltas after a new message_start. Reconcile the
+// replay against the text already emitted for that content index, preserving
+// only an unseen cumulative suffix. Exact chunks are tracked separately so a
+// legitimate short continuation that happens to match the existing tail is
+// never swallowed. This is intentionally used only while a retry is pending;
+// ordinary consecutive chunks may legitimately repeat words.
+function streamDeltaSuffix(existing, incoming, seen) {
+  const previous = String(existing || "");
+  const next = String(incoming || "");
+  if (!next || seen?.has(next)) return "";
+  if (next.startsWith(previous)) return next.slice(previous.length);
+  return next;
+}
 const integer = (value, fallback, max) => Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback;
 const jsonBytes = value => Buffer.byteLength(JSON.stringify(value), "utf8");
 const textBytes = value => jsonBytes(String(value)) - 2;
@@ -519,6 +532,9 @@ class ClaudeBridge {
         run.streamMessageIdProvided = typeof streamMessageId === "string" && streamMessageId.length > 0;
         run.messageId = run.streamMessageIdProvided ? streamMessageId : `stream-${run.turn.id}-${run.messageSequence}`;
         run.streamMessageKey = run.messageId;
+        // Existing indexes belong to the previous transport generation. Keep
+        // their canonical items and reconcile the next deltas as replays.
+        for (const index of run.streamedByIndex.keys()) run.streamReplayByIndex.set(index, true);
         // Keep streamed indexes, semantic fingerprints and tool aliases across
         // repeated message_start snapshots. Gateways can restart a stream for
         // the same assistant response before its tool_result arrives; resetting
@@ -532,10 +548,28 @@ class ClaudeBridge {
         this.usage(run, run.messageId, run.messageUsage, run.messageModel);
       }
       const index = Number.isSafeInteger(event.index) && event.index >= 0 ? event.index : 0;
-      const id = "assistant-" + (run.streamMessageKey || run.messageId || run.turn.id) + "-" + index;
       if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+        // Keep the first item ID for this content index. A retried
+        // message_start must not create a second visible assistant card.
+        const id = run.streamedByIndex.get(index) || ("assistant-" + (run.streamMessageKey || run.messageId || run.turn.id) + "-" + index);
         run.streamedByIndex.set(index, id);
-        run.streamed.add(id); this.appendText(run, id, event.delta.text);
+        const incoming = String(event.delta.text || "");
+        const seen = run.streamDeltaHistoryByIndex.get(index) || new Set();
+        run.streamDeltaHistoryByIndex.set(index, seen);
+        let delta = incoming;
+        if (run.streamReplayByIndex.get(index)) {
+          const item = run.turn.items.find(value => value.id === id && value.type === "agentMessage");
+          const reconciled = streamDeltaSuffix(item?.text || "", incoming, seen);
+          // Keep replay mode while a chunk overlaps already emitted text;
+          // leave it once an unrelated continuation arrives.
+          if (reconciled === incoming && !seen.has(incoming)) run.streamReplayByIndex.delete(index);
+          delta = reconciled;
+        }
+        if (incoming) seen.add(incoming);
+        if (delta) {
+          run.streamed.add(id);
+          this.appendText(run, id, delta);
+        }
       }
     } else if (value.type === "assistant" && Array.isArray(value.message?.content)) {
       const finalMessageId = value.message.id;
@@ -611,6 +645,8 @@ class ClaudeBridge {
       // command after that result is a legitimate new block, not a snapshot.
       run.lastAssistantBlocks = [];
       run.streamedByIndex.clear();
+      run.streamReplayByIndex.clear();
+      run.streamDeltaHistoryByIndex.clear();
       run.toolAliases.clear();
     } else if (value.type === "result") {
       // Result input/output totals accumulate every tool loop (and subagents).
@@ -674,7 +710,7 @@ class ClaudeBridge {
       if (!String(thread.name || "").trim()) thread.name = initialThreadName(previewText);
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
+    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
       this.active.set(thread.id, run);
       this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
       this.notify("turn/started", { threadId: thread.id, turn: { id: turn.id, status: "inProgress" } });
