@@ -112,6 +112,28 @@ function fakeClaudeMain() {
       send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "无 ID 仍只显示一次" } } });
       send({ type: "assistant", message: { id: "message-no-id", content: [{ type: "text", text: "无 ID 仍只显示一次" }] } });
       result("无 ID 仍只显示一次");
+    } else if (scenario === "semantic-duplicate") {
+      // Some gateways identify message_start but omit the ID on the first
+      // assistant snapshot, then assign a different ID to a repeated snapshot.
+      // Tool IDs can drift the same way, which used to create duplicate text
+      // and two identical Bash cards in the app.
+      const text = "我先看一下当前目录和这台机器的基础信息。";
+      const input = { command: "pwd" };
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "stream-message" } } });
+      send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } });
+      send({ type: "assistant", message: { content: [
+        { type: "text", text }, { type: "tool_use", id: "tool-one", name: "Bash", input },
+      ] } });
+      // A reconnect can emit another message_start before the same response's
+      // final snapshot. Fingerprints must survive this transport reset.
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "stream-retry" } } });
+      send({ type: "assistant", message: { id: "snapshot-two", content: [
+        { type: "text", text }, { type: "tool_use", id: "tool-two", name: "Bash", input: { command: "pwd" } },
+      ] } });
+      // The result follows the second snapshot and carries its drifted ID.
+      // The bridge must resolve it to the first visible card.
+      send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-two", content: "/home/yan", is_error: false }] } });
+      result("SEMANTIC_DUPLICATE_DONE");
     } else if (scenario === "permission" || scenario === "question" || scenario === "cancel-approval") {
       request = scenario === "question"
         ? { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "fixture-tool", input: { questions: [
@@ -294,6 +316,21 @@ test("streamed text reconciles when message_start omits its ID", async ({ peer }
   assert.deepEqual(assistantTexts((await peer.history(id))[0]), ["无 ID 仍只显示一次"]);
   const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
   assert.deepEqual(deltas.map(message => message.params.delta), ["无 ID 仍只显示一次"]);
+});
+
+test("semantic per-index dedup reconciles mismatched message and tool IDs", async ({ peer }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "semantic-duplicate");
+  await peer.complete(turn);
+  const latest = (await peer.history(id))[0];
+  assert.deepEqual(assistantTexts(latest), ["我先看一下当前目录和这台机器的基础信息。"]);
+  const tools = latest.items.filter(item => item.type === "mcpToolCall");
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].id, "tool-one");
+  assert.equal(tools[0].status, "completed");
+  assert.equal(tools[0].result, "/home/yan");
+  const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
+  assert.deepEqual(deltas.map(message => message.params.delta), ["我先看一下当前目录和这台机器的基础信息。"]);
 });
 
 test("thread list title remains the first prompt while preview follows the latest prompt", async ({ peer }) => {

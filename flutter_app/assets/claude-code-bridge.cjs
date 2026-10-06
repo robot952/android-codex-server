@@ -23,6 +23,26 @@ const bounded = (value, limit = MAX_TEXT) => {
   return text.length <= limit ? text : text.slice(0, limit) + "\n[内容过长，已截断]";
 };
 const clone = value => JSON.parse(JSON.stringify(value));
+// Claude-compatible gateways sometimes give a streamed message and its final
+// assistant snapshot different IDs. IDs alone therefore cannot identify a
+// repeated content block. Keep the semantic key deterministic even when tool
+// input object keys arrive in a different order.
+function stableJson(value) {
+  if (Array.isArray(value)) return "[" + value.map(item => stableJson(item)).join(",") + "]";
+  if (value && typeof value === "object") {
+    return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + stableJson(value[key])).join(",") + "}";
+  }
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? "null" : encoded;
+}
+function assistantBlockFingerprint(block) {
+  if (!block || typeof block !== "object") return "";
+  let value;
+  if (block.type === "text") value = "text\u0000" + String(block.text || "");
+  else if (block.type === "tool_use") value = "tool\u0000" + String(block.name || "") + "\u0000" + stableJson(block.input || {});
+  else return "";
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
 const integer = (value, fallback, max) => Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback;
 const jsonBytes = value => Buffer.byteLength(JSON.stringify(value), "utf8");
 const textBytes = value => jsonBytes(String(value)) - 2;
@@ -499,7 +519,10 @@ class ClaudeBridge {
         run.streamMessageIdProvided = typeof streamMessageId === "string" && streamMessageId.length > 0;
         run.messageId = run.streamMessageIdProvided ? streamMessageId : `stream-${run.turn.id}-${run.messageSequence}`;
         run.streamMessageKey = run.messageId;
-        run.streamedByIndex.clear();
+        // Keep streamed indexes, semantic fingerprints and tool aliases across
+        // repeated message_start snapshots. Gateways can restart a stream for
+        // the same assistant response before its tool_result arrives; resetting
+        // here would recreate text/tool cards under fresh transport IDs.
         run.messageUsage = { ...event.message?.usage };
         run.messageModel = event.message?.model || run.actualModel;
         this.usage(run, run.messageId, run.messageUsage, run.messageModel);
@@ -523,22 +546,59 @@ class ClaudeBridge {
       const canReuseStreamItems = !run.streamMessageIdProvided
         || (finalMessageIdProvided && finalMessageId === run.messageId);
       this.usage(run, messageId, value.message.usage, value.message.model || run.actualModel);
+      const nextAssistantBlocks = [];
       value.message.content.forEach((block, index) => {
         // Prefer the item already used by stream deltas when the message
         // identity is compatible; mismatched IDs represent a new response.
         const streamedId = canReuseStreamItems ? run.streamedByIndex.get(index) : null;
-        const id = streamedId || "assistant-" + (canReuseStreamItems ? (run.streamMessageKey || messageId) : messageId) + "-" + index;
+        const indexedStreamId = run.streamedByIndex.get(index);
+        const streamItem = block.type === "text" && indexedStreamId
+          ? run.turn.items.find(item => item.id === indexedStreamId && item.type === "agentMessage")
+          : null;
+        const finalText = block.type === "text" ? String(block.text || "") : "";
+        // Reconcile a final snapshot with the item emitted by content_block
+        // deltas even when the snapshot ID is missing or changed. If the
+        // snapshot contains more text, emit only the unseen suffix.
+        const streamPrefix = !!(streamItem && finalText && finalText.startsWith(streamItem.text));
+        const id = streamPrefix
+          ? streamItem.id
+          : streamedId || "assistant-" + (canReuseStreamItems ? (run.streamMessageKey || messageId) : messageId) + "-" + index;
+        const fingerprint = assistantBlockFingerprint(block);
+        const previous = run.lastAssistantBlocks[index];
+        const duplicateBlock = !!(fingerprint && previous?.fingerprint === fingerprint);
         if (block.type === "text") {
-          if (!run.streamed.has(id) && !run.completedMessages.has(id)) this.appendText(run, id, block.text);
+          if (streamPrefix) {
+            const suffix = finalText.slice(streamItem.text.length);
+            if (suffix) this.appendText(run, id, suffix);
+          } else if (!duplicateBlock && !run.streamed.has(id) && !run.completedMessages.has(id)) {
+            this.appendText(run, id, block.text);
+          }
           run.completedMessages.add(id);
         } else if (block.type === "tool_use") {
-          this.item(run, block.id, "mcpToolCall", { server: "Claude Code", tool: bounded(block.name, 100), arguments: boundedJsonText(JSON.stringify(block.input || {}), 16000), status: "inProgress" });
-          this.changed(run);
+          // Tool IDs are also unstable across assistant snapshots. Keep the
+          // first card and let its later tool_result update that card.
+          if (!duplicateBlock) {
+            this.item(run, block.id, "mcpToolCall", { server: "Claude Code", tool: bounded(block.name, 100), arguments: boundedJsonText(JSON.stringify(block.input || {}), 16000), status: "inProgress" });
+            this.changed(run);
+          } else if (previous?.id && block.id && previous.id !== block.id) {
+            // A repeated snapshot may assign a new tool_use ID. Remember the
+            // canonical first card so a result carrying the new ID still
+            // completes the visible card instead of creating a second one.
+            run.toolAliases.set(block.id, previous.id);
+          }
+        }
+        if (fingerprint) {
+          // For tool blocks the item ID is block.id, while text uses the
+          // generated/stream item ID. Keeping the canonical ID here makes the
+          // alias above point at the actual persisted tool card.
+          nextAssistantBlocks[index] = { fingerprint, id: block.type === "tool_use" ? block.id : id };
         }
       });
+      run.lastAssistantBlocks = nextAssistantBlocks;
     } else if (value.type === "user" && Array.isArray(value.message?.content)) {
       for (const block of value.message.content) if (block.type === "tool_result") {
-        const item = run.turn.items.find(item => item.id === block.tool_use_id);
+        const canonicalToolId = run.toolAliases.get(block.tool_use_id) || block.tool_use_id;
+        const item = run.turn.items.find(item => item.id === canonicalToolId);
         if (item) {
           delete item.result;
           item.result = boundedJsonText(typeof block.content === "string" ? block.content : JSON.stringify(block.content || ""), Math.max(0, Math.min(MAX_TEXT, MAX_TURN - OUTPUT_RESERVE - jsonBytes(run.turn) - 32)));
@@ -547,6 +607,11 @@ class ClaudeBridge {
           this.changed(run);
         }
       }
+      // A tool result starts the next assistant response. The same text or
+      // command after that result is a legitimate new block, not a snapshot.
+      run.lastAssistantBlocks = [];
+      run.streamedByIndex.clear();
+      run.toolAliases.clear();
     } else if (value.type === "result") {
       // Result input/output totals accumulate every tool loop (and subagents).
       // Only the latest assistant request measures the current context occupancy.
@@ -609,7 +674,7 @@ class ClaudeBridge {
       if (!String(thread.name || "").trim()) thread.name = initialThreadName(previewText);
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-      run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
+    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
       this.active.set(thread.id, run);
       this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
       this.notify("turn/started", { threadId: thread.id, turn: { id: turn.id, status: "inProgress" } });
