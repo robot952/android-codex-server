@@ -208,7 +208,10 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        final compact = textScale > 1.3 || width / textScale < 390;
+        final compact = find.text('ai2api.vip').evaluate().isEmpty;
+        if (width == 390 && textScale == 1) {
+          expect(compact, isFalse);
+        }
         final promotion = compact
             ? find.widgetWithIcon(IconButton, Icons.open_in_new)
             : find.ancestor(
@@ -259,6 +262,22 @@ void main() {
             find.text('Agent'),
           );
           expect(title.didExceedMaxLines, isFalse);
+          expect(
+            tester
+                .renderObject<RenderParagraph>(find.text('服务器列表'))
+                .didExceedMaxLines,
+            isFalse,
+          );
+          if (!compact) {
+            for (final label in ['低价中转站优选', 'ai2api.vip']) {
+              expect(
+                tester
+                    .renderObject<RenderParagraph>(find.text(label))
+                    .didExceedMaxLines,
+                isFalse,
+              );
+            }
+          }
           expect(
             tester.getRect(find.text('Agent')).right,
             lessThanOrEqualTo(tester.getRect(promotion).left),

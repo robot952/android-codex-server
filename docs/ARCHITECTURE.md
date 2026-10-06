@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.128+260，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.129+261，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1267,7 +1267,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     GitHub `github`；两个远端均成功才算完成，不能因为当前 upstream 指向 `origin` 就遗漏 GitHub。
     只有用户明确要求暂缓时才不推送。
 20. “低价中转站优选”显示 ai2api.vip，必须由系统浏览器打开 https://ai2api.vip，不可内嵌 WebView；
-    按钮位置不能随右侧版本长度、检查更新状态或更新标记变化而左右移动。
+    按钮位置不能随右侧版本长度、检查更新状态或更新标记变化而左右移动。推广框应紧凑，窄屏或放大
+    字体时退为图标入口，优先保证左侧 Agent 标题完整显示。
 21. 非致命远端 stderr 去除 ANSI/控制字符后写入有界 Debug 日志，不覆盖会话页状态；真正断线、认证失败和不可恢复错误仍明确显示。
 22. Codex 配置修改当前远程 Unix 用户的全局模型 URL、密钥、HTTP/HTTPS 代理和自定义 Provider 的 `supports_websockets`，不改项目工作区（当前 Codex 已接入）。
 23. 配置页先读取服务器实际 Provider、默认模型、URL、代理、登录状态和 Key；自定义 Provider 不得误报未配置（当前 Codex 已接入）。

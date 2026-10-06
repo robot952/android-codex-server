@@ -672,9 +672,30 @@ class _PromotionAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final textScaler = MediaQuery.textScalerOf(context);
+    final textTheme = Theme.of(context).textTheme;
+    double textWidth(String text, TextStyle? style) {
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: style),
+        textDirection: Directionality.of(context),
+        textScaler: textScaler,
+        maxLines: 1,
+      )..layout();
+      final width = painter.width;
+      painter.dispose();
+      return width;
+    }
+
+    final titleWidth = textWidth('Agent', textTheme.titleLarge);
+    final subtitleWidth = textWidth('服务器列表', textTheme.bodySmall);
+    final brandWidth = titleWidth > subtitleWidth ? titleWidth : subtitleWidth;
+    // Measure the actual font: a 360 dp Android screen can keep the text link,
+    // while wider accessibility fonts fall back before truncating the brand.
+    final requiredWidth =
+        24 + 48 + 10 + brandWidth + 108 + 8 + textScaler.scale(76) + 10;
     final compact =
-        textScale > 1.3 || MediaQuery.sizeOf(context).width / textScale < 390;
+        textScaler.scale(1) > 1.3 ||
+        MediaQuery.sizeOf(context).width < requiredWidth;
     if (compact) {
       return IconButton(
         tooltip: '低价中转站优选',
@@ -701,29 +722,30 @@ class _PromotionAction extends StatelessWidget {
             child: Row(
               children: [
                 Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '低价中转站优选',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(
-                              color: codexAmber,
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                      Text(
-                        'ai2api.vip',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(
-                          context,
-                        ).textTheme.labelSmall?.copyWith(color: codexMuted),
-                      ),
-                    ],
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '低价中转站优选',
+                          maxLines: 1,
+                          style: textTheme.labelMedium?.copyWith(
+                            color: codexAmber,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          'ai2api.vip',
+                          maxLines: 1,
+                          style: textTheme.labelSmall?.copyWith(
+                            color: codexMuted,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
