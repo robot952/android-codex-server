@@ -81,6 +81,8 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
     final failed = _setupFailed(widget.state);
     final viewInsets = MediaQuery.viewInsetsOf(context);
     final display = _RemoteSetupDisplay.fromPrompt(setup);
+    final isClaude = setup.agent == AgentKind.claudeCode;
+    final title = isClaude ? '安装 Claude Code 连接组件' : setup.title;
 
     return Positioned.fill(
       key: const ValueKey('remote-setup-overlay'),
@@ -88,7 +90,7 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
         container: true,
         scopesRoute: true,
         explicitChildNodes: true,
-        label: setup.title,
+        label: title,
         child: Stack(
           children: [
             ModalBarrier(
@@ -117,7 +119,7 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _DialogHeading(title: setup.title),
+                          _DialogHeading(title: title),
                           const Divider(height: 1),
                           Flexible(
                             child: Scrollbar(
@@ -150,7 +152,9 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                                   CrossAxisAlignment.stretch,
                                               children: [
                                                 Text(
-                                                  setup.detail,
+                                                  isClaude
+                                                      ? '请先在服务器安装并登录 Claude Code 2.1 或更新的 2.x 版本，准备 Node.js 18 或更新版本。这里仅安装手机连接组件，沿用服务器现有登录和配置。'
+                                                      : setup.detail,
                                                   key: const ValueKey(
                                                     'remote-setup-detail',
                                                   ),
@@ -164,32 +168,35 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                               ],
                                             ),
                                     ),
-                                    TextField(
-                                      key: const ValueKey('remote-setup-proxy'),
-                                      controller: _proxyController,
-                                      focusNode: _proxyFocusNode,
-                                      enabled: !inProgress,
-                                      autocorrect: false,
-                                      enableSuggestions: false,
-                                      keyboardType: TextInputType.url,
-                                      textInputAction: TextInputAction.done,
-                                      scrollPadding: EdgeInsets.only(
-                                        bottom: viewInsets.bottom + 96,
-                                      ),
-                                      onChanged: widget.onProxyChanged,
-                                      onSubmitted: (_) =>
-                                          _proxyFocusNode.unfocus(),
-                                      decoration: InputDecoration(
-                                        labelText: '下载代理（可选）',
-                                        hintText: 'http://127.0.0.1:7890',
-                                        helperText: display.proxyDescription,
-                                        helperMaxLines: 3,
-                                        prefixIcon: const Icon(
-                                          Icons.route_outlined,
-                                          size: 20,
+                                    if (!isClaude)
+                                      TextField(
+                                        key: const ValueKey(
+                                          'remote-setup-proxy',
+                                        ),
+                                        controller: _proxyController,
+                                        focusNode: _proxyFocusNode,
+                                        enabled: !inProgress,
+                                        autocorrect: false,
+                                        enableSuggestions: false,
+                                        keyboardType: TextInputType.url,
+                                        textInputAction: TextInputAction.done,
+                                        scrollPadding: EdgeInsets.only(
+                                          bottom: viewInsets.bottom + 96,
+                                        ),
+                                        onChanged: widget.onProxyChanged,
+                                        onSubmitted: (_) =>
+                                            _proxyFocusNode.unfocus(),
+                                        decoration: InputDecoration(
+                                          labelText: '下载代理（可选）',
+                                          hintText: 'http://127.0.0.1:7890',
+                                          helperText: display.proxyDescription,
+                                          helperMaxLines: 3,
+                                          prefixIcon: const Icon(
+                                            Icons.route_outlined,
+                                            size: 20,
+                                          ),
                                         ),
                                       ),
-                                    ),
                                     if (inProgress) ...[
                                       const SizedBox(height: 14),
                                       _InstallProgress(state: widget.state),
@@ -618,6 +625,12 @@ class _RemoteSetupDisplay {
         installPath: '$sharedRoot/opencode/releases/$_pinnedOpenCodeVersion',
         bridgePath: '$home/.local/bin/codex-remote-opencode-bridge',
         proxyDescription: '仅用于本次远程 Node.js 和 OpenCode 下载，并保存到此服务器',
+      ),
+      AgentKind.claudeCode => _RemoteSetupDisplay(
+        versionLine: 'Claude Code 2.1+（2.x）· 使用服务器已有 CLI',
+        installPath: '$sharedRoot/claude',
+        bridgePath: '$home/.local/bin/codex-remote-claude-bridge',
+        proxyDescription: '连接组件无需下载，Claude Code 沿用服务器已有网络设置',
       ),
     };
   }

@@ -584,6 +584,11 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     AppUiState state,
     AppController controller,
   ) async {
+    final isClaude = state.activeAgent == AgentKind.claudeCode;
+    final selectedMode =
+        isClaude && state.approvalMode != ApprovalMode.fullAccess
+        ? ApprovalMode.requestApproval
+        : state.approvalMode;
     final selected = await showModalBottomSheet<ApprovalMode>(
       context: context,
       showDragHandle: true,
@@ -597,12 +602,20 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                 leading: Icon(Icons.shield_outlined),
                 title: Text('权限'),
               ),
-              for (final mode in ApprovalMode.values)
+              for (final mode in ApprovalMode.values.where(
+                (mode) => !isClaude || mode != ApprovalMode.autoApprove,
+              ))
                 ListTile(
                   leading: Icon(_approvalModeIcon(mode)),
                   title: Text(mode.label),
-                  subtitle: Text(mode.description),
-                  trailing: mode == state.approvalMode
+                  subtitle: Text(
+                    isClaude
+                        ? mode == ApprovalMode.fullAccess
+                              ? '自动批准 Claude Code 发来的工具权限请求，提问仍需回答'
+                              : '沿用服务器 Claude Code 权限规则，需要授权时在此确认'
+                        : mode.description,
+                  ),
+                  trailing: mode == selectedMode
                       ? const Icon(Icons.check_circle, color: codexAmber)
                       : null,
                   onTap: () => Navigator.of(context).pop(mode),
@@ -616,7 +629,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     if (selected == ApprovalMode.fullAccess) {
       final confirmed = await _confirm(
         title: '启用完全访问',
-        message: '${state.activeAgent.label} 将不受工作区沙箱限制。',
+        message: isClaude
+            ? '将自动批准 Claude Code 的工具权限请求，可能修改服务器文件或执行命令。'
+            : '${state.activeAgent.label} 将不受工作区沙箱限制。',
         confirmLabel: '启用',
         destructive: true,
       );

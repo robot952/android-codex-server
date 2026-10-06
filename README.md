@@ -19,6 +19,7 @@ Windows x64 EXE 还可直接使用本机原生 Codex，无需 WSL 或本机 SSH 
 - 连接过程的全屏半透明阻塞层，以及连接成功后进入真实会话列表。
 - 服务器 CPU、内存、磁盘和网络采样、紧凑指标和点击详情。
 - Codex/OpenCode Agent 探测、固定版本安装、HTTP/HTTPS 下载代理、进度展示、卸载和自动连接。
+- Claude Code：通过 Linux SSH 使用服务器已有 CLI，支持新建对话、流式回复、历史恢复、工具授权、图片和停止。
 - JSONL 会话列表、搜索、恢复、分页、流式消息、停止、审批、权限、会话级模型和思考强度。
 - Work 页面中的上下文用量、压缩、草稿、附件、图片预览/保存、Markdown 链接和子 Agent。
 - SSH 终端、SFTP 文件管理、工作目录选择、全局 Codex 配置和真实模型连通性测试。
@@ -73,7 +74,7 @@ Windows x64 EXE 还可直接使用本机原生 Codex，无需 WSL 或本机 SSH 
 
 | 项目 | 当前值 |
 | --- | --- |
-| App | `1.8.71+198`，来源 `flutter_app/pubspec.yaml` |
+| App | `1.8.130+262`，来源 `flutter_app/pubspec.yaml` |
 | Flutter | `3.44.8 stable` |
 | Dart | `3.12.2` |
 | Java | 17 |

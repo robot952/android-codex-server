@@ -743,6 +743,7 @@ class _SubAgentNavigationAgent extends _FailingTurnAgent {
   AgentCapabilities get capabilities => switch (agentKind) {
     AgentKind.codex => AgentCapabilities.codex,
     AgentKind.openCode => AgentCapabilities.openCode,
+    AgentKind.claudeCode => AgentCapabilities.claudeCode,
   };
 
   Completer<AgentSession> gateNextResume(String threadId) {
@@ -5235,6 +5236,7 @@ void main() {
       clientFactory: (kind) => switch (kind) {
         AgentKind.codex => codexAgent,
         AgentKind.openCode => openCodeAgent,
+        AgentKind.claudeCode => codexAgent,
       },
     );
     final childGate = codexAgent.gateNextResume(

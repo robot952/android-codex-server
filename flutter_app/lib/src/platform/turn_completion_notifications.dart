@@ -59,6 +59,7 @@ class CompletedThreadNavigation {
     final agentValue = readString('agent').toLowerCase();
     final agent = switch (agentValue) {
       'opencode' || 'open_code' || 'open-code' => AgentKind.openCode,
+      'claudecode' || 'claude_code' || 'claude-code' => AgentKind.claudeCode,
       _ => AgentKind.codex,
     };
     return CompletedThreadNavigation(

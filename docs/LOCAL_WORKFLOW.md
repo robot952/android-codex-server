@@ -93,8 +93,8 @@ unshare --mount --propagation private bash scripts/test-ci-android.sh --read-onl
 
 | 模式 | 适用场景 | 实际执行 |
 | --- | --- | --- |
-| `quick` | 频繁编码反馈 | 服务器脚本门禁、OpenCode bridge quick 门禁、Flutter `analyze` |
-| `check` | 一个功能完成 | 服务器脚本门禁、OpenCode bridge full 门禁、Flutter analyze/test、Debug APK、Debug 模拟器冒烟 |
+| `quick` | 频繁编码反馈 | 服务器脚本门禁、OpenCode bridge quick 门禁、Claude bridge 门禁、Flutter `analyze` |
+| `check` | 一个功能完成 | 服务器脚本门禁、OpenCode bridge full 门禁、Claude bridge 门禁、Flutter analyze/test、Debug APK、Debug 模拟器冒烟 |
 | `full` | 提交前或高风险改动 | 上述门禁、Debug/Release APK、Release 模拟器冒烟 |
 | `publish` | 交付本机下载包 | `full` 的缓存结果、稳定签名校验、本机 HTTP 部署、内外网下载哈希校验 |
 | `status` | 查看环境 | Git、AVD、OpenCode 运行时、门禁 stamp 和 APK SHA-256 |
@@ -223,7 +223,7 @@ CODEX_TASK_TIMING_ID="$task_id" ./scripts/dev-workflow.sh publish --reuse
 释放本轮 Gradle daemon；缓存命中则尽量保持 AVD 和进程不动。不要同时用 `/root/.gradle` 和共享
 cache 启动两套大型 daemon。
 
-## 4. 服务器脚本和 OpenCode 门禁
+## 4. 服务器脚本与 Agent bridge 门禁
 
 它们是仓库辅助工具的静态/本地验证，不代表 Flutter APK 已接入 Agent：
 
@@ -232,11 +232,19 @@ cache 启动两套大型 daemon。
 ./scripts/test-server.sh --force
 ./scripts/test-opencode.sh quick
 ./scripts/test-opencode.sh full
+./scripts/test-claude-code.sh
 ```
 
 `test-server.sh` 检查 Bash 语法和 `server/smoke-test.mjs` 的 Node 语法，不登录或修改真实服务器。
 `test-opencode.sh` 验证本地 bridge、调度和隔离的假 OpenAI 兼容服务；需要安装固定 npm 运行时时才下载。
 两类脚本都使用内容 stamp，`--force` 才无条件重跑。
+
+`test-claude-code.sh` 检查打包 bridge 语法和隔离的 CLI 协议 fixture；本机安装了 Claude 时还执行
+真实 CLI 集成，可用 `CLAUDE_CODE_TEST_BIN=/absolute/path/to/claude` 指定。真实 CLI 测试使用临时
+HOME/配置和 loopback Anthropic fixture，覆盖工具授权/拒绝、停止、图片、去重、重启与恢复，不读取真实
+认证、不调用付费 API。没有 CLI 时会明确报告该部分跳过，不得称为真实 CLI 验证通过。该门禁在
+quick/check/full/publish 中执行，当前不复用其结果缓存。新增 Claude 能力还应运行 adapter、控制器和
+UI 回归；Linux fixture 不替代用户手机与已认证服务器的端到端验收。
 
 下载 OpenCode/npm 依赖时优先使用 `127.0.0.1:7890`。这是宿主机构建代理；将来远程服务器上的
 Codex/OpenCode 安装代理必须由用户按服务器单独配置，不能把 7890 写死进 App 业务网络。

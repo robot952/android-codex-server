@@ -174,6 +174,7 @@ const _$AgentModeEnumMap = {
 const _$AgentKindEnumMap = {
   AgentKind.codex: 'Codex',
   AgentKind.openCode: 'OpenCode',
+  AgentKind.claudeCode: 'ClaudeCode',
 };
 
 _ThreadModelPreference _$ThreadModelPreferenceFromJson(

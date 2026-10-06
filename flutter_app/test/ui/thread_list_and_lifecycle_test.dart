@@ -35,6 +35,7 @@ class _ThreadListController extends AppController {
   bool? lastRefreshSilent;
   Completer<void>? refreshGate;
   AgentKind? selectedAgent;
+  int resumedSetupCount = 0;
   bool fileManagerOpened = false;
 
   void showState(AppUiState value) => state = value;
@@ -42,6 +43,11 @@ class _ThreadListController extends AppController {
   @override
   void selectAgent(AgentKind agent) {
     selectedAgent = agent;
+  }
+
+  @override
+  void resumeRemoteSetup() {
+    resumedSetupCount++;
   }
 
   @override
@@ -319,6 +325,156 @@ void main() {
     expect(controller.selectedAgent, AgentKind.openCode);
     expect(tester.takeException(), isNull);
   });
+
+  for (final width in [320.0, 360.0]) {
+    for (final textScale in [1.0, 2.0]) {
+      testWidgets(
+        'three Agent lanes fit at $width dp and $textScale text scale',
+        (tester) async {
+          await tester.binding.setSurfaceSize(Size(width, 800));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          final manager = ServerConnectionManager();
+          final controller = _ThreadListController(_MemoryStore(), manager);
+          addTearDown(manager.close);
+          const profile = ServerProfile(
+            id: 'server',
+            name: '测试服务器',
+            host: 'example.test',
+            username: 'root',
+            authMode: AuthMode.password,
+          );
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                appControllerProvider.overrideWith((ref) => controller),
+              ],
+              child: MaterialApp(
+                theme: buildCodexTheme(),
+                builder: (context, child) => MediaQuery(
+                  data: MediaQuery.of(
+                    context,
+                  ).copyWith(textScaler: TextScaler.linear(textScale)),
+                  child: child!,
+                ),
+                home: const ThreadListScreen(),
+              ),
+            ),
+          );
+          final state = AppUiState(
+            profiles: [profile],
+            selectedProfileId: profile.id,
+            connectionStates: {
+              profile.id: const domain.ConnectionState(
+                phase: ConnectionPhase.connected,
+              ),
+            },
+            agentConnectionStates: {
+              for (final agent in AgentKind.values)
+                AgentConnectionKey(
+                  profileId: profile.id,
+                  agent: agent,
+                ): domain.ConnectionState(
+                  phase: agent == AgentKind.claudeCode
+                      ? ConnectionPhase.connected
+                      : agent == AgentKind.openCode
+                      ? ConnectionPhase.failed
+                      : ConnectionPhase.disconnected,
+                ),
+            },
+          );
+          controller.showState(state);
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+
+          for (final agent in AgentKind.values) {
+            final tab = find.byKey(ValueKey('select-agent-${agent.name}'));
+            final bounds = tester.getRect(tab);
+            final label = tester.getRect(find.text(agent.label));
+            expect(bounds.height, greaterThanOrEqualTo(48));
+            expect(label.left, greaterThanOrEqualTo(bounds.left));
+            expect(label.right, lessThanOrEqualTo(bounds.right));
+            final dot = tester.widget<Container>(
+              find.byKey(ValueKey('agent-status-${agent.name}')),
+            );
+            final color = (dot.decoration! as BoxDecoration).color;
+            expect(
+              color,
+              agent == AgentKind.claudeCode
+                  ? codexGreen
+                  : agent == AgentKind.openCode
+                  ? codexRed
+                  : codexMuted.withValues(alpha: 0.62),
+            );
+          }
+
+          await tester.tap(find.text('Claude Code'));
+          expect(controller.selectedAgent, AgentKind.claudeCode);
+          controller.showState(
+            state.copyWith(activeAgent: AgentKind.claudeCode),
+          );
+          await tester.pumpAndSettle();
+          final selectedTab = find.byKey(
+            const ValueKey('select-agent-claudeCode'),
+          );
+          final semantics = tester.widgetList<Semantics>(
+            find.ancestor(of: selectedTab, matching: find.byType(Semantics)),
+          );
+          expect(
+            semantics.any((node) => node.properties.selected == true),
+            isTrue,
+          );
+          expect(tester.takeException(), isNull);
+
+          controller.showState(
+            state.copyWith(
+              activeAgent: AgentKind.claudeCode,
+              agentSetupStates: {
+                const AgentConnectionKey(
+                  profileId: 'server',
+                  agent: AgentKind.claudeCode,
+                ): const AgentSetupState(
+                  prompt: RemoteSetupPrompt(
+                    title: 'Claude Code',
+                    detail: '安装运行时',
+                    os: 'Linux',
+                    architecture: 'x86_64',
+                    home: '/home/test',
+                    agent: AgentKind.claudeCode,
+                  ),
+                  inProgress: true,
+                  minimized: true,
+                  percent: 66,
+                ),
+              },
+            ),
+          );
+          await tester.pumpAndSettle();
+          final progressTab = find.byKey(
+            const ValueKey('resume-claudeCode-setup'),
+          );
+          final progressBounds = tester.getRect(progressTab);
+          expect(
+            tester.getTopRight(find.text('66%')).dx,
+            lessThanOrEqualTo(progressBounds.right),
+          );
+          expect(
+            tester
+                .widget<LinearProgressIndicator>(
+                  find.descendant(
+                    of: progressTab,
+                    matching: find.byType(LinearProgressIndicator),
+                  ),
+                )
+                .value,
+            0.66,
+          );
+          await tester.tap(progressTab);
+          expect(controller.resumedSetupCount, 1);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 
   testWidgets('updates visible relative times while the list remains open', (
     tester,

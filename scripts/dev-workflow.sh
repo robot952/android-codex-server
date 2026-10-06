@@ -204,11 +204,13 @@ case "$mode" in
     quick)
         run_stage "Server script gate" "$ROOT_DIR/scripts/test-server.sh" "$cache_flag"
         run_stage "OpenCode bridge quick gate" "$ROOT_DIR/scripts/test-opencode.sh" quick "$cache_flag"
+        run_stage "Claude Code bridge gate" "$ROOT_DIR/scripts/test-claude-code.sh"
         run_android_gate "Android incremental compile" fast
         ;;
     check)
         run_stage "Server script gate" "$ROOT_DIR/scripts/test-server.sh" "$cache_flag"
         run_stage "OpenCode bridge full gate" "$ROOT_DIR/scripts/test-opencode.sh" full "$cache_flag"
+        run_stage "Claude Code bridge gate" "$ROOT_DIR/scripts/test-claude-code.sh"
         run_android_gate "Android debug gate" debug
         if [[ "$run_emulator" == 1 ]]; then
             prepare_emulator
@@ -219,6 +221,7 @@ case "$mode" in
     full|publish)
         run_stage "Server script gate" "$ROOT_DIR/scripts/test-server.sh" "$cache_flag"
         run_stage "OpenCode bridge full gate" "$ROOT_DIR/scripts/test-opencode.sh" full "$cache_flag"
+        run_stage "Claude Code bridge gate" "$ROOT_DIR/scripts/test-claude-code.sh"
         run_android_gate "Android full gate" all
         if [[ "$run_emulator" == 1 ]]; then
             prepare_emulator

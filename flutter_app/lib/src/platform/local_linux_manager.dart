@@ -401,7 +401,7 @@ ServerProfile localLinuxProfile(
   approvalMode: ApprovalMode.fullAccess,
   remoteCommand: managedCodexRemoteCommand,
   workspacePromptShown: true,
-  activeAgent: AgentKind.codex,
+  activeAgent: existing?.activeAgent ?? AgentKind.codex,
   agentModelSettings:
       existing?.agentModelSettings ?? const <AgentKind, AgentModelSettings>{},
 );

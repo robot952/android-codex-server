@@ -6,6 +6,7 @@ import '../domain/models.dart';
 import '../ssh/server_connection_manager.dart';
 import '../ssh/ssh_server_client.dart';
 import 'codex_agent_client.dart';
+import 'claude_code_agent_client.dart';
 import 'opencode_agent_client.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
@@ -1181,6 +1182,9 @@ RemoteAgentClient _defaultClientFactory(AgentKind kind) => switch (kind) {
   AgentKind.openCode => OpenCodeAgentClient(
     dedicatedHostFactory: DartSshServerClient.new,
   ),
+  AgentKind.claudeCode => ClaudeCodeAgentClient(
+    dedicatedHostFactory: DartSshServerClient.new,
+  ),
 };
 
 bool _sameLaneIdentity(
@@ -1190,7 +1194,7 @@ bool _sameLaneIdentity(
 ) =>
     left.hasSameConnectionIdentity(right) &&
     (agent != AgentKind.codex || left.remoteCommand == right.remoteCommand) &&
-    (agent != AgentKind.openCode ||
+    ((agent != AgentKind.openCode && agent != AgentKind.claudeCode) ||
         left.workspace.trim() == right.workspace.trim());
 
 String _message(Object error, String fallback) {

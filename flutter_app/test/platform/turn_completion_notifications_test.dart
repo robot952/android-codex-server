@@ -90,6 +90,19 @@ void main() {
     expect(CompletedThreadNavigation.fromJson({}), isNull);
   });
 
+  test('navigation payload parses Claude Code aliases', () {
+    for (final value in ['ClaudeCode', 'claude_code', 'claude-code']) {
+      expect(
+        CompletedThreadNavigation.fromJson({
+          'profileId': 'server-a',
+          'agent': value,
+          'threadId': 'thread-a',
+        })?.agent,
+        AgentKind.claudeCode,
+      );
+    }
+  });
+
   test('notification id is stable and lane-scoped', () {
     final first = completionNotificationId(
       'server-a',

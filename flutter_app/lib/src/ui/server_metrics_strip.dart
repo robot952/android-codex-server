@@ -36,48 +36,52 @@ class ServerMetricsStrip extends StatelessWidget {
           '上传 ${_formatNetworkRate(upload, compact: false)}',
       child: Align(
         alignment: Alignment.centerLeft,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            _metric(
-              context,
-              icon: Icons.speed,
-              label: 'CPU',
-              value: metrics?.cpuPercent,
-              displayValue: _formatMetric(metrics?.cpuPercent),
-              detail: detail,
-            ),
-            SizedBox(width: spacing),
-            _metric(
-              context,
-              icon: Icons.memory,
-              label: '内存',
-              value: metrics?.memoryPercent,
-              displayValue: _formatMetric(metrics?.memoryPercent),
-              detail: detail,
-            ),
-            SizedBox(width: spacing),
-            _metric(
-              context,
-              icon: Icons.storage,
-              label: '磁盘',
-              value: metrics?.diskPercent,
-              displayValue: _formatMetric(metrics?.diskPercent),
-              detail: detail,
-            ),
-            SizedBox(width: spacing),
-            _metric(
-              context,
-              icon: Icons.network_check,
-              label: compactForServerList ? '网络总速率' : '网络',
-              displayValue: compactForServerList
-                  ? _formatNetworkTotalRate(totalNetworkRate)
-                  : '↓${_formatNetworkRate(download, compact: true)} '
-                        '↑${_formatNetworkRate(upload, compact: true)}',
-              detail: detail,
-            ),
-          ],
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              _metric(
+                context,
+                icon: Icons.speed,
+                label: 'CPU',
+                value: metrics?.cpuPercent,
+                displayValue: _formatMetric(metrics?.cpuPercent),
+                detail: detail,
+              ),
+              SizedBox(width: spacing),
+              _metric(
+                context,
+                icon: Icons.memory,
+                label: '内存',
+                value: metrics?.memoryPercent,
+                displayValue: _formatMetric(metrics?.memoryPercent),
+                detail: detail,
+              ),
+              SizedBox(width: spacing),
+              _metric(
+                context,
+                icon: Icons.storage,
+                label: '磁盘',
+                value: metrics?.diskPercent,
+                displayValue: _formatMetric(metrics?.diskPercent),
+                detail: detail,
+              ),
+              SizedBox(width: spacing),
+              _metric(
+                context,
+                icon: Icons.network_check,
+                label: compactForServerList ? '网络总速率' : '网络',
+                displayValue: compactForServerList
+                    ? _formatNetworkTotalRate(totalNetworkRate)
+                    : '↓${_formatNetworkRate(download, compact: true)} '
+                          '↑${_formatNetworkRate(upload, compact: true)}',
+                detail: detail,
+              ),
+            ],
+          ),
         ),
       ),
     );

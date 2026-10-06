@@ -598,7 +598,7 @@ class CodexAgentClient
     }
 
     final scope = _protocol.beginGeneration();
-    final command = buildCodexAppServerCommand(profile);
+    final command = buildSessionCommand(profile);
     late CodexSession session;
     try {
       if (useDurableTransport &&
@@ -673,6 +673,10 @@ class CodexAgentClient
       rethrow;
     }
   }
+
+  /// Adapters may isolate their launcher from Codex-specific environment files.
+  String buildSessionCommand(ServerProfile profile) =>
+      buildCodexAppServerCommand(profile);
 
   /// Stops a durable remote app-server only for an explicit user disconnect.
   /// Transport-loss recovery calls [disconnect] directly and deliberately

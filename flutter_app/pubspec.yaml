@@ -1,5 +1,5 @@
 name: codex_remote
-description: "A native Flutter SSH client for remote Codex and OpenCode agents."
+description: "A native Flutter SSH client for remote Codex, OpenCode, and Claude Code agents."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.8.129+261
+version: 1.8.130+262
 
 environment:
   sdk: ^3.12.2
@@ -90,6 +90,7 @@ flutter:
 
   assets:
     - assets/opencode-bridge.cjs
+    - assets/claude-code-bridge.cjs
 
   # To add assets to your application, add an assets section, like this:
   # assets:

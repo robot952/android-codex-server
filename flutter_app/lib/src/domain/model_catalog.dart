@@ -36,6 +36,7 @@ String modelWireName(AgentModel model) => _agentModelIdentity(model);
 String normalizeAgentModelId(AgentKind agent, String value) => switch (agent) {
   AgentKind.codex => _normalizeOptionalModelId(value, '模型'),
   AgentKind.openCode => normalizeOpenCodeModelId(value),
+  AgentKind.claudeCode => _normalizeOptionalModelId(value, 'Claude Code 模型'),
 };
 
 String normalizeOpenCodeModelId(String value) {

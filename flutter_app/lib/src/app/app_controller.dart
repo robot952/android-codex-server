@@ -7751,6 +7751,7 @@ List<AgentThread> _mergeListedThreads(
 String _defaultAgentProvider(AgentKind agent) => switch (agent) {
   AgentKind.codex => 'openai',
   AgentKind.openCode => openCodeManagedProviderId,
+  AgentKind.claudeCode => 'anthropic',
 };
 
 bool _preserveThreadsAfterSettingsSave({

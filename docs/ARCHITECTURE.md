@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.129+261，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.130+262，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -57,16 +57,16 @@ git branch --show-current
 
 ## 2. 项目边界
 
-长期目标是：通过 SSH 连接一台或多台服务器，在无 PTY 的 exec channel 中启动固定版本的 Codex 或
-OpenCode Agent，将事件渲染为接近 VS Code Codex 插件的移动端工作界面。当前 Flutter 已经形成可运行的
-双 Agent 纵向链路：Codex 直接使用 app-server JSONL，OpenCode 由 App 自带 bridge 将本机 REST/SSE
-转换成相同的 JSONL 契约；两条 lane 都完成 initialize、model/list、thread/list、thread/resume 和 turn
-生命周期，并将事件投影到共享会话列表和 Work 页面。
+通过 SSH 连接一台或多台服务器，在无 PTY 的 exec channel 中启动 Codex、OpenCode 或 Claude Code，
+将事件渲染为共享的移动端工作界面。Codex 使用 app-server JSONL，OpenCode bridge 转换 REST/SSE，
+Claude Code bridge 转换已安装 CLI 的 stream-json/control 协议。三种 Agent 按 lane 隔离，复用会话列表、
+Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capability 决定。
 
 当前已经接入并应按“已完成”理解的能力包括：
 
 - 多服务器 Profile、严格 SSH 指纹确认、密码/私钥认证、连接状态和 CPU/内存/磁盘/网络指标；
-- Codex JSONL 与 OpenCode bridge 的握手、模型列表、会话列表/搜索、新建、恢复、历史处理和有界事件解析；
+- Codex JSONL、OpenCode bridge 和 Claude Code bridge 的握手、会话列表/搜索、新建、恢复、历史处理和有界
+  事件解析；Codex/OpenCode 另支持模型列表；
 - Work 页面发送/停止、审批和用户输入、权限模式、会话级模型/思考强度、草稿、上下文用量、压缩、
   回退、归档、重命名、代码审查和线程目标；
 - 时间线 reducer（消息、思考、计划、命令、文件修改、工具、图片和协作活动）、图片预览/保存、
@@ -89,7 +89,8 @@ OpenCode Agent，将事件渲染为接近 VS Code Codex 插件的移动端工作
 模拟器启动回归已经通过，但尚未在授权真实服务器验证 OpenCode 固定版本下载/安装/卸载、真实
 Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在真机完成应用内更新的下载、未知来源授权
 与覆盖安装。Codex 子 Agent 独立 thread 导航/父子返回栈已经接入 Flutter，但仍需真实设备长时回归。
-两种 Agent 的自动安装、终端、文件管理、后台保护、完成通知和 Debug 日志已经有 Flutter/Android 实现，
+Codex/OpenCode 自动安装、Claude Code 连接组件安装，以及共享终端、文件管理、后台保护、完成通知和
+Debug 日志已经有 Flutter/Android 实现，
 但仍需在目标设备上做权限、厂商后台限制和长时运行回归；不要因为代码、纯单元测试和启动 smoke 已通过，
 就把真实服务器或系统安装流程写成已完成。
 
@@ -109,7 +110,7 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/persistence/profile_store.dart | 加密 Profile 存储、边界归一化、旧原生数据迁移 | 当前运行 |
 | flutter_app/lib/src/ssh/server_connection_manager.dart | 每个 profileId 一个主机客户端、锁和 generation | 当前运行 |
 | flutter_app/lib/src/ssh/ssh_server_client.dart | dartssh2 socket、认证、指纹、有界 exec、stdin 脚本、长任务逐行输出、SFTP/PTY 能力 | 当前运行；配置和安装脚本不会进入 SSH 命令参数 |
-| flutter_app/lib/src/agent/remote_agent_client.dart | Agent 中立连接、事件、列表、回合、会话变更、全局设置和可选运行时契约 | 当前运行；Codex/OpenCode 共用 |
+| flutter_app/lib/src/agent/remote_agent_client.dart | Agent 中立连接、事件、列表、回合、会话变更、全局设置和可选运行时契约 | 当前运行；Codex/OpenCode/Claude Code 共用，能力由各 adapter 声明 |
 | flutter_app/lib/src/agent/remote_bootstrap.dart | Codex/Node 固定版本、Linux 探测、安装/卸载脚本、代理校验和进度解析 | 当前运行；仅管理当前 SSH 用户目录 |
 | flutter_app/lib/src/agent/codex_agent_client.dart | Codex JSONL、pending RPC、独立 SSH exec channel、回合/审批/会话变更、运行时、全局配置和远端 API 模型列表 | 当前运行；脚本经 SSH stdin 执行 |
 | flutter_app/lib/src/agent/codex_global_settings.dart | Codex `config.toml`/认证/代理脚本、Provider URL 与 `supports_websockets` 传输策略、解析、校验、真实 API 测试与兼容 `/models` 请求脚本 | 当前运行；仅修改远程用户全局文件 |
@@ -117,12 +118,15 @@ Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在�
 | flutter_app/lib/src/agent/open_code_bootstrap.dart | 固定 OpenCode/共享 Node 探测、两阶段安装、bridge hash 校验和范围受限的卸载 | 当前运行；仅管理当前 SSH 用户目录下的 OpenCode 内容 |
 | flutter_app/lib/src/agent/open_code_bridge_asset.dart | 将打包的 OpenCode bridge 作为受校验安装输入加载 | 当前运行 |
 | flutter_app/assets/opencode-bridge.cjs | OpenCode REST/SSE 到 Agent JSONL 的远端兼容 bridge | 当前运行；只监听远端 loopback 随机端口并启用随机 Basic Auth |
+| flutter_app/lib/src/agent/claude_code_agent_client.dart | Claude Code adapter，复用共享 JSONL，独立启动环境 | 当前运行；Linux SSH |
+| flutter_app/lib/src/agent/claude_code_bootstrap.dart | 探测已有 Claude CLI/Node，校验和安装连接组件 | 不下载 CLI、不改登录或配置 |
+| flutter_app/lib/src/agent/claude_code_bridge_asset.dart、flutter_app/assets/claude-code-bridge.cjs | 打包资源及 Claude stream-json/control 到共享会话协议的转换 | 当前运行；App 创建的历史单独持久化 |
 | flutter_app/lib/src/agent/agent_connection_manager.dart | `profileId + AgentKind` lane、锁、generation 和状态 | 当前运行 |
 | flutter_app/lib/src/agent/codex_protocol.dart | JSONL 编解码、兼容 payload 解析和有界字段 | 当前运行 |
 | flutter_app/lib/src/agent/thread_session_cache.dart | 每个 Agent lane 的有界会话/时间线/上下文内存缓存 | 当前运行；由 AppController 接入 Work 恢复 |
 | flutter_app/lib/src/ssh/server_metrics.dart | Linux CPU、内存、磁盘和网络采样脚本及有界结果解析 | 当前运行 |
 | flutter_app/lib/src/ui/server_screen.dart | 服务器列表、设置编辑、私钥导入、连接遮罩和外链 | 当前运行 |
-| flutter_app/lib/src/ui/thread_list_screen.dart | Codex/OpenCode lane 切换、搜索/刷新、真实会话列表、新建入口、运行状态、工作目录、Agent 配置、终端和文件管理入口 | 当前运行；两种 Agent 均由真实 adapter 驱动 |
+| flutter_app/lib/src/ui/thread_list_screen.dart | Codex/OpenCode/Claude Code lane 切换、搜索/刷新、真实会话列表、新建入口、运行状态、工作目录、Agent 配置、终端和文件管理入口 | 当前运行；三种 Agent 均由真实 adapter 驱动，配置入口按 capability 显示 |
 | flutter_app/lib/src/ui/agent_settings_dialog.dart | 服务器实际配置、草稿 URL/Key/代理模型获取与下拉选择、模型/effort、Codex 自定义 Provider 的 WebSocket/HTTPS 传输选择、带动画的真实测试、回显和保存确认 | 当前运行；Codex/OpenCode 后端均已接入 |
 | flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化；代理聚焦时收起运行时信息 | 当前运行；IME 安全，与旧 Compose 聚焦行为一致 |
 | flutter_app/lib/src/ui/workspace_picker_dialog.dart | 当前远端路径、父/子目录浏览、加载/错误显示和目录确认 | 当前运行 |
@@ -200,8 +204,11 @@ main.dart
                                                                      +-- CodexAgentClient
                                                                      |     +-- dedicated DartSshServerClient / SSH socket / JSONL exec
                                                                      +-- OpenCodeAgentClient
+                                                                     |     +-- dedicated DartSshServerClient / SSH socket
+                                                                     |     +-- bundled bridge -> loopback OpenCode serve
+                                                                     +-- ClaudeCodeAgentClient
                                                                            +-- dedicated DartSshServerClient / SSH socket
-                                                                           +-- bundled bridge -> loopback OpenCode serve
+                                                                           +-- bundled bridge -> installed Claude CLI stream-json/control
               +-- platform bridges: foreground service, local notifications,
                   diagnostic logger, Android SAF file export and app update
               +-- AppUpdateController -> Gitee Release API
@@ -246,22 +253,22 @@ AppUiState 是 Flutter 展示状态，字段分为：
 | 服务器 | profiles、selectedProfileId、connectionStates、serverMetrics | 已使用 |
 | 连接流程 | pendingFingerprint、loading、error | 已使用 |
 | 页面 | screen、subAgentBackNavigation、debugModeEnabled | `screen` 与子 Agent 返回动画方向已使用；Debug 开关已连接持久化日志 |
-| Agent lane | agentConnectionStates、activeAgent、activeAgentCapabilities、agentThreadLists、agentModelLists、agentLoadingStates | Codex/OpenCode 均已使用并按 lane 隔离 |
-| 当前会话 | threads、activeThread、timeline、olderTurnsCursor、activeTurnId、running、turnTiming、aggregateDiff | 两种 Agent 共用 Work 链路；具体操作按 capability 开关 |
-| 会话控制 | models、selectedModel、selectedEffort、approvalMode、sandbox、approval、approvalQueue、activeGoal | 两种 Agent 共用；模型和 effort 可在当前会话独立选择，目标等能力按 Agent 隐藏 |
+| Agent lane | agentConnectionStates、activeAgent、activeAgentCapabilities、agentThreadLists、agentModelLists、agentLoadingStates | Codex/OpenCode/Claude Code 均已使用并按 lane 隔离；不支持的目录保持为空 |
+| 当前会话 | threads、activeThread、timeline、olderTurnsCursor、activeTurnId、running、turnTiming、aggregateDiff | 三种 Agent 共用 Work 链路；具体操作按 capability 开关 |
+| 会话控制 | models、selectedModel、selectedEffort、approvalMode、sandbox、approval、approvalQueue、activeGoal | 三种 Agent 共用；模型、effort 和目标等操作按 capability 显示，Claude Code 沿用服务器模型配置 |
 | 草稿/附件/上下文 | composerDraft、attachments、attachmentUploading、composerClearNonce、tokenUsage | 已使用；待发附件只属于当前活动会话，不长期持久化 |
 | 工作区 | workspacePickerVisible、workspaceLoading、workspaceCurrentPath、workspaceParentPath、workspaceDirectories、workspaceError | 已接入首次提示和手动目录浏览 |
 | 文件管理 | fileManagerProfileId、fileManagerLoading、fileManagerCurrentPath、fileManagerEntries、clipboard、operation、error | 控制器和 `FileManagerScreen` 已接入；按 profile/generation 校验 |
-| 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 探测、安装/卸载、进度弹窗、全局设置和 API 模型选项请求均已接入 |
+| 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 仅探测已有 CLI 并安装/卸载连接组件，复用进度状态 |
 
 应用自身更新不属于 `AppUiState`：`appUpdateProvider` 持有独立 `AppUpdateState`，记录已安装版本、检查中、
 可用 Release、是否自动提示和 DownloadManager 状态。不要把它混入某个服务器 profile，也不要把远程
-Codex/OpenCode runtime 安装状态与手机 APK 更新状态混为一谈。
+Agent 运行时或连接组件安装状态与手机 APK 更新状态混为一谈。
 
 ServerProfile 当前保存名称、主机、端口、用户名、密码/私钥、指纹、工作目录、代理、权限模式、
 `remoteCommand` 和 Agent 偏好。新增字段必须有默认值并保持旧 JSON 可解析。`AgentCapabilities` 描述
 adapter 可以承载的协议能力，不代表所有 Agent 支持相同操作；默认 factory 当前分别创建
-`CodexAgentClient` 和 `OpenCodeAgentClient`。Codex 的 `subAgents` 同时控制协作活动投影和独立 child
+`CodexAgentClient`、`OpenCodeAgentClient` 和 `ClaudeCodeAgentClient`。Codex 的 `subAgents` 同时控制协作活动投影和独立 child
 thread 导航；OpenCode 支持模型、两种 API 协议、effort、审批、重命名、停止、steer、压缩和全局设置，
 但 rollback、review、thread goals、subagents 和 archive capability 当前关闭，UI 必须据此隐藏操作。
 
@@ -343,7 +350,7 @@ DartSshServerClient 使用 dartssh2：
 - disconnect/close 会同时清理已认证客户端、pending client 和 pending socket。
 
 AppController 当前把 SSH 主机通道用于指纹、登录、资源采样、远程图片读取、附件上传、终端 PTY 和远程
-文件管理；每个 Codex/OpenCode Agent lane 另建专用 `DartSshServerClient`。OpenCode 在该 transport 上打开
+文件管理；每个 Codex/OpenCode/Claude Code Agent lane 另建专用 `DartSshServerClient`。OpenCode 和 Claude Code 在该 transport 上打开
 无 PTY bridge exec；Codex 默认使用旧版无 PTY stdio exec，只有显式启用 durable transport 时才转发远端私有 Unix socket。这个边界与
 旧版 JSch 实现一致，Host 指标、SFTP、PTY 和心跳异常不能直接关闭正在工作的 Agent turn。Composer 通过系统 picker
 读取本地图片/文件，上传到当前 profile 的 SFTP 目录后形成待发项；控制器在每次结果写回前校验活动
@@ -410,16 +417,16 @@ SFTP stdout 混用。
 
 ### 8.2 ThreadListScreen（Agent 会话列表）
 
-当前显示服务器标题、当前服务器的真实资源指标、Codex/OpenCode 分段控件、搜索、刷新和新建会话。
-SSH 已连接后页面按需启动当前 Agent；Codex 或 OpenCode 完成握手后显示对应 adapter 的真实
+当前显示服务器标题、当前服务器的真实资源指标、Codex/OpenCode/Claude Code 三段控件、搜索、刷新和新建会话。
+SSH 已连接后页面按需启动当前 Agent；当前 Agent 完成握手后显示对应 adapter 的真实
 `thread/list` 会话，搜索（350 ms 防抖）和刷新会请求远端，运行中的会话显示固定尺寸转圈。点击会话
-进入共享 Work 页面；终端图标打开独立 SSH PTY，齿轮菜单在当前 Agent 已连接时提供“选择工作目录”、
-全局配置和文件管理。两种 Agent 的连接、列表、模型和错误状态按 `profileId + AgentKind` 隔离。
+进入共享 Work 页面；终端图标打开独立 SSH PTY，齿轮菜单在当前 Agent 已连接时提供“选择工作目录”和
+文件管理，全局配置入口按 capability 显示。三种 Agent 的连接、列表、模型和错误状态按 `profileId + AgentKind` 隔离。
 顶部操作顺序与原版一致：终端、刷新、新建会话、设置、切换服务器；设置和切换服务器分别使用独立
 弹窗，服务器弹窗显示连接状态、用户名/地址、当前选中标记和“管理服务器”入口。Agent 选择器使用
 状态圆点和绿色选中边框，任务列表标题显示“最近任务/搜索结果”和当前数量；会话行显示终端图标、
 相对时间、预览、工作目录和来源。
-如果远程 Agent 正在首次安装，最小化安装弹窗不会停止任务；对应的 Codex/OpenCode 分段按钮显示独立
+如果远程 Agent 运行时或连接组件正在安装，最小化安装弹窗不会停止任务；对应 Agent 分段按钮显示独立
 总体进度条和百分比，点击当前进度会恢复该 lane 的安装弹窗，不会重复启动下载。
 点击 CPU、内存、磁盘或网络指标会显示同一个持久 Tooltip，包含 CPU 核心数和占比、内存/磁盘已用与
 总量，以及上下行速度。
@@ -453,7 +460,7 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 
 ### 8.3 WorkScreen（Agent 对话）
 
-Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当前 `AgentCapabilities` 控制：
+Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `AgentCapabilities` 控制：
 
 - 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、
@@ -548,9 +555,9 @@ Work 页面是 Codex/OpenCode 共用的实际对话切片，具体操作由当�
 
 ## 9. 当前 Agent 层和验收边界
 
-Agent 中立层、Codex/OpenCode adapter、两种托管运行时、共享回合状态机、Work UI 和 Codex 子 Agent
-独立导航已经落地。本节同时记录当前代码事实和仍需真实服务器/设备验证的边界；全局设置、终端、文件
-管理、后台保护和 Debug 日志不再属于代码迁移缺口，但仍需端到端回归。
+Agent 中立层、Codex/OpenCode/Claude Code adapter、Codex/OpenCode 托管运行时、Claude Code 连接组件、
+共享回合状态机、Work UI 和 Codex 子 Agent 独立导航已经落地。本节同时记录当前代码事实和仍需真实
+服务器/设备验证的边界；全局设置、终端、文件管理、后台保护和 Debug 日志不再属于代码迁移缺口，但仍需端到端回归。
 
 ### 9.1 连接和能力
 
@@ -559,23 +566,21 @@ ServerConnectionManager (profileId, SSH host session)
           |
 AgentConnectionManager (profileId + AgentKind)
           |
-RemoteAgentClient
-   +------+----------------+
-   |                       |
-Codex adapter         OpenCode adapter/bridge
-   |                       |
-shared session/event/cache contract
+RemoteAgentClient (shared session/event/cache contract)
+   +-- Codex adapter
+   +-- OpenCode adapter/bridge
+   +-- Claude Code adapter/bridge
 ~~~
 
 `RemoteAgentClient` 当前定义连接、能力、模型、会话列表/恢复/分页和关闭；回合、新建、审批和会话
-变更通过可选 interface 扩展。`AgentCapabilities` 决定 UI 是否显示操作。OpenCode 特有逻辑只能留在
+变更通过可选 interface 扩展。`AgentCapabilities` 决定 UI 是否显示操作。OpenCode 和 Claude Code 特有逻辑只能留在
 adapter/bridge，不能复制共享 UI 和状态机；当前默认 factory 对 Codex 返回 `CodexAgentClient`，对
-OpenCode 返回 `OpenCodeAgentClient`。
+OpenCode 返回 `OpenCodeAgentClient`，Claude Code 返回 `ClaudeCodeAgentClient`。
 
 每个 Agent lane 由 `AgentConnectionManager` 以 `profileId + AgentKind` 独立持有 client、锁、事件
 subscription 和 generation。它只在 SSH 主机会话已连接后启动；生产 adapter 随后持有自己的 SSH
 transport。Host 意外断开时独立 Agent 保持运行，Host 单独恢复；用户明确断开、Profile 身份改变或 lane
-被替换时才使 Agent 请求失效并关闭专用 transport。OpenCode 使用独立无 PTY exec，Codex 使用独立 SSH
+被替换时才使 Agent 请求失效并关闭专用 transport。OpenCode 和 Claude Code 使用独立无 PTY exec，Codex 使用独立 SSH
 Unix-socket forward（不支持时回退 exec），均不与 metrics/SFTP 共用 transport 或 stdout。
 
 ### 9.2 Codex JSON-RPC/JSONL（当前实现）
@@ -635,6 +640,32 @@ agent/models/sync。`turn/start` 在异步 prompt 前立即返回稳定的 synth
 `AgentCapabilities.openCode` 当前支持模型、Chat Completions/Responses 两种 API 协议、思考强度、审批、
 重命名、停止、steer、压缩和全局设置；rollback、review、thread goals、subagents 和 archive 关闭。
 bridge 即使保留兼容 RPC，也不能绕过 capability 在 UI 暴露未承诺的功能。
+
+### 9.3.1 Claude Code adapter/bridge
+
+`ClaudeCodeAgentClient` 复用 Codex JSONL 传输、reducer 和控制器，但启动命令直接执行自己的 launcher，
+不会读取 Codex 的 `codex-remote.env`、传入 Codex feature 设置或改写服务器认证。支持 Linux SSH，
+Android 本机 Linux 沿用其回环 SSH；Windows 原生 Host 暂不支持。
+
+服务器须已经安装并登录 Claude Code `2.1+`（当前支持 2.x）并具有 Node.js 18+。探测优先查找
+`~/.local/bin/claude`，其次 PATH；Node 可复用 Codex/OpenCode 的托管运行时。App 仅安装经过 SHA-256
+和语法校验的连接组件至 `~/.local/share/codex-remote/claude/bridge.cjs`，launcher 为
+`~/.local/bin/codex-remote-claude-bridge`。安装有锁和原子替换，卸载连接组件保留用户 CLI、登录、配置
+和历史。该 lane 安装不显示下载代理，因为没有额外下载。
+
+每个回合启动已安装的 CLI，使用 `--input-format stream-json --output-format stream-json`、
+initialize control 握手、`--permission-prompt-tool stdio` 和 `--resume`。工具请求转成现有审批/提问面板，
+默认由用户授权；只有用户已明确启用完全访问时才自动允许普通工具，提问仍等待回答。停止请求与
+进程退出有界处理，上一 CLI 释放写入锁后才能开始下一轮，断开不承诺远端任务持续运行。
+
+已接入新建、搜索、恢复、历史分页、文本/图片输入、流式回复、工具折叠、批准/拒绝、提问、停止和重命名。
+模型沿用服务器 Claude 设置；本轮不声明模型目录、思考强度、全局配置、压缩、steer、回退、审查、目标、
+归档或子 Agent 独立导航能力。未知上下文窗口保持未知，不猜测 token 百分比。
+
+App 创建的会话摘要和有界回合存入当前 SSH 用户的 `~/.local/share/codex-remote/claude-history`，
+按工作目录筛选列表；通过私有文件、原子替换与 writer lock 防止并发覆盖。读取损坏记录不会使其他会话消失。
+本轮不导入服务器原有 `~/.claude/projects` 对话。真实 CLI 的隔离测试使用本地 Anthropic 协议 fixture，
+验证依据和未验收边界见 [Claude Code 验证记录](CLAUDE_CODE_VALIDATION.md)。
 
 ### 9.4 会话缓存、分页和上下文（当前实现与缺口）
 
@@ -1110,6 +1141,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/agent/codex_global_settings_test.dart | Shell 语法、临时 HOME 配置读写、Provider/Key/`supports_websockets` 保留与更新、权限、`/models` 解析/去重、0600 header 文件和密钥不泄漏、自动 Responses/Chat 回退、显式 API 协议严格不回退和 HTTP/网络错误映射 |
 | test/agent/opencode_agent_client_test.dart | capability、workspace quoting、运行时生命周期、全局设置、真实 Key、Provider 前缀、模型同步/tombstone/缓存和显式 API 协议 |
 | test/agent/open_code_bootstrap_test.dart | 打包 bridge hash、固定版本探测、安装/卸载脚本语法、HTTP/HTTPS 代理防注入和托管卸载边界 |
+| test/agent/claude_code_agent_client_test.dart | Claude CLI/Node 探测、连接组件校验与安装/卸载边界、JSONL 接入和启动环境隔离 |
 | test/ssh/ssh_server_client_test.dart | `sh -s`/长任务脚本只走 stdin、EOF、非零退出、输出上限、超时，以及跨 chunk UTF-8/CRLF/末行进度回调 |
 | test/agent/remote_bootstrap_test.dart | runtime 探测、兼容命令、依赖错误、固定版本、HTTP/HTTPS 代理防注入、进度解析和安装/卸载边界 |
 | test/agent/codex_event_reducer_test.dart | turn/delta 生命周期、后台 thread 隔离、TokenUsage 窗口保护、旧 turn 完成防护，以及空 started/完整 completed 的乐观用户消息与图片附件合并 |
@@ -1131,6 +1163,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
 | test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待和后台继续的 Widget 状态切换 |
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
+| test/ui/claude_code_workflow_test.dart | 生产 Claude adapter/controller/WorkScreen 配合受控 JSONL 对端，覆盖 capability 菜单、发送/流式回复、批准/拒绝、停止、重开和跨 Agent 历史隔离 |
 | test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
 | test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和目标竖屏无溢出 |
 | test/ui/mcp_tool_card_test.dart | MCP 默认折叠、流式更新保留展开状态、条目/会话隔离、空输出、长按复制和窄屏大字体 |
@@ -1141,7 +1174,14 @@ OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
 调度、question/审批和固定 OpenCode runtime 集成。已有 `quick --force` 通过记录只能证明这些 bridge
 fixture，当次真实服务器和 Android 端到端仍需单独验证。
 
-除提问弹窗的受控 Android integration test 外，尚无 golden test 或完整 Work/会话/文件/终端 UI 测试；附件 picker、真实远端
+Claude Code 的 `scripts/test-claude-code-bridge.cjs` 使用假 CLI 验证协议和异常边界，
+`scripts/test-claude-code-cli.cjs` 使用已安装官方 CLI 与隔离的本地 Anthropic SSE fixture 联调。
+`integration_test/claude_code_workflow_test.dart` 在 Android 设备上复用上述 Claude UI 工作流，
+使用生产 adapter/controller 和受控 JSONL 对端；设备执行结果须单独记录，不能由 Widget 测试通过推定。
+这两类受控对端均不调用真实模型，也不替代用户 SSH 服务器登录、实际供应商 API 或厂商后台验收；
+验证分层见 [Claude Code 验证记录](CLAUDE_CODE_VALIDATION.md)。
+
+已有提问弹窗和 Claude 工作流的受控 Android integration 入口，尚无 golden test 或覆盖全部 Work/会话/文件/终端的 UI 测试；附件 picker、真实远端
 app-server、Android 前台 Service 和系统通知展示仍没有自动化覆盖（通知协议/去重逻辑已有纯 Dart 测试）。
 当前 `codex_agent_client_test.dart` 也未覆盖握手、请求超时、事件、审批或断线。新增共享状态、持久化、
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
@@ -1184,7 +1224,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 多服务器 | 同时连接 A/B，切换和断开不串状态 |
 | 资源指标 | 列表进入时立即采样，前台周期刷新；详情单位正确；断开和切后台后停止更新且不串服务器 |
 | 连接中 | 半透明遮罩覆盖全屏，中央只有圆环和下方取消连接按钮；Back 和重复点击被阻断，取消可退出，成功后无额外空白等待 |
-| Agent lane | SSH 已连接后 Codex/OpenCode 各自 initialize 成功；model/list 与 thread/list 独立失败不让页面崩溃；切换 lane 不串状态 |
+| Agent lane | SSH 已连接后 Codex/OpenCode/Claude Code 各自 initialize 成功；model/list 与 thread/list 独立失败不让页面崩溃，不支持模型目录的 lane 保持为空；切换 lane 不串状态 |
 | Codex 安装 | 无/旧版本时显示环境与路径；HTTP/HTTPS 代理、总体/下载进度、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表；系统同版本直接复用 |
 | Codex 卸载 | 删除整个 Codex Remote 托管 root、wrapper 和附件暂存；运行中的托管 app-server 被关闭；若曾安装 OpenCode 则需重新安装；系统 Codex、VS Code、~/.codex 和工作区保留 |
 | OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表正确；固定 1.18.11 与打包 bridge 同时匹配才复用 |
@@ -1208,7 +1248,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 
 | 领域 | 当前实现 | 仍需完成/验收 |
 | --- | --- | --- |
-| Agent 连接 | Codex 按需独立 app-server；OpenCode 使用打包 bridge + loopback `serve`；两者均有固定版本探测/复用、用户目录安装/卸载、进度/重试/自动连接 | 真实服务器 OpenCode 下载/安装/卸载、长时 turn/steer/interrupt、断线和后台回归 |
+| Agent 连接 | Codex 按需独立 app-server；OpenCode 使用打包 bridge + loopback `serve`；两者有固定版本运行时安装。Claude Code 使用打包 bridge + 服务器已有 CLI，仅安装连接组件；三者复用进度、重试和自动连接 | 真实服务器 OpenCode 安装及 Claude CLI 登录/实际模型回合；各 lane 长时运行、断线和后台回归 |
 | 工作目录 | 首次 Agent 成功只提示一次；SFTP 浏览、错误显示、确认/记忆和手动重开；thread/start/turn/start 传递 workspace | 真机大目录、权限拒绝、连续切换与断线回归 |
 | 会话 | 搜索/刷新/新建/恢复、turn 历史分页、缓存优先、resume 通知缓冲/快照协调/顺序重放、运行转圈 | thread/list 下一页；真实长时 resume/delta 竞态、缓冲溢出和大历史降级压测 |
 | 会话设置 | wire 模型和 effort 可独立选择并按 profile + Agent + thread 持久化；自定义模型新增/编辑/删除、远端隐藏/恢复、API `/models` 筛选回填已接入 | 真实服务器 Provider 差异、权限和模型目录回归 |
@@ -1406,6 +1446,9 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ## 17. 已知限制
 
+- Claude Code 已接入 Linux SSH，但需要服务器预先安装并登录 CLI；本轮不自动安装 Claude、不导入原生
+  CLI 历史、不提供 Windows 原生 Host 或 App 内 Claude 全局配置。真实 CLI + 本地模型协议 fixture
+  不代表用户服务器认证、实际模型供应商、ARM64 PRoot 或厂商后台长时行为已完成验收。
 - OpenCode adapter、bridge、真实会话/回合协议、固定版本安装/卸载、全局配置和模型同步代码均已接入，
   但尚未在授权真实服务器验证固定版本下载、实际 Provider/API、长时 turn/steer/interrupt、断线和后台
   行为；rollback、review、thread goals、subagents、archive 和独立历史 cursor capability 当前关闭。

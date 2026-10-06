@@ -140,6 +140,9 @@ class WindowsLocalServerClient
 
   @override
   Future<RemoteServerProcessSession> openAgentAppServer(AgentKind agent) async {
+    if (agent == AgentKind.claudeCode) {
+      throw UnsupportedError('Windows 本机暂不支持 Claude Code，请使用 SSH 服务器');
+    }
     if (agent != AgentKind.openCode) {
       return openCodexAppServer();
     }

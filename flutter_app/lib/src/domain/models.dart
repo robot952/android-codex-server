@@ -22,12 +22,15 @@ enum AgentKind {
   codex,
   @JsonValue('OpenCode')
   openCode,
+  @JsonValue('ClaudeCode')
+  claudeCode,
 }
 
 extension AgentKindDisplay on AgentKind {
   String get label => switch (this) {
     AgentKind.codex => 'Codex',
     AgentKind.openCode => 'OpenCode',
+    AgentKind.claudeCode => 'Claude Code',
   };
 }
 
@@ -35,6 +38,7 @@ extension AgentKindStorage on AgentKind {
   String get storageKeySegment => switch (this) {
     AgentKind.codex => 'Codex',
     AgentKind.openCode => 'OpenCode',
+    AgentKind.claudeCode => 'ClaudeCode',
   };
 }
 
@@ -297,6 +301,14 @@ abstract class AgentCapabilities with _$AgentCapabilities {
     steerTurn: true,
     compactThread: true,
     globalSettings: true,
+  );
+
+  static const claudeCode = AgentCapabilities(
+    models: false,
+    approvals: true,
+    archiveThread: false,
+    renameThread: true,
+    interruptTurn: true,
   );
 }
 
@@ -870,13 +882,16 @@ Map<String, Object?> _normalizeServerProfileJson(Map<String, Object?> json) {
   _defaultUnknownEnum(normalized, 'activeAgent', const {
     'Codex',
     'OpenCode',
+    'ClaudeCode',
   }, 'Codex');
 
   final settings = normalized['agentModelSettings'];
   if (settings is Map) {
     normalized['agentModelSettings'] = <String, Object?>{
       for (final entry in settings.entries)
-        if (entry.key == 'Codex' || entry.key == 'OpenCode')
+        if (entry.key == 'Codex' ||
+            entry.key == 'OpenCode' ||
+            entry.key == 'ClaudeCode')
           entry.key as String: entry.value,
     };
   }

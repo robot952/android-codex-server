@@ -54,6 +54,20 @@ void main() {
       );
     });
 
+    test('preserves Claude Code lane settings and wire names', () {
+      final profile = ServerProfile.fromJson({
+        'activeAgent': 'ClaudeCode',
+        'agentModelSettings': {
+          'ClaudeCode': {'preferredModel': 'sonnet'},
+        },
+      });
+
+      expect(profile.activeAgent, AgentKind.claudeCode);
+      expect(profile.modelSettings(AgentKind.claudeCode).preferredModel, 'sonnet');
+      expect(AgentKind.claudeCode.label, 'Claude Code');
+      expect(AgentKind.claudeCode.storageKeySegment, 'ClaudeCode');
+    });
+
     test('decodes native Android enum names and missing optional fields', () {
       final profile = ServerProfile.fromJson({
         'id': 'server-1',

@@ -488,13 +488,14 @@ class _ThreadSettingsDialog extends StatelessWidget {
                 enabled: agentConnected,
                 onTap: onSelectWorkspace,
               ),
-              _SettingsActionRow(
-                icon: Icons.settings,
-                title: '配置 ${agent.label}',
-                detail: '模型地址、API 密钥和代理',
-                enabled: agentConnected && canConfigureAgent,
-                onTap: onConfigureAgent,
-              ),
+              if (agent != AgentKind.claudeCode)
+                _SettingsActionRow(
+                  icon: Icons.settings,
+                  title: '配置 ${agent.label}',
+                  detail: '模型地址、API 密钥和代理',
+                  enabled: agentConnected && canConfigureAgent,
+                  onTap: onConfigureAgent,
+                ),
               if (showCodexVersion)
                 _SettingsActionRow(
                   icon: Icons.system_update_alt,
@@ -871,7 +872,10 @@ class _AgentSwitcher extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selected = activeAgent == AgentKind.codex;
+    const agents = AgentKind.values;
+    final selectedIndex = agents
+        .indexOf(activeAgent)
+        .clamp(0, agents.length - 1);
     return SizedBox(
       height: 54,
       child: DecoratedBox(
@@ -882,15 +886,18 @@ class _AgentSwitcher extends StatelessWidget {
         ),
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final segmentWidth = constraints.maxWidth / 2;
+            final segmentWidth = constraints.maxWidth / agents.length;
             return Stack(
               children: [
                 AnimatedAlign(
                   duration: const Duration(milliseconds: 220),
                   curve: Curves.easeOutCubic,
-                  alignment: selected
-                      ? Alignment.centerLeft
-                      : Alignment.centerRight,
+                  alignment: Alignment(
+                    agents.length == 1
+                        ? 0
+                        : -1 + (2 * selectedIndex / (agents.length - 1)),
+                    0,
+                  ),
                   child: SizedBox(
                     width: segmentWidth,
                     height: double.infinity,
@@ -910,24 +917,16 @@ class _AgentSwitcher extends StatelessWidget {
                 ),
                 Row(
                   children: [
-                    _AgentSegment(
-                      agent: AgentKind.codex,
-                      selected: selected,
-                      enabled: enabled,
-                      setup: setupFor(AgentKind.codex),
-                      connection: connectionFor(AgentKind.codex),
-                      onTap: () => onSelect(AgentKind.codex),
-                      onResume: () => onResume(AgentKind.codex),
-                    ),
-                    _AgentSegment(
-                      agent: AgentKind.openCode,
-                      selected: !selected,
-                      enabled: enabled,
-                      setup: setupFor(AgentKind.openCode),
-                      connection: connectionFor(AgentKind.openCode),
-                      onTap: () => onSelect(AgentKind.openCode),
-                      onResume: () => onResume(AgentKind.openCode),
-                    ),
+                    for (final agent in agents)
+                      _AgentSegment(
+                        agent: agent,
+                        selected: activeAgent == agent,
+                        enabled: enabled,
+                        setup: setupFor(agent),
+                        connection: connectionFor(agent),
+                        onTap: () => onSelect(agent),
+                        onResume: () => onResume(agent),
+                      ),
                   ],
                 ),
               ],
@@ -981,42 +980,56 @@ class _AgentSegment extends StatelessWidget {
         ? codexAmber
         : codexMuted.withValues(alpha: 0.62);
 
-    final label = Row(
-      mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Container(
-          width: 7,
-          height: 7,
-          decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 7),
-        Text(
-          agent.label,
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? codexText : codexMuted,
-          ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        if (install?.inProgress == true && progress != null) ...[
-          const SizedBox(width: 7),
-          Text(
-            '$percent%',
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: codexGreen,
-              fontWeight: FontWeight.w600,
+    final label = FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            key: ValueKey('agent-status-${agent.name}'),
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              color: statusColor,
+              shape: BoxShape.circle,
             ),
           ),
+          const SizedBox(width: 7),
+          Text(
+            agent.label,
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected ? codexText : codexMuted,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (install?.inProgress == true && progress != null) ...[
+            const SizedBox(width: 7),
+            Text(
+              '$percent%',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: codexGreen,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ],
-      ],
+      ),
     );
     if (install?.inProgress != true && !failed) {
       return Expanded(
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          child: Center(child: label),
+        child: Semantics(
+          selected: selected,
+          child: InkWell(
+            key: ValueKey('select-agent-${agent.name}'),
+            onTap: enabled ? onTap : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Center(child: label),
+            ),
+          ),
         ),
       );
     }
@@ -1037,12 +1050,15 @@ class _AgentSegment extends StatelessWidget {
       ],
     );
     return Expanded(
-      child: InkWell(
-        key: ValueKey('resume-${agent.name}-setup'),
-        onTap: canResume ? onResume : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: content,
+      child: Semantics(
+        selected: selected,
+        child: InkWell(
+          key: ValueKey('resume-${agent.name}-setup'),
+          onTap: canResume ? onResume : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            child: content,
+          ),
         ),
       ),
     );

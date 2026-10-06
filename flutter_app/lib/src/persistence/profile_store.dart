@@ -226,6 +226,7 @@ String _normalizeAgentStorageKey(String key) {
   final stableAgent = switch (agent) {
     'codex' => AgentKind.codex.storageKeySegment,
     'openCode' => AgentKind.openCode.storageKeySegment,
+    'claudeCode' => AgentKind.claudeCode.storageKeySegment,
     _ => agent,
   };
   if (stableAgent == agent) return key;

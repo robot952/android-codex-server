@@ -109,6 +109,18 @@ void main() {
     expect(controller.state.indeterminate, isTrue);
   });
 
+  test('restarting local Linux preserves the selected Agent lane', () {
+    for (final agent in AgentKind.values) {
+      final existing = localLinuxProfile(
+        _instance,
+      ).copyWith(activeAgent: agent);
+      final restarted = localLinuxProfile(_instance, existing: existing);
+      expect(restarted.activeAgent, agent);
+      expect(restarted.host, '127.0.0.1');
+      expect(restarted.remoteCommand, managedCodexRemoteCommand);
+    }
+  });
+
   test('ensureStarted coalesces concurrent native start requests', () async {
     final platform = _FakeLocalLinuxPlatform();
     final controller = LocalLinuxController(platform: platform);
