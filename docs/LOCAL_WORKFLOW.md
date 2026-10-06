@@ -239,12 +239,18 @@ cache 启动两套大型 daemon。
 `test-opencode.sh` 验证本地 bridge、调度和隔离的假 OpenAI 兼容服务；需要安装固定 npm 运行时时才下载。
 两类脚本都使用内容 stamp，`--force` 才无条件重跑。
 
-`test-claude-code.sh` 检查打包 bridge 语法和隔离的 CLI 协议 fixture；本机安装了 Claude 时还执行
+`test-claude-code.sh` 检查打包 bridge/settings 语法、隔离的配置读写/测试和 CLI 协议 fixture；本机安装了 Claude 时还执行
 真实 CLI 集成，可用 `CLAUDE_CODE_TEST_BIN=/absolute/path/to/claude` 指定。真实 CLI 测试使用临时
 HOME/配置和 loopback Anthropic fixture，覆盖工具授权/拒绝、停止、图片、去重、重启与恢复，不读取真实
 认证、不调用付费 API。没有 CLI 时会明确报告该部分跳过，不得称为真实 CLI 验证通过。该门禁在
 quick/check/full/publish 中执行，当前不复用其结果缓存。新增 Claude 能力还应运行 adapter、控制器和
 UI 回归；Linux fixture 不替代用户手机与已认证服务器的端到端验收。
+
+只有获得用户明确授权且服务器已有 Claude 配置时，才可单独运行
+`node scripts/test-claude-code-live.cjs --live`。它使用一次性 HOME、配置目录和工作区，最多两轮
+真实付费请求，测试 Opus 5.5/effort/用量、bridge 重启和续聊；拒绝工具并禁用 MCP、技能与自动更新。
+该脚本不属于 quick/check/full/publish 自动门禁，不能把真实请求当作默认回归；不要输出配置中的 URL、Key、
+响应正文或临时文件。真实 Provider 的上下文窗口只按返回的 usage/元数据展示，不从环境上限推断。
 
 下载 OpenCode/npm 依赖时优先使用 `127.0.0.1:7890`。这是宿主机构建代理；将来远程服务器上的
 Codex/OpenCode 安装代理必须由用户按服务器单独配置，不能把 7890 写死进 App 业务网络。

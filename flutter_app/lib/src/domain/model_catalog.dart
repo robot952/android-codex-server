@@ -33,6 +33,21 @@ final class ResolvedModelSelection {
 
 String modelWireName(AgentModel model) => _agentModelIdentity(model);
 
+String normalizeClaudeCodeReasoningEffort(String value) {
+  final normalized = value.trim().toLowerCase();
+  if (!const [
+    '',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  ].contains(normalized)) {
+    throw ArgumentError('Claude Code 思考强度不受支持');
+  }
+  return normalized;
+}
+
 String normalizeAgentModelId(AgentKind agent, String value) => switch (agent) {
   AgentKind.codex => _normalizeOptionalModelId(value, '模型'),
   AgentKind.openCode => normalizeOpenCodeModelId(value),
@@ -64,8 +79,9 @@ bool isValidCustomModelDisplayName(String value) {
 ResolvedModelSelection resolveModelSelection(
   List<AgentModel> models,
   String preferredModel,
-  String preferredEffort,
-) {
+  String preferredEffort, {
+  AgentKind? agent,
+}) {
   final preferred = preferredModel.trim();
   AgentModel? selected;
   for (final model in models) {
@@ -81,11 +97,15 @@ ResolvedModelSelection resolveModelSelection(
   // default here would silently change the user's session configuration.
   if (selected == null &&
       preferred.isNotEmpty &&
-      (models.isEmpty || preferred.contains('/'))) {
+      (agent == AgentKind.claudeCode ||
+          models.isEmpty ||
+          preferred.contains('/'))) {
     final requestedEffort = preferredEffort.trim();
     return ResolvedModelSelection(
       model: preferred,
-      effort: requestedEffort.isEmpty ? null : requestedEffort,
+      effort: agent == AgentKind.claudeCode || requestedEffort.isEmpty
+          ? null
+          : requestedEffort,
     );
   }
   if (selected == null) {
@@ -102,7 +122,7 @@ ResolvedModelSelection resolveModelSelection(
   final requestedEffort = preferredEffort.trim();
   final effort =
       requestedEffort.isNotEmpty &&
-          (selected.efforts.isEmpty ||
+          ((agent != AgentKind.claudeCode && selected.efforts.isEmpty) ||
               selected.efforts.contains(requestedEffort))
       ? requestedEffort
       : selected.defaultEffort.trim().isEmpty

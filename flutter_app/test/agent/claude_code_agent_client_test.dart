@@ -1,30 +1,28 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/claude_code_agent_client.dart';
 import 'package:codex_remote/src/agent/claude_code_bootstrap.dart';
+import 'package:codex_remote/src/agent/claude_code_bridge_asset.dart';
 import 'package:codex_remote/src/agent/codex_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_bootstrap.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 
 void main() {
-  test(
-    'advertises Claude Code identity without Codex settings capabilities',
-    () {
-      final client = ClaudeCodeAgentClient(bridgeLoader: () async => 'bridge');
-      addTearDown(client.close);
+  test('advertises Claude Code model and settings capabilities', () {
+    final client = ClaudeCodeAgentClient(bridgeLoader: () async => 'bridge');
+    addTearDown(client.close);
 
-      expect(client.kind, AgentKind.claudeCode);
-      expect(client.capabilities, AgentCapabilities.claudeCode);
-      expect(client.capabilities.models, isFalse);
-      expect(client.capabilities.globalSettings, isFalse);
-      expect(client.capabilities.approvals, isTrue);
-    },
-  );
+    expect(client.kind, AgentKind.claudeCode);
+    expect(client.capabilities, AgentCapabilities.claudeCode);
+    expect(client.capabilities.models, isTrue);
+    expect(client.capabilities.globalSettings, isTrue);
+    expect(client.capabilities.approvals, isTrue);
+  });
 
   test('builds a quoted bridge command', () {
     expect(buildClaudeCodeBridgeCommand(''), managedClaudeCodeBridgeCommand);
@@ -338,23 +336,84 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
     timeout: const Timeout(Duration(seconds: 30)),
   );
 
-  test('does not expose Codex global settings operations', () async {
-    final client = ClaudeCodeAgentClient(bridgeLoader: () async => 'bridge');
+  test('settings use Claude extension RPCs and preserve blank keys', () async {
+    final session = _Session();
+    final client = ClaudeCodeAgentClient(
+      sessionOpener: (_, _) async => session,
+    );
     addTearDown(client.close);
-    expect(
-      () => client.readGlobalSettings(const ServerProfile(id: 'server')),
-      throwsUnsupportedError,
+    const profile = ServerProfile(id: 'server');
+    final host = _Host();
+    await client.connect(profile, host);
+    final settings = await client.readGlobalSettings(profile);
+    expect(settings.modelProvider, 'anthropic');
+    expect(settings.model, 'm-claude');
+    expect(settings.apiKey, 'fixture-token');
+    expect(settings.hasStoredAuthentication, true);
+    await client.writeGlobalSettings(
+      profile,
+      baseUrl: 'https://example.invalid',
+      apiKey: '',
+      proxyUrl: '',
+      defaultModel: 'claude-opus-5-5',
+      defaultReasoningEffort: 'xhigh',
+      preserveCurrentProvider: true,
     );
-    expect(
-      () => client.fetchApiModels(
-        const ServerProfile(id: 'server'),
-        baseUrl: '',
-        apiKey: '',
-        proxyUrl: '',
-      ),
-      throwsUnsupportedError,
+    final write = session.requests.singleWhere(
+      (request) => request['method'] == 'agent/settings/write',
     );
+    expect(write['params'], {
+      'baseUrl': 'https://example.invalid',
+      'apiKey': '',
+      'proxyUrl': '',
+      'defaultModel': 'claude-opus-5-5',
+      'defaultReasoningEffort': 'xhigh',
+    });
+    final result = await client.testGlobalSettings(
+      profile,
+      baseUrl: 'https://draft.invalid',
+      apiKey: 'draft-token',
+      proxyUrl: '',
+      testModel: 'claude-opus-5-5',
+    );
+    expect(result.successful, true);
+    final test = session.requests.singleWhere(
+      (request) => request['method'] == 'agent/settings/test',
+    );
+    expect((test['params'] as Map)['apiKey'], 'draft-token');
+    final models = await client.fetchApiModels(
+      profile,
+      baseUrl: '',
+      apiKey: '',
+      proxyUrl: '',
+    );
+    expect(models, hasLength(2));
+    expect(models.first.modelId, 'claude-opus-5-5');
+    expect(models.first.contextWindowTokens, 1000000);
+    expect(models.last.contextWindowTokens, 0);
+    expect(host.commands, isEmpty);
+    expect(host.scripts, isEmpty);
   });
+
+  test(
+    'installed bridge bundles settings with a single hash and no relative require dependency',
+    () async {
+      final source = await ClaudeCodeBridgeAsset.load(bundle: _BridgeAssets());
+      expect(source, startsWith('#!/usr/bin/env node\n'));
+      expect(RegExp(r'^#!', multiLine: true).allMatches(source), hasLength(1));
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      final result = await fixture.script(
+        ClaudeCodeBootstrap.installScript(bridgeSource: source),
+      );
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      final launched = await fixture.script(
+        'exec ~/.local/bin/codex-remote-claude-bridge',
+      );
+      expect(launched.exitCode, 0, reason: '${launched.stderr}');
+      expect(launched.stdout, 'settings-ready\n');
+    },
+  );
 }
 
 class _RuntimeFixture {
@@ -479,6 +538,24 @@ class _Session implements CodexSession {
       'turn/start' => {
         'turn': {'id': 'claude-turn'},
       },
+      'agent/settings/read' => {
+        'model': 'm-claude',
+        'reasoningEffort': 'high',
+        'modelProvider': 'anthropic',
+        'apiKey': 'fixture-token',
+        'hasStoredAuthentication': true,
+      },
+      'agent/settings/test' => {'successful': true, 'message': 'API 连接成功'},
+      'agent/models/list' => [
+        {
+          'modelId': 'claude-opus-5-5',
+          'displayName': 'Opus 5.5',
+          'contextWindowTokens': 1000000,
+        },
+        {'modelId': 'claude-opus-5-5'},
+        {'modelId': 'custom', 'contextWindowTokens': -1},
+        {'modelId': ''},
+      ],
       'thread/resume' => {
         'thread': {
           'id': 'claude-thread',
@@ -512,3 +589,13 @@ class _Session implements CodexSession {
 }
 
 class _LocalHost extends _Host implements LocalRemoteServerClient {}
+
+class _BridgeAssets extends CachingAssetBundle {
+  @override
+  Future<ByteData> load(String key) async {
+    final source = key == claudeCodeSettingsAssetPath
+        ? 'globalThis.__claudeRemoteSettings = {readSettings: () => "settings-ready"};'
+        : '#!/usr/bin/env node\nconsole.log(globalThis.__claudeRemoteSettings.readSettings());';
+    return ByteData.sublistView(Uint8List.fromList(utf8.encode(source)));
+  }
+}

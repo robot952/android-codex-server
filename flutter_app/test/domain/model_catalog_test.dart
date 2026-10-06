@@ -4,6 +4,55 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
+    'Claude preserves explicit model IDs and scopes effort to the model',
+    () {
+      const models = [
+        AgentModel(id: 'm-claude', model: 'm-claude', isDefault: true),
+        AgentModel(
+          id: 'opus',
+          model: 'claude-opus-5-5',
+          defaultEffort: 'medium',
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        ),
+        AgentModel(id: 'haiku', model: 'claude-haiku-4-5'),
+      ];
+      final opus = resolveModelSelection(
+        models,
+        'opus',
+        'max',
+        agent: AgentKind.claudeCode,
+      );
+      expect(opus.model, 'claude-opus-5-5');
+      expect(opus.effort, 'max');
+      final haiku = resolveModelSelection(
+        models,
+        'haiku',
+        'max',
+        agent: AgentKind.claudeCode,
+      );
+      expect(haiku.model, 'claude-haiku-4-5');
+      expect(haiku.effort, isNull);
+      final custom = resolveModelSelection(
+        models,
+        'my-deployment',
+        'high',
+        agent: AgentKind.claudeCode,
+      );
+      expect(custom.model, 'my-deployment');
+      expect(custom.effort, isNull);
+      expect(normalizeClaudeCodeReasoningEffort(' XHIGH '), 'xhigh');
+      expect(
+        () => normalizeClaudeCodeReasoningEffort('ultra'),
+        throwsArgumentError,
+      );
+      expect(
+        () => normalizeClaudeCodeReasoningEffort('high\n--model=other'),
+        throwsArgumentError,
+      );
+    },
+  );
+
+  test(
     'keeps a persisted model and effort while the remote catalog is empty',
     () {
       final selection = resolveModelSelection(

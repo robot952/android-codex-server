@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const bridgePath = path.resolve(__dirname, "../flutter_app/assets/claude-code-bridge.cjs");
-const { ThreadStore, prepareInput, bounded } = require(bridgePath);
+const { ThreadStore, prepareInput, bounded, modelCatalog, usageBreakdown } = require(bridgePath);
 const timeoutMs = 5000;
 
 // The fake runs as a CLI subprocess and waits for the SDK control handshake.
@@ -27,7 +27,7 @@ function fakeClaudeMain() {
   let scenario;
   let request;
   let holdExit = false;
-  audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd() });
+  audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL });
   assert.equal(valueOf("--input-format"), "stream-json");
   assert.equal(valueOf("--output-format"), "stream-json");
   assert.equal(valueOf("--permission-mode"), "default");
@@ -79,7 +79,20 @@ function fakeClaudeMain() {
     assert.equal(message.message.role, "user");
     scenario = message.message.content.find(block => block.type === "text")?.text.replace(/^CASE:/, "") || "image";
     send({ type: "system", subtype: "init", session_id: session });
-    if (scenario === "stream") {
+    if (scenario === "usage" || scenario === "usage-unknown") {
+      const model = scenario === "usage" ? "claude-opus-5-5" : "custom-unknown";
+      const first = { type: "assistant", message: { id: "usage-first", model, usage: { input_tokens: 100, cache_read_input_tokens: 200, cache_creation_input_tokens: 50, output_tokens: 30 }, content: [{ type: "text", text: "first" }] } };
+      send(first); send(first);
+      send({ type: "assistant", parent_tool_use_id: "child-agent", message: { id: "child-usage", model: "other-model", usage: { input_tokens: 9000, output_tokens: 999 }, content: [] } });
+      send({ type: "stream_event", event: { type: "message_start", message: { id: "usage-latest", model, usage: { input_tokens: 150, cache_read_input_tokens: 250, cache_creation_input_tokens: 75, output_tokens: 0 } } } });
+      send({ type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 40 } } });
+      send({ type: "assistant", message: { id: "usage-latest", model, usage: { input_tokens: 150, cache_read_input_tokens: 250, cache_creation_input_tokens: 75, output_tokens: 40 }, content: [{ type: "text", text: "latest" }] } });
+      send(first); // A repeated earlier snapshot must not roll the context back.
+      send({ type: "result", is_error: false, usage: { input_tokens: 999999, output_tokens: 99999 }, modelUsage: {
+        "other-model": { contextWindow: 9999 },
+        ...(scenario === "usage" ? { [model]: { contextWindow: 1000000, inputTokens: 999999 } } : {}),
+      } });
+    } else if (scenario === "stream") {
       send({ type: "stream_event", event: { type: "message_start", message: { id: "message-one" } } });
       send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } });
       const delta = Buffer.from(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "你好 Claude" } } }) + "\n");
@@ -239,7 +252,9 @@ const questionFor = turn => message => message.method === "item/tool/requestUser
 const auditFor = root => fs.readFileSync(path.join(root, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
 
 test("initialize, ordered handshake, Unicode streaming and duplicate snapshots", async ({ peer, root }) => {
-  assert.deepEqual(await peer.ok("model/list"), { data: [] });
+  const catalog = await peer.ok("model/list");
+  assert.equal(catalog.data.find(model => model.isDefault).model, "default");
+  assert.ok(catalog.data.some(model => model.model === "claude-opus-5-5"));
   const id = await peer.thread();
   const turn = await peer.turn(id, "stream", { model: "fixture-model" });
   await peer.complete(turn);
@@ -263,6 +278,81 @@ test("initialize, ordered handshake, Unicode streaming and duplicate snapshots",
   assert.equal(listed.data[0].id, id);
   assert.equal(listed.data[0].source, "claude-code");
   assert.equal(listed.data[0].modelProvider, "anthropic");
+});
+
+test("explicit Opus 5.5, supported efforts and server-default selection reach CLI", async ({ peer, root }) => {
+  const id = await peer.thread();
+  for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+    await peer.complete(await peer.turn(id, "fallback", { model: "claude-opus-5-5", effort }));
+    const spawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
+    assert.equal(spawn.args[spawn.args.indexOf("--model") + 1], "claude-opus-5-5");
+    assert.equal(spawn.args[spawn.args.indexOf("--effort") + 1], effort);
+    const snapshot = await peer.ok("thread/read", { threadId: id });
+    assert.equal(snapshot.model, "claude-opus-5-5");
+    assert.equal(snapshot.reasoningEffort, effort);
+  }
+  await peer.complete(await peer.turn(id, "fallback", { model: "default" }));
+  const spawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
+  assert.ok(!spawn.args.includes("--model"), "default must defer to native settings");
+  assert.ok(!spawn.args.includes("--effort"), "omitted effort must not retain an earlier per-turn override");
+  for (const options of [{ effort: "ultra" }, { model: "--dangerous" }, { model: "invalid\nmodel" }, { model: "x".repeat(201) }]) {
+    assert.ok((await peer.request("turn/start", { threadId: id, input: [{ type: "text", text: "should not run" }], ...options })).error);
+  }
+  assert.equal(auditFor(root).filter(value => value.type === "spawn").length, 6);
+  const custom = modelCatalog({ model: "m-claude", reasoningEffort: "high" }).data[0];
+  assert.equal(custom.model, "m-claude");
+  assert.equal(custom.isDefault, true);
+  assert.deepEqual(custom.supportedReasoningEfforts, []);
+  assert.equal(custom.contextWindowTokens, undefined, "custom aliases cannot imply context capacity");
+});
+
+test("unsupported explicit model does not inherit global effort", async ({ peer, root }) => {
+  const configDir = path.join(root, ".claude");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({
+    effortLevel: "high", env: { CLAUDE_CODE_EFFORT_LEVEL: "high", ANTHROPIC_MODEL: "claude-opus-5-5" },
+  }));
+  const id = await peer.thread();
+  for (const model of ["claude-haiku-4-5", "custom-model-id"]) {
+    await peer.complete(await peer.turn(id, "fallback", { model }));
+    const spawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
+    assert.equal(spawn.args[spawn.args.indexOf("--model") + 1], model);
+    assert.ok(!spawn.args.includes("--effort"), `${model} must not inherit CLI effort`);
+    assert.equal(spawn.effortEnv, "auto", `${model} must clear inherited effort`);
+    assert.ok(!spawn.args.includes("--setting-sources"), "native permissions and hooks must remain enabled");
+    assert.deepEqual(JSON.parse(spawn.args[spawn.args.indexOf("--settings") + 1]), {
+      env: { CLAUDE_CODE_EFFORT_LEVEL: "auto" },
+    });
+    assert.equal((await peer.ok("thread/read", { threadId: id })).reasoningEffort, null);
+  }
+  await peer.complete(await peer.turn(id, "fallback", { model: "claude-opus-5-5" }));
+  const opus = auditFor(root).filter(value => value.type === "spawn").at(-1);
+  assert.equal(opus.args[opus.args.indexOf("--effort") + 1], "high", "Opus retains the configured default");
+  assert.equal(opus.effortEnv, "high");
+});
+
+test("current context includes cache tokens, deduplicates usage and survives restart", async ({ peer, root, fake, peers }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "usage", { model: "claude-opus-5-5" });
+  await peer.complete(turn);
+  const snapshot = await peer.ok("thread/resume", { threadId: id });
+  assert.deepEqual(snapshot.tokenUsage.last, { inputTokens: 475, cachedInputTokens: 250, outputTokens: 40, reasoningOutputTokens: 0, totalTokens: 515 });
+  assert.deepEqual(snapshot.tokenUsage.total, { inputTokens: 825, cachedInputTokens: 450, outputTokens: 70, reasoningOutputTokens: 0, totalTokens: 895 });
+  assert.equal(snapshot.tokenUsage.modelContextWindow, 1000000);
+  const usageEvent = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" && message.params.threadId === id).at(-1);
+  assert.deepEqual(usageEvent.params.tokenUsage, snapshot.tokenUsage);
+  await peer.close();
+  const restarted = new Peer(root, fake, peer.state);
+  peers.push(restarted);
+  await restarted.initialize();
+  assert.deepEqual((await restarted.ok("thread/resume", { threadId: id })).tokenUsage, snapshot.tokenUsage);
+  await restarted.complete(await restarted.turn(id, "usage-unknown", { model: "custom-unknown" }));
+  const switched = await restarted.ok("thread/read", { threadId: id });
+  assert.equal(switched.tokenUsage.modelContextWindow, 0, "a new unknown model must not inherit old model capacity");
+  assert.equal(switched.tokenUsage.last.totalTokens, 515, "context is the latest request, not cumulative usage");
+  assert.equal(switched.tokenUsage.total.totalTokens, 1790);
+  assert.equal(usageBreakdown({ output_tokens: 7 }), null, "output alone cannot establish context input size");
+  assert.equal(usageBreakdown({ input_tokens: -1, output_tokens: 7 }), null);
 });
 
 test("tool approval explicitly allows, denies and ignores an unrelated response", async ({ peer }) => {

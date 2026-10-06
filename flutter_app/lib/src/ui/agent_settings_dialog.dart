@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../agent/codex_global_settings.dart';
 import '../domain/models.dart';
+import 'model_selection_presentation.dart' show selectedAgentModel;
 import 'theme.dart';
 
 typedef AgentSettingsTestCallback =
@@ -132,15 +133,17 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     final settingsReady = settings != null;
     final agent = state.activeAgent;
     final agentName = agent.label;
-    final defaultProviderId = agent == AgentKind.codex
-        ? 'openai'
-        : 'custom-api';
+    final defaultProviderId = switch (agent) {
+      AgentKind.codex => 'openai',
+      AgentKind.claudeCode => 'anthropic',
+      _ => 'custom-api',
+    };
     final configuredProvider = settings?.modelProvider.trim();
     final customProviderInUse =
         settings != null &&
         configuredProvider != null &&
         configuredProvider != defaultProviderId;
-    final preserveCurrentProvider = agent == AgentKind.codex
+    final preserveCurrentProvider = agent != AgentKind.openCode
         ? settingsReady
         : customProviderInUse &&
               _normalizedUrl(_baseUrlController.text) ==
@@ -209,6 +212,16 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       testModelController: _testModelController,
                                       defaultReasoningEffort:
                                           _defaultReasoningEffort,
+                                      reasoningOptions:
+                                          agent == AgentKind.claudeCode
+                                          ? <String>[
+                                              '',
+                                              ...?selectedAgentModel(
+                                                state.models,
+                                                _defaultModelController.text,
+                                              )?.efforts,
+                                            ]
+                                          : reasoningEffortOptions,
                                       websocketPolicy: _websocketPolicy,
                                       apiKeyVisible: _apiKeyVisible,
                                       testFeedback: _testFeedback,
@@ -242,6 +255,10 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       },
                                       onTestRelevantValueChanged:
                                           _markTestResultStale,
+                                      onDefaultModelChanged: () {
+                                        _validateClaudeEffort();
+                                        _markTestResultStale();
+                                      },
                                       onFetchDefaultModels: (anchorContext) =>
                                           _fetchModels(
                                             anchorContext: anchorContext,
@@ -323,6 +340,19 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     }
   }
 
+  void _validateClaudeEffort() {
+    if (widget.state.activeAgent != AgentKind.claudeCode) return;
+    final efforts =
+        selectedAgentModel(
+          widget.state.models,
+          _defaultModelController.text,
+        )?.efforts ??
+        const <String>[];
+    if (!efforts.contains(_defaultReasoningEffort)) {
+      _defaultReasoningEffort = '';
+    }
+  }
+
   void _testSettings() {
     if (_busy || widget.state.agentSettings == null) return;
     setState(() => _testResultStale = false);
@@ -398,6 +428,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     setState(() {
       controller.text = selected;
       controller.selection = TextSelection.collapsed(offset: selected.length);
+      if (target == 'default') _validateClaudeEffort();
       if (target == 'test') _testResultStale = true;
     });
   }
@@ -412,8 +443,11 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
         key: const ValueKey('agent-settings-save-confirmation'),
         title: const Text('确认保存全局配置'),
         content: Text(
-          '保存会更新此服务器用户的 ${widget.state.activeAgent.label} 配置并断开当前连接。'
-          '已填写的 API 密钥会替换现有登录。',
+          widget.state.activeAgent == AgentKind.claudeCode
+              ? '保存会更新此服务器用户的 Claude Code 全局配置，并重新连接 Claude Code。'
+                    '留空或未修改的密钥保持不变；新密钥用于 API 认证。'
+              : '保存会更新此服务器用户的 ${widget.state.activeAgent.label} 配置并断开当前连接。'
+                    '已填写的 API 密钥会替换现有登录。',
         ),
         actions: [
           TextButton(
@@ -433,6 +467,15 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
 
     final remoteApiKey = widget.state.agentSettings?.apiKey ?? '';
     final enteredApiKey = _apiKeyController.text;
+    final supportedClaudeEfforts = selectedAgentModel(
+      widget.state.models,
+      _defaultModelController.text,
+    )?.efforts;
+    final reasoningEffort =
+        widget.state.activeAgent == AgentKind.claudeCode &&
+            supportedClaudeEfforts?.contains(_defaultReasoningEffort) != true
+        ? ''
+        : _defaultReasoningEffort;
     widget.onSave(
       baseUrl: _baseUrlController.text,
       apiKey: preserveCurrentProvider && enteredApiKey == remoteApiKey
@@ -440,7 +483,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
           : enteredApiKey,
       proxyUrl: _proxyUrlController.text,
       defaultModel: _defaultModelController.text,
-      defaultReasoningEffort: _defaultReasoningEffort,
+      defaultReasoningEffort: reasoningEffort,
       testModel: _testModelController.text,
       websocketPolicy: _websocketPolicy,
       preserveCurrentProvider: preserveCurrentProvider,
@@ -520,6 +563,7 @@ class _SettingsForm extends StatelessWidget {
     required this.proxyUrlController,
     required this.testModelController,
     required this.defaultReasoningEffort,
+    required this.reasoningOptions,
     required this.websocketPolicy,
     required this.apiKeyVisible,
     required this.testFeedback,
@@ -531,6 +575,7 @@ class _SettingsForm extends StatelessWidget {
     required this.onWebSocketPolicyChanged,
     required this.onApiKeyVisibilityChanged,
     required this.onTestRelevantValueChanged,
+    required this.onDefaultModelChanged,
     required this.onFetchDefaultModels,
     required this.onFetchTestModels,
     required this.defaultModelsLoading,
@@ -550,6 +595,7 @@ class _SettingsForm extends StatelessWidget {
   final TextEditingController proxyUrlController;
   final TextEditingController testModelController;
   final String defaultReasoningEffort;
+  final List<String> reasoningOptions;
   final String websocketPolicy;
   final bool apiKeyVisible;
   final String? testFeedback;
@@ -561,6 +607,7 @@ class _SettingsForm extends StatelessWidget {
   final ValueChanged<String> onWebSocketPolicyChanged;
   final VoidCallback onApiKeyVisibilityChanged;
   final VoidCallback onTestRelevantValueChanged;
+  final VoidCallback onDefaultModelChanged;
   final ValueChanged<BuildContext> onFetchDefaultModels;
   final ValueChanged<BuildContext> onFetchTestModels;
   final bool defaultModelsLoading;
@@ -576,7 +623,7 @@ class _SettingsForm extends StatelessWidget {
         Text(
           agent == AgentKind.codex
               ? '这些设置作用于当前服务器用户的全部 Codex CLI、IDE 插件和本应用会话。'
-              : '这些设置作用于当前服务器用户的 OpenCode CLI 和本应用会话。',
+              : '这些设置作用于当前服务器用户的 $agentName CLI 和本应用会话。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 11),
@@ -596,11 +643,10 @@ class _SettingsForm extends StatelessWidget {
           autocorrect: false,
           enableSuggestions: false,
           scrollPadding: _fieldScrollPadding,
+          onChanged: (_) => onDefaultModelChanged(),
           decoration: InputDecoration(
             labelText: '默认模型',
-            hintText: agent == AgentKind.codex
-                ? 'gpt-5.6-sol'
-                : 'custom-api/model-id',
+            hintText: _modelHint(agent),
             helperText: '留空使用 $agentName 默认模型；保存后对新会话生效',
             helperMaxLines: 3,
             suffixIcon: _FetchModelsButton(
@@ -621,12 +667,16 @@ class _SettingsForm extends StatelessWidget {
           const SizedBox(height: 7),
           _ReasoningEffortSelector(
             value: defaultReasoningEffort,
+            options: reasoningOptions,
+            preserveUnknownValue: agent != AgentKind.claudeCode,
             enabled: enabled,
             onChanged: onDefaultReasoningEffortChanged,
           ),
           const SizedBox(height: 5),
           Text(
-            '留空使用当前 Agent 的默认思考强度。',
+            agent == AgentKind.claudeCode
+                ? '默认由 Claude Code 决定；可选档位以所选模型能力为准。'
+                : '留空使用当前 Agent 的默认思考强度。',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -674,10 +724,15 @@ class _SettingsForm extends StatelessWidget {
           onChanged: (_) => onTestRelevantValueChanged(),
           decoration: InputDecoration(
             labelText: '模型 URL',
-            hintText: 'https://api.openai.com/v1',
-            helperText: agent == AgentKind.codex
-                ? '留空使用 Codex 默认 OpenAI 地址'
-                : 'OpenAI 兼容地址；用于 OpenCode 的 Codex Remote Provider',
+            hintText: agent == AgentKind.claudeCode
+                ? 'https://api.anthropic.com'
+                : 'https://api.openai.com/v1',
+            helperText: switch (agent) {
+              AgentKind.codex => '留空使用 Codex 默认 OpenAI 地址',
+              AgentKind.claudeCode =>
+                'Anthropic Messages 兼容地址；填写服务根地址，留空使用官方地址',
+              _ => 'OpenAI 兼容地址；用于 OpenCode 的 Codex Remote Provider',
+            },
             helperMaxLines: 3,
           ),
         ),
@@ -694,7 +749,11 @@ class _SettingsForm extends StatelessWidget {
           onChanged: (_) => onTestRelevantValueChanged(),
           decoration: InputDecoration(
             labelText: 'API 密钥',
-            helperText: _apiKeySupportingText(settings),
+            helperText: agent == AgentKind.claudeCode
+                ? settings?.hasStoredAuthentication == true
+                      ? '服务器已有认证；留空或不修改将保留，填写新密钥用于 API 认证。'
+                      : '留空保留服务器认证；密钥只在当前页面内存中使用。'
+                : _apiKeySupportingText(settings),
             helperMaxLines: 3,
             suffixIcon: IconButton(
               key: const ValueKey('agent-settings-api-key-visibility'),
@@ -734,9 +793,7 @@ class _SettingsForm extends StatelessWidget {
           onChanged: (_) => onTestRelevantValueChanged(),
           decoration: InputDecoration(
             labelText: '测试模型',
-            hintText: agent == AgentKind.codex
-                ? 'gpt-5.6-sol'
-                : 'custom-api/model-id',
+            hintText: _modelHint(agent),
             helperText: '保存后按当前服务器记住',
             helperMaxLines: 2,
             suffixIcon: _FetchModelsButton(
@@ -779,7 +836,9 @@ class _SettingsForm extends StatelessWidget {
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
-            '测试不会保存或断开连接。保存后会断开当前服务器；修改 API 密钥才会替换该用户现有的 $agentName 登录。',
+            agent == AgentKind.claudeCode
+                ? '测试通过 Anthropic Messages 发送最小请求，不保存配置。保存后重新连接 Claude Code，SSH 连接保留。'
+                : '测试不会保存或断开连接。保存后会断开当前服务器；修改 API 密钥才会替换该用户现有的 $agentName 登录。',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
@@ -888,7 +947,9 @@ class _CurrentSettingsPanel extends StatelessWidget {
           Text('服务器当前配置', style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 4),
           Text(
-            'Provider：${provider?.isNotEmpty == true ? provider : defaultProviderId}',
+            agent == AgentKind.claudeCode
+                ? '协议：Anthropic Messages'
+                : 'Provider：${provider?.isNotEmpty == true ? provider : defaultProviderId}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 4),
@@ -903,7 +964,7 @@ class _CurrentSettingsPanel extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
-          if (customProviderInUse) ...[
+          if (customProviderInUse && agent != AgentKind.claudeCode) ...[
             const SizedBox(height: 4),
             Text(
               agent == AgentKind.codex
@@ -925,18 +986,25 @@ class _CurrentSettingsPanel extends StatelessWidget {
 class _ReasoningEffortSelector extends StatelessWidget {
   const _ReasoningEffortSelector({
     required this.value,
+    required this.options,
+    required this.preserveUnknownValue,
     required this.enabled,
     required this.onChanged,
   });
 
   final String value;
+  final List<String> options;
+  final bool preserveUnknownValue;
   final bool enabled;
   final ValueChanged<String> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    final options = <String>[...reasoningEffortOptions];
-    if (!options.contains(value)) options.add(value);
+    final availableOptions = options.toSet().toList();
+    final unknownCurrentValue = !availableOptions.contains(value);
+    if (unknownCurrentValue) {
+      availableOptions.add(value);
+    }
     return Container(
       decoration: BoxDecoration(
         color: codexSurface,
@@ -956,12 +1024,15 @@ class _ReasoningEffortSelector extends StatelessWidget {
                   if (selected != null) onChanged(selected);
                 }
               : null,
-          items: options
+          items: availableOptions
               .map(
                 (effort) => DropdownMenuItem<String>(
                   value: effort,
+                  enabled: preserveUnknownValue || options.contains(effort),
                   child: Text(
-                    reasoningEffortLabel(effort),
+                    !preserveUnknownValue && !options.contains(effort)
+                        ? '服务器当前：${reasoningEffortLabel(effort)}（能力未知）'
+                        : reasoningEffortLabel(effort),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1026,10 +1097,17 @@ String reasoningEffortLabel(String effort) => switch (effort) {
   'medium' => '中',
   'high' => '高',
   'xhigh' => '极高',
+  'max' => '最高',
   _ => effort,
 };
 
 const _fieldScrollPadding = EdgeInsets.only(bottom: 140);
+
+String _modelHint(AgentKind agent) => switch (agent) {
+  AgentKind.codex => 'gpt-5.6-sol',
+  AgentKind.claudeCode => 'claude-opus-5-5',
+  _ => 'custom-api/model-id',
+};
 
 String _apiKeySupportingText(AgentGlobalSettings? settings) {
   if (settings?.apiKey.isNotEmpty == true) {

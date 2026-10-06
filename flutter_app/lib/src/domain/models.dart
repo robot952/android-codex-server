@@ -304,7 +304,8 @@ abstract class AgentCapabilities with _$AgentCapabilities {
   );
 
   static const claudeCode = AgentCapabilities(
-    models: false,
+    reasoningEffort: true,
+    globalSettings: true,
     approvals: true,
     archiveThread: false,
     renameThread: true,

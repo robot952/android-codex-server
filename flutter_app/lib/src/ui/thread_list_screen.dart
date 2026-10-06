@@ -488,14 +488,13 @@ class _ThreadSettingsDialog extends StatelessWidget {
                 enabled: agentConnected,
                 onTap: onSelectWorkspace,
               ),
-              if (agent != AgentKind.claudeCode)
-                _SettingsActionRow(
-                  icon: Icons.settings,
-                  title: '配置 ${agent.label}',
-                  detail: '模型地址、API 密钥和代理',
-                  enabled: agentConnected && canConfigureAgent,
-                  onTap: onConfigureAgent,
-                ),
+              _SettingsActionRow(
+                icon: Icons.settings,
+                title: '配置 ${agent.label}',
+                detail: '模型地址、API 密钥和代理',
+                enabled: agentConnected && canConfigureAgent,
+                onTap: onConfigureAgent,
+              ),
               if (showCodexVersion)
                 _SettingsActionRow(
                   icon: Icons.system_update_alt,

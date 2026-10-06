@@ -1842,7 +1842,9 @@ class AppController extends StateNotifier<AppUiState> {
     try {
       normalizedDefaultModel = normalizeAgentModelId(agent, defaultModel);
       normalizedDefaultEffort = state.activeAgentCapabilities.reasoningEffort
-          ? normalizeCodexReasoningEffort(defaultReasoningEffort)
+          ? agent == AgentKind.claudeCode
+                ? normalizeClaudeCodeReasoningEffort(defaultReasoningEffort)
+                : normalizeCodexReasoningEffort(defaultReasoningEffort)
           : '';
       normalizedTestModel = normalizeAgentModelId(agent, testModel);
       if (agent == AgentKind.codex) {
@@ -3474,11 +3476,19 @@ class AppController extends StateNotifier<AppUiState> {
         : modelSettings.preferredModel.trim().isEmpty
         ? null
         : modelSettings.preferredModel.trim();
-    final effort = state.selectedEffort?.trim().isNotEmpty == true
+    final requestedEffort = state.selectedEffort?.trim().isNotEmpty == true
         ? state.selectedEffort
         : modelSettings.preferredEffort.trim().isEmpty
         ? null
         : modelSettings.preferredEffort.trim();
+    final effort = state.activeAgent == AgentKind.claudeCode
+        ? resolveModelSelection(
+            state.models,
+            model ?? '',
+            requestedEffort ?? '',
+            agent: AgentKind.claudeCode,
+          ).effort
+        : requestedEffort;
     _diagnostics.info(
       'Message',
       'send_requested profile=$profileId agent=${state.activeAgent.name} '
@@ -4582,7 +4592,23 @@ class AppController extends StateNotifier<AppUiState> {
       state = state.copyWith(error: _message(error, '模型格式错误'));
       return;
     }
-    final normalizedEffort = effort?.trim() ?? state.selectedEffort ?? '';
+    var normalizedEffort = effort?.trim() ?? state.selectedEffort ?? '';
+    if (state.activeAgent == AgentKind.claudeCode) {
+      try {
+        normalizedEffort = normalizeClaudeCodeReasoningEffort(normalizedEffort);
+      } catch (error) {
+        state = state.copyWith(error: _message(error, '思考强度格式错误'));
+        return;
+      }
+      normalizedEffort =
+          resolveModelSelection(
+            state.models,
+            normalizedModel,
+            normalizedEffort,
+            agent: AgentKind.claudeCode,
+          ).effort ??
+          '';
+    }
     state = state.copyWith(
       selectedModel: normalizedModel,
       selectedEffort: normalizedEffort.isEmpty ? null : normalizedEffort,
@@ -4679,13 +4705,17 @@ class AppController extends StateNotifier<AppUiState> {
     final configuredModel = preference?.model.isNotEmpty == true
         ? preference!.model
         : defaults?.preferredModel ?? '';
-    final configuredEffort = preference?.effort.isNotEmpty == true
+    final configuredEffort =
+        preference != null && key.agent == AgentKind.claudeCode
+        ? preference.effort
+        : preference?.effort.isNotEmpty == true
         ? preference!.effort
         : defaults?.preferredEffort ?? '';
     final resolvedModel = resolveModelSelection(
       state.models,
       configuredModel,
       configuredEffort,
+      agent: key.agent,
     );
     final selectedModel = sameVisibleThread
         ? state.selectedModel
@@ -7258,6 +7288,7 @@ class AppController extends StateNotifier<AppUiState> {
       catalog,
       updatedSettings.preferredModel,
       updatedSettings.preferredEffort,
+      agent: agent,
     );
     state = state.copyWith(
       profiles: profiles,

@@ -9,6 +9,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { StringDecoder } = require("node:string_decoder");
+const settings = globalThis.__claudeRemoteSettings || require("./claude-code-settings.cjs");
 
 const MAX_LINE = 8 * 1024 * 1024;
 const MAX_TEXT = 128 * 1024;
@@ -25,6 +26,47 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const integer = (value, fallback, max) => Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : fallback;
 const jsonBytes = value => Buffer.byteLength(JSON.stringify(value), "utf8");
 const textBytes = value => jsonBytes(String(value)) - 2;
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const ZERO_USAGE = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
+const tokenCount = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+
+function modelCatalog(configuration = settings.readSettings()) {
+  const configured = configuration.model || "default";
+  const known = [
+    ["claude-opus-5-5", "Claude Opus 5.5", EFFORTS, "medium"],
+    ["claude-opus-4-6", "Claude Opus 4.6", EFFORTS.filter(value => value !== "xhigh"), "high"],
+    ["claude-sonnet-4-6", "Claude Sonnet 4.6", EFFORTS.filter(value => value !== "xhigh"), "high"],
+    ["claude-haiku-4-5", "Claude Haiku 4.5", [], ""],
+  ];
+  const options = known.map(([model, displayName, efforts, defaultEffort]) => ({
+    id: model, model, displayName, description: "", isDefault: model === configured,
+    supportedReasoningEfforts: efforts.map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })),
+    defaultReasoningEffort: defaultEffort,
+  }));
+  const current = options.find(option => option.model === configured);
+  if (current && current.supportedReasoningEfforts.some(option => option.reasoningEffort === configuration.reasoningEffort)) {
+    current.defaultReasoningEffort = configuration.reasoningEffort;
+  }
+  if (!current) options.unshift({
+    id: configured, model: configured, displayName: configured === "default" ? "服务器默认" : `服务器默认 · ${configured}`,
+    description: "使用服务器配置的模型", isDefault: true, supportedReasoningEfforts: [], defaultReasoningEffort: "",
+  });
+  return { data: options };
+}
+
+function usageBreakdown(value) {
+  if (!value || !["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].some(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return null;
+  const cachedInputTokens = tokenCount(value.cache_read_input_tokens);
+  const inputTokens = tokenCount(value.input_tokens) + cachedInputTokens + tokenCount(value.cache_creation_input_tokens);
+  const outputTokens = tokenCount(value.output_tokens);
+  return { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens: 0, totalTokens: inputTokens + outputTokens };
+}
+
+function modelArgument(value) {
+  if (value == null || value === "" || value === "default") return null;
+  if (typeof value !== "string" || value.length > 200 || /[\s\x00-\x1f\x7f]/.test(value) || value.startsWith("-")) throw new Error("Claude Code 模型名称无效");
+  return value;
+}
 
 function textPrefix(value, maxBytes) {
   let low = 0, high = value.length;
@@ -120,7 +162,7 @@ class ThreadStore {
   }
   create(cwd, model) {
     if (!path.isAbsolute(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error("工作目录不存在");
-    const thread = { id: uuid(), cwd, model: model || null, createdAt: Date.now(), updatedAt: Date.now(), turnIds: [], status: "idle" };
+    const thread = { id: uuid(), cwd, model: modelArgument(model), createdAt: Date.now(), updatedAt: Date.now(), turnIds: [], status: "idle" };
     fs.mkdirSync(this.directory(thread.id), { mode: 0o700 });
     this.save(thread);
     return thread;
@@ -253,7 +295,7 @@ class ClaudeBridge {
     return { data, nextCursor: hasMore ? ids.at(-1) : null };
   }
   snapshot(thread, params = {}) {
-    const result = { thread: this.view(thread) };
+    const result = { thread: this.view(thread), tokenUsage: thread.tokenUsage || null, model: thread.model, reasoningEffort: thread.effort || null };
     if (params.includeTurns !== false) result.initialTurnsPage = this.page(thread, params.initialTurnsPage || {});
     return result;
   }
@@ -266,6 +308,27 @@ class ClaudeBridge {
     if (!run.saveTimer) run.saveTimer = setTimeout(() => {
       try { this.persist(run); } catch (_) { this.fail(run, "无法保存 Claude Code 会话历史"); }
     }, 250);
+  }
+  usage(run, messageId, value, model) {
+    const breakdown = usageBreakdown(value);
+    if (!breakdown) return;
+    const isLatest = !run.usageByMessage.has(messageId) || run.lastUsageId === messageId;
+    if (isLatest && model) {
+      if (run.usageModel && run.usageModel !== model) run.contextWindow = 0;
+      run.usageModel = model;
+    }
+    run.usageByMessage.set(messageId, breakdown);
+    if (isLatest) { run.lastUsage = breakdown; run.lastUsageId = messageId; }
+    this.publishUsage(run);
+  }
+  publishUsage(run) {
+    if (!run.lastUsage) return;
+    const total = { ...run.baseUsage };
+    for (const value of run.usageByMessage.values()) for (const key of Object.keys(ZERO_USAGE)) total[key] += value[key];
+    run.thread.tokenUsage = { last: run.lastUsage, total, modelContextWindow: run.contextWindow || 0 };
+    run.thread.usageModel = run.usageModel;
+    this.notify("thread/tokenUsage/updated", { threadId: run.thread.id, turnId: run.turn.id, tokenUsage: clone(run.thread.tokenUsage) });
+    this.changed(run);
   }
   item(run, id, type, fields = {}) {
     let item = run.turn.items.find(value => value.id === id);
@@ -384,18 +447,29 @@ class ClaudeBridge {
     }
     if (value.type === "system" && value.subtype === "init") {
       run.thread.claudeSessionId = value.session_id;
+      run.actualModel = value.model || run.thread.model;
       this.changed(run);
     }
     if (value.parent_tool_use_id) return; // Nested Agent tools stay inside their own tool card.
     if (value.type === "stream_event") {
       const event = value.event || {};
-      if (event.type === "message_start") { run.messageId = event.message?.id || uuid(); }
+      if (event.type === "message_start") {
+        run.messageId = event.message?.id || uuid();
+        run.messageUsage = { ...event.message?.usage };
+        run.messageModel = event.message?.model || run.actualModel;
+        this.usage(run, run.messageId, run.messageUsage, run.messageModel);
+      }
+      if (event.type === "message_delta" && event.usage && run.messageId) {
+        run.messageUsage = { ...run.messageUsage, ...event.usage };
+        this.usage(run, run.messageId, run.messageUsage, run.messageModel);
+      }
       const id = "assistant-" + (run.messageId || run.turn.id) + "-" + (event.index || 0);
       if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
         run.streamed.add(id); this.appendText(run, id, event.delta.text);
       }
     } else if (value.type === "assistant" && Array.isArray(value.message?.content)) {
       const messageId = value.message.id || run.messageId || run.turn.id;
+      this.usage(run, messageId, value.message.usage, value.message.model || run.actualModel);
       value.message.content.forEach((block, index) => {
         const id = "assistant-" + messageId + "-" + index;
         if (block.type === "text") {
@@ -418,6 +492,14 @@ class ClaudeBridge {
         }
       }
     } else if (value.type === "result") {
+      // Result input/output totals accumulate every tool loop (and subagents).
+      // Only the latest assistant request measures the current context occupancy.
+      const modelUsage = value.modelUsage?.[run.usageModel || run.actualModel];
+      const reportedWindow = tokenCount(modelUsage?.contextWindow);
+      if (reportedWindow) {
+        run.contextWindow = reportedWindow;
+        this.publishUsage(run);
+      }
       if (value.result && !run.turn.items.some(item => item.type === "agentMessage")) this.appendText(run, "assistant-" + run.turn.id, value.result);
       this.finish(run, value.is_error ? "failed" : "completed", value.is_error ? (value.errors || [value.result || "Claude Code 执行失败"]).join("\n") : null);
       run.child.stdin.end();
@@ -438,14 +520,35 @@ class ClaudeBridge {
       const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "default", "--permission-prompt-tool", "stdio"];
       if (thread.claudeSessionId) args.push("--resume", thread.claudeSessionId);
       else args.push("--session-id", thread.id);
-      const model = params.model || thread.model;
-      if (model) args.push("--model", bounded(model, 200));
+      const configuration = settings.readSettings();
+      const model = modelArgument(params.model ?? thread.model ?? configuration.model);
+      const unsupportedEffort = model && !modelCatalog(configuration).data.find(option => option.model === model)?.supportedReasoningEfforts.length;
+      if (unsupportedEffort && params.effort) throw new Error("所选 Claude Code 模型不支持思考强度");
+      const effort = unsupportedEffort ? null : params.effort ?? configuration.reasoningEffort;
+      if (effort && !EFFORTS.includes(effort)) throw new Error("Claude Code 不支持此思考强度");
+      if (model) args.push("--model", model);
+      if (effort) args.push("--effort", effort);
+      const environment = settings.launchEnvironment();
+      if (unsupportedEffort) {
+        // Claude's auto sentinel clears this session's effort,
+        // including persisted effortLevel and settings.env overrides. Retain
+        // all native settings sources (especially permissions and hooks).
+        environment.CLAUDE_CODE_EFFORT_LEVEL = "auto";
+        args.push("--settings", '{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"auto"}}');
+      } else if (params.effort) {
+        environment.CLAUDE_CODE_EFFORT_LEVEL = effort;
+        args.push("--settings", JSON.stringify({ effortLevel: effort, env: { CLAUDE_CODE_EFFORT_LEVEL: effort } }));
+      }
+      const previousUsage = thread.tokenUsage;
+      const previousModel = thread.usageModel;
+      if (model !== thread.model) thread.tokenUsage = null;
       thread.model = model;
+      thread.effort = effort || null;
       thread.turnIds.push(turn.id); thread.activeTurnId = turn.id; thread.updatedAt = Date.now(); thread.status = "active";
       thread.preview = bounded(prepared.display.filter(item => item.type === "text").map(item => item.text).join("\n"), 1000) || "图片附件";
       this.store.saveTurn(thread, turn); this.store.save(thread);
-      const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
-      run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), completedMessages: new Set(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid() };
+      const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
+      run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), completedMessages: new Set(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
       this.active.set(thread.id, run);
       this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
       this.notify("turn/started", { threadId: thread.id, turn: { id: turn.id, status: "inProgress" } });
@@ -468,7 +571,7 @@ class ClaudeBridge {
       this.control(run, { type: "control_request", request_id: run.initializeId, request: { subtype: "initialize", hooks: {} } });
     } catch (error) { if (!run) unlock(); throw error; }
   }
-  handle(message) {
+  async handle(message) {
     if (!message || typeof message !== "object") return;
     const { id, method, params = {} } = message;
     if (!method) return this.resolveApproval(id, message.result || {});
@@ -476,7 +579,11 @@ class ClaudeBridge {
     if (this.stopping) return this.error(id, "连接正在关闭");
     try {
       if (method === "initialize") return this.response(id, { serverInfo: { name: "claude-code-bridge", version: "1" } });
-      if (method === "model/list") return this.response(id, { data: [] });
+      if (method === "model/list") return this.response(id, modelCatalog());
+      if (method === "agent/settings/read") return this.response(id, settings.readSettings());
+      if (method === "agent/settings/write") return this.response(id, await settings.writeSettings(params));
+      if (method === "agent/settings/test") return this.response(id, await settings.testSettings(params));
+      if (method === "agent/models/list") return this.response(id, await settings.listApiModels(params));
       if (method === "thread/list") {
         const search = String(params.searchTerm || "").toLowerCase();
         const threads = params.archived ? [] : this.store.list().filter(thread => thread.cwd === this.directory && (!search || [thread.name, thread.preview].some(value => String(value || "").toLowerCase().includes(search)))).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
@@ -529,4 +636,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { ClaudeBridge, ThreadStore, prepareInput, bounded, threadView };
+module.exports = { ClaudeBridge, ThreadStore, prepareInput, bounded, threadView, modelCatalog, usageBreakdown };

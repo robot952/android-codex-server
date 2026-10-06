@@ -2024,7 +2024,10 @@ class _CustomModelEditorDialogState
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: '上下文长度（tokens，可选）',
-                helperText: '保存为当前服务器的模型配置；不会扩大模型实际支持的容量',
+                helperText: state.activeAgent == AgentKind.claudeCode
+                    ? '仅作为模型容量参考；占用圆环使用 Claude Code 返回的实际窗口，不修改上下文容量或压缩阈值'
+                    : '保存为当前服务器的模型配置；不会扩大模型实际支持的容量',
+                helperMaxLines: 4,
                 errorText: invalidContext
                     ? '请输入 0 到 $maxModelTokenLimit 的整数'
                     : null,
@@ -2037,6 +2040,10 @@ class _CustomModelEditorDialogState
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: '最大输出长度（tokens，可选）',
+                helperText: state.activeAgent == AgentKind.claudeCode
+                    ? '仅保存模型说明；实际输出上限由 Claude Code 和服务端决定'
+                    : null,
+                helperMaxLines: 3,
                 errorText: invalidMaxOutput
                     ? '请输入 0 到 $maxModelTokenLimit 的整数'
                     : null,
@@ -5189,6 +5196,16 @@ class _Composer extends StatelessWidget {
         : const <SubAgentPresentation>[];
     final canOpenSubAgents =
         !state.loading && !state.submitting && state.approvalQueue.isEmpty;
+    final selectedModel = selectedAgentModel(state.models, state.selectedModel);
+    final profile = state.profiles
+        .where((candidate) => candidate.id == state.selectedProfileId)
+        .firstOrNull;
+    final customModels =
+        profile?.modelSettings(state.activeAgent).customModels ??
+        const <CustomModelDefinition>[];
+    final customWindow = state.activeAgent == AgentKind.claudeCode
+        ? explicitCustomContextWindow(selectedModel, customModels)
+        : 0;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 170),
       curve: Curves.easeOutCubic,
@@ -5525,7 +5542,15 @@ class _Composer extends StatelessWidget {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.end,
                               children: [
-                                _ContextUsageButton(usage: state.tokenUsage),
+                                _ContextUsageButton(
+                                  usage: displayedContextUsage(
+                                    agent: state.activeAgent,
+                                    usage: state.tokenUsage,
+                                  ),
+                                  claude:
+                                      state.activeAgent == AgentKind.claudeCode,
+                                  customWindow: customWindow,
+                                ),
                                 if (state.activeAgentCapabilities.models) ...[
                                   const SizedBox(width: 4),
                                   Flexible(
@@ -5974,9 +5999,15 @@ Color _goalStatusColor(ThreadGoalStatus status) => switch (status) {
 };
 
 class _ContextUsageButton extends StatelessWidget {
-  const _ContextUsageButton({required this.usage});
+  const _ContextUsageButton({
+    required this.usage,
+    required this.claude,
+    required this.customWindow,
+  });
 
   final TokenUsage? usage;
+  final bool claude;
+  final int customWindow;
 
   @override
   Widget build(BuildContext context) {
@@ -6017,7 +6048,9 @@ class _ContextUsageButton extends StatelessWidget {
                 const SizedBox(height: 4),
                 if (!known)
                   Text(
-                    '等待服务器返回上下文用量',
+                    used > 0
+                        ? '最近请求已用 ${_formatTokens(used)} 标记；上下文上限未知'
+                        : '等待服务器返回上下文用量',
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: codexMuted),
@@ -6033,6 +6066,17 @@ class _ContextUsageButton extends StatelessWidget {
                   Text(
                     '已用 ${_formatTokens(used)} 标记，剩余 '
                     '${_formatTokens(remaining)}，共 ${_formatTokens(window)}',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: codexMuted),
+                  ),
+                ],
+                if (claude) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    customWindow > 0
+                        ? '自定义参考上限 ${_formatTokens(customWindow)}；占用按 Claude Code 返回的上限计算。'
+                        : '最近请求的上下文用量，包含缓存输入；不是会话累计消耗。',
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: codexMuted),

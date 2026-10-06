@@ -122,8 +122,23 @@ class ClaudeCodeAgentClient extends CodexAgentClient
       'exec ${profile.remoteCommand}';
 
   @override
-  Future<AgentGlobalSettings> readGlobalSettings(ServerProfile profile) =>
-      throw UnsupportedError('Claude Code 使用服务器上的 Claude 配置，不支持在应用内改写全局设置');
+  Future<AgentGlobalSettings> readGlobalSettings(ServerProfile profile) async {
+    final value = _settingsMap(
+      await requestAdapterExtension(
+        'agent/settings/read',
+        timeout: const Duration(seconds: 30),
+      ),
+    );
+    return AgentGlobalSettings(
+      baseUrl: _settingsString(value, 'baseUrl'),
+      model: _settingsString(value, 'model'),
+      reasoningEffort: _settingsString(value, 'reasoningEffort'),
+      modelProvider: 'anthropic',
+      apiKey: _settingsString(value, 'apiKey'),
+      proxyUrl: _settingsString(value, 'proxyUrl'),
+      hasStoredAuthentication: value['hasStoredAuthentication'] == true,
+    );
+  }
 
   @override
   Future<void> writeGlobalSettings(
@@ -135,7 +150,19 @@ class ClaudeCodeAgentClient extends CodexAgentClient
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
-  }) => throw UnsupportedError('Claude Code 全局设置请使用 Claude Code CLI 管理');
+  }) async {
+    await requestAdapterExtension(
+      'agent/settings/write',
+      params: <String, Object?>{
+        'baseUrl': baseUrl.trim(),
+        'apiKey': apiKey.trim(),
+        'proxyUrl': proxyUrl.trim(),
+        'defaultModel': defaultModel.trim(),
+        'defaultReasoningEffort': defaultReasoningEffort.trim(),
+      },
+      timeout: const Duration(seconds: 30),
+    );
+  }
 
   @override
   Future<AgentConnectionTestResult> testGlobalSettings(
@@ -145,7 +172,24 @@ class ClaudeCodeAgentClient extends CodexAgentClient
     required String proxyUrl,
     required String testModel,
     ModelApiProtocol? apiProtocol,
-  }) => throw UnsupportedError('Claude Code 不使用应用内 API 测试');
+  }) async {
+    final value = _settingsMap(
+      await requestAdapterExtension(
+        'agent/settings/test',
+        params: <String, Object?>{
+          'baseUrl': baseUrl.trim(),
+          'apiKey': apiKey.trim(),
+          'proxyUrl': proxyUrl.trim(),
+          'testModel': testModel.trim(),
+        },
+        timeout: const Duration(seconds: 45),
+      ),
+    );
+    return AgentConnectionTestResult(
+      successful: value['successful'] == true,
+      message: _settingsString(value, 'message'),
+    );
+  }
 
   @override
   Future<List<ApiModelOption>> fetchApiModels(
@@ -153,8 +197,48 @@ class ClaudeCodeAgentClient extends CodexAgentClient
     required String baseUrl,
     required String apiKey,
     required String proxyUrl,
-  }) => throw UnsupportedError('Claude Code 模型由 CLI 管理');
+  }) async {
+    final value = await requestAdapterExtension(
+      'agent/models/list',
+      params: <String, Object?>{
+        'baseUrl': baseUrl.trim(),
+        'apiKey': apiKey.trim(),
+        'proxyUrl': proxyUrl.trim(),
+      },
+      timeout: const Duration(seconds: 45),
+    );
+    if (value is! List) throw const FormatException('Claude Code 模型列表无效');
+    final ids = <String>{};
+    final options = <ApiModelOption>[];
+    for (final item in value.take(2000)) {
+      if (item is! Map) continue;
+      final modelId = _settingsString(item, 'modelId').trim();
+      if (modelId.isEmpty || modelId.length > 256 || !ids.add(modelId)) {
+        continue;
+      }
+      options.add(
+        ApiModelOption(
+          modelId: modelId,
+          displayName: _settingsString(item, 'displayName'),
+          contextWindowTokens: _settingsTokens(item['contextWindowTokens']),
+          maxOutputTokens: _settingsTokens(item['maxOutputTokens']),
+        ),
+      );
+    }
+    return options;
+  }
 }
+
+Map<dynamic, dynamic> _settingsMap(Object? value) {
+  if (value is! Map) throw const FormatException('Claude Code 配置响应无效');
+  return value;
+}
+
+String _settingsString(Map<dynamic, dynamic> value, String key) =>
+    value[key] is String ? value[key] as String : '';
+
+int _settingsTokens(Object? value) =>
+    value is int && value > 0 && value <= 100000000 ? value : 0;
 
 String buildClaudeCodeBridgeCommand(String workspace) {
   final directory = workspace.trim();

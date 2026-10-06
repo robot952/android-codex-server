@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.130+262，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.131+263，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -65,8 +65,8 @@ Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capab
 当前已经接入并应按“已完成”理解的能力包括：
 
 - 多服务器 Profile、严格 SSH 指纹确认、密码/私钥认证、连接状态和 CPU/内存/磁盘/网络指标；
-- Codex JSONL、OpenCode bridge 和 Claude Code bridge 的握手、会话列表/搜索、新建、恢复、历史处理和有界
-  事件解析；Codex/OpenCode 另支持模型列表；
+- Codex JSONL、OpenCode bridge 和 Claude Code bridge 的握手、会话列表/搜索、新建、恢复、历史处理、有界
+  事件解析和各自模型目录；
 - Work 页面发送/停止、审批和用户输入、权限模式、会话级模型/思考强度、草稿、上下文用量、压缩、
   回退、归档、重命名、代码审查和线程目标；
 - 时间线 reducer（消息、思考、计划、命令、文件修改、工具、图片和协作活动）、图片预览/保存、
@@ -82,7 +82,7 @@ Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capab
 - Agent 首次成功连接时的一次性工作目录提示、SFTP 目录浏览、确认保存和设置菜单手动重开；
 - Codex 与 OpenCode 固定版本运行时探测、当前 SSH 用户目录隔离安装、HTTP/HTTPS 下载代理、流式安装
   进度、最小化/失败重试、安装后复检和自动连接，以及只触碰当前用户托管路径的卸载脚本；
-- Codex 与 OpenCode 全局配置读取/保存、真实 API 连通性测试、OpenCode 自定义模型同步，以及按服务器 +
+- Codex、OpenCode 与 Claude Code 全局配置读取/保存、真实 API 连通性测试、OpenCode 自定义模型同步，以及按服务器 +
   Agent 的本地默认值持久化。
 
 仍未形成可交付端到端验收的部分必须明确标为“缺口”：本轮 Flutter test、新 debug APK 和高分辨率
@@ -127,7 +127,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/ssh/server_metrics.dart | Linux CPU、内存、磁盘和网络采样脚本及有界结果解析 | 当前运行 |
 | flutter_app/lib/src/ui/server_screen.dart | 服务器列表、设置编辑、私钥导入、连接遮罩和外链 | 当前运行 |
 | flutter_app/lib/src/ui/thread_list_screen.dart | Codex/OpenCode/Claude Code lane 切换、搜索/刷新、真实会话列表、新建入口、运行状态、工作目录、Agent 配置、终端和文件管理入口 | 当前运行；三种 Agent 均由真实 adapter 驱动，配置入口按 capability 显示 |
-| flutter_app/lib/src/ui/agent_settings_dialog.dart | 服务器实际配置、草稿 URL/Key/代理模型获取与下拉选择、模型/effort、Codex 自定义 Provider 的 WebSocket/HTTPS 传输选择、带动画的真实测试、回显和保存确认 | 当前运行；Codex/OpenCode 后端均已接入 |
+| flutter_app/lib/src/ui/agent_settings_dialog.dart | 服务器实际配置、草稿 URL/Key/代理模型获取与下拉选择、模型/effort、Codex 自定义 Provider 的 WebSocket/HTTPS 传输选择、带动画的真实测试、回显和保存确认 | 当前运行；Codex/OpenCode/Claude Code 后端均已接入 |
 | flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化；代理聚焦时收起运行时信息 | 当前运行；IME 安全，与旧 Compose 聚焦行为一致 |
 | flutter_app/lib/src/ui/workspace_picker_dialog.dart | 当前远端路径、父/子目录浏览、加载/错误显示和目录确认 | 当前运行 |
 | flutter_app/lib/src/ui/work_screen.dart | 当前线程时间线、Composer、附件选择/上传、审批、模型/自定义模型管理/权限、会话操作、图片预览/保存、远程文件保存、上下文环和子 Agent 子会话入口 | 当前运行 |
@@ -255,11 +255,11 @@ AppUiState 是 Flutter 展示状态，字段分为：
 | 页面 | screen、subAgentBackNavigation、debugModeEnabled | `screen` 与子 Agent 返回动画方向已使用；Debug 开关已连接持久化日志 |
 | Agent lane | agentConnectionStates、activeAgent、activeAgentCapabilities、agentThreadLists、agentModelLists、agentLoadingStates | Codex/OpenCode/Claude Code 均已使用并按 lane 隔离；不支持的目录保持为空 |
 | 当前会话 | threads、activeThread、timeline、olderTurnsCursor、activeTurnId、running、turnTiming、aggregateDiff | 三种 Agent 共用 Work 链路；具体操作按 capability 开关 |
-| 会话控制 | models、selectedModel、selectedEffort、approvalMode、sandbox、approval、approvalQueue、activeGoal | 三种 Agent 共用；模型、effort 和目标等操作按 capability 显示，Claude Code 沿用服务器模型配置 |
+| 会话控制 | models、selectedModel、selectedEffort、approvalMode、sandbox、approval、approvalQueue、activeGoal | 三种 Agent 共用；模型和 effort 按 lane、会话独立选择，其他操作按 capability 显示 |
 | 草稿/附件/上下文 | composerDraft、attachments、attachmentUploading、composerClearNonce、tokenUsage | 已使用；待发附件只属于当前活动会话，不长期持久化 |
 | 工作区 | workspacePickerVisible、workspaceLoading、workspaceCurrentPath、workspaceParentPath、workspaceDirectories、workspaceError | 已接入首次提示和手动目录浏览 |
 | 文件管理 | fileManagerProfileId、fileManagerLoading、fileManagerCurrentPath、fileManagerEntries、clipboard、operation、error | 控制器和 `FileManagerScreen` 已接入；按 profile/generation 校验 |
-| 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 仅探测已有 CLI 并安装/卸载连接组件，复用进度状态 |
+| 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 探测已有 CLI、安装/卸载连接组件并读取/保存原生 URL、Key、默认模型和 effort |
 
 应用自身更新不属于 `AppUiState`：`appUpdateProvider` 持有独立 `AppUpdateState`，记录已安装版本、检查中、
 可用 Release、是否自动提示和 DownloadManager 状态。不要把它混入某个服务器 profile，也不要把远程
@@ -659,8 +659,12 @@ initialize control 握手、`--permission-prompt-tool stdio` 和 `--resume`。�
 进程退出有界处理，上一 CLI 释放写入锁后才能开始下一轮，断开不承诺远端任务持续运行。
 
 已接入新建、搜索、恢复、历史分页、文本/图片输入、流式回复、工具折叠、批准/拒绝、提问、停止和重命名。
-模型沿用服务器 Claude 设置；本轮不声明模型目录、思考强度、全局配置、压缩、steer、回退、审查、目标、
-归档或子 Agent 独立导航能力。未知上下文窗口保持未知，不猜测 token 百分比。
+Claude lane 有独立模型目录，包含准确的 `claude-opus-5-5` wire ID；会话可覆盖模型和思考强度，未覆盖时
+沿用服务器设置。全局配置从当前 SSH 用户的 Claude 原生设置读取/保存 URL、Key、默认模型和 effort；
+测试对当前草稿发最小真实请求，保存前确认，连接组件安装和正常会话恢复不会改写这些值。读取已有
+服务器已有的 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 由 CLI/后端继续保留，App 不读取或修改该环境变量，也不据此修改实际模型窗口；上下文用量来自 CLI
+真实 usage，窗口未知时不猜测百分比，自定义模型容量仅作独立参考，不用于重算占用圆环。压缩、steer、回退、审查、目标、
+归档或子 Agent 独立导航能力仍关闭。
 
 App 创建的会话摘要和有界回合存入当前 SSH 用户的 `~/.local/share/codex-remote/claude-history`，
 按工作目录筛选列表；通过私有文件、原子替换与 writer lock 防止并发覆盖。读取损坏记录不会使其他会话消失。
@@ -1224,12 +1228,12 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 多服务器 | 同时连接 A/B，切换和断开不串状态 |
 | 资源指标 | 列表进入时立即采样，前台周期刷新；详情单位正确；断开和切后台后停止更新且不串服务器 |
 | 连接中 | 半透明遮罩覆盖全屏，中央只有圆环和下方取消连接按钮；Back 和重复点击被阻断，取消可退出，成功后无额外空白等待 |
-| Agent lane | SSH 已连接后 Codex/OpenCode/Claude Code 各自 initialize 成功；model/list 与 thread/list 独立失败不让页面崩溃，不支持模型目录的 lane 保持为空；切换 lane 不串状态 |
+| Agent lane | SSH 已连接后 Codex/OpenCode/Claude Code 各自 initialize 成功；model/list 与 thread/list 独立失败不让页面崩溃；切换 lane 不串状态 |
 | Codex 安装 | 无/旧版本时显示环境与路径；HTTP/HTTPS 代理、总体/下载进度、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表；系统同版本直接复用 |
 | Codex 卸载 | 删除整个 Codex Remote 托管 root、wrapper 和附件暂存；运行中的托管 app-server 被关闭；若曾安装 OpenCode 则需重新安装；系统 Codex、VS Code、~/.codex 和工作区保留 |
 | OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表正确；固定 1.18.11 与打包 bridge 同时匹配才复用 |
 | OpenCode 卸载 | 只删除 OpenCode 托管子目录和 wrapper；共享 Node、Codex、附件暂存、~/.codex、VS Code 和工作区保留 |
-| Agent 全局配置 | Codex/OpenCode 都从服务器读取实际 URL/Provider/模型/effort/代理/Key；Codex 自定义 Provider 额外读取并保存 `supports_websockets`（自动/启用/仅 HTTPS）；保存后二次确认和断线；测试按显式协议发真实最小请求且不保存 |
+| Agent 全局配置 | Codex/OpenCode 从服务器读取实际 URL/Provider/模型/effort/代理/Key；Claude Code 读取/保存原生 URL/Key/默认模型/effort，保留已有上下文配置；Codex 自定义 Provider 另有 WebSocket 策略；保存需二次确认并重连当前 Agent，测试发真实最小请求且不保存 |
 | 工作目录 | 纯 SSH 不弹；当前 Agent 首次成功只弹一次并立即记忆；浏览/上一级/错误/稍后/确认正确；连续请求、切服务器/Agent和断线不串结果 |
 | 会话 | 新建、搜索、刷新、重进缓存、180 秒恢复、历史下拉分页和运行转圈不串服务器/Agent |
 | Work | 发送/流式输出/停止、审批和 user-input、权限切换、模型/草稿恢复、上下文缓存、压缩/回退/归档/重命名/审查/目标 |
@@ -1446,9 +1450,9 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ## 17. 已知限制
 
-- Claude Code 已接入 Linux SSH，但需要服务器预先安装并登录 CLI；本轮不自动安装 Claude、不导入原生
-  CLI 历史、不提供 Windows 原生 Host 或 App 内 Claude 全局配置。真实 CLI + 本地模型协议 fixture
-  不代表用户服务器认证、实际模型供应商、ARM64 PRoot 或厂商后台长时行为已完成验收。
+- Claude Code 已接入 Linux SSH，但需要服务器预先安装并配置 CLI；本轮不自动安装 Claude、不导入原生
+  CLI 历史、不提供 Windows 原生 Host。Opus 5.5 经用户授权的服务器真实网关完成两轮请求和桥接重启续聊；
+  这不代表其他模型、ARM64 PRoot、真机长时后台或断线行为已验收。
 - OpenCode adapter、bridge、真实会话/回合协议、固定版本安装/卸载、全局配置和模型同步代码均已接入，
   但尚未在授权真实服务器验证固定版本下载、实际 Provider/API、长时 turn/steer/interrupt、断线和后台
   行为；rollback、review、thread goals、subagents、archive 和独立历史 cursor capability 当前关闭。

@@ -67,14 +67,35 @@ void main({bool device = false}) {
 
       await tester.tap(find.byTooltip('设置'));
       await _pump(tester);
-      expect(find.text('配置 Claude Code'), findsNothing);
+      expect(find.text('配置 Claude Code'), findsOneWidget);
       expect(find.text('Codex 版本'), findsNothing);
       Navigator.of(tester.element(find.text('选择工作目录'))).pop();
       await _pump(tester);
       await tester.tap(find.byTooltip('新建会话'));
       await _pump(tester);
       expect(h.controller.state.activeThread?.id, _threadId);
-      expect(find.byKey(const Key('composer-model-button')), findsNothing);
+      expect(find.byKey(const Key('composer-model-button')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('composer-model-button')));
+      await _pump(tester);
+      await tester.tap(find.text('Claude Opus 5.5'));
+      await _pump(tester);
+      expect(h.controller.state.selectedModel, 'claude-opus-5-5');
+      await tester.tap(find.widgetWithText(FilterChip, '高'));
+      await _pump(tester);
+      expect(h.controller.state.selectedEffort, 'high');
+      // A model without effort metadata must not retain the previous model's
+      // selection. Switching back exposes the supported controls again.
+      await tester.tap(find.text('Claude Haiku 4.5'));
+      await _pump(tester);
+      expect(h.controller.state.selectedEffort, isNull);
+      expect(find.text('思考强度'), findsNothing);
+      await tester.tap(find.text('Claude Opus 5.5'));
+      await _pump(tester);
+      await tester.tap(find.widgetWithText(FilterChip, '高'));
+      await _pump(tester);
+      Navigator.of(tester.element(find.text('Claude Opus 5.5'))).pop();
+      await _pump(tester);
 
       // Claude exposes only request-approval and full-access modes. Cancelling
       // the destructive confirmation must leave the effective mode unchanged.
@@ -93,7 +114,7 @@ void main({bool device = false}) {
 
       await tester.tap(find.byKey(const Key('composer-action-menu')));
       await _pump(tester);
-      expect(find.text('选择模型'), findsNothing);
+      expect(find.text('选择模型'), findsOneWidget);
       expect(find.text('压缩会话'), findsNothing);
       // Dismiss the menu through its barrier, leaving the work route intact.
       await tester.tapAt(const Offset(12, 120));
@@ -107,6 +128,13 @@ void main({bool device = false}) {
         h.claude.requests.where((r) => r['method'] == 'turn/start'),
         hasLength(1),
       );
+      final sentTurn =
+          h.claude.requests.singleWhere(
+                (r) => r['method'] == 'turn/start',
+              )['params']
+              as Map;
+      expect(sentTurn['model'], 'claude-opus-5-5');
+      expect(sentTurn['effort'], 'high');
       expect(find.text('请检查工程'), findsOneWidget);
       h.claude.delta('已检查');
       await _pump(tester);
@@ -154,7 +182,29 @@ void main({bool device = false}) {
         hasLength(1),
       );
       expect(h.controller.state.running, isFalse);
-      expect(find.text('保留停止前输出'), findsOneWidget);
+      expect(
+        h.controller.state.timeline.any((entry) => entry.text == '保留停止前输出'),
+        isTrue,
+      );
+      // The Android IME can change the transcript viewport while the stop
+      // confirmation is dismissed. The transcript is a centered lazy sliver,
+      // so an older row may not be mounted even though the reducer retained
+      // it. Scroll to the retained row before asserting its rendered output.
+      final preservedOutput = find.text('保留停止前输出');
+      if (preservedOutput.evaluate().isEmpty) {
+        final transcriptScrollable = find.descendant(
+          of: find.byKey(const Key('transcript-scrollbar')),
+          matching: find.byType(Scrollable),
+        );
+        expect(transcriptScrollable, findsOneWidget);
+        await tester.scrollUntilVisible(
+          preservedOutput,
+          240,
+          scrollable: transcriptScrollable,
+        );
+        await _pump(tester);
+      }
+      expect(preservedOutput, findsOneWidget);
       expect(h.controller.state.error, isNull);
 
       await tester.tap(find.byTooltip('返回会话列表'));
@@ -411,7 +461,27 @@ class _Session implements CodexSession {
       case 'thread/turns/list':
         result = {'data': turns.reversed.toList(), 'nextCursor': null};
       case 'model/list':
-        result = {'data': []};
+        result = {
+          'data': claude
+              ? [
+                  {
+                    'id': 'claude-opus-5-5',
+                    'model': 'claude-opus-5-5',
+                    'displayName': 'Claude Opus 5.5',
+                    'defaultReasoningEffort': 'medium',
+                    'supportedReasoningEfforts': [
+                      for (final effort in ['low', 'medium', 'high', 'max'])
+                        {'reasoningEffort': effort},
+                    ],
+                  },
+                  {
+                    'id': 'claude-haiku-4-5',
+                    'model': 'claude-haiku-4-5',
+                    'displayName': 'Claude Haiku 4.5',
+                  },
+                ]
+              : [],
+        };
       case 'turn/start':
         reply = '';
         final input = params['input'] as List;

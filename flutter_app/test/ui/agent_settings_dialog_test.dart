@@ -5,6 +5,249 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  const claudeModels = [
+    AgentModel(
+      id: 'claude-opus-5-5',
+      model: 'claude-opus-5-5',
+      displayName: 'Opus 5.5',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'high',
+    ),
+    AgentModel(id: 'claude-haiku-4-5', displayName: 'Haiku 4.5'),
+  ];
+  const claudeState = AppUiState(
+    selectedProfileId: 'server-one',
+    profiles: [ServerProfile(id: 'server-one')],
+    activeAgent: AgentKind.claudeCode,
+    activeAgentCapabilities: AgentCapabilities.claudeCode,
+    models: claudeModels,
+    agentSettingsVisible: true,
+    agentSettings: AgentGlobalSettings(
+      baseUrl: 'https://claude.example.test',
+      model: 'claude-opus-5-5',
+      modelProvider: 'anthropic',
+      reasoningEffort: 'high',
+      apiKey: 'fixture-only-key',
+      hasStoredAuthentication: true,
+    ),
+  );
+
+  testWidgets(
+    'Claude settings use Messages and preserve unchanged credentials',
+    (tester) async {
+      String? savedKey;
+      String? savedUrl;
+      String? savedModel;
+      String? savedEffort;
+      await tester.pumpWidget(
+        _DialogHarness(
+          state: claudeState,
+          onSave:
+              ({
+                required baseUrl,
+                required apiKey,
+                required proxyUrl,
+                required defaultModel,
+                required defaultReasoningEffort,
+                required testModel,
+                required websocketPolicy,
+                required preserveCurrentProvider,
+              }) {
+                savedKey = apiKey;
+                savedUrl = baseUrl;
+                savedModel = defaultModel;
+                savedEffort = defaultReasoningEffort;
+                expect(preserveCurrentProvider, isTrue);
+              },
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('配置 Claude Code'), findsOneWidget);
+      expect(find.text('协议：Anthropic Messages'), findsOneWidget);
+      expect(find.textContaining('OpenAI'), findsNothing);
+      expect(find.textContaining('OpenCode'), findsNothing);
+      expect(find.textContaining('Provider：'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('agent-settings-websocket-policy')),
+        findsNothing,
+      );
+      final effort = tester.widget<DropdownButton<String>>(
+        find.byKey(const ValueKey('agent-settings-reasoning-effort')),
+      );
+      expect(effort.items!.map((item) => item.value), [
+        '',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
+      await _enterText(
+        tester,
+        'agent-settings-base-url',
+        'https://new.example.test',
+      );
+      await tester.tap(find.byKey(const ValueKey('agent-settings-save')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('重新连接 Claude Code'), findsWidgets);
+      await tester.tap(
+        find.byKey(const ValueKey('agent-settings-confirm-save')),
+      );
+      await tester.pumpAndSettle();
+      expect(savedKey, '');
+      expect(savedUrl, 'https://new.example.test');
+      expect(savedModel, 'claude-opus-5-5');
+      expect(savedEffort, 'high');
+    },
+  );
+
+  testWidgets(
+    'Claude effort options follow model changes and unknown aliases',
+    (tester) async {
+      await tester.pumpWidget(const _DialogHarness(state: claudeState));
+      await tester.pumpAndSettle();
+      await _enterText(
+        tester,
+        'agent-settings-default-model',
+        'claude-haiku-4-5',
+      );
+      var effort = tester.widget<DropdownButton<String>>(
+        find.byKey(const ValueKey('agent-settings-reasoning-effort')),
+      );
+      expect(effort.value, '');
+      expect(effort.items!.map((item) => item.value), ['']);
+      await _enterText(
+        tester,
+        'agent-settings-default-model',
+        'provider-custom-alias',
+      );
+      effort = tester.widget<DropdownButton<String>>(
+        find.byKey(const ValueKey('agent-settings-reasoning-effort')),
+      );
+      expect(effort.items!.map((item) => item.value), ['']);
+      await _enterText(
+        tester,
+        'agent-settings-default-model',
+        'claude-opus-5-5',
+      );
+      effort = tester.widget<DropdownButton<String>>(
+        find.byKey(const ValueKey('agent-settings-reasoning-effort')),
+      );
+      expect(effort.items!.map((item) => item.value), contains('max'));
+      expect(
+        effort.items!.map((item) => item.value),
+        isNot(contains('minimal')),
+      );
+    },
+  );
+
+  testWidgets('Claude unknown model saves default effort only', (tester) async {
+    String? savedEffort;
+    await tester.pumpWidget(
+      _DialogHarness(
+        state: claudeState,
+        onSave:
+            ({
+              required baseUrl,
+              required apiKey,
+              required proxyUrl,
+              required defaultModel,
+              required defaultReasoningEffort,
+              required testModel,
+              required websocketPolicy,
+              required preserveCurrentProvider,
+            }) {
+              savedEffort = defaultReasoningEffort;
+              expect(defaultModel, 'provider-custom-alias');
+            },
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _enterText(
+      tester,
+      'agent-settings-default-model',
+      'provider-custom-alias',
+    );
+    await tester.tap(find.byKey(const ValueKey('agent-settings-save')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('agent-settings-confirm-save')));
+    await tester.pumpAndSettle();
+    expect(savedEffort, isEmpty);
+  });
+
+  testWidgets(
+    'Claude draft model discovery, testing and keyboard remain usable',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(360, 800);
+      tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      AgentSettingsTestValues? tested;
+      await tester.pumpWidget(
+        _DialogHarness(
+          state: claudeState,
+          onFetchModels:
+              ({required baseUrl, required apiKey, required proxyUrl}) async {
+                expect(baseUrl, 'https://claude.example.test');
+                expect(apiKey, 'fixture-only-key');
+                return const [
+                  ApiModelOption(
+                    modelId: 'claude-opus-5-5',
+                    displayName: 'Opus 5.5',
+                  ),
+                ];
+              },
+          onTest:
+              ({
+                required baseUrl,
+                required apiKey,
+                required proxyUrl,
+                required testModel,
+              }) {
+                tested = AgentSettingsTestValues(
+                  baseUrl: baseUrl,
+                  apiKey: apiKey,
+                  proxyUrl: proxyUrl,
+                  testModel: testModel,
+                );
+              },
+        ),
+      );
+      await tester.pumpAndSettle();
+      final fetch = find.byKey(
+        const ValueKey('agent-settings-fetch-test-models'),
+      );
+      await tester.ensureVisible(fetch);
+      await tester.tap(fetch);
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(
+          const ValueKey('agent-settings-model-option-claude-opus-5-5'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final modelField = find.byKey(
+        const ValueKey('agent-settings-test-model'),
+      );
+      expect(_text(tester, 'agent-settings-test-model'), 'claude-opus-5-5');
+      await tester.ensureVisible(modelField);
+      await tester.tap(modelField);
+      await tester.pump();
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.pumpAndSettle();
+      expect(tester.getRect(modelField).bottom, lessThanOrEqualTo(500));
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('agent-settings-test')),
+      );
+      await tester.tap(find.byKey(const ValueKey('agent-settings-test')));
+      await tester.pump();
+      expect(tested?.testModel, 'claude-opus-5-5');
+      expect(tested?.apiKey, 'fixture-only-key');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets(
     'shows the Codex fields in Compose order and reveals the API key',
     (tester) async {

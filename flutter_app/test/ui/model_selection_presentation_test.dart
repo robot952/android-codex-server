@@ -39,4 +39,68 @@ void main() {
     expect(formatModelTokenLimit(8192), '8192');
     expect(modelCapabilityLabel(models.last), isEmpty);
   });
+
+  test('Claude model changes never reinterpret an existing usage sample', () {
+    const custom = AgentModel(
+      id: 'claude-opus-5-5',
+      isCustom: true,
+      contextWindowTokens: 200000,
+    );
+    const explicitLimit = <CustomModelDefinition>[
+      CustomModelDefinition(
+        modelId: 'claude-opus-5-5',
+        contextWindowTokens: 200000,
+      ),
+    ];
+    const usage = TokenUsage(
+      last: TokenUsageBreakdown(inputTokens: 40000, totalTokens: 40000),
+      modelContextWindow: 1000000,
+    );
+    expect(explicitCustomContextWindow(custom, explicitLimit), 200000);
+    final displayed = displayedContextUsage(
+      agent: AgentKind.claudeCode,
+      usage: usage,
+    );
+    expect(displayed, same(usage));
+    expect(displayed?.modelContextWindow, 1000000);
+    expect(displayed?.last.totalTokens, 40000);
+    // The current model's reference window may change to 80K, but the
+    // previous model's 1M-window sample must keep its original denominator.
+    expect(
+      explicitCustomContextWindow(custom.copyWith(id: 'other-model'), const [
+        CustomModelDefinition(
+          modelId: 'other-model',
+          contextWindowTokens: 80000,
+        ),
+      ]),
+      80000,
+    );
+    expect(
+      displayedContextUsage(agent: AgentKind.claudeCode, usage: usage),
+      same(usage),
+    );
+    expect(
+      displayedContextUsage(agent: AgentKind.claudeCode, usage: null),
+      isNull,
+    );
+    expect(
+      displayedContextUsage(
+        agent: AgentKind.claudeCode,
+        usage: const TokenUsage(modelContextWindow: 1000000),
+      ),
+      isNull,
+    );
+    expect(
+      displayedContextUsage(agent: AgentKind.codex, usage: usage),
+      same(usage),
+    );
+    expect(
+      displayedContextUsage(
+        agent: AgentKind.claudeCode,
+        usage: const TokenUsage(last: TokenUsageBreakdown(totalTokens: 40000)),
+      ),
+      const TokenUsage(last: TokenUsageBreakdown(totalTokens: 40000)),
+    );
+    expect(reasoningEffortDisplayLabel('max'), '最高');
+  });
 }

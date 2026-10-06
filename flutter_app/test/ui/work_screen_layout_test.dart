@@ -1343,6 +1343,89 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Claude model switches preserve the reported context window', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 900);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    const initial = AppUiState(
+      screen: AppScreen.work,
+      selectedProfileId: 'claude-profile',
+      profiles: [
+        ServerProfile(
+          id: 'claude-profile',
+          agentModelSettings: {
+            AgentKind.claudeCode: AgentModelSettings(
+              customModels: [
+                CustomModelDefinition(
+                  modelId: 'custom-model',
+                  contextWindowTokens: 80000,
+                ),
+              ],
+            ),
+          },
+        ),
+      ],
+      activeThread: AgentThread(id: 'claude-context', title: '上下文回归'),
+      activeAgent: AgentKind.claudeCode,
+      activeAgentCapabilities: AgentCapabilities.claudeCode,
+      models: [
+        AgentModel(id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5'),
+        AgentModel(
+          id: 'custom-model',
+          isCustom: true,
+          contextWindowTokens: 80000,
+        ),
+      ],
+      selectedModel: 'claude-opus-5-5',
+      tokenUsage: TokenUsage(
+        last: TokenUsageBreakdown(inputTokens: 40000, totalTokens: 40000),
+        modelContextWindow: 1000000,
+      ),
+    );
+    controller.showState(initial);
+    await tester.pumpAndSettle();
+    expect(find.text('4%'), findsOneWidget);
+
+    controller.showState(initial.copyWith(selectedModel: 'custom-model'));
+    await tester.pumpAndSettle();
+    expect(find.text('4%'), findsOneWidget);
+    expect(find.text('50%'), findsNothing);
+    await tester.tap(find.byKey(const Key('composer-context-usage')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('自定义参考上限 80.0k'), findsOneWidget);
+    expect(find.textContaining('占用按 Claude Code 返回的上限计算'), findsOneWidget);
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+
+    // The next CLI sample replaces the previous model's report. A missing
+    // window remains unknown, even while a custom model has a reference limit.
+    controller.showState(
+      controller.state.copyWith(
+        tokenUsage: const TokenUsage(
+          last: TokenUsageBreakdown(totalTokens: 40000),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('?'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('composer-context-usage')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('上下文上限未知'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   test('camera photo is prepared as an image attachment', () async {
     final directory = await Directory.systemTemp.createTemp(
       'work-camera-test-',

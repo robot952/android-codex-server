@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 node --check flutter_app/assets/claude-code-bridge.cjs
+node --check flutter_app/assets/claude-code-settings.cjs
+node scripts/test-claude-code-settings.cjs
 node scripts/test-claude-code-bridge.cjs
 CLAUDE_CODE_TEST_BIN="${CLAUDE_CODE_TEST_BIN:-$(command -v claude || true)}"
 if [[ -n "$CLAUDE_CODE_TEST_BIN" ]]; then

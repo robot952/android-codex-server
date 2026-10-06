@@ -37,6 +37,7 @@ String reasoningEffortDisplayLabel(String effort) => switch (effort.trim()) {
   'medium' => '中',
   'high' => '高',
   'xhigh' => '极高',
+  'max' => '最高',
   final value => value,
 };
 
@@ -52,3 +53,27 @@ String modelCapabilityLabel(AgentModel model) {
 
 String formatModelTokenLimit(int value) =>
     value >= 1000 && value % 1000 == 0 ? '${value ~/ 1000}K' : '$value';
+
+/// Usage does not identify its source model. A newly selected model cannot be
+/// used to reinterpret a sample captured before that selection.
+TokenUsage? displayedContextUsage({
+  required AgentKind agent,
+  required TokenUsage? usage,
+}) {
+  if (agent != AgentKind.claudeCode) return usage;
+  if (usage == null || usage.last.totalTokens <= 0) return null;
+  return usage;
+}
+
+int explicitCustomContextWindow(
+  AgentModel? model,
+  Iterable<CustomModelDefinition> customModels,
+) {
+  if (model?.isCustom != true) return 0;
+  for (final custom in customModels) {
+    if (custom.modelId == model!.model || custom.modelId == model.id) {
+      return custom.contextWindowTokens;
+    }
+  }
+  return 0;
+}

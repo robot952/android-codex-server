@@ -1116,6 +1116,14 @@ class _SettingsAgent extends _FailingTurnAgent
   }
 }
 
+class _ClaudeSettingsAgent extends _SettingsAgent {
+  @override
+  AgentKind get kind => AgentKind.claudeCode;
+
+  @override
+  AgentCapabilities get capabilities => AgentCapabilities.claudeCode;
+}
+
 class _RuntimeAgent extends _FailingTurnAgent
     implements RemoteAgentRuntimeClient {
   bool installed = false;
@@ -4749,6 +4757,105 @@ void main() {
     expect(harness.controller.state.selectedModel, 'gpt-5.2-codex');
     expect(harness.controller.state.selectedEffort, 'high');
   });
+
+  test(
+    'Claude model, effort and settings stay in their own Agent lane',
+    () async {
+      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final claude = _ClaudeSettingsAgent()
+        ..readValue = const AgentGlobalSettings(
+          modelProvider: 'anthropic',
+          model: 'm-claude',
+          hasStoredAuthentication: true,
+        )
+        ..modelList = const [
+          AgentModel(id: 'm-claude', model: 'm-claude', isDefault: true),
+          AgentModel(
+            id: 'claude-opus-5-5',
+            model: 'claude-opus-5-5',
+            defaultEffort: 'medium',
+            efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          ),
+          AgentModel(id: 'claude-haiku-4-5', model: 'claude-haiku-4-5'),
+        ];
+      final codex = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => kind == AgentKind.claudeCode ? claude : codex,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      controller.selectAgent(AgentKind.claudeCode);
+      await controller.ensureActiveAgent();
+      await controller.showAgentSettings();
+      await controller.saveAgentSettings(
+        baseUrl: 'https://claude.example',
+        apiKey: '',
+        proxyUrl: '',
+        defaultModel: 'claude-opus-5-5',
+        defaultReasoningEffort: 'MAX',
+        testModel: 'claude-opus-5-5',
+        websocketPolicy: 'auto',
+        preserveCurrentProvider: true,
+      );
+      expect(claude.writtenDefaultModel, 'claude-opus-5-5');
+      expect(claude.writtenDefaultEffort, 'max');
+      expect(host.connected, isTrue);
+      expect(
+        store.value.profiles.single
+            .modelSettings(AgentKind.codex)
+            .preferredModel,
+        isEmpty,
+      );
+      expect(
+        store.value.profiles.single
+            .modelSettings(AgentKind.claudeCode)
+            .preferredEffort,
+        'max',
+      );
+      controller.openThread(_FailingTurnAgent.thread);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread != null && !controller.state.loading,
+      );
+      controller.selectThreadModel('claude-opus-5-5', effort: 'xhigh');
+      final preferenceKey = threadPreferenceKey(
+        profile.id,
+        AgentKind.claudeCode,
+        _FailingTurnAgent.thread.id,
+      );
+      await _waitUntil(
+        () =>
+            store.value.threadModelPreferences[preferenceKey]?.effort ==
+            'xhigh',
+      );
+      await controller.sendMessage(text: 'Opus test');
+      expect(claude.startedModel, 'claude-opus-5-5');
+      expect(claude.startedEffort, 'xhigh');
+      // A profile-wide Opus preference must not leak into a no-effort model.
+      controller.selectThreadModel('claude-haiku-4-5');
+      expect(controller.state.selectedEffort, isNull);
+      await controller.sendMessage(text: 'Haiku test');
+      expect(claude.startedModel, 'claude-haiku-4-5');
+      expect(claude.startedEffort, isNull);
+      controller.selectThreadModel('my-deployment');
+      expect(controller.state.selectedModel, 'my-deployment');
+      expect(controller.state.selectedEffort, isNull);
+      controller.selectThreadEffort('ultra');
+      expect(controller.state.error, contains('Claude Code'));
+    },
+  );
 
   test(
     'returns through two nested Agent conversations one level at a time',
