@@ -518,12 +518,15 @@ class ClaudeBridge {
     this.send = send;
     this.active = new Map();
     this.approvals = new Map();
+    // A delegated conversation is written by its parent's run, so it has no
+    // writer lock of its own. Opening one mid-run must still read as running.
+    this.childThreads = new Map();
     this.stopping = false;
   }
   response(id, result) { if (id !== undefined) this.send({ id, result }); }
   error(id, error, code = -32000) { if (id !== undefined) this.send({ id, error: { code, message: bounded(error.message || error, 4000) } }); }
   notify(method, params) { this.send({ method, params }); }
-  view(thread) { return threadView(thread, this.store.hasWriter(thread.id) && !!thread.activeTurnId); }
+  view(thread) { return threadView(thread, (!!thread.activeTurnId) && (this.childThreads.has(thread.id) || this.store.hasWriter(thread.id))); }
   page(thread, params = {}) {
     const desc = params.sortDirection !== "asc";
     let end = desc ? thread.turnIds.length : 0;
@@ -537,7 +540,7 @@ class ClaudeBridge {
     const data = ids.map(id => {
       const running = this.active.get(thread.id);
       const turn = clone(running?.turn.id === id ? running.turn : this.store.readTurn(thread, id));
-      if (turn.status === "inProgress" && !this.store.hasWriter(thread.id)) turn.status = "interrupted";
+      if (turn.status === "inProgress" && !this.childThreads.has(thread.id) && !this.store.hasWriter(thread.id)) turn.status = "interrupted";
       if (params.itemsView === "notLoaded") { turn.items = []; turn.itemsView = "notLoaded"; }
       else if (params.itemsView === "summary") {
         turn.items = turn.items.map(item => ({ ...item, text: bounded(item.text, 4000), result: bounded(item.result, 4000) }));
@@ -698,6 +701,7 @@ class ClaudeBridge {
     for (const child of this.children(run).values()) {
       if (child.status !== "running") continue;
       child.settle(status);
+      if (this.childThreads.get(child.id) === child) this.childThreads.delete(child.id);
       try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
       const kind = status === "completed" ? "completed" : "interrupted";
       this.activity(run, child, kind, status === "completed" ? "completed" : "interrupted");
@@ -722,11 +726,11 @@ class ClaudeBridge {
     if (!current.claudeSessionId) throw new Error("当前会话尚未在服务器上建立 Claude Code 原生会话，请先发送一条消息");
     if (this.active.size >= 8) throw new Error("同时运行的 Claude Code 会话过多");
     const compactionId = uuid();
+    // The notice turn is registered and written by start(), together with its
+    // own turn file. Registering it here would leave a turn id in the history
+    // whose file start() never wrote whenever start() rejects the pass, and the
+    // App cannot page past a missing turn file.
     const turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [{ id: compactionId, type: "contextCompaction", status: "inProgress" }] };
-    // The notice lives in its own turn, so the turn has to join the history the
-    // App pages through or the card would never be readable again.
-    current.turnIds.push(turn.id);
-    this.store.save(current);
     // `/compact` is a local command: it reads the resumed session, summarises
     // it, and persists the rewritten session. Its own turn carries only the
     // notice card, so the user sees the compression and nothing else.
@@ -968,6 +972,7 @@ class ClaudeBridge {
           const alias = resultAgentId(toolResultText(block));
           if (alias) { child.agentId = alias; this.bindChildName(run, child, alias); }
           child.settle(block.is_error ? "failed" : "completed");
+          if (this.childThreads.get(child.id) === child) this.childThreads.delete(child.id);
           try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
           this.activity(run, child, block.is_error ? "interrupted" : "completed", block.is_error ? "interrupted" : "completed");
           continue;
@@ -1034,6 +1039,7 @@ class ClaudeBridge {
     if (children.size >= 16) return;
     const child = new ChildAgent({ run, store: this.store }, block.input || {});
     children.set(block.id, child);
+    if (!this.childThreads.has(child.id)) this.childThreads.set(child.id, child);
     for (const alias of [child.name, child.agentId]) this.bindChildName(run, child, alias);
     this.activity(run, child, "started", "inProgress");
     this.changed(run);
@@ -1278,6 +1284,7 @@ class ClaudeBridge {
   stop() {
     if (this.stopping) return;
     this.stopping = true;
+    this.childThreads.clear();
     for (const run of this.active.values()) { this.finish(run, "interrupted", "连接已关闭"); this.terminate(run); }
   }
 }

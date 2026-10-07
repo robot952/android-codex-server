@@ -244,6 +244,22 @@ function fakeClaudeMain() {
         { type: "tool_use", id: "relay-address", name: "SendMessage", input: { to: "a1b2c3d4e5f6", summary: "再次跟进", message: "请补充第二个文件的结论" } },
       ] } });
       result("DELEGATION_DONE");
+    } else if (scenario === "delegation-live") {
+      // A delegated conversation stays open while the parent is still working.
+      // The child is written by the parent's run, so it has no writer of its
+      // own and must still read as running to anyone who opens it.
+      send({ type: "assistant", message: { id: "live-spawn-message", content: [
+        { type: "tool_use", id: "live-spawn", name: "Task", input: { subagent_type: "Explore", description: "长时间检索", prompt: "检索整个仓库" } },
+      ] } });
+      send({ type: "assistant", parent_tool_use_id: "live-spawn", message: { id: "live-child-message", content: [{ type: "text", text: "仍在检索中" }] } });
+      // The closing report is held back until the test releases the fixture, so
+      // the child stays open while its own page is read.
+      const gate = setInterval(() => {
+        if (!fs.existsSync(workspaceFile("live-release"))) return;
+        clearInterval(gate);
+        send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "live-spawn", content: "检索完成。\nagentId: f6e5d4c3b2a1" }] } });
+        result("DELEGATION_LIVE_DONE");
+      }, 10);
     } else if (message.message.content[0].text === "/compact") {
       // `/compact` is a local command: the CLI rewrites the resumed session,
       // reports the boundary, and produces no conversational output of its own.
@@ -950,6 +966,58 @@ test("compaction without a boundary fails with a reason instead of timing out", 
   assert.equal(JSON.stringify(turns).includes("COMPACTION_WITHOUT_BOUNDARY"), false);
   const error = await peer.request("thread/compact/start", { threadId: crypto.randomUUID() });
   assert.ok(error.error);
+});
+
+test("a running delegated conversation reads as running on its own page", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "delegation-live");
+  const spawned = await peer.wait(value => value.method === "item/completed" && value.params.item?.type === "subAgentActivity", turn.after);
+  const childId = spawned.params.item.agentThreadId;
+  // The child's own answer is stored before the page is read but is not
+  // announced on the parent's transport, so wait for the fixture to stop
+  // writing rather than racing it.
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const live = await peer.ok("thread/read", { threadId: childId });
+  assert.equal(live.thread.status, "active");
+  // The child's turn file is written on a debounce, so the page reports
+  // whatever has been persisted; the thread status is what proves the page
+  // knows the delegation is still live.
+  assert.equal(live.initialTurnsPage.data.length, 1);
+  fs.writeFileSync(path.join(root, "live-release"), "");
+  await peer.complete(turn);
+  const settled = await peer.ok("thread/read", { threadId: childId });
+  assert.equal(settled.thread.status, "idle");
+  assert.equal(settled.initialTurnsPage.data[0].status, "completed");
+  assert.deepEqual(assistantTexts(settled.initialTurnsPage.data[0]), ["仍在检索中"]);
+});
+
+test("a compaction pass rejected before it starts leaves no unreadable turn behind", async ({ peer, root }) => {
+  const id = await peer.thread();
+  await peer.complete(await peer.turn(id, "compact", { model: "fixture-model" }));
+  const before = (await peer.ok("thread/resume", { threadId: id })).thread;
+  // A setting the pass cannot read makes start() reject the compaction after
+  // its notice turn was built. Registering that turn before start() accepted it
+  // would persist a turn id whose turn file never got written, and history
+  // paging reads every id in the page, so the whole conversation would stop
+  // loading.
+  const configuration = path.join(root, ".claude", "settings.json");
+  fs.mkdirSync(path.dirname(configuration), { recursive: true });
+  fs.writeFileSync(configuration, "{not json");
+  const rejected = await peer.request("thread/compact/start", { threadId: id });
+  assert.ok(rejected.error);
+  fs.rmSync(configuration, { force: true });
+
+  const after = (await peer.ok("thread/resume", { threadId: id })).thread;
+  assert.deepEqual(after.turnIds, before.turnIds);
+  assert.equal(after.status, "idle");
+  assert.equal(after.activeTurnId, null);
+  // Every registered turn must still be readable, and the conversation usable.
+  const turns = await peer.history(id);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].status, "completed");
+  assert.equal(turns.some(turn => turn.items.some(item => item.type === "contextCompaction")), false);
+  await peer.complete(await peer.turn(id, "fallback"));
+  assert.equal(auditFor(root).filter(value => value.type === "spawn").length, 2);
 });
 
 test("malformed client JSON receives a parse error and shuts down safely", async ({ peer }) => {
