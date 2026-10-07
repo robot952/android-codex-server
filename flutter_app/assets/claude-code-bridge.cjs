@@ -194,6 +194,25 @@ function resultAgentId(text) {
   return match ? match[1] : "";
 }
 
+// A spawn result is the answer followed by two lines of plumbing: the address
+// later SendMessage calls use, and a `<usage>` block with that call's token
+// count. Both belong to the delegation, not to what the agent said, and the
+// address also carries a parenthetical instruction (`use SendMessage with to:
+// …`) that is meaningless on the sub-agent's page. The CLI appends them in
+// either order and some builds print only one, so the whole tail is peeled off
+// rather than matched once.
+const REPORT_TAIL = /(\n[ \t]*agent_?id\s*[:=]\s*[^\n]*|\n[ \t]*<usage>[\s\S]*?<\/usage>[ \t]*|\n[ \t]*<\/?usage>[^\n]*)[ \t]*$/i;
+
+function stripReportTail(text) {
+  let value = String(text || "");
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = value.replace(REPORT_TAIL, "");
+    if (next === value) break;
+    value = next;
+  }
+  return value.trim();
+}
+
 // `Explore` alone cannot tell three delegated searches apart, so the label the
 // App shows comes from the description the parent wrote. The subagent type
 // stays the address: a SendMessage names teammates by it.
@@ -1015,12 +1034,11 @@ class ClaudeBridge {
           // parent page, only the child's terminal status, so it is filed on
           // the child before the turn is written.
           const report = block.is_error ? "" : toolResultText(block);
-          // The address the report ends with is bridge plumbing, not something
-          // the delegated agent said. The `agentId` is deliberately not part of
-          // the address syntax: one called `agent_1` would survive this.
+          // Read the address off the raw text: the strip below removes the line
+          // that carries it.
           const alias = resultAgentId(report);
           if (alias) { child.agentId = alias; this.bindChildName(run, child, alias); }
-          child.report(report.replace(/\n?agent_?id\s*[:=]\s*[A-Za-z0-9_.:-]{4,80}\s*$/i, ""));
+          child.report(stripReportTail(report));
           child.settle(block.is_error ? "failed" : "completed");
           if (this.childThreads.get(child.id) === child) this.childThreads.delete(child.id);
           try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}

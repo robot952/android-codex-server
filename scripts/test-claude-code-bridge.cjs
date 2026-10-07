@@ -241,8 +241,10 @@ function fakeClaudeMain() {
       send({ type: "user", message: { content: [
         { type: "tool_result", tool_use_id: "relay-one", content: "已转达" },
       ] } });
+      // The CLI appends its bookkeeping after the answer: the address and then a
+      // `<usage>` block. Neither is part of what the agent said.
       send({ type: "user", message: { content: [
-        { type: "tool_result", tool_use_id: "spawn-one", content: "解析器已定位。\nagentId: a1b2c3d4e5f6" },
+        { type: "tool_result", tool_use_id: "spawn-one", content: "解析器已定位。\nagentId: a1b2c3d4e5f6 (use SendMessage with to: 'a1b2c3d4e5f6' to continue this agent)\n<usage>total_tokens: 33446\ntool_uses: 5\nduration_ms: 45100</usage>" },
       ] } });
       // After the report, the parent may address the same collaborator by its
       // `agentId` instead of its name.
@@ -281,6 +283,21 @@ function fakeClaudeMain() {
         send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "live-spawn", content: "检索完成。\nagentId: f6e5d4c3b2a1" }] } });
         result("DELEGATION_LIVE_DONE");
       }, 10);
+    } else if (scenario === "delegation-tail") {
+      // One CLI build prints the `<usage>` block above the address instead of
+      // below it, and one prints only the block. The pass peels the tail off
+      // repeatedly, so neither order may survive onto the child's page.
+      send({ type: "assistant", message: { id: "tail-spawn-message", content: [
+        { type: "tool_use", id: "tail-one", name: "Task", input: { subagent_type: "Explore", description: "校验报告尾部", prompt: "校验报告" } },
+        { type: "tool_use", id: "tail-two", name: "Task", input: { subagent_type: "Explore", description: "只带用量块", prompt: "再校验一次" } },
+      ] } });
+      send({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "tail-one", content: "第一份结论。\n<usage>total_tokens: 120\ntool_uses: 2\nduration_ms: 30</usage>\nagentId: 1234abcd (use SendMessage with to: '1234abcd' to continue this agent)" },
+      ] } });
+      send({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "tail-two", content: "第二份结论。\n<usage>total_tokens: 90\ntool_uses: 1\nduration_ms: 12</usage>" },
+      ] } });
+      result("DELEGATION_TAIL_DONE");
     } else if (message.message.content[0].text === "/compact") {
       // `/compact` is a local command: the CLI rewrites the resumed session,
       // reports the boundary, and produces no conversational output of its own.
@@ -956,6 +973,24 @@ test("a delegated agent becomes a child conversation with activity and message r
   assert.equal(spawn.subagentModelEnv, "fixture-model");
   const audit = auditFor(root);
   assert.equal(audit.find(value => value.type === "spawn").args[audit.find(value => value.type === "spawn").args.indexOf("--model") + 1], "fixture-model");
+});
+
+test("the CLI's bookkeeping tail never reaches the sub-agent page", async ({ peer }) => {
+  const id = await peer.thread();
+  await peer.complete(await peer.turn(id, "delegation-tail"));
+  // The parent carries several rows per delegation (activity, then the message
+  // row), so the children are collected by identity instead of by row.
+  const children = new Set((await peer.ok("thread/read", { threadId: id })).initialTurnsPage.data[0].items
+    .filter(item => item.type === "subAgentActivity" && item.agentThreadId)
+    .map(item => item.agentThreadId));
+  const reports = [];
+  for (const childId of children) {
+    const [turn] = (await peer.ok("thread/read", { threadId: childId })).initialTurnsPage.data;
+    reports.push(assistantTexts(turn).at(-1));
+  }
+  // The address and the `<usage>` block are the delegation's accounting, not the
+  // agent's answer, so the page ends on the sentence either way round.
+  assert.deepEqual(reports, ["第一份结论。", "第二份结论。"]);
 });
 
 test("a per-conversation sub-agent model overrides the settings default", async ({ peer, root }) => {
