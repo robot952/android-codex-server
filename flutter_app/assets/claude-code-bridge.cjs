@@ -194,11 +194,32 @@ function resultAgentId(text) {
   return match ? match[1] : "";
 }
 
-// `Explore:find the parser` and `Explore` differ only by the parent's label.
+// `Explore` alone cannot tell three delegated searches apart, so the label the
+// App shows comes from the description the parent wrote. The subagent type
+// stays the address: a SendMessage names teammates by it.
 function agentLabel(subagentType, description) {
-  const raw = String(subagentType || "").split(":")[0].trim() || "Agent";
+  const type = String(subagentType || "").split(":")[0].trim() || "Agent";
   const text = String(description || "").split(/\r?\n/, 1)[0].trim();
-  return { name: raw, summary: text ? bounded(text, 400) : "" };
+  return { type, name: agentDisplayName(text, type), summary: text ? bounded(text, 400) : "" };
+}
+
+// The App reads a collaborator's name from the last segment of its path, so a
+// separator inside a description would hide everything that precedes it.
+function agentDisplayName(description, fallback) {
+  const name = description.replace(/[\\/]+/g, " ").replace(/\s+/g, " ").trim() || fallback;
+  return name.length <= 60 ? name : name.slice(0, 60).trim();
+}
+
+// Two delegations can carry the same type and description. Rows named alike
+// would leave the parent transcript unable to tell the two apart.
+function uniqueAgentName(run, wanted) {
+  const taken = new Set();
+  for (const sibling of (run.children || new Map()).values()) taken.add(sibling.name);
+  if (!taken.has(wanted)) return wanted;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${wanted} ${index}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 // One delegated conversation. Its blocks arrive on the parent's transport with
@@ -208,17 +229,17 @@ class ChildAgent {
   constructor({ run, store }, input) {
     const label = agentLabel(input.subagent_type, input.description);
     this.parent = run;
-    this.name = label.name;
+    this.name = uniqueAgentName(run, label.name);
+    // The address a SendMessage uses, which the description never replaces.
+    this.type = label.type;
     this.summary = label.summary;
-    // The App reads a collaborator's name from the last path segment, so a
-    // unique suffix here would replace the readable name with a hex slug.
-    this.agentPath = label.name;
+    this.agentPath = this.name;
     // The spawn result exposes an `agentId` (a…-…) that later SendMessage
     // calls may address instead of the display name.
     this.agentId = "";
     this.status = "running";
     this.turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [] };
-    this.thread = store.createChild(run.thread, { name: label.name, model: run.thread.model, agentPath: this.agentPath });
+    this.thread = store.createChild(run.thread, { name: this.name, model: run.thread.model, agentPath: this.agentPath });
     // The App opens the delegated page by this id, so it has to be the id the
     // thread is actually persisted under.
     this.id = this.thread.id;
@@ -1040,7 +1061,11 @@ class ClaudeBridge {
     const child = new ChildAgent({ run, store: this.store }, block.input || {});
     children.set(block.id, child);
     if (!this.childThreads.has(child.id)) this.childThreads.set(child.id, child);
-    for (const alias of [child.name, child.agentId]) this.bindChildName(run, child, alias);
+    // The parent addresses a teammate by the type it spawned — the only address
+    // the CLI exposes while the delegation runs — or by the `agentId` in the
+    // closing report. The display label is deliberately not an address: two
+    // delegations can share one, and it would shadow a real teammate.
+    for (const alias of [child.type, child.agentId]) this.bindChildName(run, child, alias);
     this.activity(run, child, "started", "inProgress");
     this.changed(run);
   }

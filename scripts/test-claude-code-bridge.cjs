@@ -244,6 +244,21 @@ function fakeClaudeMain() {
         { type: "tool_use", id: "relay-address", name: "SendMessage", input: { to: "a1b2c3d4e5f6", summary: "再次跟进", message: "请补充第二个文件的结论" } },
       ] } });
       result("DELEGATION_DONE");
+    } else if (scenario === "delegation-many") {
+      // Three agents of the same type in one message. The App labels each row by
+      // the leaf of its agent path, so a label taken from the type would make
+      // every row read the same.
+      send({ type: "assistant", message: { id: "many-spawn-message", content: [
+        { type: "tool_use", id: "many-one", name: "Task", input: { subagent_type: "Explore", description: "检查 nginx 配置", prompt: "检查 nginx" } },
+        { type: "tool_use", id: "many-two", name: "Task", input: { subagent_type: "Explore", description: "检查 nginx 配置", prompt: "再检查一次 nginx" } },
+        { type: "tool_use", id: "many-three", name: "Task", input: { subagent_type: "Explore", description: "排查 /var/log 下的报错", prompt: "排查日志" } },
+      ] } });
+      send({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "many-one", content: "配置正常。\nagentId: aa11bb22cc33" },
+        { type: "tool_result", tool_use_id: "many-two", content: "配置正常。\nagentId: dd44ee55ff66" },
+        { type: "tool_result", tool_use_id: "many-three", content: "日志无异常。\nagentId: 0099aa88bb77" },
+      ] } });
+      result("DELEGATION_MANY_DONE");
     } else if (scenario === "delegation-live") {
       // A delegated conversation stays open while the parent is still working.
       // The child is written by the parent's run, so it has no writer of its
@@ -866,8 +881,10 @@ test("a delegated agent becomes a child conversation with activity and message r
   const [started, relay, completed, addressed] = activities;
   // The App opens the child page by `agentThreadId` and labels the row by the
   // last path segment, so the readable agent name has to be the whole path.
+  // That name is the description: several `Explore` agents spawned in one turn
+  // would otherwise all read `Explore`.
   assert.ok(started.agentThreadId);
-  assert.equal(started.agentPath, "Explore");
+  assert.equal(started.agentPath, "查找解析器");
   assert.equal(started.message, "查找解析器");
   // The row's text comes from `kind`; its status is settled by the turn finish
   // pass like every other in-progress card.
@@ -878,7 +895,7 @@ test("a delegated agent becomes a child conversation with activity and message r
   // "已向 X 发送消息" transcript row.
   assert.equal(relay.id, "relay-one");
   assert.equal(relay.agentThreadId, started.agentThreadId);
-  assert.equal(relay.agentPath, "Explore");
+  assert.equal(relay.agentPath, "查找解析器");
   assert.equal(relay.message, "继续处理第二个文件");
   // The teammate name and the `agentId` from the closing report address the
   // same delegated conversation, so the row stays openable.
@@ -898,7 +915,7 @@ test("a delegated agent becomes a child conversation with activity and message r
   const child = await peer.ok("thread/read", { threadId: started.agentThreadId });
   assert.equal(child.thread.parentThreadId, id);
   assert.equal(child.thread.threadSource, "subagent");
-  assert.equal(child.thread.name, "Explore");
+  assert.equal(child.thread.name, "查找解析器");
   assert.equal(child.thread.status, "idle");
   // The child conversation keeps its own cards, including the tool result.
   const [childTurn] = child.initialTurnsPage.data;
@@ -966,6 +983,23 @@ test("compaction without a boundary fails with a reason instead of timing out", 
   assert.equal(JSON.stringify(turns).includes("COMPACTION_WITHOUT_BOUNDARY"), false);
   const error = await peer.request("thread/compact/start", { threadId: crypto.randomUUID() });
   assert.ok(error.error);
+});
+
+test("delegated agents of one type get distinct readable labels", async ({ peer }) => {
+  const id = await peer.thread();
+  await peer.complete(await peer.turn(id, "delegation-many"));
+  const [parent] = await peer.history(id);
+  const started = parent.items.filter(item => item.type === "subAgentActivity" && item.kind === "started");
+  // The description names the row; the type would have made all three the same.
+  assert.deepEqual(started.map(item => item.agentPath), ["检查 nginx 配置", "检查 nginx 配置 2", "排查 var log 下的报错"]);
+  // A path separator inside a description would cut the label at the last
+  // segment, because the App reads the name off the end of the path.
+  assert.equal(started.some(item => item.agentPath.includes("/")), false);
+  // Distinct labels must not become distinct addresses: every agent still
+  // answers to the type it was spawned with.
+  const addresses = started.map(item => item.agentThreadId);
+  assert.equal(new Set(addresses).size, 3);
+  assert.equal((await peer.ok("thread/read", { threadId: addresses[1] })).thread.name, "检查 nginx 配置 2");
 });
 
 test("a running delegated conversation reads as running on its own page", async ({ peer, root }) => {
