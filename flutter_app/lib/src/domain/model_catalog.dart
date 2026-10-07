@@ -20,6 +20,16 @@ const List<String> openCodeReasoningEffortValues = <String>[
   'xhigh',
 ];
 
+/// 自定义模型（以及目录里没有元数据的模型）可选的思考强度档位。
+/// Claude Code 的 CLI 只认这几档，与所选模型是否在目录里无关。
+const List<String> claudeCodeReasoningEffortValues = <String>[
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+
 final RegExp _customModelIdPattern = RegExp(r'^[A-Za-z0-9._:/@+\-]+$');
 final RegExp _controlCharacterPattern = RegExp(r'[\x00-\x1F\x7F-\x9F]');
 final RegExp _openCodeReasoningModelPattern = RegExp(
@@ -73,6 +83,26 @@ List<String> openCodeReasoningEfforts(String modelId) =>
     ? openCodeReasoningEffortValues
     : const <String>[];
 
+List<String> claudeCodeReasoningEfforts(String _) =>
+    claudeCodeReasoningEffortValues;
+
+/// 该 Agent 在没有上游元数据时使用的标准档位。Codex 的档位来自服务端目录，
+/// 这里不臆造。
+List<String> standardReasoningEfforts(AgentKind agent) =>
+    agent == AgentKind.claudeCode
+    ? claudeCodeReasoningEffortValues
+    : const <String>[];
+
+/// 一个模型在 UI 上可选的思考强度。目录里没有元数据不代表不能设置：档位由
+/// 各 Agent 自己的 CLI 决定，所以缺元数据时回落到标准档位。模型根本不在目录
+/// 里时返回空，那种情况属于“还没添加这个模型”，不是“上游没暴露元数据”。
+List<String> effectiveReasoningEfforts(AgentModel? model, AgentKind agent) {
+  if (model == null) return const <String>[];
+  return model.efforts.isNotEmpty
+      ? model.efforts
+      : standardReasoningEfforts(agent);
+}
+
 bool isValidCustomModelDisplayName(String value) {
   final displayName = value.trim();
   return displayName.length <= maxCustomModelNameChars &&
@@ -106,9 +136,7 @@ ResolvedModelSelection resolveModelSelection(
     final requestedEffort = preferredEffort.trim();
     return ResolvedModelSelection(
       model: preferred,
-      effort: agent == AgentKind.claudeCode || requestedEffort.isEmpty
-          ? null
-          : requestedEffort,
+      effort: requestedEffort.isEmpty ? null : requestedEffort,
     );
   }
   if (selected == null) {
@@ -123,9 +151,12 @@ ResolvedModelSelection resolveModelSelection(
   if (selected == null) return const ResolvedModelSelection();
 
   final requestedEffort = preferredEffort.trim();
+  // Claude Code 的档位由 CLI 校验，模型目录没有元数据不代表不能设置，因此对
+  // 该 Agent 不再按 selected.efforts 丢弃用户选过的档位。
   final effort =
       requestedEffort.isNotEmpty &&
-          ((agent != AgentKind.claudeCode && selected.efforts.isEmpty) ||
+          (agent == AgentKind.claudeCode ||
+              selected.efforts.isEmpty ||
               selected.efforts.contains(requestedEffort))
       ? requestedEffort
       : selected.defaultEffort.trim().isEmpty
@@ -144,6 +175,7 @@ List<AgentModel> buildModelCatalog(
   Iterable<String> hiddenModelIds, {
   List<String> Function(String modelId) customReasoningEfforts =
       _emptyCustomReasoningEfforts,
+  List<String> cataloglessEfforts = const <String>[],
 }) {
   final hidden = hiddenModelIds
       .map((modelId) => modelId.trim())
@@ -155,7 +187,12 @@ List<AgentModel> buildModelCatalog(
   for (final remote in remoteModels) {
     if (hidden.contains(remote.id) || hidden.contains(remote.model)) continue;
     final identity = _agentModelIdentity(remote);
-    if (remoteIdentities.add(identity)) models.add(remote);
+    // 上游没给出档位元数据（或它根本不在目录里）时，使用该 Agent 的标准档位，
+    // 这样 思考强度 控件对任何可选模型都成立。
+    final model = remote.efforts.isEmpty && cataloglessEfforts.isNotEmpty
+        ? remote.copyWith(efforts: cataloglessEfforts)
+        : remote;
+    if (remoteIdentities.add(identity)) models.add(model);
   }
 
   for (final custom in customModels) {

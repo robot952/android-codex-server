@@ -543,29 +543,36 @@ test("explicit Opus 5.5, supported efforts and server-default selection reach CL
   assert.equal(custom.contextWindowTokens, undefined, "custom aliases cannot imply context capacity");
 });
 
-test("unsupported explicit model does not inherit global effort", async ({ peer, root }) => {
+test("a model outside the native catalog still honors the configured effort", async ({ peer, root }) => {
   const configDir = path.join(root, ".claude");
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({
     effortLevel: "high", env: { CLAUDE_CODE_EFFORT_LEVEL: "high", ANTHROPIC_MODEL: "claude-opus-5-5" },
   }));
   const id = await peer.thread();
+  // Claude Code owns the effort vocabulary, so a proxied or user-defined alias
+  // must receive the same flag as a catalog model. Whether it takes effect is
+  // the CLI's decision, not a reason to drop the user's setting.
   for (const model of ["claude-haiku-4-5", "custom-model-id"]) {
     await peer.complete(await peer.turn(id, "fallback", { model }));
     const spawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
     assert.equal(spawn.args[spawn.args.indexOf("--model") + 1], model);
-    assert.ok(!spawn.args.includes("--effort"), `${model} must not inherit CLI effort`);
-    assert.equal(spawn.effortEnv, "auto", `${model} must clear inherited effort`);
+    assert.equal(spawn.args[spawn.args.indexOf("--effort") + 1], "high", `${model} keeps the configured default effort`);
+    assert.equal(spawn.effortEnv, "high", `${model} exports the effort to the CLI`);
     assert.ok(!spawn.args.includes("--setting-sources"), "native permissions and hooks must remain enabled");
     assert.deepEqual(JSON.parse(spawn.args[spawn.args.indexOf("--settings") + 1]), {
-      env: { CLAUDE_CODE_EFFORT_LEVEL: "auto" },
+      effortLevel: "high", env: { CLAUDE_CODE_EFFORT_LEVEL: "high" },
     });
-    assert.equal((await peer.ok("thread/read", { threadId: id })).reasoningEffort, null);
+    assert.equal((await peer.ok("thread/read", { threadId: id })).reasoningEffort, "high");
   }
-  await peer.complete(await peer.turn(id, "fallback", { model: "claude-opus-5-5" }));
+  // A per-turn override reaches the same model and can be cleared again.
+  await peer.complete(await peer.turn(id, "fallback", { model: "custom-model-id", effort: "max" }));
+  const overridden = auditFor(root).filter(value => value.type === "spawn").at(-1);
+  assert.equal(overridden.args[overridden.args.indexOf("--effort") + 1], "max");
+  await peer.complete(await peer.turn(id, "fallback", { model: "claude-opus-5-5", effort: "low" }));
   const opus = auditFor(root).filter(value => value.type === "spawn").at(-1);
-  assert.equal(opus.args[opus.args.indexOf("--effort") + 1], "high", "Opus retains the configured default");
-  assert.equal(opus.effortEnv, "high");
+  assert.equal(opus.args[opus.args.indexOf("--effort") + 1], "low", "an explicit per-turn effort wins over the default");
+  assert.equal(opus.effortEnv, "low");
 });
 
 test("current context includes cache tokens, deduplicates usage and survives restart", async ({ peer, root, fake, peers }) => {

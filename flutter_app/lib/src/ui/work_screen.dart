@@ -1305,7 +1305,7 @@ class _ModelSelectionSheet extends ConsumerWidget {
     final controller = ref.read(appControllerProvider.notifier);
     final selected = selectedAgentModel(state.models, state.selectedModel);
     final efforts = state.activeAgentCapabilities.reasoningEffort
-        ? selected?.efforts ?? const <String>[]
+        ? effectiveReasoningEfforts(selected, state.activeAgent)
         : const <String>[];
     final maximumHeight = MediaQuery.sizeOf(context).height * 0.72;
     return SafeArea(

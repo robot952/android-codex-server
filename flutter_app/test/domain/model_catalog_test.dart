@@ -31,7 +31,9 @@ void main() {
         agent: AgentKind.claudeCode,
       );
       expect(haiku.model, 'claude-haiku-4-5');
-      expect(haiku.effort, isNull);
+      expect(haiku.effort, 'max');
+      // A model the catalog does not know still keeps the requested effort:
+      // the CLI owns the vocabulary, not the upstream metadata.
       final custom = resolveModelSelection(
         models,
         'my-deployment',
@@ -39,7 +41,7 @@ void main() {
         agent: AgentKind.claudeCode,
       );
       expect(custom.model, 'my-deployment');
-      expect(custom.effort, isNull);
+      expect(custom.effort, 'high');
       expect(normalizeClaudeCodeReasoningEffort(' XHIGH '), 'xhigh');
       expect(
         () => normalizeClaudeCodeReasoningEffort('ultra'),
@@ -92,6 +94,57 @@ void main() {
 
     expect(selection.model, 'custom/provider-model');
     expect(selection.effort, 'medium');
+  });
+
+  test('catalog-less Claude Code models still expose the effort vocabulary', () {
+    const declared = AgentModel(
+      id: 'opus',
+      model: 'claude-opus-5-5',
+      efforts: ['low', 'high'],
+    );
+    expect(effectiveReasoningEfforts(declared, AgentKind.claudeCode), [
+      'low',
+      'high',
+    ]);
+    expect(
+      effectiveReasoningEfforts(
+        const AgentModel(id: 'haiku', model: 'claude-haiku-4-5'),
+        AgentKind.claudeCode,
+      ),
+      claudeCodeReasoningEffortValues,
+    );
+    // A model that is not in the catalog at all is a different case: there is
+    // nothing to attach a control to until it is added.
+    expect(effectiveReasoningEfforts(null, AgentKind.claudeCode), isEmpty);
+    // Codex reads its vocabulary from the server catalog and never invents one.
+    expect(
+      effectiveReasoningEfforts(
+        const AgentModel(id: 'gpt', model: 'gpt-5'),
+        AgentKind.codex,
+      ),
+      isEmpty,
+    );
+  });
+
+  test('a catalog-less remote model gains the lane standard efforts', () {
+    const remote = <AgentModel>[
+      AgentModel(id: 'opus', model: 'claude-opus-5-5', efforts: ['low']),
+      AgentModel(id: 'proxy', model: 'my-proxy-alias'),
+    ];
+    final claude = buildModelCatalog(
+      remote,
+      const <CustomModelDefinition>[],
+      const <String>[],
+      cataloglessEfforts: claudeCodeReasoningEffortValues,
+    );
+    expect(claude.first.efforts, ['low']);
+    expect(claude.last.efforts, claudeCodeReasoningEffortValues);
+    final codex = buildModelCatalog(
+      remote,
+      const <CustomModelDefinition>[],
+      const <String>[],
+    );
+    expect(codex.last.efforts, isEmpty);
   });
 
   test('normalizes custom model definitions within supported bounds', () {

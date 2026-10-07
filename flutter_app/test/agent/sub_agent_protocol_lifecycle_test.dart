@@ -214,6 +214,32 @@ void main() {
     expect(snapshot!.timeline.map((entry) => entry.text), ['child']);
   });
 
+  // Randomly named conversations (Claude Code's UUIDv4 ids) cannot be ordered
+  // by id, so the millisecond comparison is the only signal. A child record is
+  // written just after its first turn starts, which puts createdAt a
+  // millisecond past that turn and used to discard the child's whole history.
+  test('a child turn a millisecond before createdAt stays visible', () {
+    final snapshot = CodexPayloadParser.parseResumedThread({
+      'thread': {
+        'id': 'd2d6f272-0022-4ed9-b43f-053884892561',
+        'source': {'subAgent': {}},
+        'createdAt': 1791364559903,
+        'turnIds': ['ec1f5906-73a6-43cf-aa2f-40bf2a2f0b02'],
+      },
+      'initialTurnsPage': {
+        'data': [
+          historyTurn(
+            'ec1f5906-73a6-43cf-aa2f-40bf2a2f0b02',
+            'child',
+            startedAt: 1791364559902,
+          ),
+        ],
+      },
+    });
+    expect(snapshot!.timeline.map((entry) => entry.text), ['child']);
+    expect(snapshot.turnIds, ['ec1f5906-73a6-43cf-aa2f-40bf2a2f0b02']);
+  });
+
   Map<String, Object?> collab({
     String id = 'call',
     String tool = 'wait',

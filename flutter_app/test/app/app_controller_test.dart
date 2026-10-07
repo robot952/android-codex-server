@@ -4876,15 +4876,17 @@ void main() {
       await controller.sendMessage(text: 'Inherit test');
       expect(claude.startedSubagentModel, 'inherit');
       expect(claude.startedModel, 'claude-opus-5-5');
-      // A profile-wide Opus preference must not leak into a no-effort model.
+      // A model whose metadata omits supportedReasoningEfforts still keeps the
+      // requested 思考强度：CLI 才是档位的权威，上游没暴露元数据不等于不能用。
       controller.selectThreadModel('claude-haiku-4-5');
-      expect(controller.state.selectedEffort, isNull);
+      expect(controller.state.selectedEffort, 'xhigh');
       await controller.sendMessage(text: 'Haiku test');
       expect(claude.startedModel, 'claude-haiku-4-5');
-      expect(claude.startedEffort, isNull);
+      expect(claude.startedEffort, 'xhigh');
+      // 目录里没有这个别名时同样保留，档位由 CLI 校验。
       controller.selectThreadModel('my-deployment');
       expect(controller.state.selectedModel, 'my-deployment');
-      expect(controller.state.selectedEffort, isNull);
+      expect(controller.state.selectedEffort, 'xhigh');
       controller.selectThreadEffort('ultra');
       expect(controller.state.error, contains('Claude Code'));
     },

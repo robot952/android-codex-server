@@ -115,8 +115,17 @@ void main() {
       var effort = tester.widget<DropdownButton<String>>(
         find.byKey(const ValueKey('agent-settings-reasoning-effort')),
       );
-      expect(effort.value, '');
-      expect(effort.items!.map((item) => item.value), ['']);
+      // Haiku ships without effort metadata upstream, but Claude Code accepts
+      // the flag for it, so the standard 档位 和已选值 都必须保留。
+      expect(effort.value, 'high');
+      expect(effort.items!.map((item) => item.value), [
+        '',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
       await _enterText(
         tester,
         'agent-settings-default-model',
@@ -125,6 +134,8 @@ void main() {
       effort = tester.widget<DropdownButton<String>>(
         find.byKey(const ValueKey('agent-settings-reasoning-effort')),
       );
+      // 目录里没有这个别名时不能凭空选档位，已选值也一并清掉。
+      expect(effort.value, '');
       expect(effort.items!.map((item) => item.value), ['']);
       await _enterText(
         tester,

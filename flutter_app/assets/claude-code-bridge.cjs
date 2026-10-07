@@ -1186,9 +1186,10 @@ class ClaudeBridge {
       else args.push("--session-id", thread.id);
       const configuration = settings.readSettings();
       const model = modelArgument(params.model ?? thread.model ?? configuration.model);
-      const unsupportedEffort = model && !modelCatalog(configuration).data.find(option => option.model === model)?.supportedReasoningEfforts.length;
-      if (unsupportedEffort && params.effort) throw new Error("所选 Claude Code 模型不支持思考强度");
-      const effort = unsupportedEffort ? null : params.effort ?? configuration.reasoningEffort;
+      // The native catalog only knows the models this bridge ships with, but a
+      // user-defined or proxied alias can accept the same flag. The vocabulary
+      // is the only check; whether a model honors --effort is the CLI's call.
+      const effort = params.effort ?? configuration.reasoningEffort;
       if (effort && !EFFORTS.includes(effort)) throw new Error("Claude Code 不支持此思考强度");
       if (model) args.push("--model", model);
       if (effort) args.push("--effort", effort);
@@ -1209,13 +1210,7 @@ class ClaudeBridge {
         (inheritedSubagentModel == null || inheritedSubagentModel === ""
           ? modelArgument(configuration.subagentModel) || model || "inherit"
           : inheritedSubagentModel);
-      if (unsupportedEffort) {
-        // Claude's auto sentinel clears this session's effort,
-        // including persisted effortLevel and settings.env overrides. Retain
-        // all native settings sources (especially permissions and hooks).
-        environment.CLAUDE_CODE_EFFORT_LEVEL = "auto";
-        args.push("--settings", '{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"auto"}}');
-      } else if (params.effort) {
+      if (effort) {
         environment.CLAUDE_CODE_EFFORT_LEVEL = effort;
         args.push("--settings", JSON.stringify({ effortLevel: effort, env: { CLAUDE_CODE_EFFORT_LEVEL: effort } }));
       }

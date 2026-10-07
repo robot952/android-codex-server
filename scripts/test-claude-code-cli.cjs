@@ -296,7 +296,15 @@ async function main() {
     assert.equal(opusRequest?.input.model, "claude-opus-5-5", "Explicit Opus 5.5 must override the native m-claude alias");
     const effortOnWire = opusRequest.input.output_config?.effort;
     assert.equal(effortOnWire, "medium", "Opus 5.5 effort must reach the real API request");
-    for (const [mode, model] of [["haiku", "claude-haiku-4-5"], ["custom", "custom-fixture-model"]]) {
+    // The bridge no longer filters --effort through the native catalog: the CLI
+    // owns the vocabulary, so every model receives the configured effort and the
+    // CLI decides whether that model honors it. The real CLI drops it for a model
+    // it knows ships without effort metadata (haiku) and keeps it for an unknown
+    // alias (custom-fixture-model).
+    for (const [mode, model, expectedEffort] of [
+      ["haiku", "claude-haiku-4-5", undefined],
+      ["custom", "custom-fixture-model", "high"],
+    ]) {
       const created = await peer.rpc("thread/start", { cwd: workspace, model });
       const after = peer.messages.length;
       const started = await peer.rpc("turn/start", {
@@ -307,7 +315,7 @@ async function main() {
       assert.equal(completed.params.turn.status, "completed");
       const request = requests.find(value => value.mode === mode);
       assert.equal(request?.input.model, model);
-      assert.equal(request.input.output_config?.effort, undefined, `${model} must not inherit native high effort`);
+      assert.equal(request.input.output_config?.effort, expectedEffort, `${model} must receive the configured effort and let the CLI decide`);
     }
     const settingsFile = path.join(nativeConfig, "settings.json");
     const policySettings = JSON.stringify({

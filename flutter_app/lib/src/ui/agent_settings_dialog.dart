@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../agent/codex_global_settings.dart';
+import '../domain/model_catalog.dart' show effectiveReasoningEfforts;
 import '../domain/models.dart';
 import 'model_selection_presentation.dart' show selectedAgentModel;
 import 'theme.dart';
@@ -231,10 +232,13 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                           agent == AgentKind.claudeCode
                                           ? <String>[
                                               '',
-                                              ...?selectedAgentModel(
-                                                state.models,
-                                                _defaultModelController.text,
-                                              )?.efforts,
+                                              ...effectiveReasoningEfforts(
+                                                selectedAgentModel(
+                                                  state.models,
+                                                  _defaultModelController.text,
+                                                ),
+                                                agent,
+                                              ),
                                             ]
                                           : reasoningEffortOptions,
                                       websocketPolicy: _websocketPolicy,
@@ -358,12 +362,10 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
 
   void _validateClaudeEffort() {
     if (widget.state.activeAgent != AgentKind.claudeCode) return;
-    final efforts =
-        selectedAgentModel(
-          widget.state.models,
-          _defaultModelController.text,
-        )?.efforts ??
-        const <String>[];
+    final efforts = effectiveReasoningEfforts(
+      selectedAgentModel(widget.state.models, _defaultModelController.text),
+      widget.state.activeAgent,
+    );
     if (!efforts.contains(_defaultReasoningEffort)) {
       _defaultReasoningEffort = '';
     }

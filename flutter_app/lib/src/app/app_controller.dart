@@ -5920,9 +5920,8 @@ class AppController extends StateNotifier<AppUiState> {
             if (key.agent == AgentKind.openCode)
               ..._pendingManagedModelRemovals(settings),
           },
-          customReasoningEfforts: key.agent == AgentKind.openCode
-              ? openCodeReasoningEfforts
-              : _noModelReasoningEfforts,
+          customReasoningEfforts: _customModelReasoningEfforts(key.agent),
+          cataloglessEfforts: standardReasoningEfforts(key.agent),
         );
       }
       final active = _isActiveKey(key);
@@ -7356,9 +7355,8 @@ class AppController extends StateNotifier<AppUiState> {
         if (agent == AgentKind.openCode)
           ..._pendingManagedModelRemovals(updatedSettings),
       },
-      customReasoningEfforts: agent == AgentKind.openCode
-          ? openCodeReasoningEfforts
-          : _noModelReasoningEfforts,
+      customReasoningEfforts: _customModelReasoningEfforts(agent),
+      cataloglessEfforts: standardReasoningEfforts(agent),
     );
     final profiles = state.profiles
         .map(
@@ -7662,6 +7660,14 @@ const List<Duration> _defaultReconnectDelays = <Duration>[
 const int _maxSessionSnapshotEntries = 512;
 const int _maxSessionSnapshotWeightChars = 2 * 1024 * 1024;
 const Duration _customModelSyncDebounce = Duration(milliseconds: 350);
+
+/// 自定义模型没有上游元数据，但只要能选就该能设思考强度。
+List<String> Function(String) _customModelReasoningEfforts(AgentKind agent) =>
+    switch (agent) {
+      AgentKind.openCode => openCodeReasoningEfforts,
+      AgentKind.claudeCode => claudeCodeReasoningEfforts,
+      AgentKind.codex => _noModelReasoningEfforts,
+    };
 
 List<String> _noModelReasoningEfforts(String _) => const <String>[];
 

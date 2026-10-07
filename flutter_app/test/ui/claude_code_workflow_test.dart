@@ -88,11 +88,15 @@ void main({bool device = false}) {
       await _pump(tester);
       expect(h.controller.state.selectedEffort, 'high');
       // A model without effort metadata must not retain the previous model's
-      // selection. Switching back exposes the supported controls again.
+      // selection, but the control stays available: Claude Code's own effort
+      // vocabulary does not depend on the upstream catalog.
       await tester.tap(mainModel('Claude Haiku 4.5'));
       await _pump(tester);
       expect(h.controller.state.selectedEffort, isNull);
-      expect(find.text('思考强度'), findsNothing);
+      expect(find.text('思考强度'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilterChip, '低'));
+      await _pump(tester);
+      expect(h.controller.state.selectedEffort, 'low');
       await tester.tap(mainModel('Claude Opus 5.5'));
       await _pump(tester);
       await tester.tap(find.widgetWithText(FilterChip, '高'));

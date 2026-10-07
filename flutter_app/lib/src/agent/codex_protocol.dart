@@ -24,6 +24,11 @@ const int _maxReasoningParts = 64;
 const int _maxFileChanges = 256;
 const int _maxPayloadDepth = 6;
 
+/// How far a turn must precede a sub-agent's creation before it counts as
+/// inherited history. Creation and the first turn can land a millisecond
+/// apart, so anything closer is the child's own work.
+const int inheritedTurnThresholdMillis = 1000;
+
 const String codexTextTruncationMarker = '\n\n[内容过长，后续已截断]';
 const String codexOutputTruncationMarker = '\n\n[命令输出过长，后续已截断]';
 const String codexDiffTruncationMarker = '\n\n[差异内容过长，后续已截断]';
@@ -1130,12 +1135,18 @@ abstract final class CodexPayloadParser {
         ? _asList(rawThread['turns'], maxItems: _maxTimelineTurns)
         : pageTurns.reversed.toList(growable: false);
     final subAgentCreatedAt = _subAgentCreatedAt(rawThread);
+    final subAgentThreadId = _isSubAgentThread(rawThread)
+        ? _firstString(rawThread, const ['id', 'threadId', 'thread_id'])
+        : null;
     final visibleTurns = _withoutInheritedSubAgentTurns(
       turns,
       subAgentCreatedAt,
-      subAgentThreadId: _isSubAgentThread(rawThread)
-          ? _firstString(rawThread, const ['id', 'threadId', 'thread_id'])
-          : null,
+      subAgentThreadId: subAgentThreadId,
+      ownedTurnIds: subAgentThreadId == null
+          ? const <String>{}
+          : _asList(rawThread['turnIds'], maxItems: 10000)
+                .whereType<String>()
+                .toSet(),
     );
     final reachedInheritedHistory = visibleTurns.length != turns.length;
     final hydratedThread = Map<String, Object?>.from(rawThread)
@@ -1232,9 +1243,12 @@ abstract final class CodexPayloadParser {
         _normalizeEpochMillis(subAgentCreatedAt ?? 0) ??
         (childMillis == null ? null : childMillis ~/ 1000 * 1000);
     final startedAt = _normalizeEpochMillis(turnStartedAt ?? 0);
-    return cutoff != null &&
-        (turnMillis ?? startedAt) != null &&
-        (turnMillis ?? startedAt)! < cutoff;
+    final turnAt = turnMillis ?? startedAt;
+    if (cutoff == null || turnAt == null) return false;
+    // A child's first turn can start a millisecond before the record that
+    // announces the child was written. Only a whole second of separation is
+    // evidence that the turn predates this conversation.
+    return cutoff - turnAt >= inheritedTurnThresholdMillis;
   }
 
   static TokenUsage? parseTokenUsage(Object? result) {
@@ -1960,18 +1974,23 @@ List<Object?> _withoutInheritedSubAgentTurns(
   List<Object?> turns,
   int? subAgentCreatedAt, {
   String? subAgentThreadId,
+  Set<String> ownedTurnIds = const <String>{},
 }) {
   if (subAgentCreatedAt == null && subAgentThreadId == null) return turns;
   return turns
       .where((value) {
         final turn = _asObjectMap(value);
         if (turn == null) return true;
+        final id = _firstString(turn, const ['id'], marker: '');
+        // A turn the child record lists as its own is never inherited, so the
+        // recorded ids settle the millisecond-adjacent cases outright.
+        if (id.isNotEmpty && ownedTurnIds.contains(id)) return true;
         final startedAt = _firstInt(turn, const <String>[
           'startedAt',
           'started_at',
         ]);
         return !CodexPayloadParser.isInheritedSubAgentTurn(
-          _firstString(turn, const ['id'], marker: ''),
+          id,
           subAgentThreadId: subAgentThreadId ?? '',
           subAgentCreatedAt: subAgentCreatedAt,
           turnStartedAt: startedAt,
