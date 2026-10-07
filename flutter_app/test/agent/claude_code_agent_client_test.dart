@@ -356,17 +356,21 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       apiKey: '',
       proxyUrl: '',
       defaultModel: 'claude-opus-5-5',
+      defaultSubagentModel: 'claude-haiku-4-5',
       defaultReasoningEffort: 'xhigh',
       preserveCurrentProvider: true,
     );
     final write = session.requests.singleWhere(
       (request) => request['method'] == 'agent/settings/write',
     );
+    // The sub-agent default always travels with the write, blank included: a
+    // stale server value would otherwise keep pinning delegated work.
     expect(write['params'], {
       'baseUrl': 'https://example.invalid',
       'apiKey': '',
       'proxyUrl': '',
       'defaultModel': 'claude-opus-5-5',
+      'defaultSubagentModel': 'claude-haiku-4-5',
       'defaultReasoningEffort': 'xhigh',
     });
     final result = await client.testGlobalSettings(

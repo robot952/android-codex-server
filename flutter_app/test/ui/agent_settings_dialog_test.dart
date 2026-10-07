@@ -48,6 +48,7 @@ void main() {
                 required apiKey,
                 required proxyUrl,
                 required defaultModel,
+                required defaultSubagentModel,
                 required defaultReasoningEffort,
                 required testModel,
                 required websocketPolicy,
@@ -152,6 +153,7 @@ void main() {
               required apiKey,
               required proxyUrl,
               required defaultModel,
+              required defaultSubagentModel,
               required defaultReasoningEffort,
               required testModel,
               required websocketPolicy,
@@ -173,6 +175,167 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('agent-settings-confirm-save')));
     await tester.pumpAndSettle();
     expect(savedEffort, isEmpty);
+  });
+
+  testWidgets(
+    'Claude default sub-agent model round-trips and trims input',
+    (tester) async {
+      AgentSettingsSaveValues? saved;
+      String? savedSubagentModel;
+      await tester.pumpWidget(
+        _DialogHarness(
+          state: claudeState.copyWith(
+            agentSettings: claudeState.agentSettings!.copyWith(
+              subagentModel: 'claude-haiku-4-5',
+            ),
+          ),
+          onSave:
+              ({
+                required baseUrl,
+                required apiKey,
+                required proxyUrl,
+                required defaultModel,
+                required defaultSubagentModel,
+                required defaultReasoningEffort,
+                required testModel,
+                required websocketPolicy,
+                required preserveCurrentProvider,
+              }) {
+                saved = AgentSettingsSaveValues(
+                  baseUrl: baseUrl,
+                  apiKey: apiKey,
+                  proxyUrl: proxyUrl,
+                  defaultModel: defaultModel,
+                  defaultReasoningEffort: defaultReasoningEffort,
+                  testModel: testModel,
+                  websocketPolicy: websocketPolicy,
+                  preserveCurrentProvider: preserveCurrentProvider,
+                );
+                savedSubagentModel = defaultSubagentModel;
+              },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        _text(tester, 'agent-settings-default-subagent-model'),
+        'claude-haiku-4-5',
+      );
+      expect(
+        find.text('子 Agent 默认使用的模型；留空则跟随主模型。子 Agent 的思考强度始终跟随主模型。'),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('agent-settings-fetch-default-subagent-models')),
+        findsOneWidget,
+      );
+      // 子模型字段排在默认思考强度之后、Provider 分组之前。
+      expect(
+        tester
+            .getTopLeft(
+              find.byKey(const ValueKey('agent-settings-default-subagent-model')),
+            )
+            .dy,
+        greaterThan(
+          tester
+              .getTopLeft(
+                find.byKey(const ValueKey('agent-settings-reasoning-effort')),
+              )
+              .dy,
+        ),
+      );
+
+      await _enterText(
+        tester,
+        'agent-settings-default-subagent-model',
+        '  claude-sonnet-4-6  ',
+      );
+      await tester.tap(find.byKey(const ValueKey('agent-settings-save')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('agent-settings-confirm-save')));
+      await tester.pumpAndSettle();
+      expect(savedSubagentModel, '  claude-sonnet-4-6  ');
+      expect(saved?.defaultModel, 'claude-opus-5-5');
+    },
+  );
+
+  testWidgets('Claude sub-agent fetch fills only the sub-agent field', (
+    tester,
+  ) async {
+    var fetches = 0;
+    await tester.pumpWidget(
+      _DialogHarness(
+        state: claudeState,
+        onFetchModels:
+            ({required baseUrl, required apiKey, required proxyUrl}) async {
+              fetches += 1;
+              return const [
+                ApiModelOption(
+                  modelId: 'claude-haiku-4-5',
+                  displayName: 'Haiku 4.5',
+                ),
+              ];
+            },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final fetch = find.byKey(
+      const ValueKey('agent-settings-fetch-default-subagent-models'),
+    );
+    await tester.ensureVisible(fetch);
+    await tester.tap(fetch);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('agent-settings-model-option-claude-haiku-4-5')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(fetches, 1);
+    expect(_text(tester, 'agent-settings-default-subagent-model'), 'claude-haiku-4-5');
+    // 子模型选择不得顺带改写默认主模型。
+    expect(_text(tester, 'agent-settings-default-model'), 'claude-opus-5-5');
+  });
+
+  testWidgets('only Claude Code offers a default sub-agent model', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const _DialogHarness(
+        state: AppUiState(
+          selectedProfileId: 'server-one',
+          profiles: [ServerProfile(id: 'server-one')],
+          activeAgent: AgentKind.codex,
+          activeAgentCapabilities: AgentCapabilities.codex,
+          agentSettingsVisible: true,
+          agentSettings: AgentGlobalSettings(model: 'gpt-default'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('agent-settings-default-subagent-model')),
+      findsNothing,
+    );
+
+    await tester.pumpWidget(
+      const _DialogHarness(
+        state: AppUiState(
+          selectedProfileId: 'server-one',
+          profiles: [ServerProfile(id: 'server-one')],
+          activeAgent: AgentKind.openCode,
+          activeAgentCapabilities: AgentCapabilities.openCode,
+          agentSettingsVisible: true,
+          agentSettings: AgentGlobalSettings(model: 'custom-api/gpt-test'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('agent-settings-default-subagent-model')),
+      findsNothing,
+    );
   });
 
   testWidgets(
@@ -559,6 +722,7 @@ void main() {
               required apiKey,
               required proxyUrl,
               required defaultModel,
+              required defaultSubagentModel,
               required defaultReasoningEffort,
               required testModel,
               required websocketPolicy,
@@ -869,6 +1033,7 @@ void _noopSave({
   required String apiKey,
   required String proxyUrl,
   required String defaultModel,
+  required String defaultSubagentModel,
   required String defaultReasoningEffort,
   required String testModel,
   required String websocketPolicy,

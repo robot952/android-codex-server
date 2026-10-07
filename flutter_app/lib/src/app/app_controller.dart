@@ -1813,6 +1813,7 @@ class AppController extends StateNotifier<AppUiState> {
     required String apiKey,
     required String proxyUrl,
     required String defaultModel,
+    required String defaultSubagentModel,
     required String defaultReasoningEffort,
     required String testModel,
     required String websocketPolicy,
@@ -1837,10 +1838,19 @@ class AppController extends StateNotifier<AppUiState> {
     if (profile == null) return;
 
     late final String normalizedDefaultModel;
+    late final String normalizedDefaultSubagentModel;
     late final String normalizedDefaultEffort;
     late final String normalizedTestModel;
     try {
       normalizedDefaultModel = normalizeAgentModelId(agent, defaultModel);
+      // 空值即 跟随主模型；"inherit" 是 CLI 自己的写法，一并归一化为空。
+      final requestedDefaultSubagent = defaultSubagentModel.trim();
+      normalizedDefaultSubagentModel =
+          agent != AgentKind.claudeCode ||
+              requestedDefaultSubagent.isEmpty ||
+              requestedDefaultSubagent.toLowerCase() == 'inherit'
+          ? ''
+          : normalizeAgentModelId(agent, requestedDefaultSubagent);
       normalizedDefaultEffort = state.activeAgentCapabilities.reasoningEffort
           ? agent == AgentKind.claudeCode
                 ? normalizeClaudeCodeReasoningEffort(defaultReasoningEffort)
@@ -1900,6 +1910,7 @@ class AppController extends StateNotifier<AppUiState> {
         apiKey: apiKey,
         proxyUrl: proxyUrl,
         defaultModel: normalizedDefaultModel,
+        defaultSubagentModel: normalizedDefaultSubagentModel,
         defaultReasoningEffort: normalizedDefaultEffort,
         websocketPolicy: agent == AgentKind.codex ? websocketPolicy : null,
         preserveCurrentProvider: effectivePreserveCurrentProvider,
@@ -1909,6 +1920,7 @@ class AppController extends StateNotifier<AppUiState> {
         profileId: profile.id,
         agent: agent,
         defaultModel: normalizedDefaultModel,
+        defaultSubagentModel: normalizedDefaultSubagentModel,
         defaultEffort: normalizedDefaultEffort,
         testModel: normalizedTestModel,
       );
@@ -3489,6 +3501,15 @@ class AppController extends StateNotifier<AppUiState> {
             agent: AgentKind.claudeCode,
           ).effort
         : requestedEffort;
+    // Empty means 跟随主模型; the bridge turns that into the CLI's own
+    // "inherit" so a sub-agent never silently keeps an earlier pinned model.
+    final subagentModel =
+        state.activeAgent == AgentKind.claudeCode &&
+            state.selectedSubagentModel?.trim().isNotEmpty == true
+        ? state.selectedSubagentModel!.trim()
+        : modelSettings.preferredSubagentModel.trim().isEmpty
+        ? null
+        : modelSettings.preferredSubagentModel.trim();
     _diagnostics.info(
       'Message',
       'send_requested profile=$profileId agent=${state.activeAgent.name} '
@@ -3607,6 +3628,7 @@ class AppController extends StateNotifier<AppUiState> {
           attachments: attachments,
           model: model,
           effort: effort,
+          subagentModel: subagentModel,
           approvalMode: state.approvalMode,
           sandbox: state.sandbox,
           cwd: profile.workspace.trim().isEmpty
@@ -4579,7 +4601,11 @@ class AppController extends StateNotifier<AppUiState> {
     });
   }
 
-  void selectThreadModel(String model, {String? effort}) {
+  void selectThreadModel(
+    String model, {
+    String? effort,
+    String? subagentModel,
+  }) {
     if (state.isThreadReadOnly) return;
     if (!state.activeAgentCapabilities.models) return;
     final profileId = state.selectedProfileId;
@@ -4592,6 +4618,10 @@ class AppController extends StateNotifier<AppUiState> {
       state = state.copyWith(error: _message(error, '模型格式错误'));
       return;
     }
+    final normalizedSubagentModel = _normalizeSubagentModel(
+      subagentModel ?? state.selectedSubagentModel,
+    );
+    if (normalizedSubagentModel == null) return;
     var normalizedEffort = effort?.trim() ?? state.selectedEffort ?? '';
     if (state.activeAgent == AgentKind.claudeCode) {
       try {
@@ -4612,6 +4642,11 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(
       selectedModel: normalizedModel,
       selectedEffort: normalizedEffort.isEmpty ? null : normalizedEffort,
+      // 空值代表这个会话没有单独设置过子模型（回落到设置页默认值）；
+      // 'inherit' 是会话里显式选择的 跟随主模型，必须能压过设置页默认值。
+      selectedSubagentModel: normalizedSubagentModel.isEmpty
+          ? null
+          : normalizedSubagentModel,
     );
     final key = threadPreferenceKey(profileId, state.activeAgent, threadId);
     unawaited(
@@ -4622,11 +4657,54 @@ class AppController extends StateNotifier<AppUiState> {
             key: ThreadModelPreference(
               model: normalizedModel,
               effort: normalizedEffort,
+              subagentModel: normalizedSubagentModel,
             ),
           },
         ),
       ),
     );
+  }
+
+  void selectThreadSubagentModel(String subagentModel) {
+    if (state.isThreadReadOnly) return;
+    if (state.activeAgent != AgentKind.claudeCode) return;
+    final model = state.selectedModel;
+    if (model == null || model.trim().isEmpty) return;
+    // 空值即 跟随主模型；显式传入 "inherit" 与留空等价。
+    final requested = subagentModel.trim();
+    selectThreadModel(
+      model,
+      subagentModel: requested.isEmpty || requested.toLowerCase() == 'inherit'
+          ? 'inherit'
+          : requested,
+    );
+  }
+
+  /// 子模型回到 跟随主模型，保留当前主模型与思考强度。
+  /// 归一化后的空值写回偏好，等于清掉这个会话的子模型设置。
+  void clearThreadSubagentModel() {
+    if (state.isThreadReadOnly) return;
+    if (state.activeAgent != AgentKind.claudeCode) return;
+    final model = state.selectedModel;
+    if (model == null || model.trim().isEmpty) return;
+    selectThreadModel(model, subagentModel: 'inherit');
+  }
+
+  /// Returns the normalized sub-agent model, or null when the caller should
+  /// abort. Only Claude Code can delegate with a distinct model.
+  /// 空值代表未设置（回落设置页默认子模型），`inherit` 代表显式跟随主模型，
+  /// 两者必须区分开，否则会话里选的 跟随主模型 会被设置页默认值盖掉。
+  String? _normalizeSubagentModel(String? value) {
+    final requested = value?.trim() ?? '';
+    if (state.activeAgent != AgentKind.claudeCode) return '';
+    if (requested.isEmpty) return '';
+    if (requested.toLowerCase() == 'inherit') return inheritSubagentModel;
+    try {
+      return normalizeAgentModelId(AgentKind.claudeCode, requested);
+    } catch (error) {
+      state = state.copyWith(error: _message(error, '子模型格式错误'));
+      return null;
+    }
   }
 
   void selectThreadEffort(String effort) {
@@ -4727,6 +4805,16 @@ class AppController extends StateNotifier<AppUiState> {
         : sameInitialThread && initialSnapshot!.selectedEffort != null
         ? initialSnapshot.selectedEffort
         : resolvedModel.effort;
+    final configuredSubagentModel = preference?.subagentModel.isNotEmpty == true
+        ? preference!.subagentModel
+        : defaults?.preferredSubagentModel ?? '';
+    final selectedSubagentModel = sameVisibleThread
+        ? state.selectedSubagentModel
+        : sameInitialThread && initialSnapshot!.selectedSubagentModel != null
+        ? initialSnapshot.selectedSubagentModel
+        : configuredSubagentModel.isEmpty
+        ? null
+        : configuredSubagentModel;
     final threadHasActiveTurn =
         snapshot.thread.activeTurnId?.trim().isNotEmpty == true;
     final threadStatusRunning = _threadStatusIndicatesRunning(
@@ -4829,6 +4917,7 @@ class AppController extends StateNotifier<AppUiState> {
       attachmentUploading: false,
       selectedModel: selectedModel,
       selectedEffort: selectedEffort,
+      selectedSubagentModel: selectedSubagentModel,
       approvalQueue: approvalQueue,
       approval: approvalQueue.firstOrNull,
       error: null,
@@ -6131,6 +6220,7 @@ class AppController extends StateNotifier<AppUiState> {
     required String profileId,
     required AgentKind agent,
     required String defaultModel,
+    required String defaultSubagentModel,
     required String defaultEffort,
     required String testModel,
   }) async {
@@ -6143,6 +6233,7 @@ class AppController extends StateNotifier<AppUiState> {
                 .modelSettings(agent)
                 .copyWith(
                   preferredModel: defaultModel,
+                  preferredSubagentModel: defaultSubagentModel,
                   preferredEffort: defaultEffort,
                   testModel: testModel,
                 ),
@@ -6161,6 +6252,7 @@ class AppController extends StateNotifier<AppUiState> {
                     .modelSettings(agent)
                     .copyWith(
                       preferredModel: defaultModel,
+                      preferredSubagentModel: defaultSubagentModel,
                       preferredEffort: defaultEffort,
                       testModel: testModel,
                     ),
@@ -7302,6 +7394,11 @@ class AppController extends StateNotifier<AppUiState> {
       selectedEffort: active && !selectedIsAvailable
           ? fallback.effort
           : state.selectedEffort,
+      // An explicit per-conversation choice survives a settings edit; only a
+      // lane that cannot delegate is forced back to 跟随主模型.
+      selectedSubagentModel: agent == AgentKind.claudeCode
+          ? state.selectedSubagentModel
+          : null,
       error: null,
     );
     _connections.registerProfile(updatedProfile);
@@ -7592,6 +7689,7 @@ class _SessionSnapshot {
     required this.models,
     required this.selectedModel,
     required this.selectedEffort,
+    required this.selectedSubagentModel,
     required this.activeThread,
     required this.activeAgentName,
     required this.activeGoal,
@@ -7622,6 +7720,7 @@ class _SessionSnapshot {
   final List<AgentModel> models;
   final String? selectedModel;
   final String? selectedEffort;
+  final String? selectedSubagentModel;
   final AgentThread? activeThread;
   final String? activeAgentName;
   final ThreadGoal? activeGoal;
@@ -7654,6 +7753,7 @@ class _SessionSnapshot {
       models: state.models,
       selectedModel: state.selectedModel,
       selectedEffort: state.selectedEffort,
+      selectedSubagentModel: state.selectedSubagentModel,
       activeThread: state.activeThread,
       activeAgentName: state.activeAgentName,
       activeGoal: state.activeGoal,

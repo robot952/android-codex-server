@@ -132,6 +132,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
     return AgentGlobalSettings(
       baseUrl: _settingsString(value, 'baseUrl'),
       model: _settingsString(value, 'model'),
+      subagentModel: _settingsString(value, 'subagentModel'),
       reasoningEffort: _settingsString(value, 'reasoningEffort'),
       modelProvider: 'anthropic',
       apiKey: _settingsString(value, 'apiKey'),
@@ -147,6 +148,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
     required String apiKey,
     required String proxyUrl,
     required String defaultModel,
+    String defaultSubagentModel = '',
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
@@ -158,6 +160,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
         'apiKey': apiKey.trim(),
         'proxyUrl': proxyUrl.trim(),
         'defaultModel': defaultModel.trim(),
+        'defaultSubagentModel': defaultSubagentModel.trim(),
         'defaultReasoningEffort': defaultReasoningEffort.trim(),
       },
       timeout: const Duration(seconds: 30),

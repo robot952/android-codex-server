@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/app/app_controller.dart';
+import 'package:codex_remote/src/domain/model_catalog.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/platform/local_file_exporter.dart';
@@ -35,6 +36,27 @@ class _LayoutController extends AppController {
     : super(store, manager);
 
   void showState(AppUiState value) => state = value;
+}
+
+class _SubagentRecordingController extends _LayoutController {
+  _SubagentRecordingController(super.store, super.manager);
+
+  final List<String> selections = <String>[];
+
+  @override
+  void selectThreadSubagentModel(String subagentModel) {
+    selections.add(subagentModel);
+    state = state.copyWith(
+      selectedSubagentModel: subagentModel,
+      selectedEffort: state.selectedEffort,
+    );
+  }
+
+  @override
+  void clearThreadSubagentModel() {
+    selections.add(inheritSubagentModel);
+    state = state.copyWith(selectedSubagentModel: inheritSubagentModel);
+  }
 }
 
 class _PaginationController extends _LayoutController {
@@ -1424,6 +1446,100 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('上下文上限未知'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the model sheet picks a per-conversation sub-agent model', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(400, 900);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _SubagentRecordingController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'subagent-thread', title: '子模型'),
+        activeAgent: AgentKind.claudeCode,
+        activeAgentCapabilities: AgentCapabilities.claudeCode,
+        models: [
+          AgentModel(id: 'claude-opus-5-5', displayName: 'Opus 5.5'),
+          AgentModel(id: 'claude-haiku-4-5', displayName: 'Haiku 4.5'),
+        ],
+        selectedModel: 'claude-opus-5-5',
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-model-button')));
+    await tester.pumpAndSettle();
+
+    final inherit = find.byKey(const ValueKey('thread-subagent-model-inherit'));
+    final haiku = find.byKey(
+      const ValueKey('thread-subagent-model-claude-haiku-4-5'),
+    );
+    await tester.ensureVisible(inherit);
+    expect(find.text('子模型'), findsWidgets);
+    expect(find.text('子 Agent 使用的模型；思考强度跟随主模型。'), findsOneWidget);
+    // 未设置时，跟随主模型是默认展示。
+    expect(tester.widget<FilterChip>(inherit).selected, isTrue);
+    expect(tester.widget<FilterChip>(haiku).selected, isFalse);
+
+    await tester.tap(haiku);
+    await tester.pumpAndSettle();
+    expect(controller.selections, ['claude-haiku-4-5']);
+    expect(tester.widget<FilterChip>(haiku).selected, isTrue);
+    expect(tester.widget<FilterChip>(inherit).selected, isFalse);
+
+    // 会话里显式选了跟随主模型后，chip 必须回到选中态而不是停留在上次的模型上。
+    await tester.tap(inherit);
+    await tester.pumpAndSettle();
+    expect(controller.selections, ['claude-haiku-4-5', inheritSubagentModel]);
+    expect(tester.widget<FilterChip>(inherit).selected, isTrue);
+    expect(tester.widget<FilterChip>(haiku).selected, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the sub-agent section stays Claude Code only', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(400, 900);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    controller.showState(
+      const AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'codex-thread', title: 'Codex 会话'),
+        activeAgentCapabilities: AgentCapabilities.codex,
+        models: [AgentModel(id: 'gpt-5.6', displayName: 'GPT-5.6')],
+        selectedModel: 'gpt-5.6',
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('composer-model-button')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('thread-subagent-model-inherit')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('thread-subagent-model-gpt-5.6')),
+      findsNothing,
+    );
+    expect(find.text('子 Agent 使用的模型；思考强度跟随主模型。'), findsNothing);
   });
 
   test('camera photo is prepared as an image attachment', () async {

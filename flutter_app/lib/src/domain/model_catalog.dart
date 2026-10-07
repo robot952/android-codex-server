@@ -8,6 +8,9 @@ const int maxHiddenModelIds = 500;
 const int maxManagedModelIds = 512;
 const String openCodeManagedProviderId = 'custom-api';
 const String openCodeLegacyManagedProviderId = 'codex-remote';
+/// Claude Code CLI 自己的写法，表示子 Agent 跟随主模型。
+/// 必须显式下发：bridge 在不传该参数时会回落到服务端默认子模型。
+const String inheritSubagentModel = 'inherit';
 
 const List<String> openCodeReasoningEffortValues = <String>[
   'minimal',

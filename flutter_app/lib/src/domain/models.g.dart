@@ -37,6 +37,7 @@ _AgentModelSettings _$AgentModelSettingsFromJson(Map<String, dynamic> json) =>
     _AgentModelSettings(
       preferredModel: json['preferredModel'] as String? ?? '',
       preferredEffort: json['preferredEffort'] as String? ?? '',
+      preferredSubagentModel: json['preferredSubagentModel'] as String? ?? '',
       testModel: json['testModel'] as String? ?? '',
       customModels:
           (json['customModels'] as List<dynamic>?)
@@ -62,6 +63,7 @@ Map<String, dynamic> _$AgentModelSettingsToJson(_AgentModelSettings instance) =>
     <String, dynamic>{
       'preferredModel': instance.preferredModel,
       'preferredEffort': instance.preferredEffort,
+      'preferredSubagentModel': instance.preferredSubagentModel,
       'testModel': instance.testModel,
       'customModels': instance.customModels,
       'hiddenModelIds': instance.hiddenModelIds,
@@ -94,6 +96,7 @@ _ServerProfile _$ServerProfileFromJson(Map<String, dynamic> json) =>
       workspacePromptShown: json['workspacePromptShown'] as bool? ?? false,
       preferredModel: json['preferredModel'] as String? ?? '',
       preferredEffort: json['preferredEffort'] as String? ?? '',
+      preferredSubagentModel: json['preferredSubagentModel'] as String? ?? '',
       testModel: json['testModel'] as String? ?? '',
       customModels:
           (json['customModels'] as List<dynamic>?)
@@ -144,6 +147,7 @@ Map<String, dynamic> _$ServerProfileToJson(_ServerProfile instance) =>
       'workspacePromptShown': instance.workspacePromptShown,
       'preferredModel': instance.preferredModel,
       'preferredEffort': instance.preferredEffort,
+      'preferredSubagentModel': instance.preferredSubagentModel,
       'testModel': instance.testModel,
       'customModels': instance.customModels,
       'hiddenModelIds': instance.hiddenModelIds,
@@ -182,11 +186,16 @@ _ThreadModelPreference _$ThreadModelPreferenceFromJson(
 ) => _ThreadModelPreference(
   model: json['model'] as String? ?? '',
   effort: json['effort'] as String? ?? '',
+  subagentModel: json['subagentModel'] as String? ?? '',
 );
 
 Map<String, dynamic> _$ThreadModelPreferenceToJson(
   _ThreadModelPreference instance,
-) => <String, dynamic>{'model': instance.model, 'effort': instance.effort};
+) => <String, dynamic>{
+  'model': instance.model,
+  'effort': instance.effort,
+  'subagentModel': instance.subagentModel,
+};
 
 _TurnTiming _$TurnTimingFromJson(Map<String, dynamic> json) => _TurnTiming(
   threadId: json['threadId'] as String,

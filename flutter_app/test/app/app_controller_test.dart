@@ -399,6 +399,7 @@ class _FailingTurnAgent
   List<PendingAttachment>? startedAttachments;
   String? startedModel;
   String? startedEffort;
+  String? startedSubagentModel;
   ApprovalMode? startedApprovalMode;
   SandboxChoice? startedSandbox;
   String? startedCwd;
@@ -479,6 +480,7 @@ class _FailingTurnAgent
     List<PendingAttachment> attachments = const <PendingAttachment>[],
     String? model,
     String? effort,
+    String? subagentModel,
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
     SandboxChoice? sandbox,
     String? cwd,
@@ -488,6 +490,7 @@ class _FailingTurnAgent
     startedAttachments = List<PendingAttachment>.unmodifiable(attachments);
     startedModel = model;
     startedEffort = effort;
+    startedSubagentModel = subagentModel;
     startedApprovalMode = approvalMode;
     startedSandbox = sandbox;
     startedCwd = cwd;
@@ -1033,6 +1036,7 @@ class _SettingsAgent extends _FailingTurnAgent
   String? writtenApiKey;
   String? writtenProxyUrl;
   String? writtenDefaultModel;
+  String? writtenDefaultSubagentModel;
   String? writtenDefaultEffort;
   bool? writtenPreserveProvider;
   String? fetchedBaseUrl;
@@ -1088,11 +1092,13 @@ class _SettingsAgent extends _FailingTurnAgent
     required String apiKey,
     required String proxyUrl,
     required String defaultModel,
+    String defaultSubagentModel = '',
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
   }) async {
     writeCalls++;
+    writtenDefaultSubagentModel = defaultSubagentModel;
     writtenBaseUrl = baseUrl;
     writtenApiKey = apiKey;
     writtenProxyUrl = proxyUrl;
@@ -4036,6 +4042,7 @@ void main() {
       apiKey: '',
       proxyUrl: 'http://127.0.0.1:7890',
       defaultModel: '  gpt-saved  ',
+      defaultSubagentModel: '',
       defaultReasoningEffort: 'HIGH',
       testModel: '  gpt-test-saved  ',
       websocketPolicy: 'auto',
@@ -4070,6 +4077,7 @@ void main() {
       apiKey: '',
       proxyUrl: '',
       defaultModel: 'gpt-relay-new',
+      defaultSubagentModel: '',
       defaultReasoningEffort: 'high',
       testModel: 'gpt-relay-new',
       websocketPolicy: 'auto',
@@ -4144,6 +4152,7 @@ void main() {
       apiKey: '',
       proxyUrl: '',
       defaultModel: 'gpt-saved',
+      defaultSubagentModel: '',
       defaultReasoningEffort: 'high',
       testModel: 'gpt-test-saved',
       websocketPolicy: 'auto',
@@ -4804,6 +4813,7 @@ void main() {
         apiKey: '',
         proxyUrl: '',
         defaultModel: 'claude-opus-5-5',
+        defaultSubagentModel: '  claude-haiku-4-5  ',
         defaultReasoningEffort: 'MAX',
         testModel: 'claude-opus-5-5',
         websocketPolicy: 'auto',
@@ -4824,6 +4834,12 @@ void main() {
             .preferredEffort,
         'max',
       );
+      expect(
+        store.value.profiles.single
+            .modelSettings(AgentKind.claudeCode)
+            .preferredSubagentModel,
+        'claude-haiku-4-5',
+      );
       controller.openThread(_FailingTurnAgent.thread);
       await _waitUntil(
         () =>
@@ -4843,6 +4859,23 @@ void main() {
       await controller.sendMessage(text: 'Opus test');
       expect(claude.startedModel, 'claude-opus-5-5');
       expect(claude.startedEffort, 'xhigh');
+      // 设置页保存的默认子模型会随会话生效，无需在对话页重复设置。
+      expect(claude.startedSubagentModel, 'claude-haiku-4-5');
+      controller.selectThreadSubagentModel('claude-sonnet-4-6');
+      expect(controller.state.selectedSubagentModel, 'claude-sonnet-4-6');
+      await controller.sendMessage(text: 'Subagent model test');
+      expect(claude.startedSubagentModel, 'claude-sonnet-4-6');
+      // 跟随主模型：会话里显式选择后必须下发 inherit，才能压过设置页默认子模型。
+      controller.clearThreadSubagentModel();
+      expect(controller.state.selectedSubagentModel, 'inherit');
+      await _waitUntil(
+        () =>
+            store.value.threadModelPreferences[preferenceKey]?.subagentModel ==
+            'inherit',
+      );
+      await controller.sendMessage(text: 'Inherit test');
+      expect(claude.startedSubagentModel, 'inherit');
+      expect(claude.startedModel, 'claude-opus-5-5');
       // A profile-wide Opus preference must not leak into a no-effort model.
       controller.selectThreadModel('claude-haiku-4-5');
       expect(controller.state.selectedEffort, isNull);

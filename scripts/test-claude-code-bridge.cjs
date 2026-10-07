@@ -935,6 +935,44 @@ test("a delegated agent becomes a child conversation with activity and message r
   assert.equal(audit.find(value => value.type === "spawn").args[audit.find(value => value.type === "spawn").args.indexOf("--model") + 1], "fixture-model");
 });
 
+test("a per-conversation sub-agent model overrides the settings default", async ({ peer, root }) => {
+  // The settings page writes its default into settings.json's env, which the
+  // bridge folds into the CLI environment. A choice made for one conversation
+  // must still win over it, otherwise the per-conversation picker is useless.
+  const configDir = path.join(root, ".claude");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: "claude-sonnet-4-6" } }));
+  const id = await peer.thread();
+  const lastSpawn = () => auditFor(root).filter(value => value.type === "spawn").at(-1);
+  const runTurn = async options => {
+    await peer.complete(await peer.turn(id, "fallback", { model: "fixture-model", ...options }));
+    const spawn = lastSpawn();
+    // The sub-agent pin never leaks into the main model argument.
+    assert.equal(spawn.args[spawn.args.indexOf("--model") + 1], "fixture-model");
+    return spawn.subagentModelEnv;
+  };
+
+  assert.equal(await runTurn({ subagentModel: "claude-haiku-4-5" }), "claude-haiku-4-5", "the conversation choice beats the settings default");
+  // "inherit" is the CLI's own spelling for 跟随主模型, so it must reach the CLI
+  // verbatim instead of collapsing into the settings default.
+  assert.equal(await runTurn({ subagentModel: "inherit" }), "inherit");
+  assert.equal(await runTurn({}), "claude-sonnet-4-6", "no conversation choice falls back to the settings default");
+});
+
+test("an unset sub-agent choice follows the main model", async ({ peer, root }) => {
+  const id = await peer.thread();
+  await peer.complete(await peer.turn(id, "fallback", { model: "fixture-model" }));
+  const spawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
+  assert.equal(spawn.subagentModelEnv, "fixture-model", "an absent choice follows the main model");
+  assert.equal(spawn.args[spawn.args.indexOf("--model") + 1], "fixture-model");
+
+  // A blank request is unset, not a model named "".
+  await assert.rejects(
+    () => peer.turn(id, "fallback", { model: "fixture-model", subagentModel: "-bad flag" }),
+    error => error.message.includes("模型名称无效"),
+  );
+});
+
 test("active compaction reports one notice card and never leaks the summary pass", async ({ peer, root }) => {
   const id = await peer.thread();
   const turn = await peer.turn(id, "compact", { model: "fixture-model" });

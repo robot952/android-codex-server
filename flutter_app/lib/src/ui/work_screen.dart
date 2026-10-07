@@ -1431,6 +1431,59 @@ class _ModelSelectionSheet extends ConsumerWidget {
               ),
               const SizedBox(height: 12),
             ],
+            if (state.activeAgent == AgentKind.claudeCode) ...[
+              const Divider(height: 1, color: codexBorder),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                child: Text(
+                  '子模型',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 3, 20, 7),
+                child: Text(
+                  '子 Agent 使用的模型；思考强度跟随主模型。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  children: [
+                    FilterChip(
+                      key: const ValueKey('thread-subagent-model-inherit'),
+                      selected:
+                          state.selectedSubagentModel == null ||
+                          state.selectedSubagentModel == inheritSubagentModel,
+                      onSelected: (_) => controller.clearThreadSubagentModel(),
+                      label: const Text('跟随主模型'),
+                    ),
+                    for (final model in state.models) ...[
+                      const SizedBox(width: 8),
+                      FilterChip(
+                        key: ValueKey(
+                          'thread-subagent-model-${agentModelWireName(model)}',
+                        ),
+                        selected:
+                            state.selectedSubagentModel ==
+                            agentModelWireName(model),
+                        onSelected: (_) => controller.selectThreadSubagentModel(
+                          agentModelWireName(model),
+                        ),
+                        label: Text(
+                          model.displayName.trim().isEmpty
+                              ? agentModelWireName(model)
+                              : model.displayName.trim(),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
           ],
         ),
       ),

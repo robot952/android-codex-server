@@ -1194,13 +1194,21 @@ class ClaudeBridge {
       if (effort) args.push("--effort", effort);
       const environment = settings.launchEnvironment();
       // Claude Code resolves a sub-agent's model from per-agent frontmatter
-      // (Explore and friends default to a small model). The user's chosen
-      // model and effort must govern delegated work too, and this variable is
-      // checked before any frontmatter, so it is the only reliable pin. It is
-      // left untouched when the server environment sets it deliberately.
-      if (environment.CLAUDE_CODE_SUBAGENT_MODEL == null) {
-        environment.CLAUDE_CODE_SUBAGENT_MODEL = model || "inherit";
-      }
+      // (Explore and friends default to a small model). This variable is read
+      // first, ahead of any frontmatter, so it is the only reliable pin. An
+      // empty choice means 跟随主模型; the literal "inherit" is the CLI's own
+      // spelling for that and resolves to the main loop's model. A blank server
+      // value counts as unset so a cleared setting cannot pin a stale model.
+      // `launchEnvironment()` already folds in settings.json, whose env holds
+      // the settings-page default. That default is only a fallback: a choice
+      // made for this conversation must be able to override it, so the per-turn
+      // value is read first and never compared against the inherited env.
+      const chosenSubagentModel = modelArgument(params.subagentModel ?? thread.subagentModel);
+      const inheritedSubagentModel = environment.CLAUDE_CODE_SUBAGENT_MODEL;
+      environment.CLAUDE_CODE_SUBAGENT_MODEL = chosenSubagentModel ||
+        (inheritedSubagentModel == null || inheritedSubagentModel === ""
+          ? modelArgument(configuration.subagentModel) || model || "inherit"
+          : inheritedSubagentModel);
       if (unsupportedEffort) {
         // Claude's auto sentinel clears this session's effort,
         // including persisted effortLevel and settings.env overrides. Retain

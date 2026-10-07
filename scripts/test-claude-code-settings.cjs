@@ -112,6 +112,21 @@ async function main() {
     settings.writeSettings({ ...draft, apiKey: "replacement-token", proxyUrl: "http://proxy.invalid:3128" });
     assert.equal(read().env.ANTHROPIC_AUTH_TOKEN, "replacement-token");
     assert.equal(settings.launchEnvironment().HTTPS_PROXY, "http://proxy.invalid:3128");
+    // The sub-agent default is written into settings.json's env, which is what
+    // the bridge folds into the CLI environment; blank must clear the inherited
+    // value instead of leaving an earlier pin behind.
+    write({ ...preserved, env: { ...preserved.env, CLAUDE_CODE_SUBAGENT_MODEL: "stale-subagent" } });
+    assert.equal(settings.readSettings().subagentModel, "stale-subagent");
+    settings.writeSettings({ ...draft, defaultSubagentModel: "claude-haiku-4-5" });
+    assert.equal(read().subagentModel, "claude-haiku-4-5");
+    assert.equal(read().env.CLAUDE_CODE_SUBAGENT_MODEL, "claude-haiku-4-5");
+    assert.equal(settings.readSettings().subagentModel, "claude-haiku-4-5");
+    assert.equal(settings.launchEnvironment().CLAUDE_CODE_SUBAGENT_MODEL, "claude-haiku-4-5");
+    settings.writeSettings({ ...draft, defaultSubagentModel: "" });
+    assert.equal(read().subagentModel, undefined);
+    assert.equal(read().env.CLAUDE_CODE_SUBAGENT_MODEL, "", "a cleared default must not keep pinning sub-agents");
+    assert.equal(settings.readSettings().subagentModel, "");
+
     settings.writeSettings({ ...draft, defaultModel: "", defaultReasoningEffort: "" });
     assert.equal(read().model, undefined);
     assert.equal(read().effortLevel, undefined);

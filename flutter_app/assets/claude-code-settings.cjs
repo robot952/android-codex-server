@@ -61,13 +61,17 @@ globalThis.__claudeRemoteSettings = (() => {
     const env = environment(data);
     const apiKey = text(env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY, 16384);
     const model = text(env.ANTHROPIC_MODEL || data.model);
+    // "inherit" is the CLI's own default and the only value that means "follow
+    // the main loop". Empty is reported as empty so the UI can show 跟随主模型
+    // without inventing a value the user never chose.
+    const subagentModel = text(env.CLAUDE_CODE_SUBAGENT_MODEL || data.subagentModel, 256);
     const reasoningEffort = text(env.CLAUDE_CODE_EFFORT_LEVEL || data.effortLevel, 32);
     const contextLimit = env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
     const contextWindowTokens = typeof contextLimit === "string" && /^[1-9]\d{0,8}$/.test(contextLimit) &&
       Number(contextLimit) <= 100000000 ? Number(contextLimit) : 0;
     return {
       baseUrl: text(env.ANTHROPIC_BASE_URL) || "https://api.anthropic.com",
-      model, reasoningEffort, contextWindowTokens, modelProvider: "anthropic", apiKey,
+      model, subagentModel, reasoningEffort, contextWindowTokens, modelProvider: "anthropic", apiKey,
       proxyUrl: proxyFrom(env),
       hasStoredAuthentication: !!apiKey || !!data.apiKeyHelper || fs.existsSync(path.join(directory, ".credentials.json")),
     };
@@ -179,6 +183,7 @@ globalThis.__claudeRemoteSettings = (() => {
     const proxyUrl = url(params.proxyUrl, "代理");
     const apiKey = text(params.apiKey, 16384);
     const defaultModel = model(params.defaultModel);
+    const defaultSubagentModel = model(params.defaultSubagentModel);
     const defaultEffort = effort(params.defaultReasoningEffort);
     const initial = load();
     try {
@@ -205,6 +210,10 @@ globalThis.__claudeRemoteSettings = (() => {
       }
       env.ANTHROPIC_MODEL = defaultModel;
       if (defaultModel) data.model = defaultModel; else delete data.model;
+      // Written even when blank: an inherited server value would otherwise keep
+      // pinning sub-agents to a model the user explicitly cleared.
+      env.CLAUDE_CODE_SUBAGENT_MODEL = defaultSubagentModel;
+      if (defaultSubagentModel) data.subagentModel = defaultSubagentModel; else delete data.subagentModel;
       env.CLAUDE_CODE_EFFORT_LEVEL = defaultEffort;
       if (defaultEffort) data.effortLevel = defaultEffort; else delete data.effortLevel;
       // Explicit empty overrides inherited proxies for App-launched CLI too.

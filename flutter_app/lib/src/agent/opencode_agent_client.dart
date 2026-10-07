@@ -191,6 +191,7 @@ class OpenCodeAgentClient extends CodexAgentClient
     required String apiKey,
     required String proxyUrl,
     required String defaultModel,
+    String defaultSubagentModel = '',
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,

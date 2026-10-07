@@ -78,7 +78,10 @@ void main({bool device = false}) {
 
       await tester.tap(find.byKey(const Key('composer-model-button')));
       await _pump(tester);
-      await tester.tap(find.text('Claude Opus 5.5'));
+      // The sheet lists the main models and, for Claude Code, the 子模型 chips,
+      // so a display name matches both; the main list is the ListTile.
+      Finder mainModel(String name) => find.widgetWithText(ListTile, name);
+      await tester.tap(mainModel('Claude Opus 5.5'));
       await _pump(tester);
       expect(h.controller.state.selectedModel, 'claude-opus-5-5');
       await tester.tap(find.widgetWithText(FilterChip, '高'));
@@ -86,15 +89,26 @@ void main({bool device = false}) {
       expect(h.controller.state.selectedEffort, 'high');
       // A model without effort metadata must not retain the previous model's
       // selection. Switching back exposes the supported controls again.
-      await tester.tap(find.text('Claude Haiku 4.5'));
+      await tester.tap(mainModel('Claude Haiku 4.5'));
       await _pump(tester);
       expect(h.controller.state.selectedEffort, isNull);
       expect(find.text('思考强度'), findsNothing);
-      await tester.tap(find.text('Claude Opus 5.5'));
+      await tester.tap(mainModel('Claude Opus 5.5'));
       await _pump(tester);
       await tester.tap(find.widgetWithText(FilterChip, '高'));
       await _pump(tester);
-      Navigator.of(tester.element(find.text('Claude Opus 5.5'))).pop();
+      // A per-conversation sub-agent model must survive the trip through the
+      // sheet and the settings default, which already pins a value in env.
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('thread-subagent-model-claude-haiku-4-5')),
+      );
+      await _pump(tester);
+      await tester.tap(
+        find.byKey(const ValueKey('thread-subagent-model-claude-haiku-4-5')),
+      );
+      await _pump(tester);
+      expect(h.controller.state.selectedSubagentModel, 'claude-haiku-4-5');
+      Navigator.of(tester.element(mainModel('Claude Opus 5.5'))).pop();
       await _pump(tester);
 
       // Claude exposes only request-approval and full-access modes. Cancelling
@@ -148,6 +162,7 @@ void main({bool device = false}) {
               as Map;
       expect(sentTurn['model'], 'claude-opus-5-5');
       expect(sentTurn['effort'], 'high');
+      expect(sentTurn['subagentModel'], 'claude-haiku-4-5');
       expect(find.text('请检查工程'), findsOneWidget);
       h.claude.delta('已检查');
       await _pump(tester);

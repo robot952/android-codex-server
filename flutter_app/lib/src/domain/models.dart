@@ -87,6 +87,7 @@ abstract class AgentModelSettings with _$AgentModelSettings {
   const factory AgentModelSettings({
     @Default('') String preferredModel,
     @Default('') String preferredEffort,
+    @Default('') String preferredSubagentModel,
     @Default('') String testModel,
     @Default(<CustomModelDefinition>[])
     List<CustomModelDefinition> customModels,
@@ -122,6 +123,7 @@ abstract class ServerProfile with _$ServerProfile {
     @Default(false) bool workspacePromptShown,
     @Default('') String preferredModel,
     @Default('') String preferredEffort,
+    @Default('') String preferredSubagentModel,
     @Default('') String testModel,
     @Default(<CustomModelDefinition>[])
     List<CustomModelDefinition> customModels,
@@ -147,6 +149,7 @@ abstract class ServerProfile with _$ServerProfile {
     return AgentModelSettings(
       preferredModel: preferredModel,
       preferredEffort: preferredEffort,
+      preferredSubagentModel: preferredSubagentModel,
       testModel: testModel,
       customModels: customModels,
       hiddenModelIds: hiddenModelIds,
@@ -165,6 +168,9 @@ abstract class ServerProfile with _$ServerProfile {
     preferredEffort: agent == AgentKind.codex
         ? settings.preferredEffort
         : preferredEffort,
+    preferredSubagentModel: agent == AgentKind.codex
+        ? settings.preferredSubagentModel
+        : preferredSubagentModel,
     testModel: agent == AgentKind.codex ? settings.testModel : testModel,
     customModels: agent == AgentKind.codex
         ? settings.customModels
@@ -190,6 +196,7 @@ abstract class ThreadModelPreference with _$ThreadModelPreference {
   const factory ThreadModelPreference({
     @Default('') String model,
     @Default('') String effort,
+    @Default('') String subagentModel,
   }) = _ThreadModelPreference;
 
   factory ThreadModelPreference.fromJson(Map<String, Object?> json) =>
@@ -733,6 +740,7 @@ abstract class AgentGlobalSettings with _$AgentGlobalSettings {
   const factory AgentGlobalSettings({
     @Default('') String baseUrl,
     @Default('') String model,
+    @Default('') String subagentModel,
     @Default('') String reasoningEffort,
     @Default('openai') String modelProvider,
     String? websocketPolicy,
@@ -807,6 +815,7 @@ abstract class AppUiState with _$AppUiState {
     String? apiModelOptionsError,
     String? selectedModel,
     String? selectedEffort,
+    String? selectedSubagentModel,
     @Default(ApprovalMode.requestApproval) ApprovalMode approvalMode,
     @Default(SandboxChoice.workspaceWrite) SandboxChoice sandbox,
     @Default(false) bool workspacePickerVisible,

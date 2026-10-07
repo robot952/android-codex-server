@@ -26,6 +26,7 @@ typedef AgentSettingsSaveCallback =
       required String apiKey,
       required String proxyUrl,
       required String defaultModel,
+      required String defaultSubagentModel,
       required String defaultReasoningEffort,
       required String testModel,
       required String websocketPolicy,
@@ -55,6 +56,7 @@ class AgentSettingsDialog extends StatefulWidget {
 class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   final _scrollController = ScrollController();
   late final TextEditingController _defaultModelController;
+  late final TextEditingController _defaultSubagentModelController;
   late final TextEditingController _baseUrlController;
   late final TextEditingController _apiKeyController;
   late final TextEditingController _proxyUrlController;
@@ -70,6 +72,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   void initState() {
     super.initState();
     _defaultModelController = TextEditingController();
+    _defaultSubagentModelController = TextEditingController();
     _baseUrlController = TextEditingController();
     _apiKeyController = TextEditingController();
     _proxyUrlController = TextEditingController();
@@ -104,6 +107,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   void dispose() {
     _scrollController.dispose();
     _defaultModelController.dispose();
+    _defaultSubagentModelController.dispose();
     _baseUrlController.dispose();
     _apiKeyController.dispose();
     _proxyUrlController.dispose();
@@ -212,6 +216,17 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       testModelController: _testModelController,
                                       defaultReasoningEffort:
                                           _defaultReasoningEffort,
+                                      defaultSubagentModelController:
+                                          _defaultSubagentModelController,
+                                      onChangedDefaultSubagentModel:
+                                          _markTestResultStale,
+                                      onFetchDefaultSubagentModels:
+                                          (anchorContext) => _fetchModels(
+                                            anchorContext: anchorContext,
+                                            controller:
+                                                _defaultSubagentModelController,
+                                            target: 'default',
+                                          ),
                                       reasoningOptions:
                                           agent == AgentKind.claudeCode
                                           ? <String>[
@@ -324,6 +339,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   void _applyRemoteSettings() {
     final settings = widget.state.agentSettings;
     _defaultModelController.text = settings?.model ?? '';
+    _defaultSubagentModelController.text = settings?.subagentModel ?? '';
     _baseUrlController.text = settings?.baseUrl ?? '';
     _apiKeyController.text = settings?.apiKey ?? '';
     _proxyUrlController.text = settings?.proxyUrl ?? '';
@@ -483,6 +499,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
           : enteredApiKey,
       proxyUrl: _proxyUrlController.text,
       defaultModel: _defaultModelController.text,
+      defaultSubagentModel: _defaultSubagentModelController.text,
       defaultReasoningEffort: reasoningEffort,
       testModel: _testModelController.text,
       websocketPolicy: _websocketPolicy,
@@ -558,6 +575,9 @@ class _SettingsForm extends StatelessWidget {
     required this.preserveCurrentProvider,
     required this.defaultProviderId,
     required this.defaultModelController,
+    required this.defaultSubagentModelController,
+    required this.onChangedDefaultSubagentModel,
+    required this.onFetchDefaultSubagentModels,
     required this.baseUrlController,
     required this.apiKeyController,
     required this.proxyUrlController,
@@ -590,6 +610,9 @@ class _SettingsForm extends StatelessWidget {
   final bool preserveCurrentProvider;
   final String defaultProviderId;
   final TextEditingController defaultModelController;
+  final TextEditingController defaultSubagentModelController;
+  final VoidCallback onChangedDefaultSubagentModel;
+  final ValueChanged<BuildContext> onFetchDefaultSubagentModels;
   final TextEditingController baseUrlController;
   final TextEditingController apiKeyController;
   final TextEditingController proxyUrlController;
@@ -678,6 +701,36 @@ class _SettingsForm extends StatelessWidget {
                 ? '默认由 Claude Code 决定；可选档位以所选模型能力为准。'
                 : '留空使用当前 Agent 的默认思考强度。',
             style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+        if (agent == AgentKind.claudeCode) ...[
+          const SizedBox(height: 11),
+          TextField(
+            key: const ValueKey('agent-settings-default-subagent-model'),
+            controller: defaultSubagentModelController,
+            enabled: enabled,
+            autocorrect: false,
+            enableSuggestions: false,
+            scrollPadding: _fieldScrollPadding,
+            onChanged: (_) => onChangedDefaultSubagentModel(),
+            decoration: InputDecoration(
+              labelText: '默认子模型',
+              hintText: '留空跟随主模型',
+              helperText: '子 Agent 默认使用的模型；留空则跟随主模型。子 Agent 的思考强度始终跟随主模型。',
+              helperMaxLines: 3,
+              suffixIcon: _FetchModelsButton(
+                key: const ValueKey(
+                  'agent-settings-fetch-default-subagent-models',
+                ),
+                enabled: enabled && !modelsLoading,
+                loading: defaultModelsLoading,
+                onPressed: onFetchDefaultSubagentModels,
+              ),
+              suffixIconConstraints: const BoxConstraints(
+                minHeight: 56,
+                minWidth: 126,
+              ),
+            ),
           ),
         ],
         if (agent == AgentKind.codex && customProviderInUse) ...[
@@ -957,6 +1010,13 @@ class _CurrentSettingsPanel extends StatelessWidget {
             '默认模型：${model?.isNotEmpty == true ? model : '未配置，使用 ${agent.label} 默认值'}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
+          if (agent == AgentKind.claudeCode) ...[
+            const SizedBox(height: 4),
+            Text(
+              '默认子模型：${settings?.subagentModel.trim().isNotEmpty == true ? settings!.subagentModel.trim() : '跟随主模型'}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
           if (reasoningSettingsAvailable) ...[
             const SizedBox(height: 4),
             Text(

@@ -132,6 +132,7 @@ class _QuestionAgent extends Fake
     List<PendingAttachment> attachments = const [],
     String? model,
     String? effort,
+    String? subagentModel,
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
     SandboxChoice? sandbox,
     String? cwd,
