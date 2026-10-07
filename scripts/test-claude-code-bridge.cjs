@@ -219,6 +219,12 @@ function fakeClaudeMain() {
       send({ type: "assistant", message: { id: "spawn-message", content: [
         { type: "tool_use", id: "spawn-one", name: "Task", input: { subagent_type: "Explore", description: "查找解析器", prompt: "定位解析器" } },
       ] } });
+      // The real CLI replays the delegated prompt on the parent's transport
+      // once the child is running. It is the same text the spawn carried, so it
+      // must not become a second prompt or an assistant bubble — and a gateway
+      // that mislabels the replay as an assistant block must not either.
+      send({ type: "user", parent_tool_use_id: "spawn-one", message: { role: "user", content: [{ type: "text", text: "定位解析器" }] } });
+      send({ type: "assistant", parent_tool_use_id: "spawn-one", message: { id: "child-echo-message", content: [{ type: "text", text: "定位解析器" }] } });
       send({ type: "assistant", parent_tool_use_id: "spawn-one", message: { id: "child-message", content: [{ type: "text", text: "解析器位于 codex_protocol.dart" }] } });
       send({ type: "assistant", parent_tool_use_id: "spawn-one", message: { id: "child-tool-message", content: [
         { type: "tool_use", id: "child-bash", name: "Bash", input: { command: "grep -n parseItem codex_protocol.dart" } },
@@ -927,7 +933,14 @@ test("a delegated agent becomes a child conversation with activity and message r
   // The child conversation keeps its own cards, including the tool result.
   const [childTurn] = child.initialTurnsPage.data;
   assert.equal(childTurn.status, "completed");
-  assert.deepEqual(childTurn.items.filter(item => item.type === "agentMessage").map(item => item.text), ["解析器位于 codex_protocol.dart"]);
+  // The delegated page has to open on what the parent asked for, the way a
+  // normal conversation opens on the user's message. The CLI replays the prompt
+  // as a `user` message on the parent's transport; a missing role check turned
+  // it into the sub-agent's own words, so it has to stay a user message.
+  const promptItem = childTurn.items.find(item => item.type === "userMessage");
+  assert.deepEqual(promptItem.content, [{ type: "text", text: "定位解析器" }]);
+  assert.equal(childTurn.items.filter(item => item.type === "userMessage").length, 1);
+  assert.deepEqual(assistantTexts(childTurn), ["解析器位于 codex_protocol.dart"]);
   const command = childTurn.items.find(item => item.type === "commandExecution");
   assert.equal(command.command, "grep -n parseItem codex_protocol.dart");
   assert.equal(command.status, "completed");
@@ -1062,6 +1075,11 @@ test("a running delegated conversation reads as running on its own page", async 
   // whatever has been persisted; the thread status is what proves the page
   // knows the delegation is still live.
   assert.equal(live.initialTurnsPage.data.length, 1);
+  // A page opened mid-flight still shows what the parent asked for.
+  assert.deepEqual(
+    live.initialTurnsPage.data[0].items.filter(item => item.type === "userMessage").map(item => item.content[0].text),
+    ["检索整个仓库"],
+  );
   fs.writeFileSync(path.join(root, "live-release"), "");
   await peer.complete(turn);
   const settled = await peer.ok("thread/read", { threadId: childId });

@@ -239,6 +239,17 @@ class ChildAgent {
     this.agentId = "";
     this.status = "running";
     this.turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [] };
+    // The delegated page has to open on the instructions the parent wrote, the
+    // way the parent's own page opens on the user's message. The CLI echoes the
+    // prompt back on the parent's transport, but only after the child has been
+    // running for a while, and at least one CLI build never echoes it at all.
+    const prompt = bounded(input.prompt, MAX_TEXT);
+    // Kept for the duplicate check below: the replay has to be recognised even
+    // when a gateway labels it as an assistant block.
+    this.prompt = prompt;
+    if (prompt.trim()) {
+      this.turn.items.push({ id: "child-prompt", type: "userMessage", content: [{ type: "text", text: prompt }] });
+    }
     this.thread = store.createChild(run.thread, { name: this.name, model: run.thread.model, agentPath: this.agentPath });
     // The App opens the delegated page by this id, so it has to be the id the
     // thread is actually persisted under.
@@ -1109,10 +1120,18 @@ class ClaudeBridge {
     const messageId = typeof value.message?.id === "string" && value.message.id
       ? value.message.id
       : `${turn.id}-${turn.items.length}`;
+    // `user` blocks on this transport are the CLI replaying what was sent to
+    // the child — the delegated prompt and the tool results. Only the tool
+    // results have anything to add; the prompt is already the child's first
+    // item, so a text block here would repeat it as the sub-agent's own words.
+    const role = value.message?.role || value.type;
     for (const [index, block] of value.message.content.entries()) {
       const id = "child-" + messageId + "-" + index;
       if (block.type === "text") {
         const text = String(block.text || "");
+        // A gateway may mislabel the replay as an assistant block, so the
+        // seeded prompt is recognised by its text too.
+        if (role === "user" || (text && child.prompt && child.prompt.startsWith(text))) continue;
         // The child's transcript shows the finished block, not deltas, so a
         // repeated snapshot is resolved against the text already stored.
         const stored = turn.items.find(entry => entry.id === id && entry.type === "agentMessage");
