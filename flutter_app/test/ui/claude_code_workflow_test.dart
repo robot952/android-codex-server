@@ -115,10 +115,23 @@ void main({bool device = false}) {
       await tester.tap(find.byKey(const Key('composer-action-menu')));
       await _pump(tester);
       expect(find.text('选择模型'), findsOneWidget);
-      expect(find.text('压缩会话'), findsNothing);
-      // Dismiss the menu through its barrier, leaving the work route intact.
-      await tester.tapAt(const Offset(12, 120));
+      // The bridge serves `thread/compact/start` by re-running the native
+      // session through its `/compact` command, so the entry must be offered.
+      expect(find.text('压缩会话'), findsOneWidget);
+      await tester.tap(find.text('压缩会话'));
       await _pump(tester);
+      expect(find.text('是否压缩当前会话？压缩后可以释放一部分上下文空间。'), findsOneWidget);
+      await tester.tap(find.text('压缩'));
+      await tester.runAsync(() async {
+        await tester.pump();
+        await drain();
+      });
+      await _pump(tester);
+      expect(
+        h.claude.requests.where((r) => r['method'] == 'thread/compact/start'),
+        hasLength(1),
+      );
+      expect(h.controller.state.diagnostic, '已开始压缩会话上下文');
 
       await _enterMessage(tester, '请检查工程', device: device);
       await tester.tap(find.byTooltip('发送'));

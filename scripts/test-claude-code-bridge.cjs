@@ -27,7 +27,7 @@ function fakeClaudeMain() {
   let scenario;
   let request;
   let holdExit = false;
-  audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL });
+  audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL, subagentModelEnv: process.env.CLAUDE_CODE_SUBAGENT_MODEL });
   assert.equal(valueOf("--input-format"), "stream-json");
   assert.equal(valueOf("--output-format"), "stream-json");
   assert.equal(valueOf("--permission-mode"), "default");
@@ -35,6 +35,7 @@ function fakeClaudeMain() {
   assert.ok(args.includes("--include-partial-messages"));
   assert.ok(!args.includes("--dangerously-skip-permissions"));
   const result = text => send({ type: "result", is_error: false, result: text });
+  const workspaceFile = name => process.env.CLAUDE_TEST_AUDIT.replace(/\/audit\.jsonl$/, "") + "/" + name;
   input.on("line", line => {
     const message = JSON.parse(line);
     audit({ type: "input", message });
@@ -211,6 +212,53 @@ function fakeClaudeMain() {
     } else if (scenario === "image") {
       assert.ok(message.message.content.some(block => block.type === "image"));
       result("IMAGE_RECEIVED");
+    } else if (scenario === "delegation") {
+      // A delegated agent answers on the parent's transport behind
+      // `parent_tool_use_id`, then the spawn result carries its address. A
+      // later SendMessage may name either the teammate or that address.
+      send({ type: "assistant", message: { id: "spawn-message", content: [
+        { type: "tool_use", id: "spawn-one", name: "Task", input: { subagent_type: "Explore", description: "查找解析器", prompt: "定位解析器" } },
+      ] } });
+      send({ type: "assistant", parent_tool_use_id: "spawn-one", message: { id: "child-message", content: [{ type: "text", text: "解析器位于 codex_protocol.dart" }] } });
+      send({ type: "assistant", parent_tool_use_id: "spawn-one", message: { id: "child-tool-message", content: [
+        { type: "tool_use", id: "child-bash", name: "Bash", input: { command: "grep -n parseItem codex_protocol.dart" } },
+      ] } });
+      send({ type: "user", parent_tool_use_id: "spawn-one", message: { content: [
+        { type: "tool_result", tool_use_id: "child-bash", content: "1486: static TimelineEntry? parseItem" },
+      ] } });
+      // The parent can only address the teammate by name while it is running;
+      // the `agentId` address arrives with the closing report below.
+      send({ type: "assistant", message: { id: "relay-message", content: [
+        { type: "tool_use", id: "relay-one", name: "SendMessage", input: { to: "Explore", summary: "继续处理第二个文件", message: "请继续处理第二个文件并汇报" } },
+        { type: "tool_use", id: "relay-unknown", name: "SendMessage", input: { to: "ghost", summary: "未知协作方", message: "这条消息没有可打开的会话" } },
+      ] } });
+      send({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "relay-one", content: "已转达" },
+      ] } });
+      send({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "spawn-one", content: "解析器已定位。\nagentId: a1b2c3d4e5f6" },
+      ] } });
+      // After the report, the parent may address the same collaborator by its
+      // `agentId` instead of its name.
+      send({ type: "assistant", message: { id: "relay-address-message", content: [
+        { type: "tool_use", id: "relay-address", name: "SendMessage", input: { to: "a1b2c3d4e5f6", summary: "再次跟进", message: "请补充第二个文件的结论" } },
+      ] } });
+      result("DELEGATION_DONE");
+    } else if (message.message.content[0].text === "/compact") {
+      // `/compact` is a local command: the CLI rewrites the resumed session,
+      // reports the boundary, and produces no conversational output of its own.
+      assert.ok(args.includes("--resume"));
+      if (fs.existsSync(workspaceFile("no-boundary"))) {
+        // The App must read a reason instead of waiting for its own timeout.
+        result("COMPACTION_WITHOUT_BOUNDARY");
+        return;
+      }
+      send({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 180000, post_tokens: 42000 } });
+      send({ type: "assistant", message: { id: "compact-summary", content: [{ type: "text", text: "COMPACTION_SUMMARY_MUST_NOT_LEAK" }] } });
+      result("COMPACTED");
+    } else if (scenario === "compact-no-boundary") {
+      fs.writeFileSync(workspaceFile("no-boundary"), "");
+      result("SEEDED_FOR_COMPACTION_FAILURE");
     } else {
       result("FALLBACK_RESULT");
     }
@@ -282,7 +330,8 @@ class Peer {
   async thread(cwd) { return (await this.ok("thread/start", cwd ? { cwd } : {})).thread.id; }
   async turn(threadId, scenario, options = {}) {
     const after = this.mark();
-    const result = await this.ok("turn/start", { threadId, input: [{ type: "text", text: "CASE:" + scenario }], ...options });
+    const { prompt, ...rest } = options;
+    const result = await this.ok("turn/start", { threadId, input: [{ type: "text", text: prompt ?? "CASE:" + scenario }], ...rest });
     return { id: result.turn.id, after, threadId };
   }
   async complete(turn, expected = "completed") {
@@ -392,11 +441,12 @@ test("semantic per-index dedup reconciles mismatched message and tool IDs", asyn
   await peer.complete(turn);
   const latest = (await peer.history(id))[0];
   assert.deepEqual(assistantTexts(latest), ["我先看一下当前目录和这台机器的基础信息。"]);
-  const tools = latest.items.filter(item => item.type === "mcpToolCall");
+  const tools = latest.items.filter(item => item.type === "commandExecution");
   assert.equal(tools.length, 1);
   assert.equal(tools[0].id, "tool-one");
+  assert.equal(tools[0].command, "pwd");
   assert.equal(tools[0].status, "completed");
-  assert.equal(tools[0].result, "/home/yan");
+  assert.equal(tools[0].output, "/home/yan");
   const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
   assert.deepEqual(deltas.map(message => message.params.delta), ["我先看一下当前目录和这台机器的基础信息。"]);
 });
@@ -526,9 +576,10 @@ test("tool approval explicitly allows, denies and ignores an unrelated response"
     const latest = (await peer.history(id))[0];
     assert.deepEqual(assistantTexts(latest), [accepted ? "TOOL_ALLOWED" : "TOOL_DENIED"]);
     const tool = latest.items.find(item => item.id === "fixture-tool");
-    assert.equal(tool.type, "mcpToolCall");
+    assert.equal(tool.type, "commandExecution");
+    assert.equal(tool.command, "printf fixture");
     assert.equal(tool.status, accepted ? "completed" : "failed");
-    assert.equal(tool.result, accepted ? "command output" : "not executed");
+    assert.equal(tool.output, accepted ? "command output" : "not executed");
   }
 });
 
@@ -784,6 +835,121 @@ test("invalid requests and attachment limits cannot start a CLI", async ({ peer,
   assert.throws(() => prepareInput([{ type: "text", text: "x".repeat(512 * 1024 + 1) }]), /文本附件/);
   assert.equal(bounded("abc", 2), "ab\n[内容过长，已截断]");
   assert.equal(bounded(null), "");
+});
+
+test("a delegated agent becomes a child conversation with activity and message rows", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "delegation", { model: "fixture-model" });
+  await peer.complete(turn);
+  const [parent] = await peer.history(id);
+  const activities = parent.items.filter(item => item.type === "subAgentActivity");
+  // One row per lifecycle change, in the order the parent made them: the
+  // delegation starts, the parent writes to it, it reports back, and the parent
+  // keeps writing to the address the report handed over.
+  assert.deepEqual(activities.map(item => item.kind), ["started", "sendInput", "completed", "sendInput"]);
+  const [started, relay, completed, addressed] = activities;
+  // The App opens the child page by `agentThreadId` and labels the row by the
+  // last path segment, so the readable agent name has to be the whole path.
+  assert.ok(started.agentThreadId);
+  assert.equal(started.agentPath, "Explore");
+  assert.equal(started.message, "查找解析器");
+  // The row's text comes from `kind`; its status is settled by the turn finish
+  // pass like every other in-progress card.
+  assert.equal(started.status, "completed");
+  assert.equal(relay.status, "completed");
+  assert.equal(completed.status, "completed");
+  // A SendMessage is a message row, ranked by the App as `sendInput` → the
+  // "已向 X 发送消息" transcript row.
+  assert.equal(relay.id, "relay-one");
+  assert.equal(relay.agentThreadId, started.agentThreadId);
+  assert.equal(relay.agentPath, "Explore");
+  assert.equal(relay.message, "继续处理第二个文件");
+  // The teammate name and the `agentId` from the closing report address the
+  // same delegated conversation, so the row stays openable.
+  assert.equal(addressed.id, "relay-address");
+  assert.equal(addressed.agentThreadId, started.agentThreadId);
+  assert.equal(addressed.message, "再次跟进");
+  // A message to a teammate the bridge never saw start stays an ordinary card
+  // instead of creating a phantom collaborator.
+  const ghost = parent.items.find(item => item.id === "relay-unknown");
+  assert.equal(ghost.type, "mcpToolCall");
+  assert.equal(ghost.title, "发送消息");
+  assert.equal(parent.items.filter(item => item.type === "subAgentActivity").length, 4);
+  // The child's own blocks never enter the parent transcript.
+  assert.equal(parent.items.some(item => item.text === "解析器位于 codex_protocol.dart"), false);
+  assert.equal(assistantTexts(parent).includes("DELEGATION_DONE"), true);
+
+  const child = await peer.ok("thread/read", { threadId: started.agentThreadId });
+  assert.equal(child.thread.parentThreadId, id);
+  assert.equal(child.thread.threadSource, "subagent");
+  assert.equal(child.thread.name, "Explore");
+  assert.equal(child.thread.status, "idle");
+  // The child conversation keeps its own cards, including the tool result.
+  const [childTurn] = child.initialTurnsPage.data;
+  assert.equal(childTurn.status, "completed");
+  assert.deepEqual(childTurn.items.filter(item => item.type === "agentMessage").map(item => item.text), ["解析器位于 codex_protocol.dart"]);
+  const command = childTurn.items.find(item => item.type === "commandExecution");
+  assert.equal(command.command, "grep -n parseItem codex_protocol.dart");
+  assert.equal(command.status, "completed");
+  assert.match(command.output, /1486/);
+  // A delegated conversation belongs to its parent page, not to the list.
+  assert.deepEqual((await peer.ok("thread/list")).data.map(thread => thread.id), [id]);
+  // The user's model governs delegated work too: per-agent frontmatter would
+  // otherwise pick a smaller model for agents like Explore.
+  const spawn = auditFor(root).find(value => value.type === "spawn");
+  assert.equal(spawn.subagentModelEnv, "fixture-model");
+  const audit = auditFor(root);
+  assert.equal(audit.find(value => value.type === "spawn").args[audit.find(value => value.type === "spawn").args.indexOf("--model") + 1], "fixture-model");
+});
+
+test("active compaction reports one notice card and never leaks the summary pass", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "compact", { model: "fixture-model" });
+  await peer.complete(turn);
+  const before = auditFor(root).filter(value => value.type === "spawn").length;
+  const result = await peer.ok("thread/compact/start", { threadId: id });
+  assert.deepEqual(result, {});
+  // The pass re-enters the same native session, so the CLI resumes it instead
+  // of opening a fresh one, and it receives `/compact` as a local command.
+  const spawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
+  assert.equal(auditFor(root).filter(value => value.type === "spawn").length, before + 1);
+  const sessionId = spawn.args[spawn.args.indexOf("--resume") + 1];
+  assert.ok(sessionId);
+  assert.equal(spawn.subagentModelEnv, "fixture-model");
+  const compaction = auditFor(root).filter(value => value.type === "input").map(value => value.message).find(message => message.type === "user" && message.message?.content?.[0]?.text === "/compact");
+  assert.ok(compaction);
+  // The compaction turn carries the notice and nothing else: the summary the
+  // CLI writes during the pass must not appear in the conversation.
+  // History pages newest-first, so the notice turn is the first entry.
+  const turns = await peer.history(id);
+  const compactionTurn = turns[0];
+  assert.deepEqual(compactionTurn.items.map(item => item.type), ["contextCompaction"]);
+  assert.equal(compactionTurn.items[0].status, "completed");
+  assert.equal(compactionTurn.status, "completed");
+  assert.equal(turns.length, 2);
+  assert.equal(JSON.stringify(turns).includes("COMPACTION_SUMMARY_MUST_NOT_LEAK"), false);
+  // Occupancy is corrected from the boundary so the context ring reflects the
+  // compacted session without waiting for another model response.
+  assert.equal((await peer.ok("thread/read", { threadId: id, includeTurns: false })).tokenUsage.last.inputTokens, 42000);
+  // The pass released the writer, so the conversation stays usable.
+  const next = await peer.turn(id, "fallback");
+  await peer.complete(next);
+});
+
+test("compaction without a boundary fails with a reason instead of timing out", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "compact-no-boundary");
+  await peer.complete(turn);
+  const response = await peer.request("thread/compact/start", { threadId: id });
+  assert.match(response.error.message, /未完成压缩/);
+  const turns = await peer.history(id);
+  assert.deepEqual(turns[0].items.map(item => item.type), ["contextCompaction"]);
+  assert.equal(turns[0].status, "failed");
+  assert.ok(turns[0].error.message);
+  // Nothing from the aborted pass may be appended to the session.
+  assert.equal(JSON.stringify(turns).includes("COMPACTION_WITHOUT_BOUNDARY"), false);
+  const error = await peer.request("thread/compact/start", { threadId: crypto.randomUUID() });
+  assert.ok(error.error);
 });
 
 test("malformed client JSON receives a parse error and shuts down safely", async ({ peer }) => {

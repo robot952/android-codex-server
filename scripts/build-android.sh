@@ -64,6 +64,7 @@ release_apk="$FLUTTER_DIR/build/app/outputs/flutter-apk/app-release.apk"
 android_input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     flutter_app/lib \
     flutter_app/test \
+    flutter_app/assets \
     flutter_app/android \
     flutter_app/pubspec.yaml \
     flutter_app/pubspec.lock \

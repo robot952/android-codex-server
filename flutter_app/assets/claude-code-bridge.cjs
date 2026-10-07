@@ -95,6 +95,173 @@ function usageBreakdown(value) {
   return { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens: 0, totalTokens: inputTokens + outputTokens };
 }
 
+// Every native tool is projected onto the App's shared timeline contract so
+// Claude Code cards read exactly like Codex cards: shell work becomes a
+// command card, file writes become a diff card, and the remaining tools keep a
+// Chinese label instead of the raw English wire name.
+const TOOL_TITLES = {
+  Read: "读取文件", Glob: "查找文件", Grep: "搜索内容",
+  WebSearch: "网页搜索", WebFetch: "抓取网页", TodoWrite: "更新任务清单",
+  TaskCreate: "创建任务", TaskUpdate: "更新任务", TaskList: "查看任务", TaskGet: "查看任务",
+  AskUserQuestion: "询问用户", EnterPlanMode: "进入计划模式", ExitPlanMode: "退出计划模式",
+  EnterWorktree: "进入工作树", ExitWorktree: "退出工作树", KillShell: "停止后台任务",
+  KillBash: "停止后台任务", BashOutput: "查看命令输出", NotebookRead: "读取笔记本",
+  Skill: "调用技能", SlashCommand: "执行命令", ListMcpResources: "列出资源",
+  ReadMcpResource: "读取资源", Computer: "操作界面", CodebaseSearch: "搜索代码",
+  ExitSpecMode: "退出规格模式", EnterSpecMode: "进入规格模式",
+};
+// Blueprint names that Claude has renamed across releases.
+const TOOL_ALIASES = { Bash: "command", Shell: "command", Terminal: "command", Task: "agent", Agent: "agent", SendMessage: "agentMessage" };
+const AGENT_TOOLS = new Set(["Task", "Agent"]);
+// Sending a message to an agent that already exists is not a new delegation,
+// so it becomes an addressable transcript row instead of a tool card.
+const AGENT_MESSAGE_TOOLS = new Set(["SendMessage"]);
+
+function toolKind(name) {
+  const raw = String(name || "");
+  const colon = raw.indexOf(":");
+  // `mcp__server__tool`, `Server:tool` and `mcp_server_tool` all reach one name.
+  if (raw.startsWith("mcp__")) return { kind: "mcp", server: raw.split("__")[1] || "MCP", tool: raw.split("__").slice(2).join("__") || raw };
+  if (colon > 0) return { kind: "mcp", server: raw.slice(0, colon), tool: raw.slice(colon + 1) };
+  const alias = TOOL_ALIASES[raw];
+  if (alias === "command") return { kind: "command" };
+  if (alias === "agent") return { kind: "agent" };
+  if (alias === "agentMessage") return { kind: "agentMessage" };
+  if (raw === "Edit" || raw === "MultiEdit" || raw === "Write" || raw === "NotebookEdit") return { kind: "file" };
+  if (raw === "WebSearch") return { kind: "search" };
+  return { kind: "tool", title: TOOL_TITLES[raw] || raw || "工具调用" };
+}
+
+function readString(value, key) {
+  const found = value?.[key];
+  return typeof found === "string" ? found : "";
+}
+
+// A local line diff is enough to keep +N/-N and the per-file rows meaningful;
+// the App never re-applies these hunks.
+function lineDiff(before, after, context = 2) {
+  const left = String(before ?? "").split("\n");
+  const target = String(after ?? "").split("\n");
+  const right = target;
+  let head = 0;
+
+  while (head < left.length && head < right.length && left[head] === right[head]) head += 1;
+  let tail = 0;
+  while (tail < left.length - head && tail < right.length - head && left[left.length - 1 - tail] === right[right.length - 1 - tail]) tail += 1;
+  const removed = left.slice(head, left.length - tail);
+  const added = right.slice(head, right.length - tail);
+  if (!removed.length && !added.length) return "";
+  const from = Math.max(0, head - context);
+  const to = Math.min(left.length, left.length - tail + context);
+  const lines = [];
+  for (const line of left.slice(from, head)) lines.push(" " + line);
+  for (const line of removed) lines.push("-" + line);
+  for (const line of added) lines.push("+" + line);
+  const last = Math.min(right.length, right.length - tail + context);
+  for (const line of right.slice(right.length - tail, last)) lines.push(" " + line);
+  return lines.join("\n");
+}
+
+// Claude tools carry one file per call. Emitting the App's `changes` array lets
+// the transcript show the edited paths instead of an opaque tool row.
+function fileChanges(name, input) {
+  const path = readString(input, "file_path") || readString(input, "notebook_path") || readString(input, "path");
+  if (!path) return null;
+  if (name === "MultiEdit" && Array.isArray(input.edits)) {
+    const diff = input.edits.map(edit => lineDiff(edit.old_string, edit.new_string)).filter(Boolean).join("\n");
+    return { path, kind: "update", diff };
+  }
+  if (name === "Edit") return { path, kind: "update", diff: lineDiff(input.old_string, input.new_string) };
+  if (name === "NotebookEdit") return { path, kind: "update", diff: lineDiff(input.old_source, input.new_source) };
+  const content = readString(input, "content");
+  return { path, kind: "add", diff: content ? content.split("\n").map(line => "+" + line).join("\n") : "" };
+}
+
+function toolResultText(block) {
+  const content = block?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map(part => typeof part === "string" ? part : readString(part, "text")).filter(Boolean).join("\n");
+  }
+  return "";
+}
+
+// The spawn result ends with the address that later SendMessage calls use
+// (`agentId: a1b2c3d4e5f6`). Those calls may name that address instead of the
+// teammate, so it has to be read back off the result text.
+function resultAgentId(text) {
+  const match = /agent_?id\s*[:=]\s*([A-Za-z0-9_.:-]{4,80})/i.exec(String(text || ""));
+  return match ? match[1] : "";
+}
+
+// `Explore:find the parser` and `Explore` differ only by the parent's label.
+function agentLabel(subagentType, description) {
+  const raw = String(subagentType || "").split(":")[0].trim() || "Agent";
+  const text = String(description || "").split(/\r?\n/, 1)[0].trim();
+  return { name: raw, summary: text ? bounded(text, 400) : "" };
+}
+
+// One delegated conversation. Its blocks arrive on the parent's transport with
+// `parent_tool_use_id` set, and they are kept out of the parent's own usage
+// totals so the context ring still measures the parent only.
+class ChildAgent {
+  constructor({ run, store }, input) {
+    const label = agentLabel(input.subagent_type, input.description);
+    this.parent = run;
+    this.name = label.name;
+    this.summary = label.summary;
+    // The App reads a collaborator's name from the last path segment, so a
+    // unique suffix here would replace the readable name with a hex slug.
+    this.agentPath = label.name;
+    // The spawn result exposes an `agentId` (a…-…) that later SendMessage
+    // calls may address instead of the display name.
+    this.agentId = "";
+    this.status = "running";
+    this.turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [] };
+    this.thread = store.createChild(run.thread, { name: label.name, model: run.thread.model, agentPath: this.agentPath });
+    // The App opens the delegated page by this id, so it has to be the id the
+    // thread is actually persisted under.
+    this.id = this.thread.id;
+    this.streamed = new Set();
+    this.completedMessages = new Set();
+    this.lastAssistantBlocks = [];
+    this.runText = new Map();
+    // Registering the turn is what makes the child page load its history at all.
+    this.thread.turnIds.push(this.turn.id);
+    this.thread.activeTurnId = this.turn.id;
+    this.thread.status = "active";
+    this.preview = this.summary;
+    store.saveTurn(this.thread, this.turn);
+    store.save(this.thread);
+  }
+  item(type, id, fields) {
+    let item = this.turn.items.find(value => value.id === id);
+    if (item) return item;
+    item = { id, type, ...fields };
+    this.thread.updatedAt = Date.now();
+    this.turn.items.push(item);
+    return item;
+  }
+  text(id, value) {
+    const item = this.item("agentMessage", id, { text: "" });
+    const incoming = String(value || "");
+    if (!incoming || this.streamed.has(id)) return "";
+    this.streamed.add(id);
+    item.text += incoming;
+    return item.text;
+  }
+  settle(status) {
+    if (this.status !== "running") return;
+    this.status = status;
+    this.turn.status = status === "completed" ? "completed" : status;
+    this.turn.completedAt = Date.now();
+    this.thread.updatedAt = Date.now();
+    this.thread.status = "idle";
+    delete this.thread.activeTurnId;
+    for (const item of this.turn.items) if (item.status === "inProgress") item.status = this.turn.status === "completed" ? "completed" : "failed";
+  }
+}
+
 function modelArgument(value) {
   if (value == null || value === "" || value === "default") return null;
   if (typeof value !== "string" || value.length > 200 || /[\s\x00-\x1f\x7f]/.test(value) || value.startsWith("-")) throw new Error("Claude Code 模型名称无效");
@@ -216,6 +383,18 @@ class ThreadStore {
     this.save(thread);
     return thread;
   }
+  // A delegated sub-agent gets its own openable conversation. The App only
+  // treats it as a collaborator when the record declares its parent and the
+  // subagent thread source.
+  createChild(parent, { name, model, agentPath }) {
+    const thread = this.create(parent.cwd, model);
+    thread.parentThreadId = parent.id;
+    thread.threadSource = "subagent";
+    thread.agentPath = agentPath;
+    thread.name = name;
+    this.save(thread);
+    return thread;
+  }
   list() {
     const all = [];
     const directory = fs.opendirSync(this.root);
@@ -268,7 +447,7 @@ class ThreadStore {
 }
 
 function threadView(thread, active = false) {
-  return {
+  const view = {
     // `preview` is intentionally updated on every turn. It is not a stable
     // title fallback: using it here made unnamed conversations appear to
     // rename themselves after each new prompt.
@@ -278,6 +457,13 @@ function threadView(thread, active = false) {
     status: active ? "active" : "idle", activeTurnId: active ? thread.activeTurnId : null,
     createdAt: thread.createdAt, updatedAt: thread.updatedAt,
   };
+  // A delegated conversation is only recognised as a collaborator when its
+  // parent and subagent origin travel with the record; otherwise reopening
+  // the child page loses the parent link the App navigates back to.
+  if (thread.parentThreadId) view.parentThreadId = thread.parentThreadId;
+  if (thread.threadSource) view.threadSource = thread.threadSource;
+  if (thread.agentPath) view.agentPath = thread.agentPath;
+  return view;
 }
 
 function prepareInput(input) {
@@ -482,16 +668,109 @@ class ClaudeBridge {
         this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
       }
     }
+    this.closeChildren(run, status === "completed" ? "completed" : "failed");
     try { this.persist(run); } catch (_) { run.turn.status = "failed"; run.turn.error = { message: "无法保存 Claude Code 会话历史" }; }
+    // A compaction pass holds the request until its turn reaches this point.
+    if (run.settlePass) { const settle = run.settlePass; run.settlePass = null; settle(); }
     // The CLI may still own its native session until close. Keep the visible
     // turn active until that writer is gone; completion must permit a new turn.
   }
+  // The CLI compacts the conversation itself and then reports the boundary.
+  // The App only needs the one notice card plus corrected occupancy.
+  compacted(run, metadata) {
+    const post = tokenCount(metadata.post_tokens);
+    if (post) {
+      const previous = run.usageByMessage.get(run.compactionId) || { ...ZERO_USAGE };
+      run.usageByMessage.set(run.compactionId, { ...previous, inputTokens: post, totalTokens: post + previous.outputTokens });
+      run.lastUsage = run.usageByMessage.get(run.compactionId);
+      run.lastUsageId = run.compactionId;
+      this.publishUsage(run);
+    }
+    const item = this.item(run, run.compactionId, "contextCompaction", {});
+    item.status = "completed";
+    this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
+    run.compactionDone = true;
+    this.changed(run);
+  }
+  // A delegation whose closing tool result never arrived still has to reach a
+  // terminal state, otherwise its card would spin forever.
+  closeChildren(run, status) {
+    for (const child of this.children(run).values()) {
+      if (child.status !== "running") continue;
+      child.settle(status);
+      try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
+      const kind = status === "completed" ? "completed" : "interrupted";
+      this.activity(run, child, kind, status === "completed" ? "completed" : "interrupted");
+    }
+  }
   terminate(run) {
     if (run.killTimer) return;
+    // A superseded transport may still flush buffered events while the
+    // replacement run is already publishing; it must not touch shared state.
+    run.exiting = true;
     run.child.kill("SIGTERM");
     run.killTimer = setTimeout(() => run.child.kill("SIGKILL"), 2000);
   }
+  // Claude Code has no compaction control request. It ships `/compact` as a
+  // local command that works non-interactively, so active compaction is one
+  // extra headless pass over the same native session: the pass summarises the
+  // transcript, the CLI persists the new session state, and the App gets a
+  // single notice card plus the corrected context occupancy.
+  async compact(thread, params, requestId) {
+    if (this.active.has(thread.id)) throw new Error("Claude Code 会话仍在处理中");
+    const current = this.store.get(thread.id);
+    if (!current.claudeSessionId) throw new Error("当前会话尚未在服务器上建立 Claude Code 原生会话，请先发送一条消息");
+    if (this.active.size >= 8) throw new Error("同时运行的 Claude Code 会话过多");
+    const compactionId = uuid();
+    const turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [{ id: compactionId, type: "contextCompaction", status: "inProgress" }] };
+    // The notice lives in its own turn, so the turn has to join the history the
+    // App pages through or the card would never be readable again.
+    current.turnIds.push(turn.id);
+    this.store.save(current);
+    // `/compact` is a local command: it reads the resumed session, summarises
+    // it, and persists the rewritten session. Its own turn carries only the
+    // notice card, so the user sees the compression and nothing else.
+    const prepared = { display: [], content: [{ type: "text", text: "/compact" }] };
+    let resolveBoundary;
+    let rejectBoundary;
+    const boundary = new Promise((resolve, reject) => { resolveBoundary = resolve; rejectBoundary = reject; });
+    // The boundary only has the new occupancy; the turn stays active until the
+    // CLI exits and releases its writer, so the request has to outlive it or
+    // the App would page a turn that is still marked in progress.
+    let settlePass;
+    const settled = new Promise(resolve => { settlePass = resolve; });
+    const run = this.start(thread, prepared, { model: current.model, effort: current.effort }, requestId, { turn, compactionId, compact: true });
+    run.settlePass = settlePass;
+    run.boundaryResolve = () => {
+      run.boundaryDone = true;
+      resolveBoundary();
+      // `/compact` rewrites the session on the server before it reports the
+      // boundary, so the pass is already done: the CLI only still has to exit,
+      // and one that lingers is stopped shortly after rather than holding the
+      // request open.
+      run.exitTimer = setTimeout(() => this.completePass(run), 2000);
+    };
+    run.boundaryReject = error => rejectBoundary(error);
+    // The App budgets 180s for this request; the pass gives up sooner so the
+    // user reads a reason instead of a bare timeout.
+    run.boundaryTimer = setTimeout(() => this.fail(run, "Claude Code 压缩超时，请稍后重试"), 120000);
+    let failure = null;
+    try { await boundary; } catch (error) { failure = error; }
+    clearTimeout(run.boundaryTimer);
+    if (!run.boundaryDone) {
+      if (!failure) failure = "Claude Code 未能压缩当前会话上下文";
+      this.finish(run, "failed", failure);
+      this.terminate(run);
+      throw new Error(failure);
+    }
+    await settled;
+    if (run.turn.status !== "completed") throw new Error(run.turn.error?.message || "Claude Code 未能完成压缩");
+    return {};
+  }
   fail(run, error) { this.finish(run, "failed", error); this.terminate(run); }
+  // A compaction pass that saw its boundary has already done its work; the CLI
+  // only still has to go away.
+  completePass(run) { this.finish(run, "completed"); this.terminate(run); }
   message(run, value) {
     if (value.type === "control_request") return this.permission(run, value);
     if (value.type === "control_cancel_request") {
@@ -518,7 +797,33 @@ class ClaudeBridge {
       run.actualModel = value.model || run.thread.model;
       this.changed(run);
     }
-    if (value.parent_tool_use_id) return; // Nested Agent tools stay inside their own tool card.
+    // Compaction reports how much of the window survived, so the App's usage
+    // ring can be corrected without waiting for the next model response.
+    if (value.type === "system" && value.subtype === "compact_boundary") {
+      this.compacted(run, value.compact_metadata || {});
+      if (run.boundaryResolve) run.boundaryResolve();
+      return;
+    }
+    // A dedicated compaction run only produces the boundary and its summary
+    // message; nothing from it may be appended to the conversation. The CLI
+    // still has to be told the pass is over, or a pass that reported no
+    // boundary would leave its request waiting on a process that never exits.
+    if (run.compactOnly) {
+      if (value.type === "result") run.child.stdin.end();
+      return;
+    }
+    // A delegated sub-agent shares the parent's transport but not its turn.
+    // Its blocks belong to the child conversation that owns this tool call.
+    const child = value.parent_tool_use_id ? this.children(run).get(value.parent_tool_use_id) : null;
+    if (value.parent_tool_use_id && !child) return;
+    if (run.exiting) return; // A superseded transport must not touch the newer one.
+    if (child) {
+      // A child's answer is not deduplicated against the parent's stream state,
+      // so it only needs the block snapshots. Its tool results arrive as `user`
+      // messages on the same transport and must reach the same child.
+      if ((value.type === "assistant" || value.type === "user") && Array.isArray(value.message?.content)) this.childAnswer(child, value);
+      return;
+    }
     if (value.type === "stream_event") {
       const event = value.event || {};
       if (event.type === "message_start") {
@@ -630,7 +935,13 @@ class ClaudeBridge {
           // Tool IDs are also unstable across assistant snapshots. Keep the
           // first card and let its later tool_result update that card.
           if (!duplicateBlock) {
-            this.item(run, block.id, "mcpToolCall", { server: "Claude Code", tool: bounded(block.name, 100), arguments: boundedJsonText(JSON.stringify(block.input || {}), 16000), status: "inProgress" });
+            // A SendMessage naming an agent the bridge never saw start is not a
+            // collaborator this app can open, so it stays an ordinary card.
+            const plan = this.toolPlan(block);
+            if (plan) this.item(run, block.id, plan.type, { ...plan.fields, status: "inProgress" });
+            else if (toolKind(block.name).kind === "agentMessage") {
+              if (!this.relay(run, block)) this.item(run, block.id, "mcpToolCall", { title: "发送消息", status: "inProgress" });
+            } else this.delegate(run, block);
             this.changed(run);
           } else if (previous?.id && block.id && previous.id !== block.id) {
             // A repeated snapshot may assign a new tool_use ID. Remember the
@@ -650,10 +961,29 @@ class ClaudeBridge {
     } else if (value.type === "user" && Array.isArray(value.message?.content)) {
       for (const block of value.message.content) if (block.type === "tool_result") {
         const canonicalToolId = run.toolAliases.get(block.tool_use_id) || block.tool_use_id;
+        const child = this.children(run).get(canonicalToolId);
+        if (child) {
+          // The delegation is over; its closing report is not shown on the
+          // parent page, only the child's terminal status.
+          const alias = resultAgentId(toolResultText(block));
+          if (alias) { child.agentId = alias; this.bindChildName(run, child, alias); }
+          child.settle(block.is_error ? "failed" : "completed");
+          try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
+          this.activity(run, child, block.is_error ? "interrupted" : "completed", block.is_error ? "interrupted" : "completed");
+          continue;
+        }
         const item = run.turn.items.find(item => item.id === canonicalToolId);
         if (item) {
-          delete item.result;
-          item.result = boundedJsonText(typeof block.content === "string" ? block.content : JSON.stringify(block.content || ""), Math.max(0, Math.min(MAX_TEXT, MAX_TURN - OUTPUT_RESERVE - jsonBytes(run.turn) - 32)));
+          if (item.type === "fileChange" || item.type === "commandExecution") {
+            // These cards read `output`/`changes` and would show a stray `result`.
+            if (item.type === "commandExecution") {
+              const output = toolResultText(block);
+              item.output = boundedJsonText(output, Math.max(0, Math.min(MAX_TEXT, MAX_TURN - OUTPUT_RESERVE - jsonBytes(run.turn) - 32)));
+            }
+          } else {
+            delete item.result;
+            item.result = boundedJsonText(typeof block.content === "string" ? block.content : JSON.stringify(block.content || ""), Math.max(0, Math.min(MAX_TEXT, MAX_TURN - OUTPUT_RESERVE - jsonBytes(run.turn) - 32)));
+          }
           item.status = block.is_error ? "failed" : "completed";
           this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
           this.changed(run);
@@ -681,8 +1011,135 @@ class ClaudeBridge {
       run.exitTimer = setTimeout(() => this.terminate(run), 2000);
     }
   }
-  start(thread, prepared, params, requestId) {
-    if (params.sandboxPolicy?.type === "readOnly") throw new Error("Claude Code 暂不支持应用内只读沙箱，请使用 Claude Code 权限审批模式");
+  children(run) {
+    run.children ??= new Map();
+    return run.children;
+  }
+  // A SendMessage names its target, which is either a teammate name or the
+  // `agentId` returned by the spawn. Both are pinned to the child here so the
+  // row can be attributed without the App knowing anything about the address.
+  childNames(run) {
+    run.childNames ??= new Map();
+    return run.childNames;
+  }
+  bindChildName(run, child, alias) {
+    const key = String(alias || "").trim().toLowerCase();
+    if (key) this.childNames(run).set(key, child);
+  }
+  // The parent transcript keeps one row per delegation: the child starts, then
+  // reports back. Blocks from inside the child never reach the parent page.
+  delegate(run, block) {
+    const children = this.children(run);
+    if (children.has(block.id)) return;
+    if (children.size >= 16) return;
+    const child = new ChildAgent({ run, store: this.store }, block.input || {});
+    children.set(block.id, child);
+    for (const alias of [child.name, child.agentId]) this.bindChildName(run, child, alias);
+    this.activity(run, child, "started", "inProgress");
+    this.changed(run);
+  }
+  // "已向 X 发送消息" — the same row Codex renders when the parent writes to a
+  // collaborator it already started. The row is keyed by the tool_use id so it
+  // keeps its place in the transcript and stays openable.
+  relay(run, block) {
+    const input = block.input || {};
+    const target = String(input.to ?? "").trim();
+    const child = this.childNames(run).get(target.toLowerCase());
+    if (!child) return false;
+    const summary = readString(input, "summary").trim() || readString(input, "message").split(/\r?\n/, 1)[0].trim();
+    const item = this.item(run, block.id, "subAgentActivity", {
+      kind: "sendInput",
+      agentPath: child.agentPath,
+      agentThreadId: child.id,
+      message: bounded(summary, 400),
+      status: "inProgress",
+    });
+    this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
+    this.changed(run);
+    return true;
+  }
+  // One row per lifecycle change, so the parent page reads as
+  // "开始工作 → 已完成" for each delegated conversation.
+  activity(run, child, kind, status) {
+    const item = this.item(run, `agent:${child.id}:${kind}`, "subAgentActivity", {
+      kind,
+      agentPath: child.agentPath,
+      agentThreadId: child.id,
+      message: child.summary,
+      status,
+    });
+    item.status = status;
+    this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
+    this.changed(run);
+  }
+  childAnswer(child, value) {
+    const { parent: run, turn } = child;
+    if (turn.status !== "inProgress") return;
+    const messageId = typeof value.message?.id === "string" && value.message.id
+      ? value.message.id
+      : `${turn.id}-${turn.items.length}`;
+    for (const [index, block] of value.message.content.entries()) {
+      const id = "child-" + messageId + "-" + index;
+      if (block.type === "text") {
+        const text = String(block.text || "");
+        // The child's transcript shows the finished block, not deltas, so a
+        // repeated snapshot is resolved against the text already stored.
+        const stored = turn.items.find(entry => entry.id === id && entry.type === "agentMessage");
+        if (stored) { if (text.startsWith(stored.text)) stored.text = text; }
+        else if (text) child.text(id, text);
+      } else if (block.type === "tool_use") {
+        this.noteToolUse(child, block);
+      } else if (block.type === "tool_result") {
+        this.childToolResult(child, block);
+      }
+    }
+    // A child's tokens are deliberately kept out of the parent's totals: the
+    // context ring must keep measuring the conversation the user is reading.
+    this.changed(run);
+  }
+  // A child's edits and commands are stored on the child conversation so the
+  // delegated page shows the same kind of cards as the parent.
+  noteToolUse(child, block) {
+    const plan = this.toolPlan(block);
+    if (plan) child.item(plan.type, block.id, { ...plan.fields, status: "inProgress" });
+  }
+  childToolResult(child, block) {
+    const item = child.turn.items.find(entry => entry.id === block.tool_use_id);
+    if (!item) return;
+    if (item.type === "commandExecution") item.output = bounded(toolResultText(block), 64 * 1024);
+    else if (item.type === "mcpToolCall") item.result = boundedJsonText(toolResultText(block) || JSON.stringify(block.content || ""), 16000);
+    item.status = block.is_error ? "failed" : "completed";
+  }
+  // Maps a native tool call onto the App's shared card contract. Returns null
+  // for delegations, which the parent and child handle differently.
+  toolPlan(block) {
+    const input = block.input || {};
+    const kind = toolKind(block.name);
+    // Delegation and messaging are decided by the caller, which knows whether
+    // the named collaborator exists in this run.
+    if (kind.kind === "agent" || kind.kind === "agentMessage") return null;
+    if (kind.kind === "command") {
+      return { type: "commandExecution", fields: { command: bounded(readString(input, "command"), 4000), cwd: readString(input, "cwd") } };
+    }
+    if (kind.kind === "file") {
+      const change = fileChanges(block.name, input);
+      return change ? { type: "fileChange", fields: { changes: [change] } } : null;
+    }
+    if (kind.kind === "search") {
+      return { type: "webSearch", fields: { query: bounded(readString(input, "query"), 4000), status: "inProgress" } };
+    }
+    const title = kind.kind === "mcp" ? `${kind.server} · ${kind.tool}` : kind.title;
+    return {
+      type: "mcpToolCall",
+      fields: {
+        server: kind.kind === "mcp" ? kind.server : "Claude Code",
+        tool: bounded(title, 200),
+        arguments: boundedJsonText(JSON.stringify(input), 16000),
+      },
+    };
+  }
+  start(thread, prepared, params, requestId, options = {}) {
+    if (!options.compact && params.sandboxPolicy?.type === "readOnly") throw new Error("Claude Code 暂不支持应用内只读沙箱，请使用 Claude Code 权限审批模式");
     if (this.active.has(thread.id)) throw new Error("Claude Code 会话仍在处理中");
     if (this.active.size >= 8) throw new Error("同时运行的 Claude Code 会话过多");
     const unlock = this.store.lock(thread.id);
@@ -691,7 +1148,7 @@ class ClaudeBridge {
       thread = this.store.get(thread.id);
       if (!String(thread.name || "").trim()) thread.name = this.store.inferName(thread);
       if (thread.turnIds.length >= 10000) throw new Error("会话回合数量已达上限，请新建会话");
-      const turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [{ id: uuid(), type: "userMessage", content: prepared.display }] };
+      const turn = options.turn || { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [{ id: uuid(), type: "userMessage", content: prepared.display }] };
       if (jsonBytes(turn) > MAX_TURN - OUTPUT_RESERVE) throw new Error("文本附件过大");
       const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "default", "--permission-prompt-tool", "stdio"];
       if (thread.claudeSessionId) args.push("--resume", thread.claudeSessionId);
@@ -705,6 +1162,14 @@ class ClaudeBridge {
       if (model) args.push("--model", model);
       if (effort) args.push("--effort", effort);
       const environment = settings.launchEnvironment();
+      // Claude Code resolves a sub-agent's model from per-agent frontmatter
+      // (Explore and friends default to a small model). The user's chosen
+      // model and effort must govern delegated work too, and this variable is
+      // checked before any frontmatter, so it is the only reliable pin. It is
+      // left untouched when the server environment sets it deliberately.
+      if (environment.CLAUDE_CODE_SUBAGENT_MODEL == null) {
+        environment.CLAUDE_CODE_SUBAGENT_MODEL = model || "inherit";
+      }
       if (unsupportedEffort) {
         // Claude's auto sentinel clears this session's effort,
         // including persisted effortLevel and settings.env overrides. Retain
@@ -720,17 +1185,22 @@ class ClaudeBridge {
       if (model !== thread.model) thread.tokenUsage = null;
       thread.model = model;
       thread.effort = effort || null;
-      thread.turnIds.push(turn.id); thread.activeTurnId = turn.id; thread.updatedAt = Date.now(); thread.status = "active";
-      const previewText = prepared.display.filter(item => item.type === "text").map(item => item.text).join("\n");
-      thread.preview = bounded(previewText, 1000) || "图片附件";
-      // A conversation title is assigned once, from its first prompt. Keep
-      // the mutable preview separate so list refreshes cannot rename it.
-      if (!String(thread.name || "").trim()) thread.name = initialThreadName(previewText);
+      if (!thread.turnIds.includes(turn.id)) thread.turnIds.push(turn.id);
+      thread.activeTurnId = turn.id; thread.updatedAt = Date.now(); thread.status = "active";
+      if (!options.compact) {
+        const previewText = prepared.display.filter(item => item.type === "text").map(item => item.text).join("\n");
+        thread.preview = bounded(previewText, 1000) || "图片附件";
+        // A conversation title is assigned once, from its first prompt. Keep
+        // the mutable preview separate so list refreshes cannot rename it.
+        if (!String(thread.name || "").trim()) thread.name = initialThreadName(previewText);
+      }
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
+    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
       this.active.set(thread.id, run);
-      this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
+      // A compaction pass answers its own request once the boundary is in, so it
+      // must not resolve the request with a turn the caller never sees.
+      if (!options.compact) this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
       this.notify("turn/started", { threadId: thread.id, turn: { id: turn.id, status: "inProgress" } });
       this.notify("item/completed", { threadId: thread.id, turnId: turn.id, item: turn.items[0] });
       jsonLines(child.stdout, value => this.message(run, value), error => this.fail(run, error.message));
@@ -738,8 +1208,13 @@ class ClaudeBridge {
       child.stdin.on("error", () => this.fail(run, "Claude Code 输入通道已关闭"));
       child.on("error", () => this.fail(run, "无法启动 Claude Code，请检查服务器上的安装与登录"));
       child.on("close", code => {
-        clearTimeout(run.initTimer); clearTimeout(run.saveTimer); clearTimeout(run.killTimer); clearTimeout(run.exitTimer);
-        if (run.turn.status === "inProgress") this.finish(run, "failed", `Claude Code 未完成响应便退出 (${code ?? "signal"})，请检查登录与服务配置`);
+        clearTimeout(run.initTimer); clearTimeout(run.saveTimer); clearTimeout(run.killTimer); clearTimeout(run.exitTimer); clearTimeout(run.boundaryTimer);
+        // A compaction pass that exits without reporting a boundary must still
+        // release its awaiting request instead of leaving it to time out, and
+        // one that did report its boundary has already done its work: the exit
+        // only ends the pass, it does not decide whether it succeeded.
+        if (run.boundaryReject && !run.boundaryDone) run.boundaryReject(`Claude Code 未完成压缩便退出 (${code ?? "signal"})，请检查登录与服务配置`);
+        else if (run.turn.status === "inProgress") this.finish(run, run.compactOnly ? "completed" : "failed", run.compactOnly ? null : `Claude Code 未完成响应便退出 (${code ?? "signal"})，请检查登录与服务配置`);
         if (this.active.get(thread.id) === run) this.active.delete(thread.id);
         run.thread.activeTurnId = null; run.thread.status = "idle";
         try { this.persist(run); } catch (_) { run.turn.status = "failed"; run.turn.error = { message: "无法保存 Claude Code 会话历史" }; }
@@ -750,6 +1225,8 @@ class ClaudeBridge {
       run.initTimer = setTimeout(() => this.fail(run, "Claude Code 初始化超时，请检查 CLI 版本"), 30000);
       this.control(run, { type: "control_request", request_id: run.initializeId, request: { subtype: "initialize", hooks: {} } });
     } catch (error) { if (!run) unlock(); throw error; }
+    // The caller has to be able to hand a compaction pass its own boundary hooks.
+    return run;
   }
   async handle(message) {
     if (!message || typeof message !== "object") return;
@@ -766,7 +1243,9 @@ class ClaudeBridge {
       if (method === "agent/models/list") return this.response(id, await settings.listApiModels(params));
       if (method === "thread/list") {
         const search = String(params.searchTerm || "").toLowerCase();
-        const threads = params.archived ? [] : this.store.list().filter(thread => thread.cwd === this.directory && (!search || [thread.name, thread.preview].some(value => String(value || "").toLowerCase().includes(search)))).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+        // Delegated conversations belong to their parent page, not to the
+        // conversation list the user browses.
+        const threads = params.archived ? [] : this.store.list().filter(thread => thread.cwd === this.directory && !thread.parentThreadId && (!search || [thread.name, thread.preview].some(value => String(value || "").toLowerCase().includes(search)))).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         const offset = params.cursor ? threads.findIndex(thread => thread.id === params.cursor) + 1 : 0;
         if (params.cursor && offset === 0) throw new Error("会话列表游标已失效");
         const limit = integer(params.limit, 100, 100);
@@ -778,6 +1257,7 @@ class ClaudeBridge {
       if (method === "thread/read" || method === "thread/resume") return this.response(id, this.snapshot(thread, params));
       if (method === "thread/turns/list") return this.response(id, this.page(thread, params));
       if (method === "turn/start") return this.start(thread, prepareInput(params.input), params, id);
+      if (method === "thread/compact/start") return this.response(id, await this.compact(thread, params, id));
       if (method === "turn/interrupt") {
         const run = this.active.get(thread.id);
         if (!run || run.turn.id !== params.turnId) throw new Error("待停止的回合已失效或由另一个连接运行");

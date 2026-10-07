@@ -310,6 +310,11 @@ abstract class AgentCapabilities with _$AgentCapabilities {
     archiveThread: false,
     renameThread: true,
     interruptTurn: true,
+    // Both are served by the bridge: compaction re-runs the native session
+    // through its `/compact` command, and delegated Task agents are published
+    // as real child conversations.
+    compactThread: true,
+    subAgents: true,
   );
 }
 
