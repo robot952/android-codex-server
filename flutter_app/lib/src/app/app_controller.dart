@@ -4826,11 +4826,21 @@ class AppController extends StateNotifier<AppUiState> {
     final serverActiveTurnId = threadHasActiveTurn
         ? snapshot.thread.activeTurnId
         : timelineTurnId;
-    final currentTiming = sameInitialThread
-        ? initialSnapshot!.turnTiming
-        : state.turnTiming?.threadId == snapshot.thread.id
+    // A snapshot describes the server's view of the thread, and it can be read
+    // before the lane publishes the completion event — the Claude Code bridge
+    // deliberately holds it until the CLI process is gone. Such a snapshot
+    // carries no completedAt, so preferring it would erase a completed turn's
+    // timing and the footer with it. The visible completion wins; a later
+    // turn/started replaces the whole timing and clears it.
+    final visibleTiming = state.turnTiming?.threadId == snapshot.thread.id
         ? state.turnTiming
         : null;
+    final settledVisibleTiming = visibleTiming?.completedAtMillis != null
+        ? visibleTiming
+        : null;
+    final currentTiming = sameInitialThread
+        ? settledVisibleTiming ?? initialSnapshot!.turnTiming ?? visibleTiming
+        : visibleTiming;
     final storedTiming = active && snapshot.thread.id.isNotEmpty
         ? _stored.completedTurnTimings[threadPreferenceKey(
             key.profileId,
@@ -4844,11 +4854,22 @@ class AppController extends StateNotifier<AppUiState> {
               storedTiming?.completedAtMillis != null
         ? storedTiming
         : null;
-    final locallySettled = _completedTimingMatchesTurn(
-      completedTiming,
-      snapshot.thread.id,
-      serverActiveTurnId,
-    );
+    // A turn the visible state watched finish is over, whatever status a
+    // snapshot read before the lane published its completion still reports. A
+    // timing known only from storage is weaker evidence — the lane can restart
+    // a turn under the same id — so there only an explicit stop settles it.
+    final locallySettled =
+        (settledVisibleTiming != null &&
+            _finishedTimingMatchesTurn(
+              settledVisibleTiming,
+              snapshot.thread.id,
+              serverActiveTurnId,
+            )) ||
+        _completedTimingMatchesTurn(
+          completedTiming,
+          snapshot.thread.id,
+          serverActiveTurnId,
+        );
     final activeTurnId = locallySettled ? null : serverActiveTurnId;
     final running =
         !locallySettled &&
@@ -8007,9 +8028,17 @@ bool _completedTimingMatchesTurn(
   String threadId,
   String? activeTurnId,
 ) {
+  if (timing == null || !timing.stopped) return false;
+  return _finishedTimingMatchesTurn(timing, threadId, activeTurnId);
+}
+
+bool _finishedTimingMatchesTurn(
+  TurnTiming? timing,
+  String threadId,
+  String? activeTurnId,
+) {
   if (timing == null ||
       timing.completedAtMillis == null ||
-      !timing.stopped ||
       timing.threadId != threadId) {
     return false;
   }

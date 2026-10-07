@@ -198,6 +198,25 @@ void main({bool device = false}) {
       h.claude.finish('已检查，等待工具授权。');
       await _pump(tester);
       expect(h.controller.state.running, isFalse);
+      // A finished turn keeps its completion footer, exactly as the Codex lane
+      // shows one: elapsed time plus the wall-clock moment it finished.
+      expect(
+        find.byKey(const ValueKey('turn-timing-footer')),
+        findsWidgets,
+      );
+      expect(find.textContaining('完成于'), findsOneWidget);
+
+      // The bridge has already written the turn as terminal, but it holds the
+      // completion notification until the CLI process exits, and until then it
+      // still reports the thread as active and still names this turn. A read
+      // taken inside that window describes a turn that is over, so it must not
+      // re-arm the running state or drop the timing the footer is built from.
+      h.claude.activeTurnId = 'turn-1';
+      await h.reopenClaudeThread();
+      await _pump(tester);
+      expect(h.controller.state.running, isFalse);
+      expect(h.controller.state.turnTiming?.completedAtMillis, isNotNull);
+      expect(find.textContaining('完成于'), findsOneWidget);
 
       await _enterMessage(tester, '继续运行', device: device);
       await tester.tap(find.byTooltip('发送'));
@@ -244,6 +263,15 @@ void main({bool device = false}) {
       expect(h.controller.state.screen, AppScreen.threads);
       await tester.tap(find.text('Claude 工作流'));
       await _pump(tester);
+      // Re-entering the thread must not drop the finished turn's footer: the
+      // navigation snapshot carries the running turn's timing, which is older
+      // than the completion. This turn was stopped, so the footer reads 已停止.
+      expect(h.controller.state.running, isFalse);
+      expect(
+        h.controller.state.turnTiming?.completedAtMillis,
+        isNotNull,
+      );
+      expect(find.textContaining('已停止'), findsOneWidget);
       expect(
         h.controller.state.timeline.any((e) => e.text == '保留停止前输出'),
         isTrue,
@@ -373,6 +401,14 @@ class _Harness {
     await drain();
   }
 
+  /// Re-opens the Claude thread so a fresh snapshot of it reaches the visible
+  /// state, the way a resume or the two-second externally-owned refresh does.
+  Future<void> reopenClaudeThread() async {
+    final thread = controller.state.activeThread;
+    if (thread == null) return;
+    controller.openThread(thread);
+  }
+
   Future<void> close() async {
     controller.dispose();
     await agents.close();
@@ -406,13 +442,21 @@ class _Session implements CodexSession {
   final responses = <Map<String, dynamic>>[];
   final turns = <Map<String, dynamic>>[];
   var reply = '';
-  String get turnId => 'turn-${turns.length}';
+  /// The turn the server still reports as in flight. The shipped bridge clears
+  /// this only when the CLI process is gone, so a read taken in between sees
+  /// the turn already written as terminal while `activeTurnId` still names it.
+  String? activeTurnId;
+  String get turnId => activeTurnId ?? 'turn-${turns.length}';
   String get replyId => 'reply-${turns.length}';
   Map<String, Object?> get thread => {
     'id': _threadId,
     'name': claude ? 'Claude 工作流' : 'Codex 独立历史',
     'preview': claude ? 'Claude 会话记录' : 'Codex 会话记录',
     'cwd': '/fixture/workspace',
+    if (activeTurnId != null) ...{
+      'status': 'active',
+      'activeTurnId': activeTurnId,
+    },
     'turns': turns,
   };
   @override
@@ -459,13 +503,28 @@ class _Session implements CodexSession {
     },
   });
   void finish(String text, {String status = 'completed'}) {
+    settleLocally(text, status: status);
+    notifyCompletion(status: status);
+  }
+
+  /// Records the turn as terminal on the server without publishing anything,
+  /// which is what the shipped bridge does between `finish()` — it writes the
+  /// turn file and holds the notification until the CLI process exits, up to
+  /// two seconds later.
+  void settleLocally(String text, {String status = 'completed'}) {
     final item = {'id': replyId, 'type': 'agentMessage', 'text': text};
     (turns.last['items'] as List).add(item);
     turns.last['status'] = status;
     notify('item/completed', {'turnId': turnId, 'item': item});
+  }
+
+  void notifyCompletion({String status = 'completed'}) {
+    final completedTurnId = turnId;
+    activeTurnId = null;
     notify('turn/completed', {
-      'turn': {'id': turnId, 'status': status},
+      'turn': {'id': completedTurnId, 'status': status},
     });
+    notify('thread/status/changed', {'status': 'idle'});
   }
 
   @override
@@ -531,6 +590,7 @@ class _Session implements CodexSession {
             },
           ],
         });
+        activeTurnId = turns.last['id'] as String;
         result = {
           'turn': {'id': turnId, 'status': 'inProgress'},
         };
