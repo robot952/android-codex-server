@@ -940,7 +940,10 @@ test("a delegated agent becomes a child conversation with activity and message r
   const promptItem = childTurn.items.find(item => item.type === "userMessage");
   assert.deepEqual(promptItem.content, [{ type: "text", text: "定位解析器" }]);
   assert.equal(childTurn.items.filter(item => item.type === "userMessage").length, 1);
-  assert.deepEqual(assistantTexts(childTurn), ["解析器位于 codex_protocol.dart"]);
+  // The closing report is the delegation's answer, and the parent page never
+  // shows it as a message of its own — so it has to end up on the child, minus
+  // the `agentId` line the bridge used as an address.
+  assert.deepEqual(assistantTexts(childTurn), ["解析器位于 codex_protocol.dart", "解析器已定位。"]);
   const command = childTurn.items.find(item => item.type === "commandExecution");
   assert.equal(command.command, "grep -n parseItem codex_protocol.dart");
   assert.equal(command.status, "completed");
@@ -1085,7 +1088,9 @@ test("a running delegated conversation reads as running on its own page", async 
   const settled = await peer.ok("thread/read", { threadId: childId });
   assert.equal(settled.thread.status, "idle");
   assert.equal(settled.initialTurnsPage.data[0].status, "completed");
-  assert.deepEqual(assistantTexts(settled.initialTurnsPage.data[0]), ["仍在检索中"]);
+  // A finished delegation ends on the answer it reported back, not on its last
+  // tool card.
+  assert.deepEqual(assistantTexts(settled.initialTurnsPage.data[0]), ["仍在检索中", "检索完成。"]);
 });
 
 test("a compaction pass rejected before it starts leaves no unreadable turn behind", async ({ peer, root }) => {
