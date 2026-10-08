@@ -53,6 +53,7 @@ void main() {
                 required testModel,
                 required websocketPolicy,
                 required preserveCurrentProvider,
+                required contextLimit,
               }) {
                 savedKey = apiKey;
                 savedUrl = baseUrl;
@@ -169,6 +170,7 @@ void main() {
               required testModel,
               required websocketPolicy,
               required preserveCurrentProvider,
+              required contextLimit,
             }) {
               savedEffort = defaultReasoningEffort;
               expect(defaultModel, 'provider-custom-alias');
@@ -211,6 +213,7 @@ void main() {
                 required testModel,
                 required websocketPolicy,
                 required preserveCurrentProvider,
+                required contextLimit,
               }) {
                 saved = AgentSettingsSaveValues(
                   baseUrl: baseUrl,
@@ -738,6 +741,7 @@ void main() {
               required testModel,
               required websocketPolicy,
               required preserveCurrentProvider,
+              required contextLimit,
             }) {
               saves.add(
                 AgentSettingsSaveValues(
@@ -1049,4 +1053,5 @@ void _noopSave({
   required String testModel,
   required String websocketPolicy,
   required bool preserveCurrentProvider,
+  required int contextLimit,
 }) {}

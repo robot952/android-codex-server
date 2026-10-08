@@ -8477,7 +8477,7 @@ $RemoteSetupPromptCopyWith<$Res>? get prompt {
 /// @nodoc
 mixin _$AgentGlobalSettings {
 
- String get baseUrl; String get model; String get subagentModel; String get reasoningEffort; String get modelProvider; String? get websocketPolicy; bool get hasStoredAuthentication; String get apiKey; String get proxyUrl;
+ String get baseUrl; String get model; String get subagentModel; String get reasoningEffort; String get modelProvider; String? get websocketPolicy; bool get hasStoredAuthentication; String get apiKey; String get proxyUrl; int get contextWindowTokens;
 /// Create a copy of AgentGlobalSettings
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -8488,16 +8488,16 @@ $AgentGlobalSettingsCopyWith<AgentGlobalSettings> get copyWith => _$AgentGlobalS
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentGlobalSettings&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.model, model) || other.model == model)&&(identical(other.subagentModel, subagentModel) || other.subagentModel == subagentModel)&&(identical(other.reasoningEffort, reasoningEffort) || other.reasoningEffort == reasoningEffort)&&(identical(other.modelProvider, modelProvider) || other.modelProvider == modelProvider)&&(identical(other.websocketPolicy, websocketPolicy) || other.websocketPolicy == websocketPolicy)&&(identical(other.hasStoredAuthentication, hasStoredAuthentication) || other.hasStoredAuthentication == hasStoredAuthentication)&&(identical(other.apiKey, apiKey) || other.apiKey == apiKey)&&(identical(other.proxyUrl, proxyUrl) || other.proxyUrl == proxyUrl));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentGlobalSettings&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.model, model) || other.model == model)&&(identical(other.subagentModel, subagentModel) || other.subagentModel == subagentModel)&&(identical(other.reasoningEffort, reasoningEffort) || other.reasoningEffort == reasoningEffort)&&(identical(other.modelProvider, modelProvider) || other.modelProvider == modelProvider)&&(identical(other.websocketPolicy, websocketPolicy) || other.websocketPolicy == websocketPolicy)&&(identical(other.hasStoredAuthentication, hasStoredAuthentication) || other.hasStoredAuthentication == hasStoredAuthentication)&&(identical(other.apiKey, apiKey) || other.apiKey == apiKey)&&(identical(other.proxyUrl, proxyUrl) || other.proxyUrl == proxyUrl)&&(identical(other.contextWindowTokens, contextWindowTokens) || other.contextWindowTokens == contextWindowTokens));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,baseUrl,model,subagentModel,reasoningEffort,modelProvider,websocketPolicy,hasStoredAuthentication,apiKey,proxyUrl);
+int get hashCode => Object.hash(runtimeType,baseUrl,model,subagentModel,reasoningEffort,modelProvider,websocketPolicy,hasStoredAuthentication,apiKey,proxyUrl,contextWindowTokens);
 
 @override
 String toString() {
-  return 'AgentGlobalSettings(baseUrl: $baseUrl, model: $model, subagentModel: $subagentModel, reasoningEffort: $reasoningEffort, modelProvider: $modelProvider, websocketPolicy: $websocketPolicy, hasStoredAuthentication: $hasStoredAuthentication, apiKey: $apiKey, proxyUrl: $proxyUrl)';
+  return 'AgentGlobalSettings(baseUrl: $baseUrl, model: $model, subagentModel: $subagentModel, reasoningEffort: $reasoningEffort, modelProvider: $modelProvider, websocketPolicy: $websocketPolicy, hasStoredAuthentication: $hasStoredAuthentication, apiKey: $apiKey, proxyUrl: $proxyUrl, contextWindowTokens: $contextWindowTokens)';
 }
 
 
@@ -8508,7 +8508,7 @@ abstract mixin class $AgentGlobalSettingsCopyWith<$Res>  {
   factory $AgentGlobalSettingsCopyWith(AgentGlobalSettings value, $Res Function(AgentGlobalSettings) _then) = _$AgentGlobalSettingsCopyWithImpl;
 @useResult
 $Res call({
- String baseUrl, String model, String subagentModel, String reasoningEffort, String modelProvider, String? websocketPolicy, bool hasStoredAuthentication, String apiKey, String proxyUrl
+ String baseUrl, String model, String subagentModel, String reasoningEffort, String modelProvider, String? websocketPolicy, bool hasStoredAuthentication, String apiKey, String proxyUrl, int contextWindowTokens
 });
 
 
@@ -8525,7 +8525,7 @@ class _$AgentGlobalSettingsCopyWithImpl<$Res>
 
 /// Create a copy of AgentGlobalSettings
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? baseUrl = null,Object? model = null,Object? subagentModel = null,Object? reasoningEffort = null,Object? modelProvider = null,Object? websocketPolicy = freezed,Object? hasStoredAuthentication = null,Object? apiKey = null,Object? proxyUrl = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? baseUrl = null,Object? model = null,Object? subagentModel = null,Object? reasoningEffort = null,Object? modelProvider = null,Object? websocketPolicy = freezed,Object? hasStoredAuthentication = null,Object? apiKey = null,Object? proxyUrl = null,Object? contextWindowTokens = null,}) {
   return _then(_self.copyWith(
 baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable
 as String,model: null == model ? _self.model : model // ignore: cast_nullable_to_non_nullable
@@ -8536,7 +8536,8 @@ as String,websocketPolicy: freezed == websocketPolicy ? _self.websocketPolicy : 
 as String?,hasStoredAuthentication: null == hasStoredAuthentication ? _self.hasStoredAuthentication : hasStoredAuthentication // ignore: cast_nullable_to_non_nullable
 as bool,apiKey: null == apiKey ? _self.apiKey : apiKey // ignore: cast_nullable_to_non_nullable
 as String,proxyUrl: null == proxyUrl ? _self.proxyUrl : proxyUrl // ignore: cast_nullable_to_non_nullable
-as String,
+as String,contextWindowTokens: null == contextWindowTokens ? _self.contextWindowTokens : contextWindowTokens // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 
@@ -8621,10 +8622,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String baseUrl,  String model,  String subagentModel,  String reasoningEffort,  String modelProvider,  String? websocketPolicy,  bool hasStoredAuthentication,  String apiKey,  String proxyUrl)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String baseUrl,  String model,  String subagentModel,  String reasoningEffort,  String modelProvider,  String? websocketPolicy,  bool hasStoredAuthentication,  String apiKey,  String proxyUrl,  int contextWindowTokens)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AgentGlobalSettings() when $default != null:
-return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEffort,_that.modelProvider,_that.websocketPolicy,_that.hasStoredAuthentication,_that.apiKey,_that.proxyUrl);case _:
+return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEffort,_that.modelProvider,_that.websocketPolicy,_that.hasStoredAuthentication,_that.apiKey,_that.proxyUrl,_that.contextWindowTokens);case _:
   return orElse();
 
 }
@@ -8642,10 +8643,10 @@ return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEff
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String baseUrl,  String model,  String subagentModel,  String reasoningEffort,  String modelProvider,  String? websocketPolicy,  bool hasStoredAuthentication,  String apiKey,  String proxyUrl)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String baseUrl,  String model,  String subagentModel,  String reasoningEffort,  String modelProvider,  String? websocketPolicy,  bool hasStoredAuthentication,  String apiKey,  String proxyUrl,  int contextWindowTokens)  $default,) {final _that = this;
 switch (_that) {
 case _AgentGlobalSettings():
-return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEffort,_that.modelProvider,_that.websocketPolicy,_that.hasStoredAuthentication,_that.apiKey,_that.proxyUrl);case _:
+return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEffort,_that.modelProvider,_that.websocketPolicy,_that.hasStoredAuthentication,_that.apiKey,_that.proxyUrl,_that.contextWindowTokens);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -8662,10 +8663,10 @@ return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEff
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String baseUrl,  String model,  String subagentModel,  String reasoningEffort,  String modelProvider,  String? websocketPolicy,  bool hasStoredAuthentication,  String apiKey,  String proxyUrl)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String baseUrl,  String model,  String subagentModel,  String reasoningEffort,  String modelProvider,  String? websocketPolicy,  bool hasStoredAuthentication,  String apiKey,  String proxyUrl,  int contextWindowTokens)?  $default,) {final _that = this;
 switch (_that) {
 case _AgentGlobalSettings() when $default != null:
-return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEffort,_that.modelProvider,_that.websocketPolicy,_that.hasStoredAuthentication,_that.apiKey,_that.proxyUrl);case _:
+return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEffort,_that.modelProvider,_that.websocketPolicy,_that.hasStoredAuthentication,_that.apiKey,_that.proxyUrl,_that.contextWindowTokens);case _:
   return null;
 
 }
@@ -8677,7 +8678,7 @@ return $default(_that.baseUrl,_that.model,_that.subagentModel,_that.reasoningEff
 
 
 class _AgentGlobalSettings implements AgentGlobalSettings {
-  const _AgentGlobalSettings({this.baseUrl = '', this.model = '', this.subagentModel = '', this.reasoningEffort = '', this.modelProvider = 'openai', this.websocketPolicy, this.hasStoredAuthentication = false, this.apiKey = '', this.proxyUrl = ''});
+  const _AgentGlobalSettings({this.baseUrl = '', this.model = '', this.subagentModel = '', this.reasoningEffort = '', this.modelProvider = 'openai', this.websocketPolicy, this.hasStoredAuthentication = false, this.apiKey = '', this.proxyUrl = '', this.contextWindowTokens = 0});
   
 
 @override@JsonKey() final  String baseUrl;
@@ -8689,6 +8690,7 @@ class _AgentGlobalSettings implements AgentGlobalSettings {
 @override@JsonKey() final  bool hasStoredAuthentication;
 @override@JsonKey() final  String apiKey;
 @override@JsonKey() final  String proxyUrl;
+@override@JsonKey() final  int contextWindowTokens;
 
 /// Create a copy of AgentGlobalSettings
 /// with the given fields replaced by the non-null parameter values.
@@ -8700,16 +8702,16 @@ _$AgentGlobalSettingsCopyWith<_AgentGlobalSettings> get copyWith => __$AgentGlob
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentGlobalSettings&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.model, model) || other.model == model)&&(identical(other.subagentModel, subagentModel) || other.subagentModel == subagentModel)&&(identical(other.reasoningEffort, reasoningEffort) || other.reasoningEffort == reasoningEffort)&&(identical(other.modelProvider, modelProvider) || other.modelProvider == modelProvider)&&(identical(other.websocketPolicy, websocketPolicy) || other.websocketPolicy == websocketPolicy)&&(identical(other.hasStoredAuthentication, hasStoredAuthentication) || other.hasStoredAuthentication == hasStoredAuthentication)&&(identical(other.apiKey, apiKey) || other.apiKey == apiKey)&&(identical(other.proxyUrl, proxyUrl) || other.proxyUrl == proxyUrl));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentGlobalSettings&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.model, model) || other.model == model)&&(identical(other.subagentModel, subagentModel) || other.subagentModel == subagentModel)&&(identical(other.reasoningEffort, reasoningEffort) || other.reasoningEffort == reasoningEffort)&&(identical(other.modelProvider, modelProvider) || other.modelProvider == modelProvider)&&(identical(other.websocketPolicy, websocketPolicy) || other.websocketPolicy == websocketPolicy)&&(identical(other.hasStoredAuthentication, hasStoredAuthentication) || other.hasStoredAuthentication == hasStoredAuthentication)&&(identical(other.apiKey, apiKey) || other.apiKey == apiKey)&&(identical(other.proxyUrl, proxyUrl) || other.proxyUrl == proxyUrl)&&(identical(other.contextWindowTokens, contextWindowTokens) || other.contextWindowTokens == contextWindowTokens));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,baseUrl,model,subagentModel,reasoningEffort,modelProvider,websocketPolicy,hasStoredAuthentication,apiKey,proxyUrl);
+int get hashCode => Object.hash(runtimeType,baseUrl,model,subagentModel,reasoningEffort,modelProvider,websocketPolicy,hasStoredAuthentication,apiKey,proxyUrl,contextWindowTokens);
 
 @override
 String toString() {
-  return 'AgentGlobalSettings(baseUrl: $baseUrl, model: $model, subagentModel: $subagentModel, reasoningEffort: $reasoningEffort, modelProvider: $modelProvider, websocketPolicy: $websocketPolicy, hasStoredAuthentication: $hasStoredAuthentication, apiKey: $apiKey, proxyUrl: $proxyUrl)';
+  return 'AgentGlobalSettings(baseUrl: $baseUrl, model: $model, subagentModel: $subagentModel, reasoningEffort: $reasoningEffort, modelProvider: $modelProvider, websocketPolicy: $websocketPolicy, hasStoredAuthentication: $hasStoredAuthentication, apiKey: $apiKey, proxyUrl: $proxyUrl, contextWindowTokens: $contextWindowTokens)';
 }
 
 
@@ -8720,7 +8722,7 @@ abstract mixin class _$AgentGlobalSettingsCopyWith<$Res> implements $AgentGlobal
   factory _$AgentGlobalSettingsCopyWith(_AgentGlobalSettings value, $Res Function(_AgentGlobalSettings) _then) = __$AgentGlobalSettingsCopyWithImpl;
 @override @useResult
 $Res call({
- String baseUrl, String model, String subagentModel, String reasoningEffort, String modelProvider, String? websocketPolicy, bool hasStoredAuthentication, String apiKey, String proxyUrl
+ String baseUrl, String model, String subagentModel, String reasoningEffort, String modelProvider, String? websocketPolicy, bool hasStoredAuthentication, String apiKey, String proxyUrl, int contextWindowTokens
 });
 
 
@@ -8737,7 +8739,7 @@ class __$AgentGlobalSettingsCopyWithImpl<$Res>
 
 /// Create a copy of AgentGlobalSettings
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? baseUrl = null,Object? model = null,Object? subagentModel = null,Object? reasoningEffort = null,Object? modelProvider = null,Object? websocketPolicy = freezed,Object? hasStoredAuthentication = null,Object? apiKey = null,Object? proxyUrl = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? baseUrl = null,Object? model = null,Object? subagentModel = null,Object? reasoningEffort = null,Object? modelProvider = null,Object? websocketPolicy = freezed,Object? hasStoredAuthentication = null,Object? apiKey = null,Object? proxyUrl = null,Object? contextWindowTokens = null,}) {
   return _then(_AgentGlobalSettings(
 baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable
 as String,model: null == model ? _self.model : model // ignore: cast_nullable_to_non_nullable
@@ -8748,7 +8750,8 @@ as String,websocketPolicy: freezed == websocketPolicy ? _self.websocketPolicy : 
 as String?,hasStoredAuthentication: null == hasStoredAuthentication ? _self.hasStoredAuthentication : hasStoredAuthentication // ignore: cast_nullable_to_non_nullable
 as bool,apiKey: null == apiKey ? _self.apiKey : apiKey // ignore: cast_nullable_to_non_nullable
 as String,proxyUrl: null == proxyUrl ? _self.proxyUrl : proxyUrl // ignore: cast_nullable_to_non_nullable
-as String,
+as String,contextWindowTokens: null == contextWindowTokens ? _self.contextWindowTokens : contextWindowTokens // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 

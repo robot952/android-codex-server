@@ -1096,6 +1096,7 @@ class _SettingsAgent extends _FailingTurnAgent
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
+    int contextLimit = 0,
   }) async {
     writeCalls++;
     writtenDefaultSubagentModel = defaultSubagentModel;
@@ -4047,6 +4048,7 @@ void main() {
       testModel: '  gpt-test-saved  ',
       websocketPolicy: 'auto',
       preserveCurrentProvider: true,
+      contextLimit: 0,
     );
 
     expect(agent.writeCalls, 1);
@@ -4082,6 +4084,7 @@ void main() {
       testModel: 'gpt-relay-new',
       websocketPolicy: 'auto',
       preserveCurrentProvider: false,
+      contextLimit: 0,
     );
     expect(agent.writtenPreserveProvider, isTrue);
     expect(
@@ -4157,6 +4160,7 @@ void main() {
       testModel: 'gpt-test-saved',
       websocketPolicy: 'auto',
       preserveCurrentProvider: true,
+      contextLimit: 0,
     );
     await _waitUntil(
       () =>
@@ -4818,6 +4822,7 @@ void main() {
         testModel: 'claude-opus-5-5',
         websocketPolicy: 'auto',
         preserveCurrentProvider: true,
+        contextLimit: 0,
       );
       expect(claude.writtenDefaultModel, 'claude-opus-5-5');
       expect(claude.writtenDefaultEffort, 'max');

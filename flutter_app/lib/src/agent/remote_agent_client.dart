@@ -267,6 +267,7 @@ abstract interface class RemoteAgentGlobalSettingsClient {
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
+    int contextLimit = 0,
   });
 
   Future<AgentConnectionTestResult> testGlobalSettings(

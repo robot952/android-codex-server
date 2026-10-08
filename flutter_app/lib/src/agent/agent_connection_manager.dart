@@ -722,6 +722,7 @@ class AgentConnectionManager {
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
+    int contextLimit = 0,
   }) async {
     final entry = _requireConnected(key);
     final generation = entry.generation;
@@ -736,6 +737,7 @@ class AgentConnectionManager {
       defaultReasoningEffort: defaultReasoningEffort,
       websocketPolicy: websocketPolicy,
       preserveCurrentProvider: preserveCurrentProvider,
+      contextLimit: contextLimit,
     );
     _requireCurrentRequest(key, entry, generation, 'Agent 全局配置保存请求已失效');
   }

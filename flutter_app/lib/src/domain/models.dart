@@ -747,6 +747,7 @@ abstract class AgentGlobalSettings with _$AgentGlobalSettings {
     @Default(false) bool hasStoredAuthentication,
     @Default('') String apiKey,
     @Default('') String proxyUrl,
+    @Default(0) int contextWindowTokens,
   }) = _AgentGlobalSettings;
 }
 

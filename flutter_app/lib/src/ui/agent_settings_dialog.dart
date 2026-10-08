@@ -32,6 +32,7 @@ typedef AgentSettingsSaveCallback =
       required String testModel,
       required String websocketPolicy,
       required bool preserveCurrentProvider,
+      required int contextLimit,
     });
 
 class AgentSettingsDialog extends StatefulWidget {
@@ -62,6 +63,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   late final TextEditingController _apiKeyController;
   late final TextEditingController _proxyUrlController;
   late final TextEditingController _testModelController;
+  late final TextEditingController _contextLimitController;
 
   String _defaultReasoningEffort = '';
   String _websocketPolicy = codexWebSocketPolicyAuto;
@@ -78,6 +80,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     _apiKeyController = TextEditingController();
     _proxyUrlController = TextEditingController();
     _testModelController = TextEditingController();
+    _contextLimitController = TextEditingController();
     _applyRemoteSettings();
     if (_testFeedback != null) _scrollToFeedback();
   }
@@ -113,6 +116,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     _apiKeyController.dispose();
     _proxyUrlController.dispose();
     _testModelController.dispose();
+    _contextLimitController.dispose();
     super.dispose();
   }
 
@@ -215,6 +219,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                                       apiKeyController: _apiKeyController,
                                       proxyUrlController: _proxyUrlController,
                                       testModelController: _testModelController,
+                                      contextLimitController: _contextLimitController,
                                       defaultReasoningEffort:
                                           _defaultReasoningEffort,
                                       defaultSubagentModelController:
@@ -350,6 +355,9 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     _defaultReasoningEffort = settings?.reasoningEffort ?? '';
     _websocketPolicy = settings?.websocketPolicy ?? codexWebSocketPolicyAuto;
     _testModelController.text = _initialTestModel(widget.state);
+    _contextLimitController.text = settings?.contextWindowTokens != null && settings!.contextWindowTokens > 0
+        ? '${settings.contextWindowTokens}'
+        : '';
   }
 
   void _markTestResultStale() {
@@ -494,6 +502,8 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
             supportedClaudeEfforts?.contains(_defaultReasoningEffort) != true
         ? ''
         : _defaultReasoningEffort;
+    final contextLimitText = _contextLimitController.text.trim();
+    final contextLimit = contextLimitText.isEmpty ? 0 : int.tryParse(contextLimitText) ?? 0;
     widget.onSave(
       baseUrl: _baseUrlController.text,
       apiKey: preserveCurrentProvider && enteredApiKey == remoteApiKey
@@ -506,6 +516,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
       testModel: _testModelController.text,
       websocketPolicy: _websocketPolicy,
       preserveCurrentProvider: preserveCurrentProvider,
+      contextLimit: contextLimit,
     );
   }
 
@@ -584,6 +595,7 @@ class _SettingsForm extends StatelessWidget {
     required this.apiKeyController,
     required this.proxyUrlController,
     required this.testModelController,
+    required this.contextLimitController,
     required this.defaultReasoningEffort,
     required this.reasoningOptions,
     required this.websocketPolicy,
@@ -619,6 +631,7 @@ class _SettingsForm extends StatelessWidget {
   final TextEditingController apiKeyController;
   final TextEditingController proxyUrlController;
   final TextEditingController testModelController;
+  final TextEditingController contextLimitController;
   final String defaultReasoningEffort;
   final List<String> reasoningOptions;
   final String websocketPolicy;
@@ -835,6 +848,23 @@ class _SettingsForm extends StatelessWidget {
             hintText: 'http://127.0.0.1:7890',
             helperText: '支持 HTTP/HTTPS；留空会清除 $agentName 代理',
             helperMaxLines: 3,
+          ),
+        ),
+        const SizedBox(height: 11),
+        TextField(
+          key: const ValueKey('agent-settings-context-limit'),
+          controller: contextLimitController,
+          enabled: enabled,
+          autocorrect: false,
+          enableSuggestions: false,
+          keyboardType: TextInputType.number,
+          scrollPadding: _fieldScrollPadding,
+          onChanged: (_) => onTestRelevantValueChanged(),
+          decoration: const InputDecoration(
+            labelText: '上下文大小（tokens）',
+            hintText: '512000',
+            helperText: '留空使用模型默认值；设置后 CLI 会在此阈值触发压缩',
+            helperMaxLines: 2,
           ),
         ),
         const SizedBox(height: 11),

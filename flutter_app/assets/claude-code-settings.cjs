@@ -185,6 +185,7 @@ globalThis.__claudeRemoteSettings = (() => {
     const defaultModel = model(params.defaultModel);
     const defaultSubagentModel = model(params.defaultSubagentModel);
     const defaultEffort = effort(params.defaultReasoningEffort);
+    const contextLimit = params.contextLimit != null ? integer(params.contextLimit, 0, 2000000) : null;
     const initial = load();
     try {
       if (fs.existsSync(initial.directory) && fs.lstatSync(initial.directory).isSymbolicLink()) throw new Error();
@@ -221,6 +222,13 @@ globalThis.__claudeRemoteSettings = (() => {
       if (defaultSubagentModel) data.subagentModel = defaultSubagentModel; else delete data.subagentModel;
       env.CLAUDE_CODE_EFFORT_LEVEL = defaultEffort;
       if (defaultEffort) data.effortLevel = defaultEffort; else delete data.effortLevel;
+      if (contextLimit != null && contextLimit > 0) {
+        env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(contextLimit);
+        data.contextLimit = contextLimit;
+      } else if (contextLimit === 0) {
+        delete env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+        delete data.contextLimit;
+      }
       // Explicit empty overrides inherited proxies for App-launched CLI too.
       for (const key of PROXY_KEYS) env[key] = proxyUrl;
       data.env = env;

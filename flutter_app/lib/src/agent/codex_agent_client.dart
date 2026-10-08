@@ -1453,6 +1453,7 @@ class CodexAgentClient
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
+    int contextLimit = 0,
   }) async {
     final connectedHost = _requireConnectedSettingsHost(profile);
     if (connectedHost is RemoteServerCodexSettingsClient) {

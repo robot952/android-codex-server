@@ -358,6 +358,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       defaultModel: 'claude-opus-5-5',
       defaultSubagentModel: 'claude-haiku-4-5',
       defaultReasoningEffort: 'xhigh',
+      contextLimit: 0,
       preserveCurrentProvider: true,
     );
     final write = session.requests.singleWhere(
@@ -372,6 +373,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       'defaultModel': 'claude-opus-5-5',
       'defaultSubagentModel': 'claude-haiku-4-5',
       'defaultReasoningEffort': 'xhigh',
+      'contextLimit': 0,
     });
     final result = await client.testGlobalSettings(
       profile,

@@ -195,6 +195,7 @@ class OpenCodeAgentClient extends CodexAgentClient
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
+    int contextLimit = 0,
   }) async {
     final normalizedBaseUrl = normalizeCodexBaseUrl(baseUrl);
     final normalizedApiKey = normalizeCodexApiKey(apiKey);

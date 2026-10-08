@@ -1249,6 +1249,11 @@ class ClaudeBridge {
       if (model) args.push("--model", model);
       if (effort) args.push("--effort", effort);
       const environment = settings.launchEnvironment();
+      // Mark App-launched sessions with a visible entrypoint so they appear in
+      // the native `claude -r` picker. Without this, every session is stamped
+      // sdk-cli (from the -p headless flag) and filtered out when the user runs
+      // an interactive resume from their terminal.
+      environment.CLAUDE_CODE_ENTRYPOINT = "claude-desktop";
       // Claude Code resolves a sub-agent's model from per-agent frontmatter
       // (Explore and friends default to a small model). This variable is read
       // first, ahead of any frontmatter, so it is the only reliable pin. An

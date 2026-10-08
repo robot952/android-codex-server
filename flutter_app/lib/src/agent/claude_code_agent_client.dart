@@ -152,6 +152,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
     required String defaultReasoningEffort,
     String? websocketPolicy,
     required bool preserveCurrentProvider,
+    int contextLimit = 0,
   }) async {
     await requestAdapterExtension(
       'agent/settings/write',
@@ -162,6 +163,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
         'defaultModel': defaultModel.trim(),
         'defaultSubagentModel': defaultSubagentModel.trim(),
         'defaultReasoningEffort': defaultReasoningEffort.trim(),
+        'contextLimit': contextLimit,
       },
       timeout: const Duration(seconds: 30),
     );

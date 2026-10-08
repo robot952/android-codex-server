@@ -1818,6 +1818,7 @@ class AppController extends StateNotifier<AppUiState> {
     required String testModel,
     required String websocketPolicy,
     required bool preserveCurrentProvider,
+    required int contextLimit,
   }) async {
     await _ensureInitialized();
     if (!state.agentSettingsVisible ||
@@ -1914,6 +1915,7 @@ class AppController extends StateNotifier<AppUiState> {
         defaultReasoningEffort: normalizedDefaultEffort,
         websocketPolicy: agent == AgentKind.codex ? websocketPolicy : null,
         preserveCurrentProvider: effectivePreserveCurrentProvider,
+        contextLimit: contextLimit,
       );
       stage = 'profile_persist';
       await _updateProfileAgentDefaults(
