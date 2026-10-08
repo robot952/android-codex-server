@@ -660,9 +660,15 @@ initialize control 握手、`--permission-prompt-tool stdio` 和 `--resume`。�
 
 已接入新建、搜索、恢复、历史分页、文本/图片输入、流式回复、工具折叠、批准/拒绝、提问、停止和重命名。
 Claude lane 有独立模型目录，包含准确的 `claude-opus-5-5` wire ID；会话可覆盖模型和思考强度，未覆盖时
-沿用服务器设置。全局配置从当前 SSH 用户的 Claude 原生设置读取/保存 URL、Key、默认模型和 effort；
-测试对当前草稿发最小真实请求，保存前确认，连接组件安装和正常会话恢复不会改写这些值。读取已有
-服务器已有的 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 由 CLI/后端继续保留，App 不读取或修改该环境变量，也不据此修改实际模型窗口；上下文用量来自 CLI
+沿用服务器设置。全局配置从当前 SSH 用户的 Claude 原生设置读取/保存 URL、Key、默认模型、effort 和
+上下文大小；测试对当前草稿发最小真实请求，保存前确认，连接组件安装和正常会话恢复不会改写这些值。
+
+设置页的“上下文大小”必须**同时**写 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 和
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`。前者才是决定自动压缩时机的变量；只写后者时 CLI 仍按模型 auto
+窗口（1M 模型约 800K）判断压缩，用户填了 256000 也会在 300K 之后才压缩，表现为“不生效”。两个变量
+都不在 App 侧推算实际模型窗口，取值限制为 CLI 接受的 `100000–1000000`（`claude --autocompact` 范围），
+越界值在写盘前拒绝，避免把无效值写进服务器 settings.json。读取时优先回显
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`，老配置只有 `MAX_CONTEXT_TOKENS` 时退回读它。上下文用量来自 CLI
 真实 usage，窗口未知时不猜测百分比，自定义模型容量仅作独立参考，不用于重算占用圆环。压缩、steer、回退、审查、目标、
 归档或子 Agent 独立导航能力仍关闭。
 

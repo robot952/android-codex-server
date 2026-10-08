@@ -107,6 +107,38 @@ async function main() {
       settings.writeSettings(draft);
       assert.equal(read().env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, invalid);
     }
+
+    // 上下文大小必须同时写两个变量：AUTO_COMPACT_WINDOW 才真正决定压缩时机，
+    // 只写 MAX_CONTEXT_TOKENS 时用户在 300K 也不会看到压缩。
+    write(preserved);
+    settings.writeSettings({ ...draft, contextLimit: 200000 });
+    assert.equal(read().env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "200000", "the compaction threshold must be written");
+    assert.equal(read().env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "200000", "the assumed window travels with it");
+    assert.equal(read().contextLimit, 200000);
+    assert.equal(settings.readSettings().contextWindowTokens, 200000);
+    assert.equal(settings.launchEnvironment().CLAUDE_CODE_AUTO_COMPACT_WINDOW, "200000");
+
+    // 自动压缩窗口优先回显：用户改了阈值但留有旧的 MAX_CONTEXT_TOKENS 时以阈值为准。
+    write({ ...preserved, env: { ...preserved.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: "150000" } });
+    assert.equal(settings.readSettings().contextWindowTokens, 150000);
+
+    // 清空（0）必须把两个变量一起删掉，否则残留的阈值会继续限制压缩。
+    settings.writeSettings({ ...draft, contextLimit: 0 });
+    assert.equal(read().env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+    assert.equal(read().env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+    assert.equal(read().contextLimit, undefined);
+    assert.equal(settings.readSettings().contextWindowTokens, 0);
+
+    // CLI 只接受 100k–1M，越界值在写盘前就被拒绝。
+    write({ untouchedContext: true });
+    for (const invalid of [1, 99999, 1000001, 2000000, -1, 1.5]) {
+      assert.throws(
+        () => settings.writeSettings({ ...draft, contextLimit: invalid }),
+        /上下文大小/,
+        `${invalid} must be rejected before touching the file`,
+      );
+      assert.deepEqual(read(), { untouchedContext: true });
+    }
     write(preserved);
 
     settings.writeSettings({ ...draft, apiKey: "replacement-token", proxyUrl: "http://proxy.invalid:3128" });

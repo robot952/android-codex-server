@@ -12,6 +12,12 @@ const String openCodeLegacyManagedProviderId = 'codex-remote';
 /// 必须显式下发：bridge 在不传该参数时会回落到服务端默认子模型。
 const String inheritSubagentModel = 'inherit';
 
+/// Claude Code CLI 接受的自动压缩窗口范围（`claude --autocompact` 只认 100k–1M）。
+/// App 的"上下文大小"同时写 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（真正决定压缩时机）
+/// 和 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（CLI 假设的窗口），两个变量口径必须一致。
+const int claudeCodeAutoCompactWindowMin = 100000;
+const int claudeCodeAutoCompactWindowMax = 1000000;
+
 const List<String> openCodeReasoningEffortValues = <String>[
   'minimal',
   'low',

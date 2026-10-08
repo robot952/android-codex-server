@@ -12,6 +12,23 @@ globalThis.__claudeRemoteSettings = (() => {
   const PROXY_KEYS = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"];
   const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const object = value => value && typeof value === "object" && !Array.isArray(value);
+  // CLI 只接受 100000–1000000 的自动压缩窗口（`claude --autocompact` 取值范围）。
+  // App 把同一个值同时写进"CLI 假设的窗口"和"自动压缩阈值"，否则填了数字也不会
+  // 触发压缩——只有 MAX_CONTEXT_TOKENS 时 CLI 仍按模型 auto 窗口压缩。
+  const MIN_AUTO_COMPACT_WINDOW = 100000;
+  const MAX_AUTO_COMPACT_WINDOW = 1000000;
+  function contextWindowLimit(value) {
+    if (value == null) return null;
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("上下文大小必须是整数");
+    if (value === 0) return 0;
+    if (value < MIN_AUTO_COMPACT_WINDOW || value > MAX_AUTO_COMPACT_WINDOW) {
+      throw new Error(`上下文大小需要留空，或在 ${MIN_AUTO_COMPACT_WINDOW}–${MAX_AUTO_COMPACT_WINDOW} 之间`);
+    }
+    return value;
+  }
+  // 只接受十进制正整数字符串，避免把 "1e6"、"0x10" 之类喂给 CLI。
+  const contextTokensFrom = value => typeof value === "string" && /^[1-9]\d{0,8}$/.test(value) &&
+    Number(value) <= 100000000 ? Number(value) : 0;
   function text(value, maximum = 4096) {
     if (value == null) return "";
     if (typeof value !== "string" || value.length > maximum || /[\x00-\x1f\x7f]/.test(value)) {
@@ -66,9 +83,10 @@ globalThis.__claudeRemoteSettings = (() => {
     // without inventing a value the user never chose.
     const subagentModel = text(env.CLAUDE_CODE_SUBAGENT_MODEL || data.subagentModel, 256);
     const reasoningEffort = text(env.CLAUDE_CODE_EFFORT_LEVEL || data.effortLevel, 32);
-    const contextLimit = env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
-    const contextWindowTokens = typeof contextLimit === "string" && /^[1-9]\d{0,8}$/.test(contextLimit) &&
-      Number(contextLimit) <= 100000000 ? Number(contextLimit) : 0;
+    // 自动压缩窗口才是真正决定压缩时机的变量，优先回显它；老配置只有
+    // MAX_CONTEXT_TOKENS 时退回读它，保证设置页能显示用户之前填的值。
+    const contextWindowTokens = contextTokensFrom(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) ||
+      contextTokensFrom(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS);
     return {
       baseUrl: text(env.ANTHROPIC_BASE_URL) || "https://api.anthropic.com",
       model, subagentModel, reasoningEffort, contextWindowTokens, modelProvider: "anthropic", apiKey,
@@ -185,7 +203,7 @@ globalThis.__claudeRemoteSettings = (() => {
     const defaultModel = model(params.defaultModel);
     const defaultSubagentModel = model(params.defaultSubagentModel);
     const defaultEffort = effort(params.defaultReasoningEffort);
-    const contextLimit = params.contextLimit != null ? integer(params.contextLimit, 0, 2000000) : null;
+    const contextLimit = contextWindowLimit(params.contextLimit);
     const initial = load();
     try {
       if (fs.existsSync(initial.directory) && fs.lstatSync(initial.directory).isSymbolicLink()) throw new Error();
@@ -223,9 +241,14 @@ globalThis.__claudeRemoteSettings = (() => {
       env.CLAUDE_CODE_EFFORT_LEVEL = defaultEffort;
       if (defaultEffort) data.effortLevel = defaultEffort; else delete data.effortLevel;
       if (contextLimit != null && contextLimit > 0) {
+        // 两个变量必须同时写：MAX_CONTEXT_TOKENS 只告诉 CLI "假设的窗口大小"，
+        // 真正触发自动压缩的是 AUTO_COMPACT_WINDOW。只写前者时用户在 300K 也不会
+        // 看到压缩，因为 CLI 仍按模型 auto 窗口（1M 模型约 800K）判断。
+        env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(contextLimit);
         env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(contextLimit);
         data.contextLimit = contextLimit;
       } else if (contextLimit === 0) {
+        delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
         delete env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
         delete data.contextLimit;
       }

@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../agent/codex_global_settings.dart';
-import '../domain/model_catalog.dart' show effectiveReasoningEfforts;
+import '../domain/model_catalog.dart'
+    show
+        claudeCodeAutoCompactWindowMax,
+        claudeCodeAutoCompactWindowMin,
+        effectiveReasoningEfforts;
 import '../domain/models.dart';
 import 'model_selection_presentation.dart' show selectedAgentModel;
 import 'theme.dart';
@@ -461,6 +465,33 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
 
   Future<void> _confirmSave({required bool preserveCurrentProvider}) async {
     if (_busy || widget.state.agentSettings == null) return;
+    // 取值必须在 CLI 接受的自动压缩窗口范围内，否则保存后不会生效；
+    // 越界时本地就拦住，避免把无效值写进服务器 settings.json。
+    final contextLimitText = _contextLimitController.text.trim();
+    if (contextLimitText.isNotEmpty) {
+      final parsed = int.tryParse(contextLimitText);
+      if (parsed == null) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('上下文大小必须是整数')));
+        return;
+      }
+      if (parsed != 0 &&
+          (parsed < claudeCodeAutoCompactWindowMin ||
+              parsed > claudeCodeAutoCompactWindowMax)) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text(
+                '上下文大小需要留空，或在 $claudeCodeAutoCompactWindowMin–'
+                '$claudeCodeAutoCompactWindowMax 之间',
+              ),
+            ),
+          );
+        return;
+      }
+    }
     FocusScope.of(context).unfocus();
     final confirmed = await showDialog<bool>(
       context: context,
@@ -502,7 +533,6 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
             supportedClaudeEfforts?.contains(_defaultReasoningEffort) != true
         ? ''
         : _defaultReasoningEffort;
-    final contextLimitText = _contextLimitController.text.trim();
     final contextLimit = contextLimitText.isEmpty ? 0 : int.tryParse(contextLimitText) ?? 0;
     widget.onSave(
       baseUrl: _baseUrlController.text,
@@ -862,8 +892,8 @@ class _SettingsForm extends StatelessWidget {
           onChanged: (_) => onTestRelevantValueChanged(),
           decoration: const InputDecoration(
             labelText: '上下文大小（tokens）',
-            hintText: '512000',
-            helperText: '留空使用模型默认值；设置后 CLI 会在此阈值触发压缩',
+            hintText: '200000',
+            helperText: '留空使用模型默认值；填写后 CLI 在此阈值触发自动压缩，取值 100000–1000000',
             helperMaxLines: 2,
           ),
         ),

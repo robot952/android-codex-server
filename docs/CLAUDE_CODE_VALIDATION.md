@@ -11,7 +11,10 @@
 
 连接组件不下载或升级 Claude CLI，不修改登录或原生模型配置；只有用户在设置页确认保存时，才原子更新
 当前 SSH 用户的 `~/.claude/settings.json` 中相关字段，空 Key 保持原有认证。会话级模型/effort 覆盖不会
-改写服务器默认值。服务器已有的 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 由 CLI/后端继续保留，App 不读取或修改该环境变量；上下文占用使用 CLI 返回的真实用量，未知窗口不显示伪百分比，自定义模型容量只作独立参考，不用于重算占用圆环。历史列表仅包含 App 创建的 Claude 对话，不导入既有 CLI 对话。
+改写服务器默认值。设置页的“上下文大小”同时写 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（真正决定自动压缩
+时机）和 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`，取值限制在 CLI 接受的 `100000–1000000`；只写后者时 CLI
+仍按模型 auto 窗口判断压缩，用户填了数值也不会在预期阈值触发。读取时优先回显自动压缩窗口，老配置只有
+`MAX_CONTEXT_TOKENS` 时退回读它。上下文占用使用 CLI 返回的真实用量，未知窗口不显示伪百分比，自定义模型容量只作独立参考，不用于重算占用圆环。历史列表仅包含 App 创建的 Claude 对话，不导入既有 CLI 对话。
 Windows 原生 Host 暂不支持；Android 本机 Linux 走回环 SSH，但 ARM64 PRoot 运行需真机验证。
 
 ## 验证分层
