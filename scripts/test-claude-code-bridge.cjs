@@ -27,7 +27,7 @@ function fakeClaudeMain() {
   let scenario;
   let request;
   let holdExit = false;
-  audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL, subagentModelEnv: process.env.CLAUDE_CODE_SUBAGENT_MODEL });
+  audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL, subagentModelEnv: process.env.CLAUDE_CODE_SUBAGENT_MODEL, subagentForceEnv: process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE });
   assert.equal(valueOf("--input-format"), "stream-json");
   assert.equal(valueOf("--output-format"), "stream-json");
   assert.equal(valueOf("--permission-mode"), "default");
@@ -583,9 +583,20 @@ test("a model outside the native catalog still honors the configured effort", as
     assert.equal(spawn.args[spawn.args.indexOf("--effort") + 1], "high", `${model} keeps the configured default effort`);
     assert.equal(spawn.effortEnv, "high", `${model} exports the effort to the CLI`);
     assert.ok(!spawn.args.includes("--setting-sources"), "native permissions and hooks must remain enabled");
+    // 2.1.293 reads settings.json's env ahead of the process environment, and
+    // per-agent frontmatter outranks the variable on its own. Only a
+    // command-line --settings outranks the file, so the sub-agent pin and the
+    // force switch have to travel there too, or delegated work silently runs on
+    // the main model.
     assert.deepEqual(JSON.parse(spawn.args[spawn.args.indexOf("--settings") + 1]), {
-      effortLevel: "high", env: { CLAUDE_CODE_EFFORT_LEVEL: "high" },
+      effortLevel: "high",
+      env: {
+        CLAUDE_CODE_SUBAGENT_MODEL: model,
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1",
+        CLAUDE_CODE_EFFORT_LEVEL: "high",
+      },
     });
+    assert.equal(spawn.subagentForceEnv, "1", `${model} forces the sub-agent pin to win`);
     assert.equal((await peer.ok("thread/read", { threadId: id })).reasoningEffort, "high");
   }
   // A per-turn override reaches the same model and can be cleared again.

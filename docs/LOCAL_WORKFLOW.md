@@ -246,6 +246,14 @@ HOME/配置和 loopback Anthropic fixture，覆盖工具授权/拒绝、停止�
 quick/check/full/publish 中执行，当前不复用其结果缓存。新增 Claude 能力还应运行 adapter、控制器和
 UI 回归；Linux fixture 不替代用户手机与已认证服务器的端到端验收。
 
+子 Agent 模型相关的改动必须用真实 CLI 手工复核，fixture 只能证明 bridge 传了什么，不能证明 CLI
+采用了它。复核方式：用独立 `CLAUDE_CONFIG_DIR` 复制当前配置，分别以「会话级指定具体模型」「会话级
+跟随主模型」「未设而跟随设置页默认」三种输入各派一个子代理，再读
+`$CLAUDE_CONFIG_DIR/projects/*/<session-id>/subagents/*.jsonl` 里 `message.model` 的实际取值。
+子 Agent 模型在 CLI 2.1.293 上依赖 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`，且 settings.json 的 env
+优先于进程环境变量、命令行 `--settings` 优先于 settings.json；改动前先按上述三种输入重新确认优先级，
+不要依据旧版本或文档推断。复核使用的临时目录和会话文件必须删除，不得留下探针会话。
+
 只有获得用户明确授权且服务器已有 Claude 配置时，才可单独运行
 `node scripts/test-claude-code-live.cjs --live`。它使用一次性 HOME、配置目录和工作区，最多两轮
 真实付费请求，测试 Opus 5.5/effort/用量、bridge 重启和续聊；拒绝工具并禁用 MCP、技能与自动更新。

@@ -213,6 +213,11 @@ globalThis.__claudeRemoteSettings = (() => {
       // Written even when blank: an inherited server value would otherwise keep
       // pinning sub-agents to a model the user explicitly cleared.
       env.CLAUDE_CODE_SUBAGENT_MODEL = defaultSubagentModel;
+      // Claude Code 2.1.293 only honors the line above when this switch is
+      // present; without it every sub-agent silently falls back to the main
+      // model. It is written into the native file as well as the App's launch
+      // environment so a plain `claude` started over SSH behaves the same.
+      env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = "1";
       if (defaultSubagentModel) data.subagentModel = defaultSubagentModel; else delete data.subagentModel;
       env.CLAUDE_CODE_EFFORT_LEVEL = defaultEffort;
       if (defaultEffort) data.effortLevel = defaultEffort; else delete data.effortLevel;

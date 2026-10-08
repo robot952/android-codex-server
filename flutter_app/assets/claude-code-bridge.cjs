@@ -1261,14 +1261,28 @@ class ClaudeBridge {
       // value is read first and never compared against the inherited env.
       const chosenSubagentModel = modelArgument(params.subagentModel ?? thread.subagentModel);
       const inheritedSubagentModel = environment.CLAUDE_CODE_SUBAGENT_MODEL;
-      environment.CLAUDE_CODE_SUBAGENT_MODEL = chosenSubagentModel ||
+      const subagentModel = chosenSubagentModel ||
         (inheritedSubagentModel == null || inheritedSubagentModel === ""
           ? modelArgument(configuration.subagentModel) || model || "inherit"
           : inheritedSubagentModel);
-      if (effort) {
-        environment.CLAUDE_CODE_EFFORT_LEVEL = effort;
-        args.push("--settings", JSON.stringify({ effortLevel: effort, env: { CLAUDE_CODE_EFFORT_LEVEL: effort } }));
-      }
+      environment.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel;
+      // 2.1.293 delegates every sub-agent to the main model unless this switch
+      // is set: it reads settings.json's env ahead of the process environment,
+      // and per-agent frontmatter outranks the variable on its own. A
+      // command-line --settings is the one input that outranks the file, so the
+      // resolved choice travels there as well. Verified against 2.1.150 (which
+      // honored the variable directly) and 2.1.293.
+      environment.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = "1";
+      if (effort) environment.CLAUDE_CODE_EFFORT_LEVEL = effort;
+      const overrides = {
+        env: {
+          CLAUDE_CODE_SUBAGENT_MODEL: subagentModel,
+          CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1",
+          ...(effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}),
+        },
+      };
+      if (effort) overrides.effortLevel = effort;
+      args.push("--settings", JSON.stringify(overrides));
       const previousUsage = thread.tokenUsage;
       const previousModel = thread.usageModel;
       if (model !== thread.model) thread.tokenUsage = null;
