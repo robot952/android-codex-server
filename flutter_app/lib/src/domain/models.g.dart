@@ -186,16 +186,11 @@ _ThreadModelPreference _$ThreadModelPreferenceFromJson(
 ) => _ThreadModelPreference(
   model: json['model'] as String? ?? '',
   effort: json['effort'] as String? ?? '',
-  subagentModel: json['subagentModel'] as String? ?? '',
 );
 
 Map<String, dynamic> _$ThreadModelPreferenceToJson(
   _ThreadModelPreference instance,
-) => <String, dynamic>{
-  'model': instance.model,
-  'effort': instance.effort,
-  'subagentModel': instance.subagentModel,
-};
+) => <String, dynamic>{'model': instance.model, 'effort': instance.effort};
 
 _TurnTiming _$TurnTimingFromJson(Map<String, dynamic> json) => _TurnTiming(
   threadId: json['threadId'] as String,

@@ -196,7 +196,6 @@ abstract class ThreadModelPreference with _$ThreadModelPreference {
   const factory ThreadModelPreference({
     @Default('') String model,
     @Default('') String effort,
-    @Default('') String subagentModel,
   }) = _ThreadModelPreference;
 
   factory ThreadModelPreference.fromJson(Map<String, Object?> json) =>
@@ -816,7 +815,6 @@ abstract class AppUiState with _$AppUiState {
     String? apiModelOptionsError,
     String? selectedModel,
     String? selectedEffort,
-    String? selectedSubagentModel,
     @Default(ApprovalMode.requestApproval) ApprovalMode approvalMode,
     @Default(SandboxChoice.workspaceWrite) SandboxChoice sandbox,
     @Default(false) bool workspacePickerVisible,

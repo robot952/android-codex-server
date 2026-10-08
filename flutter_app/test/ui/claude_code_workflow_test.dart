@@ -78,8 +78,7 @@ void main({bool device = false}) {
 
       await tester.tap(find.byKey(const Key('composer-model-button')));
       await _pump(tester);
-      // The sheet lists the main models and, for Claude Code, the 子模型 chips,
-      // so a display name matches both; the main list is the ListTile.
+      // The sheet lists the main models; 子 Agent 模型只在设置页配置。
       Finder mainModel(String name) => find.widgetWithText(ListTile, name);
       await tester.tap(mainModel('Claude Opus 5.5'));
       await _pump(tester);
@@ -101,17 +100,6 @@ void main({bool device = false}) {
       await _pump(tester);
       await tester.tap(find.widgetWithText(FilterChip, '高'));
       await _pump(tester);
-      // A per-conversation sub-agent model must survive the trip through the
-      // sheet and the settings default, which already pins a value in env.
-      await tester.ensureVisible(
-        find.byKey(const ValueKey('thread-subagent-model-claude-haiku-4-5')),
-      );
-      await _pump(tester);
-      await tester.tap(
-        find.byKey(const ValueKey('thread-subagent-model-claude-haiku-4-5')),
-      );
-      await _pump(tester);
-      expect(h.controller.state.selectedSubagentModel, 'claude-haiku-4-5');
       Navigator.of(tester.element(mainModel('Claude Opus 5.5'))).pop();
       await _pump(tester);
 
@@ -166,7 +154,9 @@ void main({bool device = false}) {
               as Map;
       expect(sentTurn['model'], 'claude-opus-5-5');
       expect(sentTurn['effort'], 'high');
-      expect(sentTurn['subagentModel'], 'claude-haiku-4-5');
+      // 会话级子模型已经移除：子 Agent 模型只由设置页全局默认决定，
+      // 因此 turn 请求里不再出现会话选择，空值表示跟随主模型。
+      expect(sentTurn.containsKey('subagentModel'), isFalse);
       expect(find.text('请检查工程'), findsOneWidget);
       h.claude.delta('已检查');
       await _pump(tester);

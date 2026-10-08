@@ -671,15 +671,20 @@ App 创建的会话摘要和有界回合存入当前 SSH 用户的 `~/.local/sha
 本轮不导入服务器原有 `~/.claude/projects` 对话。真实 CLI 的隔离测试使用本地 Anthropic 协议 fixture，
 验证依据和未验收边界见 [Claude Code 验证记录](CLAUDE_CODE_VALIDATION.md)。
 
-子 Agent 模型的输入优先级是 CLI 版本相关的行为，改动前必须按本机 CLI 重新实测。在
+子 Agent 模型只有一个来源：设置页的**全局默认子模型**。它写在原生 `settings.json` 的
+`CLAUDE_CODE_SUBAGENT_MODEL`，bridge 通过 `launchEnvironment()` 读取并写进 CLI 进程环境与
+`--settings`，per-turn 的 `subagentModel` 参数一律忽略。会话级选择、`ThreadModelPreference`
+和对话页的“子模型”选择区都已移除，因此不同对话不会互相覆盖，也不需要在每个会话里重复设置。
+
+子 Agent 模型的环境变量优先级是 CLI 版本相关的行为，改动前必须按本机 CLI 重新实测。在
 Claude Code 2.1.293 上，只设 `CLAUDE_CODE_SUBAGENT_MODEL` 会被忽略，所有子 Agent 静默回落到主模型；
 必须同时设 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`。同一版本还遵循 settings.json
 `env` > 进程环境变量、命令行 `--settings` > settings.json 文件的优先级，而 per-agent frontmatter 在
 只设环境变量时仍会胜出。因此 bridge 把解析后的子 Agent 模型同时写进进程环境和 `--settings`，
 设置页保存默认值时也把 FORCE 开关写进原生 `settings.json`，使手机 App 与用户在电脑上直接执行
 `claude` 两种用法结果一致。该开关生效时 Agent 工具调用点显式传入的 `model` 参数会被忽略；
-子 Agent 模型以会话级选择和设置页默认值为准，不要依赖调用点覆盖。
-`CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 同时写进原生设置的 env 后，普通 CLI 用户的子 Agent 也遵循该设置。
+不要依赖调用点覆盖。`CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 同时写进原生设置的 env 后，
+普通 CLI 用户的子 Agent 也遵循该设置。
 
 ### 9.4 会话缓存、分页和上下文（当前实现与缺口）
 

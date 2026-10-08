@@ -1004,10 +1004,9 @@ test("the CLI's bookkeeping tail never reaches the sub-agent page", async ({ pee
   assert.deepEqual(reports, ["第一份结论。", "第二份结论。"]);
 });
 
-test("a per-conversation sub-agent model overrides the settings default", async ({ peer, root }) => {
-  // The settings page writes its default into settings.json's env, which the
-  // bridge folds into the CLI environment. A choice made for one conversation
-  // must still win over it, otherwise the per-conversation picker is useless.
+test("the settings default is the only sub-agent model source", async ({ peer, root }) => {
+  // 会话级子 Agent 模型已经移除：设置页写进 settings.json 的全局默认是唯一来源，
+  // bridge 忽略任何 per-turn 的 subagentModel，保证会话之间不会互相串设置。
   const configDir = path.join(root, ".claude");
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: "claude-sonnet-4-6" } }));
@@ -1021,11 +1020,10 @@ test("a per-conversation sub-agent model overrides the settings default", async 
     return spawn.subagentModelEnv;
   };
 
-  assert.equal(await runTurn({ subagentModel: "claude-haiku-4-5" }), "claude-haiku-4-5", "the conversation choice beats the settings default");
-  // "inherit" is the CLI's own spelling for 跟随主模型, so it must reach the CLI
-  // verbatim instead of collapsing into the settings default.
-  assert.equal(await runTurn({ subagentModel: "inherit" }), "inherit");
-  assert.equal(await runTurn({}), "claude-sonnet-4-6", "no conversation choice falls back to the settings default");
+  assert.equal(await runTurn({}), "claude-sonnet-4-6", "the settings default applies to every conversation");
+  // 过期的会话级 payload 不再被采纳，一律回到全局默认。
+  assert.equal(await runTurn({ subagentModel: "claude-haiku-4-5" }), "claude-sonnet-4-6", "a per-turn choice is ignored");
+  assert.equal(await runTurn({ subagentModel: "inherit" }), "claude-sonnet-4-6", "a per-turn inherit is ignored too");
 });
 
 test("an unset sub-agent choice follows the main model", async ({ peer, root }) => {
@@ -1035,11 +1033,12 @@ test("an unset sub-agent choice follows the main model", async ({ peer, root }) 
   assert.equal(spawn.subagentModelEnv, "fixture-model", "an absent choice follows the main model");
   assert.equal(spawn.args[spawn.args.indexOf("--model") + 1], "fixture-model");
 
-  // A blank request is unset, not a model named "".
-  await assert.rejects(
-    () => peer.turn(id, "fallback", { model: "fixture-model", subagentModel: "-bad flag" }),
-    error => error.message.includes("模型名称无效"),
-  );
+  // 会话级子模型已移除，per-turn 的值（包括非法值）整条被忽略，
+  // 既不会进入 CLI 参数，也不会再触发模型名校验，一律回到全局默认。
+  await peer.complete(await peer.turn(id, "fallback", { model: "fixture-model", subagentModel: "-bad flag" }));
+  const ignoredSpawn = auditFor(root).filter(value => value.type === "spawn").at(-1);
+  assert.equal(ignoredSpawn.subagentModelEnv, "fixture-model");
+  assert.equal(ignoredSpawn.args[ignoredSpawn.args.indexOf("--model") + 1], "fixture-model");
 });
 
 test("active compaction reports one notice card and never leaks the summary pass", async ({ peer, root }) => {

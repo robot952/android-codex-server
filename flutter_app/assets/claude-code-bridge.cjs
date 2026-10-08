@@ -1261,15 +1261,12 @@ class ClaudeBridge {
       // spelling for that and resolves to the main loop's model. A blank server
       // value counts as unset so a cleared setting cannot pin a stale model.
       // `launchEnvironment()` already folds in settings.json, whose env holds
-      // the settings-page default. That default is only a fallback: a choice
-      // made for this conversation must be able to override it, so the per-turn
-      // value is read first and never compared against the inherited env.
-      const chosenSubagentModel = modelArgument(params.subagentModel ?? thread.subagentModel);
+      // the settings-page default. 子 Agent 模型只由设置页的全局默认决定：
+      // 会话级覆盖已经移除，任何 per-turn 的 subagentModel 都不再参与解析。
       const inheritedSubagentModel = environment.CLAUDE_CODE_SUBAGENT_MODEL;
-      const subagentModel = chosenSubagentModel ||
-        (inheritedSubagentModel == null || inheritedSubagentModel === ""
-          ? modelArgument(configuration.subagentModel) || model || "inherit"
-          : inheritedSubagentModel);
+      const subagentModel = inheritedSubagentModel == null || inheritedSubagentModel === ""
+        ? modelArgument(configuration.subagentModel) || model || "inherit"
+        : inheritedSubagentModel;
       environment.CLAUDE_CODE_SUBAGENT_MODEL = subagentModel;
       // 2.1.293 delegates every sub-agent to the main model unless this switch
       // is set: it reads settings.json's env ahead of the process environment,

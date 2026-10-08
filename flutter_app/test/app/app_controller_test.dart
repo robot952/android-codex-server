@@ -4864,23 +4864,14 @@ void main() {
       await controller.sendMessage(text: 'Opus test');
       expect(claude.startedModel, 'claude-opus-5-5');
       expect(claude.startedEffort, 'xhigh');
-      // 设置页保存的默认子模型会随会话生效，无需在对话页重复设置。
+      // 子 Agent 模型只由设置页全局默认决定，会话级不再有覆盖入口；
+      // 每次发送都直接用偏好里的 preferredSubagentModel。
       expect(claude.startedSubagentModel, 'claude-haiku-4-5');
-      controller.selectThreadSubagentModel('claude-sonnet-4-6');
-      expect(controller.state.selectedSubagentModel, 'claude-sonnet-4-6');
-      await controller.sendMessage(text: 'Subagent model test');
-      expect(claude.startedSubagentModel, 'claude-sonnet-4-6');
-      // 跟随主模型：会话里显式选择后必须下发 inherit，才能压过设置页默认子模型。
-      controller.clearThreadSubagentModel();
-      expect(controller.state.selectedSubagentModel, 'inherit');
-      await _waitUntil(
-        () =>
-            store.value.threadModelPreferences[preferenceKey]?.subagentModel ==
-            'inherit',
+      // 会话偏好里只保留主模型和思考强度，不再持久化子模型覆盖。
+      expect(
+        store.value.threadModelPreferences[preferenceKey]?.model,
+        'claude-opus-5-5',
       );
-      await controller.sendMessage(text: 'Inherit test');
-      expect(claude.startedSubagentModel, 'inherit');
-      expect(claude.startedModel, 'claude-opus-5-5');
       // A model whose metadata omits supportedReasoningEfforts still keeps the
       // requested 思考强度：CLI 才是档位的权威，上游没暴露元数据不等于不能用。
       controller.selectThreadModel('claude-haiku-4-5');
