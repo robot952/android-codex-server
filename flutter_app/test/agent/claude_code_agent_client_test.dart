@@ -420,6 +420,28 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       expect(launched.stdout, 'settings-ready\n');
     },
   );
+
+  test(
+    'installs large bridge sources without putting base64 content in argv',
+    () async {
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      final source = 'console.log("large");\n${List.filled(300000, 'x').join()}';
+      final script = ClaudeCodeBootstrap.installScript(bridgeSource: source);
+      expect(script, contains('process.stdin.on("data"'));
+      expect(script, isNot(contains('process.argv[2]')));
+      expect(script.length, greaterThan(131072));
+      final result = await fixture.scriptFromStdin(script);
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(
+        await File(
+          '${fixture.directory.path}/.local/share/codex-remote/claude/bridge.cjs',
+        ).readAsString(),
+        source,
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
 }
 
 class _RuntimeFixture {
@@ -467,6 +489,24 @@ class _RuntimeFixture {
         },
         includeParentEnvironment: false,
       );
+
+  Future<ProcessResult> scriptFromStdin(String source, {String? path}) async {
+    final process = await Process.start(
+      '/bin/sh',
+      ['-s'],
+      environment: {
+        'HOME': directory.path,
+        'PATH': path ?? '${directory.path}/.local/bin:/usr/bin:/bin',
+      },
+      includeParentEnvironment: false,
+    );
+    final stdout = process.stdout.transform(utf8.decoder).join();
+    final stderr = process.stderr.transform(utf8.decoder).join();
+    process.stdin.write(source);
+    await process.stdin.close();
+    final exitCode = await process.exitCode;
+    return ProcessResult(process.pid, exitCode, await stdout, await stderr);
+  }
 
   Future<void> close() => directory.delete(recursive: true);
 }

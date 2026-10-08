@@ -150,11 +150,11 @@ command -v curl >/dev/null 2>&1 && value DOWNLOADER curl || value DOWNLOADER non
     final install = _installTemplate
         .replaceAll(
           '__BRIDGE_BASE64__',
-          shellQuote(base64Encode(utf8.encode(bridgeSource))),
+          base64Encode(utf8.encode(bridgeSource)),
         )
         .replaceAll(
           '__LAUNCHER_BASE64__',
-          shellQuote(base64Encode(utf8.encode(launcherSource))),
+          base64Encode(utf8.encode(launcherSource)),
         )
         .replaceAll('__BRIDGE_HASH__', bridgeSha256(bridgeSource));
     return 'set -eu\numask 077\n$_discoverRuntime$install';
@@ -180,11 +180,11 @@ LAUNCHER="$(mktemp "$BIN_DIR/.codex-remote-claude.XXXXXX")"
 cleanup() { rm -f -- "$WORK/bridge.cjs" "$LAUNCHER"; rmdir -- "$WORK" 2>/dev/null || true; }
 trap cleanup EXIT HUP INT TERM
 printf '::progress::25||校验 Claude Code 连接组件|服务器 CLI 已就绪\n'
-"$NODE_BIN" -e 'require("node:fs").writeFileSync(process.argv[1],Buffer.from(process.argv[2],"base64"),{mode:384})' "$WORK/bridge.cjs" __BRIDGE_BASE64__
+printf '%s' '__BRIDGE_BASE64__' | "$NODE_BIN" -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>require("node:fs").writeFileSync(process.argv[1],Buffer.from(s,"base64"),{mode:384}))' "$WORK/bridge.cjs"
 ACTUAL_HASH="$(sha256sum "$WORK/bridge.cjs" | cut -d ' ' -f 1)"
 [ "$ACTUAL_HASH" = '__BRIDGE_HASH__' ] || { printf '%s\n' 'Claude Code 连接组件校验失败' >&2; exit 65; }
 "$NODE_BIN" --check "$WORK/bridge.cjs" >/dev/null
-"$NODE_BIN" -e 'require("node:fs").writeFileSync(process.argv[1],Buffer.from(process.argv[2],"base64"),{mode:448})' "$LAUNCHER" __LAUNCHER_BASE64__
+printf '%s' '__LAUNCHER_BASE64__' | "$NODE_BIN" -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>require("node:fs").writeFileSync(process.argv[1],Buffer.from(s,"base64"),{mode:448}))' "$LAUNCHER"
 chmod 700 "$LAUNCHER"
 sh -n "$LAUNCHER"
 mv -f -- "$WORK/bridge.cjs" "$ROOT/bridge.cjs"
