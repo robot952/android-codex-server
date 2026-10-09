@@ -5207,8 +5207,11 @@ class _Composer extends StatelessWidget {
         ? explicitCustomContextWindow(selectedModel, customModels)
         : 0;
     // 全局压缩窗口：配置页设置的 contextLimit，会写入 CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    // 优先从 profile 读取（已保存的配置），如果没有则回退到 state.agentSettings（配置对话框中）
     final compactionWindow = state.activeAgent == AgentKind.claudeCode
-        ? (state.agentSettings?.contextWindowTokens ?? 0)
+        ? (profile?.modelSettings(state.activeAgent).contextWindowTokens ??
+            state.agentSettings?.contextWindowTokens ??
+            0)
         : 0;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 170),

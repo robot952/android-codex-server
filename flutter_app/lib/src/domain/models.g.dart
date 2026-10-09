@@ -57,6 +57,7 @@ _AgentModelSettings _$AgentModelSettingsFromJson(Map<String, dynamic> json) =>
               ?.map((e) => e as String)
               .toList() ??
           const <String>[],
+      contextWindowTokens: (json['contextWindowTokens'] as num?)?.toInt() ?? 0,
     );
 
 Map<String, dynamic> _$AgentModelSettingsToJson(_AgentModelSettings instance) =>
@@ -68,6 +69,7 @@ Map<String, dynamic> _$AgentModelSettingsToJson(_AgentModelSettings instance) =>
       'customModels': instance.customModels,
       'hiddenModelIds': instance.hiddenModelIds,
       'managedModelIds': instance.managedModelIds,
+      'contextWindowTokens': instance.contextWindowTokens,
     };
 
 _ServerProfile _$ServerProfileFromJson(Map<String, dynamic> json) =>

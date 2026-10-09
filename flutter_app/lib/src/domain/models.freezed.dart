@@ -290,7 +290,7 @@ as ModelApiProtocol,
 /// @nodoc
 mixin _$AgentModelSettings {
 
- String get preferredModel; String get preferredEffort; String get preferredSubagentModel; String get testModel; List<CustomModelDefinition> get customModels; List<String> get hiddenModelIds; List<String> get managedModelIds;
+ String get preferredModel; String get preferredEffort; String get preferredSubagentModel; String get testModel; List<CustomModelDefinition> get customModels; List<String> get hiddenModelIds; List<String> get managedModelIds; int get contextWindowTokens;
 /// Create a copy of AgentModelSettings
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -303,16 +303,16 @@ $AgentModelSettingsCopyWith<AgentModelSettings> get copyWith => _$AgentModelSett
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentModelSettings&&(identical(other.preferredModel, preferredModel) || other.preferredModel == preferredModel)&&(identical(other.preferredEffort, preferredEffort) || other.preferredEffort == preferredEffort)&&(identical(other.preferredSubagentModel, preferredSubagentModel) || other.preferredSubagentModel == preferredSubagentModel)&&(identical(other.testModel, testModel) || other.testModel == testModel)&&const DeepCollectionEquality().equals(other.customModels, customModels)&&const DeepCollectionEquality().equals(other.hiddenModelIds, hiddenModelIds)&&const DeepCollectionEquality().equals(other.managedModelIds, managedModelIds));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentModelSettings&&(identical(other.preferredModel, preferredModel) || other.preferredModel == preferredModel)&&(identical(other.preferredEffort, preferredEffort) || other.preferredEffort == preferredEffort)&&(identical(other.preferredSubagentModel, preferredSubagentModel) || other.preferredSubagentModel == preferredSubagentModel)&&(identical(other.testModel, testModel) || other.testModel == testModel)&&const DeepCollectionEquality().equals(other.customModels, customModels)&&const DeepCollectionEquality().equals(other.hiddenModelIds, hiddenModelIds)&&const DeepCollectionEquality().equals(other.managedModelIds, managedModelIds)&&(identical(other.contextWindowTokens, contextWindowTokens) || other.contextWindowTokens == contextWindowTokens));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,preferredModel,preferredEffort,preferredSubagentModel,testModel,const DeepCollectionEquality().hash(customModels),const DeepCollectionEquality().hash(hiddenModelIds),const DeepCollectionEquality().hash(managedModelIds));
+int get hashCode => Object.hash(runtimeType,preferredModel,preferredEffort,preferredSubagentModel,testModel,const DeepCollectionEquality().hash(customModels),const DeepCollectionEquality().hash(hiddenModelIds),const DeepCollectionEquality().hash(managedModelIds),contextWindowTokens);
 
 @override
 String toString() {
-  return 'AgentModelSettings(preferredModel: $preferredModel, preferredEffort: $preferredEffort, preferredSubagentModel: $preferredSubagentModel, testModel: $testModel, customModels: $customModels, hiddenModelIds: $hiddenModelIds, managedModelIds: $managedModelIds)';
+  return 'AgentModelSettings(preferredModel: $preferredModel, preferredEffort: $preferredEffort, preferredSubagentModel: $preferredSubagentModel, testModel: $testModel, customModels: $customModels, hiddenModelIds: $hiddenModelIds, managedModelIds: $managedModelIds, contextWindowTokens: $contextWindowTokens)';
 }
 
 
@@ -323,7 +323,7 @@ abstract mixin class $AgentModelSettingsCopyWith<$Res>  {
   factory $AgentModelSettingsCopyWith(AgentModelSettings value, $Res Function(AgentModelSettings) _then) = _$AgentModelSettingsCopyWithImpl;
 @useResult
 $Res call({
- String preferredModel, String preferredEffort, String preferredSubagentModel, String testModel, List<CustomModelDefinition> customModels, List<String> hiddenModelIds, List<String> managedModelIds
+ String preferredModel, String preferredEffort, String preferredSubagentModel, String testModel, List<CustomModelDefinition> customModels, List<String> hiddenModelIds, List<String> managedModelIds, int contextWindowTokens
 });
 
 
@@ -340,7 +340,7 @@ class _$AgentModelSettingsCopyWithImpl<$Res>
 
 /// Create a copy of AgentModelSettings
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? preferredModel = null,Object? preferredEffort = null,Object? preferredSubagentModel = null,Object? testModel = null,Object? customModels = null,Object? hiddenModelIds = null,Object? managedModelIds = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? preferredModel = null,Object? preferredEffort = null,Object? preferredSubagentModel = null,Object? testModel = null,Object? customModels = null,Object? hiddenModelIds = null,Object? managedModelIds = null,Object? contextWindowTokens = null,}) {
   return _then(_self.copyWith(
 preferredModel: null == preferredModel ? _self.preferredModel : preferredModel // ignore: cast_nullable_to_non_nullable
 as String,preferredEffort: null == preferredEffort ? _self.preferredEffort : preferredEffort // ignore: cast_nullable_to_non_nullable
@@ -349,7 +349,8 @@ as String,testModel: null == testModel ? _self.testModel : testModel // ignore: 
 as String,customModels: null == customModels ? _self.customModels : customModels // ignore: cast_nullable_to_non_nullable
 as List<CustomModelDefinition>,hiddenModelIds: null == hiddenModelIds ? _self.hiddenModelIds : hiddenModelIds // ignore: cast_nullable_to_non_nullable
 as List<String>,managedModelIds: null == managedModelIds ? _self.managedModelIds : managedModelIds // ignore: cast_nullable_to_non_nullable
-as List<String>,
+as List<String>,contextWindowTokens: null == contextWindowTokens ? _self.contextWindowTokens : contextWindowTokens // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 
@@ -434,10 +435,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String preferredModel,  String preferredEffort,  String preferredSubagentModel,  String testModel,  List<CustomModelDefinition> customModels,  List<String> hiddenModelIds,  List<String> managedModelIds)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String preferredModel,  String preferredEffort,  String preferredSubagentModel,  String testModel,  List<CustomModelDefinition> customModels,  List<String> hiddenModelIds,  List<String> managedModelIds,  int contextWindowTokens)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AgentModelSettings() when $default != null:
-return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubagentModel,_that.testModel,_that.customModels,_that.hiddenModelIds,_that.managedModelIds);case _:
+return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubagentModel,_that.testModel,_that.customModels,_that.hiddenModelIds,_that.managedModelIds,_that.contextWindowTokens);case _:
   return orElse();
 
 }
@@ -455,10 +456,10 @@ return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubage
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String preferredModel,  String preferredEffort,  String preferredSubagentModel,  String testModel,  List<CustomModelDefinition> customModels,  List<String> hiddenModelIds,  List<String> managedModelIds)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String preferredModel,  String preferredEffort,  String preferredSubagentModel,  String testModel,  List<CustomModelDefinition> customModels,  List<String> hiddenModelIds,  List<String> managedModelIds,  int contextWindowTokens)  $default,) {final _that = this;
 switch (_that) {
 case _AgentModelSettings():
-return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubagentModel,_that.testModel,_that.customModels,_that.hiddenModelIds,_that.managedModelIds);case _:
+return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubagentModel,_that.testModel,_that.customModels,_that.hiddenModelIds,_that.managedModelIds,_that.contextWindowTokens);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -475,10 +476,10 @@ return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubage
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String preferredModel,  String preferredEffort,  String preferredSubagentModel,  String testModel,  List<CustomModelDefinition> customModels,  List<String> hiddenModelIds,  List<String> managedModelIds)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String preferredModel,  String preferredEffort,  String preferredSubagentModel,  String testModel,  List<CustomModelDefinition> customModels,  List<String> hiddenModelIds,  List<String> managedModelIds,  int contextWindowTokens)?  $default,) {final _that = this;
 switch (_that) {
 case _AgentModelSettings() when $default != null:
-return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubagentModel,_that.testModel,_that.customModels,_that.hiddenModelIds,_that.managedModelIds);case _:
+return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubagentModel,_that.testModel,_that.customModels,_that.hiddenModelIds,_that.managedModelIds,_that.contextWindowTokens);case _:
   return null;
 
 }
@@ -490,7 +491,7 @@ return $default(_that.preferredModel,_that.preferredEffort,_that.preferredSubage
 @JsonSerializable()
 
 class _AgentModelSettings implements AgentModelSettings {
-  const _AgentModelSettings({this.preferredModel = '', this.preferredEffort = '', this.preferredSubagentModel = '', this.testModel = '', final  List<CustomModelDefinition> customModels = const <CustomModelDefinition>[], final  List<String> hiddenModelIds = const <String>[], final  List<String> managedModelIds = const <String>[]}): _customModels = customModels,_hiddenModelIds = hiddenModelIds,_managedModelIds = managedModelIds;
+  const _AgentModelSettings({this.preferredModel = '', this.preferredEffort = '', this.preferredSubagentModel = '', this.testModel = '', final  List<CustomModelDefinition> customModels = const <CustomModelDefinition>[], final  List<String> hiddenModelIds = const <String>[], final  List<String> managedModelIds = const <String>[], this.contextWindowTokens = 0}): _customModels = customModels,_hiddenModelIds = hiddenModelIds,_managedModelIds = managedModelIds;
   factory _AgentModelSettings.fromJson(Map<String, dynamic> json) => _$AgentModelSettingsFromJson(json);
 
 @override@JsonKey() final  String preferredModel;
@@ -518,6 +519,7 @@ class _AgentModelSettings implements AgentModelSettings {
   return EqualUnmodifiableListView(_managedModelIds);
 }
 
+@override@JsonKey() final  int contextWindowTokens;
 
 /// Create a copy of AgentModelSettings
 /// with the given fields replaced by the non-null parameter values.
@@ -532,16 +534,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentModelSettings&&(identical(other.preferredModel, preferredModel) || other.preferredModel == preferredModel)&&(identical(other.preferredEffort, preferredEffort) || other.preferredEffort == preferredEffort)&&(identical(other.preferredSubagentModel, preferredSubagentModel) || other.preferredSubagentModel == preferredSubagentModel)&&(identical(other.testModel, testModel) || other.testModel == testModel)&&const DeepCollectionEquality().equals(other._customModels, _customModels)&&const DeepCollectionEquality().equals(other._hiddenModelIds, _hiddenModelIds)&&const DeepCollectionEquality().equals(other._managedModelIds, _managedModelIds));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentModelSettings&&(identical(other.preferredModel, preferredModel) || other.preferredModel == preferredModel)&&(identical(other.preferredEffort, preferredEffort) || other.preferredEffort == preferredEffort)&&(identical(other.preferredSubagentModel, preferredSubagentModel) || other.preferredSubagentModel == preferredSubagentModel)&&(identical(other.testModel, testModel) || other.testModel == testModel)&&const DeepCollectionEquality().equals(other._customModels, _customModels)&&const DeepCollectionEquality().equals(other._hiddenModelIds, _hiddenModelIds)&&const DeepCollectionEquality().equals(other._managedModelIds, _managedModelIds)&&(identical(other.contextWindowTokens, contextWindowTokens) || other.contextWindowTokens == contextWindowTokens));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,preferredModel,preferredEffort,preferredSubagentModel,testModel,const DeepCollectionEquality().hash(_customModels),const DeepCollectionEquality().hash(_hiddenModelIds),const DeepCollectionEquality().hash(_managedModelIds));
+int get hashCode => Object.hash(runtimeType,preferredModel,preferredEffort,preferredSubagentModel,testModel,const DeepCollectionEquality().hash(_customModels),const DeepCollectionEquality().hash(_hiddenModelIds),const DeepCollectionEquality().hash(_managedModelIds),contextWindowTokens);
 
 @override
 String toString() {
-  return 'AgentModelSettings(preferredModel: $preferredModel, preferredEffort: $preferredEffort, preferredSubagentModel: $preferredSubagentModel, testModel: $testModel, customModels: $customModels, hiddenModelIds: $hiddenModelIds, managedModelIds: $managedModelIds)';
+  return 'AgentModelSettings(preferredModel: $preferredModel, preferredEffort: $preferredEffort, preferredSubagentModel: $preferredSubagentModel, testModel: $testModel, customModels: $customModels, hiddenModelIds: $hiddenModelIds, managedModelIds: $managedModelIds, contextWindowTokens: $contextWindowTokens)';
 }
 
 
@@ -552,7 +554,7 @@ abstract mixin class _$AgentModelSettingsCopyWith<$Res> implements $AgentModelSe
   factory _$AgentModelSettingsCopyWith(_AgentModelSettings value, $Res Function(_AgentModelSettings) _then) = __$AgentModelSettingsCopyWithImpl;
 @override @useResult
 $Res call({
- String preferredModel, String preferredEffort, String preferredSubagentModel, String testModel, List<CustomModelDefinition> customModels, List<String> hiddenModelIds, List<String> managedModelIds
+ String preferredModel, String preferredEffort, String preferredSubagentModel, String testModel, List<CustomModelDefinition> customModels, List<String> hiddenModelIds, List<String> managedModelIds, int contextWindowTokens
 });
 
 
@@ -569,7 +571,7 @@ class __$AgentModelSettingsCopyWithImpl<$Res>
 
 /// Create a copy of AgentModelSettings
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? preferredModel = null,Object? preferredEffort = null,Object? preferredSubagentModel = null,Object? testModel = null,Object? customModels = null,Object? hiddenModelIds = null,Object? managedModelIds = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? preferredModel = null,Object? preferredEffort = null,Object? preferredSubagentModel = null,Object? testModel = null,Object? customModels = null,Object? hiddenModelIds = null,Object? managedModelIds = null,Object? contextWindowTokens = null,}) {
   return _then(_AgentModelSettings(
 preferredModel: null == preferredModel ? _self.preferredModel : preferredModel // ignore: cast_nullable_to_non_nullable
 as String,preferredEffort: null == preferredEffort ? _self.preferredEffort : preferredEffort // ignore: cast_nullable_to_non_nullable
@@ -578,7 +580,8 @@ as String,testModel: null == testModel ? _self.testModel : testModel // ignore: 
 as String,customModels: null == customModels ? _self._customModels : customModels // ignore: cast_nullable_to_non_nullable
 as List<CustomModelDefinition>,hiddenModelIds: null == hiddenModelIds ? _self._hiddenModelIds : hiddenModelIds // ignore: cast_nullable_to_non_nullable
 as List<String>,managedModelIds: null == managedModelIds ? _self._managedModelIds : managedModelIds // ignore: cast_nullable_to_non_nullable
-as List<String>,
+as List<String>,contextWindowTokens: null == contextWindowTokens ? _self.contextWindowTokens : contextWindowTokens // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 

@@ -1925,6 +1925,7 @@ class AppController extends StateNotifier<AppUiState> {
         defaultSubagentModel: normalizedDefaultSubagentModel,
         defaultEffort: normalizedDefaultEffort,
         testModel: normalizedTestModel,
+        contextWindowTokens: contextLimit,
       );
       saved = true;
       if (_isAgentSettingsRequestCurrent(
@@ -6175,6 +6176,7 @@ class AppController extends StateNotifier<AppUiState> {
     required String defaultSubagentModel,
     required String defaultEffort,
     required String testModel,
+    required int contextWindowTokens,
   }) async {
     final profiles = state.profiles
         .map((profile) {
@@ -6188,6 +6190,7 @@ class AppController extends StateNotifier<AppUiState> {
                   preferredSubagentModel: defaultSubagentModel,
                   preferredEffort: defaultEffort,
                   testModel: testModel,
+                  contextWindowTokens: contextWindowTokens,
                 ),
           );
         })
@@ -6207,6 +6210,7 @@ class AppController extends StateNotifier<AppUiState> {
                       preferredSubagentModel: defaultSubagentModel,
                       preferredEffort: defaultEffort,
                       testModel: testModel,
+                      contextWindowTokens: contextWindowTokens,
                     ),
               );
             })

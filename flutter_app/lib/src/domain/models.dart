@@ -93,6 +93,7 @@ abstract class AgentModelSettings with _$AgentModelSettings {
     List<CustomModelDefinition> customModels,
     @Default(<String>[]) List<String> hiddenModelIds,
     @Default(<String>[]) List<String> managedModelIds,
+    @Default(0) int contextWindowTokens,
   }) = _AgentModelSettings;
 
   factory AgentModelSettings.fromJson(Map<String, Object?> json) =>
