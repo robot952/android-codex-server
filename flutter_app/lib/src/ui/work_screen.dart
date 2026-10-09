@@ -5203,8 +5203,12 @@ class _Composer extends StatelessWidget {
     final customModels =
         profile?.modelSettings(state.activeAgent).customModels ??
         const <CustomModelDefinition>[];
-    final customWindow = state.activeAgent == AgentKind.claudeCode
+    final customModelWindow = state.activeAgent == AgentKind.claudeCode
         ? explicitCustomContextWindow(selectedModel, customModels)
+        : 0;
+    // 全局压缩窗口：配置页设置的 contextLimit，会写入 CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    final compactionWindow = state.activeAgent == AgentKind.claudeCode
+        ? (state.agentSettings?.contextWindowTokens ?? 0)
         : 0;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 170),
@@ -5549,7 +5553,8 @@ class _Composer extends StatelessWidget {
                                   ),
                                   claude:
                                       state.activeAgent == AgentKind.claudeCode,
-                                  customWindow: customWindow,
+                                  customModelWindow: customModelWindow,
+                                  compactionWindow: compactionWindow,
                                 ),
                                 if (state.activeAgentCapabilities.models) ...[
                                   const SizedBox(width: 4),
@@ -6002,16 +6007,20 @@ class _ContextUsageButton extends StatelessWidget {
   const _ContextUsageButton({
     required this.usage,
     required this.claude,
-    required this.customWindow,
+    required this.customModelWindow,
+    required this.compactionWindow,
   });
 
   final TokenUsage? usage;
   final bool claude;
-  final int customWindow;
+  final int customModelWindow;
+  final int compactionWindow;
 
   @override
   Widget build(BuildContext context) {
-    final window = usage?.modelContextWindow ?? 0;
+    final modelWindow = usage?.modelContextWindow ?? 0;
+    // 优先使用配置的压缩窗口计算圆环；未配置时回退到 CLI 返回的模型窗口
+    final window = compactionWindow > 0 ? compactionWindow : modelWindow;
     // Codex reports the latest request's context usage in `last`; `total` is
     // cumulative thread accounting and would make the ring drift upward.
     final used = usage?.last.totalTokens ?? 0;
@@ -6074,9 +6083,11 @@ class _ContextUsageButton extends StatelessWidget {
                 if (claude) ...[
                   const SizedBox(height: 4),
                   Text(
-                    customWindow > 0
-                        ? '自定义参考上限 ${_formatTokens(customWindow)}；占用按 Claude Code 返回的上限计算。'
-                        : '最近请求的上下文用量，包含缓存输入；不是会话累计消耗。',
+                    _buildContextHint(
+                      compactionWindow: compactionWindow,
+                      modelWindow: modelWindow,
+                      customModelWindow: customModelWindow,
+                    ),
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: codexMuted),
@@ -6122,6 +6133,30 @@ class _ContextUsageButton extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _buildContextHint({
+    required int compactionWindow,
+    required int modelWindow,
+    required int customModelWindow,
+  }) {
+    if (compactionWindow > 0) {
+      // 配置了压缩窗口，圆环按压缩窗口计算
+      final parts = <String>['占用按配置的压缩窗口 ${_formatTokens(compactionWindow)} 计算'];
+      if (customModelWindow > 0) {
+        parts.add('自定义模型参考上限 ${_formatTokens(customModelWindow)}');
+      }
+      if (modelWindow > 0 && modelWindow != compactionWindow) {
+        parts.add('CLI 返回上限 ${_formatTokens(modelWindow)}');
+      }
+      return '${parts.join('；')}。';
+    }
+    if (customModelWindow > 0) {
+      // 有自定义模型窗口但没配置压缩窗口，圆环按 CLI 返回的窗口计算
+      return '自定义参考上限 ${_formatTokens(customModelWindow)}；占用按 Claude Code 返回的上限计算。';
+    }
+    // 都没有，显示默认提示
+    return '最近请求的上下文用量，包含缓存输入；不是会话累计消耗。';
   }
 }
 

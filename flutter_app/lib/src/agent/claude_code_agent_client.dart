@@ -138,6 +138,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
       apiKey: _settingsString(value, 'apiKey'),
       proxyUrl: _settingsString(value, 'proxyUrl'),
       hasStoredAuthentication: value['hasStoredAuthentication'] == true,
+      contextWindowTokens: _settingsTokens(value['contextWindowTokens']),
     );
   }
 
