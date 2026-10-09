@@ -62,6 +62,11 @@ const textBytes = value => jsonBytes(String(value)) - 2;
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const ZERO_USAGE = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
 const tokenCount = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+// 设置页配置的自动压缩窗口。它决定 CLI 何时压缩上下文，所以 App 的占用圆环
+// 要按它算，而不是按模型自带的窗口——同一个会话压缩过以后又继续跑到 900K，
+// 用模型窗口算出来的百分比毫无参考价值。未配置时返回 0，调用方回退到 CLI
+// 上报的真实窗口。
+const configuredCompactionWindow = configuration => tokenCount(configuration?.contextWindowTokens);
 
 function modelCatalog(configuration = settings.readSettings()) {
   const configured = configuration.model || "default";
@@ -634,6 +639,7 @@ class ClaudeBridge {
     if (!breakdown) return;
     const isLatest = !run.usageByMessage.has(messageId) || run.lastUsageId === messageId;
     if (isLatest && model) {
+      // 换了模型就不能再沿用旧容量：CLI 会重新上报，青黄不接时宁可显示未知。
       if (run.usageModel && run.usageModel !== model) run.contextWindow = 0;
       run.usageModel = model;
     }
@@ -645,7 +651,13 @@ class ClaudeBridge {
     if (!run.lastUsage) return;
     const total = { ...run.baseUsage };
     for (const value of run.usageByMessage.values()) for (const key of Object.keys(ZERO_USAGE)) total[key] += value[key];
-    run.thread.tokenUsage = { last: run.lastUsage, total, modelContextWindow: run.contextWindow || 0 };
+    // 圆环的分母：设置页配了压缩窗口就用它——它决定 CLI 什么时候压缩，也
+    // 就是用户真正关心的"还能装多少"；没配才回退到 CLI 上报的模型容量。
+    const window = run.compactionWindow || run.contextWindow || 0;
+    run.thread.tokenUsage = { last: run.lastUsage, total, modelContextWindow: window };
+    // CLI 上报的模型容量单独存一份：tokenUsage.modelContextWindow 现在可能是
+    // 压缩窗口，恢复会话时拿它当容量会算错。
+    run.thread.modelWindow = run.contextWindow;
     run.thread.usageModel = run.usageModel;
     this.notify("thread/tokenUsage/updated", { threadId: run.thread.id, turnId: run.turn.id, tokenUsage: clone(run.thread.tokenUsage) });
     this.changed(run);
@@ -1301,7 +1313,7 @@ class ClaudeBridge {
       }
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(previousUsage?.modelContextWindow) : 0 };
+    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(thread.modelWindow) : 0, compactionWindow: configuredCompactionWindow(configuration) };
       this.active.set(thread.id, run);
       // A compaction pass answers its own request once the boundary is in, so it
       // must not resolve the request with a turn the caller never sees.

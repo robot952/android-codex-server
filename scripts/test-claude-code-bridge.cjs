@@ -633,6 +633,36 @@ test("current context includes cache tokens, deduplicates usage and survives res
   assert.equal(usageBreakdown({ input_tokens: -1, output_tokens: 7 }), null);
 });
 
+test("the configured compaction window, not the model capacity, is the ring denominator", async ({ peer, root, fake, peers }) => {
+  // 设置页配了压缩窗口时，CLI 什么时候压缩就由它决定，用户真正关心的是
+  // "离压缩还有多远"。所以圆环的分母要报压缩窗口，模型自带的容量单独存，
+  // 不能混在一起——否则 256K 的配置会一直显示成 1.0m 的 5%。
+  const configDir = path.join(root, ".claude");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({
+    env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "256000", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "256000" },
+  }));
+  const id = await peer.thread();
+  await peer.complete(await peer.turn(id, "usage", { model: "claude-opus-5-5" }));
+  const snapshot = await peer.ok("thread/resume", { threadId: id });
+  assert.equal(snapshot.tokenUsage.modelContextWindow, 256000, "the ring divides by the configured compaction window");
+  // CLI 上报的 1.0m 单独存着，没被压缩窗口覆盖掉。
+  const record = JSON.parse(fs.readFileSync(path.join(peer.state, id, "thread.json"), "utf8"));
+  assert.equal(record.modelWindow, 1000000, "the model capacity the CLI reported is kept separately");
+  const usageEvent = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" && message.params.threadId === id).at(-1);
+  assert.equal(usageEvent.params.tokenUsage.modelContextWindow, 256000, "the live event carries the same denominator");
+  // 重启后不能退回模型容量：恢复路径以前读的是持久化的 modelContextWindow。
+  await peer.close();
+  const restarted = new Peer(root, fake, peer.state);
+  peers.push(restarted);
+  await restarted.initialize();
+  assert.equal((await restarted.ok("thread/resume", { threadId: id })).tokenUsage.modelContextWindow, 256000, "the denominator survives a restart");
+  // 清掉配置就回到 CLI 上报的容量。
+  fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({ env: {} }));
+  await restarted.complete(await restarted.turn(id, "usage", { model: "claude-opus-5-5" }));
+  assert.equal((await restarted.ok("thread/read", { threadId: id })).tokenUsage.modelContextWindow, 1000000, "an unset window falls back to the model capacity");
+});
+
 test("tool approval explicitly allows, denies and ignores an unrelated response", async ({ peer }) => {
   const id = await peer.thread();
   for (const accepted of [true, false]) {
