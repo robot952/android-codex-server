@@ -1396,7 +1396,17 @@ class ClaudeBridge {
     if (this.stopping) return;
     this.stopping = true;
     this.childThreads.clear();
-    for (const run of this.active.values()) { this.finish(run, "interrupted", "连接已关闭"); this.terminate(run); }
+    for (const run of this.active.values()) {
+      // Clear thread busy state before finish() persists. Without this, the
+      // bridge process can die before child.on("close") fires, leaving the
+      // thread saved as status="busy" / activeTurnId=<stale>. A fresh bridge
+      // on reconnect would then see the thread as occupied and block new turns.
+      // claudeSessionId is preserved so the next turn/start uses --resume.
+      run.thread.activeTurnId = null;
+      run.thread.status = "idle";
+      this.finish(run, "interrupted", "连接已关闭");
+      this.terminate(run);
+    }
   }
 }
 
