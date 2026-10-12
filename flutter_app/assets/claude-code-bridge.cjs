@@ -1404,6 +1404,9 @@ class ClaudeBridge {
       // claudeSessionId is preserved so the next turn/start uses --resume.
       run.thread.activeTurnId = null;
       run.thread.status = "idle";
+      // Remove from active map BEFORE finish() to prevent child.on("close")
+      // from racing and double-processing this run (L1335 checks active.get).
+      this.active.delete(run.thread.id);
       this.finish(run, "interrupted", "连接已关闭");
       this.terminate(run);
     }
