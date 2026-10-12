@@ -16,7 +16,7 @@ concurrency:
 jobs:
   ios-compile:
     name: iOS unsigned compile
-    runs-on: macos-14
+    runs-on: macos-15
     defaults:
       run:
         working-directory: flutter_app
@@ -33,6 +33,7 @@ jobs:
 
       - name: Check Apple toolchain
         run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild -version
           flutter --version
           flutter doctor --verbose
@@ -165,6 +166,11 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Analyze and test including Linux SSH installers
+        run: |
+          flutter analyze --no-pub
+          flutter test --no-pub
 
       - name: Build Android release APK
         # Refresh the Release registrant to exclude dev-only integration_test.

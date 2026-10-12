@@ -295,10 +295,14 @@ if [ "$BODY_SIZE" -gt "$MAX_BODY_BYTES" ]; then
   printf '__CODEX_API_MODEL_LIST_STATUS=BODY_TOO_LARGE\n'
   exit 0
 fi
+if ! ENCODED_BODY="$(base64 < "$BODY_FILE" 2>/dev/null)"; then
+  printf '__CODEX_API_MODEL_LIST_STATUS=ENCODER_ERROR\n'
+  exit 0
+fi
 
 printf '__CODEX_API_MODEL_LIST_STATUS=SUCCESS\n'
 printf '__CODEX_API_MODEL_LIST_HTTP_STATUS=%s\n' "$HTTP_STATUS"
-base64 "$BODY_FILE" | tr -d '\n' | fold -w "$CHUNK_WIDTH" | while IFS= read -r CHUNK || [ -n "$CHUNK" ]; do
+printf '%s' "$ENCODED_BODY" | tr -d '\n' | fold -w "$CHUNK_WIDTH" | while IFS= read -r CHUNK || [ -n "$CHUNK" ]; do
   printf '__CODEX_API_MODEL_LIST_DATA=%s\n' "$CHUNK"
 done
 ''',
@@ -342,6 +346,8 @@ List<ApiModelOption> parseCodexApiModels(String output) {
       throw StateError('服务器未安装 curl，无法获取模型列表');
     case 'ENCODER_UNAVAILABLE':
       throw StateError('服务器缺少 base64 或 fold，无法读取模型列表');
+    case 'ENCODER_ERROR':
+      throw StateError('模型列表响应编码失败，请检查服务器 base64');
     case 'TEMPORARY_FILE_ERROR':
       throw StateError('无法安全准备模型列表请求');
     case 'NETWORK_ERROR':
@@ -781,16 +787,22 @@ else
       ;;
   esac
 fi
+BODY_SIZE="$(wc -c < "$BODY_FILE" | tr -d '[:space:]')"
+ENCODED_BODY=
+if [ "$BODY_SIZE" -gt "$MAX_BODY_BYTES" ] || [ "$CURL_EXIT_CODE" -eq 63 ]; then
+  TEST_STATUS=BODY_TOO_LARGE
+elif [ "$TEST_STATUS" = SUCCESS ]; then
+  if ! ENCODED_BODY="$(base64 < "$BODY_FILE" 2>/dev/null)"; then
+    TEST_STATUS=ENCODER_ERROR
+  fi
+fi
 printf '__CODEX_CONNECTION_TEST_STATUS=%s\n' "$TEST_STATUS"
 printf '__CODEX_CONNECTION_TEST_MODEL=%s\n' "$TEST_MODEL"
 printf '__CODEX_CONNECTION_TEST_API=%s\n' "$TEST_API"
 printf '__CODEX_CONNECTION_TEST_HTTP_STATUS=%s\n' "$HTTP_STATUS"
 printf '__CODEX_CONNECTION_TEST_CURL_EXIT=%s\n' "$CURL_EXIT_CODE"
-BODY_SIZE="$(wc -c < "$BODY_FILE" | tr -d '[:space:]')"
-if [ "$BODY_SIZE" -gt "$MAX_BODY_BYTES" ] || [ "$CURL_EXIT_CODE" -eq 63 ]; then
-  printf '__CODEX_CONNECTION_TEST_STATUS=BODY_TOO_LARGE\n'
-elif [ "$TEST_STATUS" = SUCCESS ]; then
-  base64 "$BODY_FILE" | tr -d '\n' | fold -w 4096 | while IFS= read -r CHUNK || [ -n "$CHUNK" ]; do
+if [ "$TEST_STATUS" = SUCCESS ]; then
+  printf '%s' "$ENCODED_BODY" | tr -d '\n' | fold -w 4096 | while IFS= read -r CHUNK || [ -n "$CHUNK" ]; do
     printf '__CODEX_CONNECTION_TEST_DATA=%s\n' "$CHUNK"
   done
 fi
@@ -851,6 +863,10 @@ AgentConnectionTestResult parseCodexConnectionTest(String output) {
     'ENCODER_UNAVAILABLE' => const AgentConnectionTestResult(
       successful: false,
       message: '服务器缺少 base64 或 fold，无法校验 API 响应',
+    ),
+    'ENCODER_ERROR' => const AgentConnectionTestResult(
+      successful: false,
+      message: 'API 响应编码失败，请检查服务器 base64',
     ),
     'BODY_TOO_LARGE' => const AgentConnectionTestResult(
       successful: false,

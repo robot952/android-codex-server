@@ -387,6 +387,7 @@ supports_websockets = false
         const baseUrl = 'https://gateway.example.com/v1';
         const proxyUrl = 'http://127.0.0.1:7890';
         final home = await _apiFixtureHome(apiKey: apiKey, model: model);
+        await _installBase64Fixture(home);
 
         final result = await _runShell(
           buildTestCodexGlobalSettingsScript(
@@ -425,6 +426,10 @@ supports_websockets = false
         expect(parsed.message, contains('Responses'));
         expect(parsed.message, contains(model));
         expect(parsed.message, contains('不验证 WebSocket'));
+        expect(
+          await File('${home.path}/base64-argument-counts').readAsString(),
+          '0\n',
+        );
       },
     );
 
@@ -434,6 +439,7 @@ supports_websockets = false
         const apiKey = 'sk-chat-fallback';
         const model = 'gpt-chat';
         final home = await _apiFixtureHome(apiKey: apiKey, model: model);
+        await _installBase64Fixture(home);
 
         final result = await _runShell(
           buildTestCodexGlobalSettingsScript(
@@ -463,6 +469,55 @@ supports_websockets = false
         final parsed = parseCodexConnectionTest(result.stdout);
         expect(parsed.successful, isTrue);
         expect(parsed.message, contains('Chat Completions'));
+        expect(
+          await File('${home.path}/base64-argument-counts').readAsString(),
+          '0\n',
+        );
+      },
+    );
+
+    test(
+      'rejects valid encoder output when encoding exits unsuccessfully',
+      () async {
+        for (final mode in ['responses_success', 'fallback']) {
+          final home = await _apiFixtureHome(
+            apiKey: 'fixture-key',
+            model: 'test',
+          );
+          await _installBase64Fixture(home, failAfterEncoding: true);
+          final temporary = await Directory('${home.path}/tmp').create();
+          final result = await _runShell(
+            buildTestCodexGlobalSettingsScript(
+              baseUrl: 'https://gateway.example.com/v1',
+              apiKey: 'fixture-key',
+              proxyUrl: '',
+              testModel: 'test',
+            ),
+            home: home,
+            environment: {
+              ..._fakeCurlEnvironment(home, mode),
+              'TMPDIR': temporary.path,
+            },
+          );
+
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            result.stdout,
+            contains('__CODEX_CONNECTION_TEST_STATUS=ENCODER_ERROR'),
+          );
+          expect(
+            result.stdout,
+            isNot(contains('__CODEX_CONNECTION_TEST_STATUS=SUCCESS')),
+          );
+          expect(
+            result.stdout,
+            isNot(contains('__CODEX_CONNECTION_TEST_DATA=')),
+          );
+          final parsed = parseCodexConnectionTest(result.stdout);
+          expect(parsed.successful, isFalse, reason: mode);
+          expect(parsed.message, contains('编码失败'));
+          expect(await temporary.list().toList(), isEmpty);
+        }
       },
     );
 
@@ -773,6 +828,77 @@ supports_websockets = false
   });
 
   group('Codex API model list', () {
+    test(
+      'encodes model lists using standard input and reports encoding failures',
+      () async {
+        for (final failAfterEncoding in [false, true]) {
+          final home = await _apiFixtureHome(
+            apiKey: 'fixture-key',
+            model: 'test',
+          );
+          await _writeExecutable(File('${home.path}/bin/curl'), r'''
+#!/bin/sh
+output_file=
+previous_argument=
+for argument in "$@"; do
+  if [ "$previous_argument" = --output ]; then output_file="$argument"; fi
+  previous_argument="$argument"
+done
+[ -n "$output_file" ] || exit 1
+printf '{"data":[{"id":"gpt-test"}]}' > "$output_file"
+printf '200'
+''');
+          await _installBase64Fixture(
+            home,
+            failAfterEncoding: failAfterEncoding,
+          );
+          final temporary = await Directory('${home.path}/tmp').create();
+          final result = await _runShell(
+            buildFetchCodexApiModelsScript(
+              baseUrl: 'https://gateway.example.com/v1',
+              apiKey: 'fixture-key',
+              proxyUrl: '',
+            ),
+            home: home,
+            environment: {
+              ..._fakeCurlEnvironment(home, ''),
+              'TMPDIR': temporary.path,
+            },
+          );
+
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            await File('${home.path}/base64-argument-counts').readAsString(),
+            '0\n',
+          );
+          if (failAfterEncoding) {
+            expect(
+              result.stdout,
+              contains('__CODEX_API_MODEL_LIST_STATUS=ENCODER_ERROR'),
+            );
+            expect(
+              result.stdout,
+              isNot(contains('__CODEX_API_MODEL_LIST_STATUS=SUCCESS')),
+            );
+            expect(
+              result.stdout,
+              isNot(contains('__CODEX_API_MODEL_LIST_DATA=')),
+            );
+            expect(
+              () => parseCodexApiModels(result.stdout),
+              throwsA(predicate((error) => '$error'.contains('编码失败'))),
+            );
+          } else {
+            expect(
+              parseCodexApiModels(result.stdout).single.modelId,
+              'gpt-test',
+            );
+          }
+          expect(await temporary.list().toList(), isEmpty);
+        }
+      },
+    );
+
     test('parses common provider metadata and removes duplicate IDs', () {
       final encoded = base64.encode(
         utf8.encode(
@@ -884,6 +1010,31 @@ Map<String, String> _fakeCurlEnvironment(Directory home, String mode) => {
   'PATH': '${home.path}/bin:${Platform.environment['PATH'] ?? ''}',
   'FAKE_CURL_MODE': mode,
 };
+
+Future<void> _installBase64Fixture(
+  Directory home, {
+  bool failAfterEncoding = false,
+}) async {
+  final discovery = await Process.run('sh', ['-c', 'command -v base64']);
+  if (discovery.exitCode != 0) {
+    throw StateError('base64 discovery failed: ${discovery.stderr}');
+  }
+  final executable = (discovery.stdout as String).trim().replaceAll(
+    "'",
+    "'\"'\"'",
+  );
+  await _writeExecutable(File('${home.path}/bin/base64'), '''
+#!/bin/sh
+printf '%s\\n' "\$#" >> "\$HOME/base64-argument-counts"
+# macOS base64 rejects positional filenames; input must arrive on stdin.
+if [ "\$#" -ne 0 ]; then
+  printf 'base64: invalid argument\\n' >&2
+  exit 64
+fi
+'$executable'
+${failAfterEncoding ? 'exit 1' : r'exit $?'}
+''');
+}
 
 Future<void> _writeExecutable(File file, String contents) async {
   await file.parent.create(recursive: true);

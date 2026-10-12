@@ -9,6 +9,10 @@
 
 Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只响应 `v` 前缀的 Git 标签；普通提交不会触发云端构建。
 标签脚本会核对标签与 `pubspec.yaml` 版本一致，再执行发布构建，避免错误标签消耗构建额度。
+GitHub 的跨平台出包由 `.github/workflows/flutter-refactor-ios.yml` 响应 `flutter-refactor-v*` 标签。
+Android 的 Ubuntu job 和 iOS 的 macOS job 都执行完整 analyze/test；Claude Linux SSH 安装脚本的五项
+集成测试只在 Linux 执行，由 Android job 把关，其他 adapter、协议及 API 测试仍在两端执行。
+iOS 使用 macOS 15 并显式选择 Xcode 16.4，三个平台全部成功后才发布统一 Release。
 Flutter 缓存路径为挂载点时保留根目录，从 `storage.flutter-io.cn` 下载固定版本 SDK 压缩包，验证固定
 SHA-256 与 revision 后在子目录复用。下载有三次限时尝试，保留断点文件；不从 GitHub 克隆 Flutter。
 `FLUTTER_STORAGE_BASE_URL` 和 `PUB_HOSTED_URL` 默认使用 Flutter 中国社区镜像，允许流水线变量覆盖。

@@ -886,6 +886,8 @@ adapter 在已连接 SSH 主机上执行脚本。脚本规范化 base URL 与 HT
 仅在本次 `curl` 显式传入 `--proxy`，以 GET 请求 `${baseUrl}/models`；网络请求有连接/总时限、一次重试、
 响应大小上限和分块 base64 回传。结果解析为有界、去重的 `ApiModelOption`，401/403、网络、工具缺失、
 临时文件和无效响应都映射为短错误，不能覆盖已切换 profile、Agent 或 generation 的页面状态。
+连接测试和模型列表均从 stdin 向 `base64` 传入响应，兼容 GNU/Linux 与 macOS BSD 工具；编码退出状态
+必须成功后才输出 SUCCESS 和分块 DATA，编码失败不能被后续管道掩盖或被当作有效 API 响应。
 
 API key 由当前读取结果仅在内存和远端脚本 stdin 中短暂传递，不作为 SSH 命令参数、`curl` 参数、诊断字段
 或持久化数据。脚本用 `mktemp` 创建 header 与响应 body 临时文件，显式 `chmod 600`，把
@@ -1201,6 +1203,9 @@ fixture，当次真实服务器和 Android 端到端仍需单独验证。
 
 Claude Code 的 `scripts/test-claude-code-bridge.cjs` 使用假 CLI 验证协议和异常边界，
 `scripts/test-claude-code-cli.cjs` 使用已安装官方 CLI 与隔离的本地 Anthropic SSE fixture 联调。
+`claude_code_agent_client_test.dart` 中真正执行 Linux SSH 安装脚本的五项集成测试只在 Linux 运行，
+其余 adapter/协议测试保持跨平台。GitHub Android Ubuntu job 和 iOS macOS job 均执行完整 Flutter
+测试，前者验证 Linux 安装、hash 校验、卸载保留用户数据和大脚本 stdin 传输，后者验证 macOS 兼容性。
 `integration_test/claude_code_workflow_test.dart` 在 Android 设备上复用上述 Claude UI 工作流，
 使用生产 adapter/controller 和受控 JSONL 对端；设备执行结果须单独记录，不能由 Widget 测试通过推定。
 这两类受控对端均不调用真实模型，也不替代用户 SSH 服务器登录、实际供应商 API 或厂商后台验收；

@@ -12,6 +12,12 @@ import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 
+// These execute the installer for Linux SSH servers, including flock and
+// sha256sum. Adapter and protocol tests below still run on every host platform.
+final _linuxInstallerSkip = Platform.isLinux
+    ? false
+    : 'Linux SSH installer integration runs in the Android Ubuntu CI job';
+
 void main() {
   test('advertises Claude Code model and settings capabilities', () {
     final client = ClaudeCodeAgentClient(bridgeLoader: () async => 'bridge');
@@ -176,47 +182,54 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
     },
   );
 
-  test('uses managed Node when the SSH PATH has no Node executable', () async {
-    final fixture = await _RuntimeFixture.create();
-    addTearDown(fixture.close);
-    final nodeResult = await Process.run('/bin/sh', ['-c', 'command -v node']);
-    final node = (nodeResult.stdout as String).trim();
-    final tools = Directory('${fixture.directory.path}/tools');
-    await tools.create();
-    for (final command in [
-      'dirname',
-      'mkdir',
-      'flock',
-      'mktemp',
-      'sha256sum',
-      'cut',
-      'chmod',
-      'sh',
-      'mv',
-      'rm',
-      'rmdir',
-    ]) {
-      await Link('${tools.path}/$command').create('/usr/bin/$command');
-    }
-    final managed = File(
-      '${fixture.directory.path}/.local/share/codex-remote/runtime/node-test/bin/node',
-    );
-    await managed.parent.create(recursive: true);
-    await Link(managed.path).create(node);
-    final result = await fixture.script(
-      ClaudeCodeBootstrap.installScript(
-        bridgeSource: 'console.log("managed-node-ok");',
-      ),
-      path: tools.path,
-    );
-    expect(result.exitCode, 0, reason: '${result.stderr}');
-    final launched = await fixture.script(
-      'exec ~/.local/bin/codex-remote-claude-bridge',
-      path: tools.path,
-    );
-    expect(launched.exitCode, 0, reason: '${launched.stderr}');
-    expect(launched.stdout, 'managed-node-ok\n');
-  });
+  test(
+    'uses managed Node when the SSH PATH has no Node executable',
+    () async {
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      final nodeResult = await Process.run('/bin/sh', [
+        '-c',
+        'command -v node',
+      ]);
+      final node = (nodeResult.stdout as String).trim();
+      final tools = Directory('${fixture.directory.path}/tools');
+      await tools.create();
+      for (final command in [
+        'dirname',
+        'mkdir',
+        'flock',
+        'mktemp',
+        'sha256sum',
+        'cut',
+        'chmod',
+        'sh',
+        'mv',
+        'rm',
+        'rmdir',
+      ]) {
+        await Link('${tools.path}/$command').create('/usr/bin/$command');
+      }
+      final managed = File(
+        '${fixture.directory.path}/.local/share/codex-remote/runtime/node-test/bin/node',
+      );
+      await managed.parent.create(recursive: true);
+      await Link(managed.path).create(node);
+      final result = await fixture.script(
+        ClaudeCodeBootstrap.installScript(
+          bridgeSource: 'console.log("managed-node-ok");',
+        ),
+        path: tools.path,
+      );
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      final launched = await fixture.script(
+        'exec ~/.local/bin/codex-remote-claude-bridge',
+        path: tools.path,
+      );
+      expect(launched.exitCode, 0, reason: '${launched.stderr}');
+      expect(launched.stdout, 'managed-node-ok\n');
+    },
+    skip: _linuxInstallerSkip,
+  );
 
   test(
     'installs, executes, detects tampering and preserves user data on uninstall',
@@ -300,6 +313,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       );
     },
     timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
   );
 
   test(
@@ -334,6 +348,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       expect(await installed.readAsString(), source);
     },
     timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
   );
 
   test('settings use Claude extension RPCs and preserve blank keys', () async {
@@ -419,6 +434,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       expect(launched.exitCode, 0, reason: '${launched.stderr}');
       expect(launched.stdout, 'settings-ready\n');
     },
+    skip: _linuxInstallerSkip,
   );
 
   test(
@@ -426,7 +442,8 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
     () async {
       final fixture = await _RuntimeFixture.create();
       addTearDown(fixture.close);
-      final source = 'console.log("large");\n${List.filled(300000, 'x').join()}';
+      final source =
+          'console.log("large");\n${List.filled(300000, 'x').join()}';
       final script = ClaudeCodeBootstrap.installScript(bridgeSource: source);
       expect(script, contains('process.stdin.on("data"'));
       expect(script, isNot(contains('process.argv[2]')));
@@ -441,6 +458,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       );
     },
     timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
   );
 }
 
