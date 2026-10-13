@@ -437,6 +437,19 @@ class AppController extends StateNotifier<AppUiState> {
     );
     final connectionIdentityChanged =
         existing != null && !existing.hasSameConnectionIdentity(normalized);
+    final codexVersionChanged =
+        existing != null &&
+        existing.codexVersion.trim() != normalized.codexVersion.trim();
+    final codexKey = AgentConnectionKey(
+      profileId: normalized.id,
+      agent: AgentKind.codex,
+    );
+    if (codexVersionChanged &&
+        (_setupStarting.contains(codexKey) ||
+            _setupRequests.containsKey(codexKey) ||
+            state.agentSetupStates[codexKey]?.inProgress == true)) {
+      throw StateError('Codex 正在安装，请等待安装结束后再切换版本');
+    }
     final agentLaunchIdentityChanged =
         existing != null &&
         (existing.remoteCommand.trim() != normalized.remoteCommand.trim() ||
@@ -445,6 +458,14 @@ class AppController extends StateNotifier<AppUiState> {
     if (existing != null &&
         (connectionIdentityChanged || agentLaunchIdentityChanged)) {
       _removeStoredProfileSnapshots(existing);
+      for (final agent in AgentKind.values) {
+        final key = AgentConnectionKey(profileId: normalized.id, agent: agent);
+        _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
+        _agentLoadRequests.remove(key);
+        if (state.agentLoadingStates[key] == true) {
+          _setAgentLoading(key, false);
+        }
+      }
     }
     if (connectionIdentityChanged) {
       _forgetRetainedConnection(normalized.id);
@@ -453,6 +474,7 @@ class AppController extends StateNotifier<AppUiState> {
       _retainedAgentConnections.removeWhere(
         (key) => key.profileId == normalized.id,
       );
+      if (codexVersionChanged) _removeSetupState(codexKey);
     }
     if (existing != null &&
         !connectionIdentityChanged &&
@@ -1303,11 +1325,9 @@ class AppController extends StateNotifier<AppUiState> {
         _setError(error, '代理地址无效');
         return;
       }
-      final sourceProfile =
-          _setupProfiles[key] ??
-          state.profiles.firstWhereOrNull(
-            (candidate) => candidate.id == profileId,
-          );
+      final sourceProfile = state.profiles.firstWhereOrNull(
+        (candidate) => candidate.id == profileId,
+      );
       if (sourceProfile == null) return;
       final profile = sourceProfile.copyWith(proxyUrl: normalizedProxy);
       _setupProfiles[key] = profile;
@@ -1332,16 +1352,26 @@ class AppController extends StateNotifier<AppUiState> {
               .toList(growable: false),
         ),
       );
-      if (!mounted || !_setupProfiles.containsKey(key)) return;
+      if (!mounted || !_isCurrentSetupProfile(key, profile)) return;
 
       _updateSetupState(
         key,
         (current) => current.copyWith(
+          prompt: prompt.copyWith(
+            targetVersion: key.agent == AgentKind.codex
+                ? profile.codexVersion
+                : prompt.targetVersion,
+          ),
           inProgress: true,
           progress: '准备安装',
           percent: 0,
           detail: '',
           downloadPercent: null,
+          downloadedBytes: null,
+          totalBytes: null,
+          bytesPerSecond: null,
+          elapsedSeconds: null,
+          progressIndeterminate: false,
           minimized: false,
         ),
       );
@@ -1367,7 +1397,7 @@ class AppController extends StateNotifier<AppUiState> {
         profile,
         key.agent,
         onProgress: (progress) {
-          if (!mounted || !_setupProfiles.containsKey(key)) return;
+          if (!mounted || !_isCurrentSetupProfile(key, profile)) return;
           _updateSetupState(
             key,
             (current) => current.copyWith(
@@ -5802,7 +5832,7 @@ class AppController extends StateNotifier<AppUiState> {
       // probing increments its generation and rejects concurrent thread opens.
       final effectiveProfile = runtimePrepared || _isHostAndAgentConnected(key)
           ? profile
-          : await _prepareRemoteRuntime(key, profile);
+          : await _prepareRemoteRuntime(key, profile, loadRevision);
       if (effectiveProfile == null || !_isAgentLoadCurrent(key, loadRevision)) {
         return;
       }
@@ -5925,6 +5955,7 @@ class AppController extends StateNotifier<AppUiState> {
   Future<ServerProfile?> _prepareRemoteRuntime(
     AgentConnectionKey key,
     ServerProfile profile,
+    int loadRevision,
   ) async {
     if (key.agent == AgentKind.codex &&
         profile.remoteCommand.trim() != managedCodexRemoteCommand) {
@@ -5932,20 +5963,33 @@ class AppController extends StateNotifier<AppUiState> {
     }
     final existingSetup = state.agentSetupStates[key];
     if (existingSetup?.prompt != null) {
-      if (_isActiveKey(key)) _showRemoteSetup(key);
-      return null;
+      if (key.agent == AgentKind.codex &&
+          !existingSetup!.inProgress &&
+          existingSetup.prompt!.targetVersion != profile.codexVersion) {
+        _removeSetupState(key);
+      } else {
+        if (_isActiveKey(key)) _showRemoteSetup(key);
+        return null;
+      }
     }
     final inspection = await _agents.inspectRuntime(profile, key.agent);
+    if (!_isAgentLoadCurrent(key, loadRevision)) return null;
     final problem = inspection.installationProblem;
     if (problem != null) throw StateError(problem);
     if (inspection.compatibleCommand != null) return profile;
 
     final localWindows = isLocalWindowsProfile(profile);
+    final targetVersion = key.agent == AgentKind.codex
+        ? profile.codexVersion
+        : null;
+    final installationDetail = targetVersion == null
+        ? '需要安装兼容版本。'
+        : '将安装所选版本 Codex $targetVersion。';
     final detail = inspection.detectedVersion == null
         ? localWindows
               ? '${key.agent.label} 尚未安装，将在当前 Windows 用户目录安装。'
               : '${key.agent.label} 尚未安装，将在当前 SSH 用户目录安装。'
-        : '${key.agent.label} 检测到 ${inspection.detectedVersion}，需要安装兼容版本。';
+        : '${key.agent.label} 检测到 ${inspection.detectedVersion}，$installationDetail';
     final prompt = RemoteSetupPrompt(
       title: localWindows
           ? '安装 Windows 原生 ${key.agent.label}'
@@ -5955,6 +5999,7 @@ class AppController extends StateNotifier<AppUiState> {
       architecture: inspection.architecture,
       home: inspection.home,
       detectedVersion: inspection.detectedVersion,
+      targetVersion: targetVersion,
       agent: key.agent,
     );
     _setupProfiles[key] = profile;
@@ -6122,7 +6167,10 @@ class AppController extends StateNotifier<AppUiState> {
         setupProfile.hasSameConnectionIdentity(profile) &&
         current.hasSameConnectionIdentity(profile) &&
         setupProfile.proxyUrl == profile.proxyUrl &&
-        current.proxyUrl == profile.proxyUrl;
+        current.proxyUrl == profile.proxyUrl &&
+        (key.agent != AgentKind.codex ||
+            (setupProfile.codexVersion == profile.codexVersion &&
+                current.codexVersion == profile.codexVersion));
   }
 
   bool _isActiveKey(AgentConnectionKey key) =>

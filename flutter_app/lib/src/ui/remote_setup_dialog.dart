@@ -45,6 +45,10 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
   @override
   void didUpdateWidget(covariant RemoteSetupDialog oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!oldWidget.state.setupInProgress && widget.state.setupInProgress) {
+      _proxyFocused = false;
+      _proxyFocusNode.unfocus();
+    }
     if (oldWidget.proxyUrl == widget.proxyUrl ||
         _proxyController.text == widget.proxyUrl) {
       return;
@@ -154,6 +158,9 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                                 Text(
                                                   isClaude
                                                       ? '请先在服务器安装并登录 Claude Code 2.1 或更新的 2.x 版本，准备 Node.js 18 或更新版本。这里仅安装手机连接组件，沿用服务器现有登录和配置。'
+                                                      : setup.agent ==
+                                                            AgentKind.codex
+                                                      ? '将在此服务器安装 Codex ${_codexTargetVersion(setup)}，完成后自动连接。'
                                                       : setup.detail,
                                                   key: const ValueKey(
                                                     'remote-setup-detail',
@@ -168,7 +175,7 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                               ],
                                             ),
                                     ),
-                                    if (!isClaude)
+                                    if (!isClaude && !inProgress)
                                       TextField(
                                         key: const ValueKey(
                                           'remote-setup-proxy',
@@ -198,8 +205,14 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                         ),
                                       ),
                                     if (inProgress) ...[
-                                      const SizedBox(height: 14),
                                       _InstallProgress(state: widget.state),
+                                      const SizedBox(height: 10),
+                                      Text(
+                                        '安装在服务器上继续，可最小化查看其他页面。',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
                                     ] else if (failed) ...[
                                       const SizedBox(height: 14),
                                       _InstallFailure(state: widget.state),
@@ -290,7 +303,7 @@ class _RuntimeInformation extends StatelessWidget {
           _InformationLine(
             key: const ValueKey('remote-setup-version'),
             icon: Icons.inventory_2_outlined,
-            label: '安装版本',
+            label: '目标版本',
             value: display.versionLine,
           ),
           if (detectedVersion?.isNotEmpty ?? false) ...[
@@ -298,7 +311,7 @@ class _RuntimeInformation extends StatelessWidget {
             _InformationLine(
               key: const ValueKey('remote-setup-detected-version'),
               icon: Icons.search_outlined,
-              label: '已检测',
+              label: '当前版本',
               value: detectedVersion!,
             ),
           ],
@@ -343,23 +356,45 @@ class _InformationLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 17, color: codexMuted),
-        const SizedBox(width: 8),
-        SizedBox(width: 62, child: Text(label, style: textTheme.bodySmall)),
-        const SizedBox(width: 4),
-        Expanded(
-          child: SelectableText(
-            value,
-            style: textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface,
-              fontFamily: monospace ? 'monospace' : null,
-            ),
-          ),
-        ),
-      ],
+    final valueText = SelectableText(
+      value,
+      style: textTheme.bodySmall?.copyWith(
+        color: Theme.of(context).colorScheme.onSurface,
+        fontFamily: monospace ? 'monospace' : null,
+      ),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final labelRow = <Widget>[
+          Icon(icon, size: 17, color: codexMuted),
+          const SizedBox(width: 8),
+          Text(label, style: textTheme.bodySmall),
+        ];
+        if (constraints.maxWidth < 300 &&
+            MediaQuery.textScalerOf(context).scale(14) > 18) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(children: labelRow),
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.only(left: 25),
+                child: valueText,
+              ),
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 17, color: codexMuted),
+            const SizedBox(width: 8),
+            SizedBox(width: 62, child: Text(label, style: textTheme.bodySmall)),
+            const SizedBox(width: 4),
+            Expanded(child: valueText),
+          ],
+        );
+      },
     );
   }
 }
@@ -372,15 +407,20 @@ class _InstallProgress extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fraction = _setupProgressFraction(state);
-    final percent = (fraction * 100).round();
-    final downloadPercent = state.setupDownloadPercent?.clamp(0, 100);
+    final percent = fraction == null ? null : (fraction * 100).round();
+    final downloadedBytes = state.setupDownloadedBytes;
+    final totalBytes = state.setupTotalBytes;
+    final downloadFraction =
+        downloadedBytes != null && totalBytes != null && totalBytes > 0
+        ? (downloadedBytes / totalBytes).clamp(0.0, 1.0)
+        : null;
+    final downloadPercent = downloadFraction == null
+        ? null
+        : (downloadFraction * 100).round();
     final progress = state.setupProgress.trim();
     final detail = state.setupProgressDetail.trim();
-    final transfer =
-        state.setupDownloadedBytes != null ||
-        state.setupTotalBytes != null ||
-        state.setupBytesPerSecond != null ||
-        state.setupElapsedSeconds != null;
+    final downloading = downloadedBytes != null || totalBytes != null;
+    final transfer = downloading || state.setupElapsedSeconds != null;
 
     return Container(
       key: const ValueKey('remote-setup-progress'),
@@ -404,27 +444,34 @@ class _InstallProgress extends StatelessWidget {
                 child: Text(
                   progress.isEmpty ? '正在安装' : progress,
                   key: const ValueKey('remote-setup-progress-label'),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.labelLarge,
                 ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                '$percent%',
-                key: const ValueKey('remote-setup-overall-percent'),
-                style: Theme.of(
-                  context,
-                ).textTheme.labelMedium?.copyWith(color: codexMuted),
               ),
             ],
           ),
           const SizedBox(height: 10),
-          Text('总体安装进度', style: Theme.of(context).textTheme.bodySmall),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '安装步骤进度',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              if (percent != null)
+                Text(
+                  '$percent%',
+                  key: const ValueKey('remote-setup-overall-percent'),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelMedium?.copyWith(color: codexMuted),
+                ),
+            ],
+          ),
           const SizedBox(height: 5),
           Semantics(
-            label: '总体安装进度 $percent%',
-            value: '$percent%',
+            label: '安装步骤进度',
+            value: percent == null ? '准备中' : '$percent%',
             child: LinearProgressIndicator(
               key: const ValueKey('remote-setup-overall-progress'),
               value: fraction,
@@ -440,13 +487,13 @@ class _InstallProgress extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
-          if (downloadPercent != null || state.setupProgressIndeterminate) ...[
+          if (downloading) ...[
             const SizedBox(height: 11),
             Row(
               children: [
                 Expanded(
                   child: Text(
-                    '当前下载进度',
+                    '当前文件下载',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -462,21 +509,23 @@ class _InstallProgress extends StatelessWidget {
             ),
             const SizedBox(height: 5),
             Semantics(
-              label: '当前下载进度 $downloadPercent%',
-              value: '$downloadPercent%',
+              label: '当前文件下载',
+              value: downloadPercent == null ? '总大小未知' : '$downloadPercent%',
               child: LinearProgressIndicator(
                 key: const ValueKey('remote-setup-download-progress'),
-                value: downloadPercent == null ? null : downloadPercent / 100,
+                value: downloadFraction,
                 minHeight: 4,
                 borderRadius: BorderRadius.circular(3),
                 color: codexGreen,
               ),
             ),
           ],
-          if (state.setupProgressIndeterminate && downloadPercent == null) ...[
+          if (state.setupProgressIndeterminate &&
+              !downloading &&
+              detail.isEmpty) ...[
             const SizedBox(height: 10),
             Text(
-              '当前阶段仍在处理，暂无可计算的总大小',
+              '当前安装阶段仍在处理',
               key: const ValueKey('remote-setup-indeterminate-detail'),
               style: Theme.of(context).textTheme.bodySmall,
             ),
@@ -485,11 +534,11 @@ class _InstallProgress extends StatelessWidget {
             const SizedBox(height: 9),
             Text(
               formatInstallTransfer(
-                downloadedBytes: state.setupDownloadedBytes,
-                totalBytes: state.setupTotalBytes,
-                bytesPerSecond: state.setupBytesPerSecond,
+                downloadedBytes: downloadedBytes,
+                totalBytes: totalBytes,
+                bytesPerSecond: downloading ? state.setupBytesPerSecond : null,
                 elapsedSeconds: state.setupElapsedSeconds,
-                action: progress.contains('下载') ? '已下载' : '已处理',
+                action: '已下载',
               ),
               key: const ValueKey('remote-setup-transfer-summary'),
               style: Theme.of(context).textTheme.bodySmall,
@@ -615,7 +664,8 @@ class _RemoteSetupDisplay {
     final sharedRoot = '$home/.local/share/codex-remote';
     return switch (setup.agent) {
       AgentKind.codex => _RemoteSetupDisplay(
-        versionLine: 'Codex $pinnedCodexVersion · Node $pinnedNodeVersion',
+        versionLine:
+            'Codex ${_codexTargetVersion(setup)} · Node $pinnedNodeVersion',
         installPath: sharedRoot,
         proxyDescription: '仅用于本次远程 Node.js 和 Codex 下载，并保存到此服务器',
       ),
@@ -661,22 +711,16 @@ String _setupFailureMessage(AppUiState state) {
   return progress.isEmpty ? '远程安装失败，请检查网络或代理后重试。' : progress;
 }
 
-double _setupProgressFraction(AppUiState state) {
+String _codexTargetVersion(RemoteSetupPrompt setup) {
+  final targetVersion = setup.targetVersion?.trim();
+  return targetVersion == null || targetVersion.isEmpty
+      ? pinnedCodexVersion
+      : targetVersion;
+}
+
+double? _setupProgressFraction(AppUiState state) {
   if (state.setupProgressPercent > 0) {
     return state.setupProgressPercent.clamp(0, 100) / 100;
   }
-  final message = state.setupProgress.trim();
-  if (message.isEmpty) return 0.04;
-  if (message.startsWith('等待')) return 0;
-  final encoded = RegExp(r'^(\d{1,3})(?:%|\|)').firstMatch(message);
-  if (encoded != null) {
-    final percent = int.tryParse(encoded.group(1) ?? '');
-    if (percent != null) return (percent.clamp(0, 100) / 100).clamp(0.02, 1);
-  }
-  if (message.contains('下载')) return 0.18;
-  if (message.contains('校验')) return 0.36;
-  if (message.contains('安装 Codex')) return 0.58;
-  if (message.contains('验证')) return 0.86;
-  if (message.contains('完成')) return 1;
-  return 0.08;
+  return null;
 }

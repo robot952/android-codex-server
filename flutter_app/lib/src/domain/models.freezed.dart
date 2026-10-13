@@ -7888,7 +7888,7 @@ as RemoteFileTransferMode,
 /// @nodoc
 mixin _$RemoteSetupPrompt {
 
- String get title; String get detail; String get os; String get architecture; String get home; String? get detectedVersion; AgentKind get agent;
+ String get title; String get detail; String get os; String get architecture; String get home; String? get detectedVersion; String? get targetVersion; AgentKind get agent;
 /// Create a copy of RemoteSetupPrompt
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -7899,16 +7899,16 @@ $RemoteSetupPromptCopyWith<RemoteSetupPrompt> get copyWith => _$RemoteSetupPromp
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is RemoteSetupPrompt&&(identical(other.title, title) || other.title == title)&&(identical(other.detail, detail) || other.detail == detail)&&(identical(other.os, os) || other.os == os)&&(identical(other.architecture, architecture) || other.architecture == architecture)&&(identical(other.home, home) || other.home == home)&&(identical(other.detectedVersion, detectedVersion) || other.detectedVersion == detectedVersion)&&(identical(other.agent, agent) || other.agent == agent));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is RemoteSetupPrompt&&(identical(other.title, title) || other.title == title)&&(identical(other.detail, detail) || other.detail == detail)&&(identical(other.os, os) || other.os == os)&&(identical(other.architecture, architecture) || other.architecture == architecture)&&(identical(other.home, home) || other.home == home)&&(identical(other.detectedVersion, detectedVersion) || other.detectedVersion == detectedVersion)&&(identical(other.targetVersion, targetVersion) || other.targetVersion == targetVersion)&&(identical(other.agent, agent) || other.agent == agent));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,title,detail,os,architecture,home,detectedVersion,agent);
+int get hashCode => Object.hash(runtimeType,title,detail,os,architecture,home,detectedVersion,targetVersion,agent);
 
 @override
 String toString() {
-  return 'RemoteSetupPrompt(title: $title, detail: $detail, os: $os, architecture: $architecture, home: $home, detectedVersion: $detectedVersion, agent: $agent)';
+  return 'RemoteSetupPrompt(title: $title, detail: $detail, os: $os, architecture: $architecture, home: $home, detectedVersion: $detectedVersion, targetVersion: $targetVersion, agent: $agent)';
 }
 
 
@@ -7919,7 +7919,7 @@ abstract mixin class $RemoteSetupPromptCopyWith<$Res>  {
   factory $RemoteSetupPromptCopyWith(RemoteSetupPrompt value, $Res Function(RemoteSetupPrompt) _then) = _$RemoteSetupPromptCopyWithImpl;
 @useResult
 $Res call({
- String title, String detail, String os, String architecture, String home, String? detectedVersion, AgentKind agent
+ String title, String detail, String os, String architecture, String home, String? detectedVersion, String? targetVersion, AgentKind agent
 });
 
 
@@ -7936,7 +7936,7 @@ class _$RemoteSetupPromptCopyWithImpl<$Res>
 
 /// Create a copy of RemoteSetupPrompt
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? title = null,Object? detail = null,Object? os = null,Object? architecture = null,Object? home = null,Object? detectedVersion = freezed,Object? agent = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? title = null,Object? detail = null,Object? os = null,Object? architecture = null,Object? home = null,Object? detectedVersion = freezed,Object? targetVersion = freezed,Object? agent = null,}) {
   return _then(_self.copyWith(
 title: null == title ? _self.title : title // ignore: cast_nullable_to_non_nullable
 as String,detail: null == detail ? _self.detail : detail // ignore: cast_nullable_to_non_nullable
@@ -7944,6 +7944,7 @@ as String,os: null == os ? _self.os : os // ignore: cast_nullable_to_non_nullabl
 as String,architecture: null == architecture ? _self.architecture : architecture // ignore: cast_nullable_to_non_nullable
 as String,home: null == home ? _self.home : home // ignore: cast_nullable_to_non_nullable
 as String,detectedVersion: freezed == detectedVersion ? _self.detectedVersion : detectedVersion // ignore: cast_nullable_to_non_nullable
+as String?,targetVersion: freezed == targetVersion ? _self.targetVersion : targetVersion // ignore: cast_nullable_to_non_nullable
 as String?,agent: null == agent ? _self.agent : agent // ignore: cast_nullable_to_non_nullable
 as AgentKind,
   ));
@@ -8030,10 +8031,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String title,  String detail,  String os,  String architecture,  String home,  String? detectedVersion,  AgentKind agent)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String title,  String detail,  String os,  String architecture,  String home,  String? detectedVersion,  String? targetVersion,  AgentKind agent)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _RemoteSetupPrompt() when $default != null:
-return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,_that.detectedVersion,_that.agent);case _:
+return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,_that.detectedVersion,_that.targetVersion,_that.agent);case _:
   return orElse();
 
 }
@@ -8051,10 +8052,10 @@ return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String title,  String detail,  String os,  String architecture,  String home,  String? detectedVersion,  AgentKind agent)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String title,  String detail,  String os,  String architecture,  String home,  String? detectedVersion,  String? targetVersion,  AgentKind agent)  $default,) {final _that = this;
 switch (_that) {
 case _RemoteSetupPrompt():
-return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,_that.detectedVersion,_that.agent);case _:
+return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,_that.detectedVersion,_that.targetVersion,_that.agent);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -8071,10 +8072,10 @@ return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String title,  String detail,  String os,  String architecture,  String home,  String? detectedVersion,  AgentKind agent)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String title,  String detail,  String os,  String architecture,  String home,  String? detectedVersion,  String? targetVersion,  AgentKind agent)?  $default,) {final _that = this;
 switch (_that) {
 case _RemoteSetupPrompt() when $default != null:
-return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,_that.detectedVersion,_that.agent);case _:
+return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,_that.detectedVersion,_that.targetVersion,_that.agent);case _:
   return null;
 
 }
@@ -8086,7 +8087,7 @@ return $default(_that.title,_that.detail,_that.os,_that.architecture,_that.home,
 
 
 class _RemoteSetupPrompt implements RemoteSetupPrompt {
-  const _RemoteSetupPrompt({required this.title, required this.detail, required this.os, required this.architecture, required this.home, this.detectedVersion, this.agent = AgentKind.codex});
+  const _RemoteSetupPrompt({required this.title, required this.detail, required this.os, required this.architecture, required this.home, this.detectedVersion, this.targetVersion, this.agent = AgentKind.codex});
   
 
 @override final  String title;
@@ -8095,6 +8096,7 @@ class _RemoteSetupPrompt implements RemoteSetupPrompt {
 @override final  String architecture;
 @override final  String home;
 @override final  String? detectedVersion;
+@override final  String? targetVersion;
 @override@JsonKey() final  AgentKind agent;
 
 /// Create a copy of RemoteSetupPrompt
@@ -8107,16 +8109,16 @@ _$RemoteSetupPromptCopyWith<_RemoteSetupPrompt> get copyWith => __$RemoteSetupPr
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _RemoteSetupPrompt&&(identical(other.title, title) || other.title == title)&&(identical(other.detail, detail) || other.detail == detail)&&(identical(other.os, os) || other.os == os)&&(identical(other.architecture, architecture) || other.architecture == architecture)&&(identical(other.home, home) || other.home == home)&&(identical(other.detectedVersion, detectedVersion) || other.detectedVersion == detectedVersion)&&(identical(other.agent, agent) || other.agent == agent));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _RemoteSetupPrompt&&(identical(other.title, title) || other.title == title)&&(identical(other.detail, detail) || other.detail == detail)&&(identical(other.os, os) || other.os == os)&&(identical(other.architecture, architecture) || other.architecture == architecture)&&(identical(other.home, home) || other.home == home)&&(identical(other.detectedVersion, detectedVersion) || other.detectedVersion == detectedVersion)&&(identical(other.targetVersion, targetVersion) || other.targetVersion == targetVersion)&&(identical(other.agent, agent) || other.agent == agent));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,title,detail,os,architecture,home,detectedVersion,agent);
+int get hashCode => Object.hash(runtimeType,title,detail,os,architecture,home,detectedVersion,targetVersion,agent);
 
 @override
 String toString() {
-  return 'RemoteSetupPrompt(title: $title, detail: $detail, os: $os, architecture: $architecture, home: $home, detectedVersion: $detectedVersion, agent: $agent)';
+  return 'RemoteSetupPrompt(title: $title, detail: $detail, os: $os, architecture: $architecture, home: $home, detectedVersion: $detectedVersion, targetVersion: $targetVersion, agent: $agent)';
 }
 
 
@@ -8127,7 +8129,7 @@ abstract mixin class _$RemoteSetupPromptCopyWith<$Res> implements $RemoteSetupPr
   factory _$RemoteSetupPromptCopyWith(_RemoteSetupPrompt value, $Res Function(_RemoteSetupPrompt) _then) = __$RemoteSetupPromptCopyWithImpl;
 @override @useResult
 $Res call({
- String title, String detail, String os, String architecture, String home, String? detectedVersion, AgentKind agent
+ String title, String detail, String os, String architecture, String home, String? detectedVersion, String? targetVersion, AgentKind agent
 });
 
 
@@ -8144,7 +8146,7 @@ class __$RemoteSetupPromptCopyWithImpl<$Res>
 
 /// Create a copy of RemoteSetupPrompt
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? title = null,Object? detail = null,Object? os = null,Object? architecture = null,Object? home = null,Object? detectedVersion = freezed,Object? agent = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? title = null,Object? detail = null,Object? os = null,Object? architecture = null,Object? home = null,Object? detectedVersion = freezed,Object? targetVersion = freezed,Object? agent = null,}) {
   return _then(_RemoteSetupPrompt(
 title: null == title ? _self.title : title // ignore: cast_nullable_to_non_nullable
 as String,detail: null == detail ? _self.detail : detail // ignore: cast_nullable_to_non_nullable
@@ -8152,6 +8154,7 @@ as String,os: null == os ? _self.os : os // ignore: cast_nullable_to_non_nullabl
 as String,architecture: null == architecture ? _self.architecture : architecture // ignore: cast_nullable_to_non_nullable
 as String,home: null == home ? _self.home : home // ignore: cast_nullable_to_non_nullable
 as String,detectedVersion: freezed == detectedVersion ? _self.detectedVersion : detectedVersion // ignore: cast_nullable_to_non_nullable
+as String?,targetVersion: freezed == targetVersion ? _self.targetVersion : targetVersion // ignore: cast_nullable_to_non_nullable
 as String?,agent: null == agent ? _self.agent : agent // ignore: cast_nullable_to_non_nullable
 as AgentKind,
   ));

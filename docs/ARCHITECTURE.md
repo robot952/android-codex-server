@@ -796,6 +796,11 @@ watchdog 终止安装进程组。
 连接成功后 App 会请求 GitHub 官方稳定 Release 列表，在服务器设置和会话列表的设置菜单中提供 Codex 版本下拉选择和刷新按钮。
 版本选择保存在服务器 Profile，只影响该服务器用户目录中的 Codex 托管运行时；URL、API Key、Provider、工作目录和会话不变。
 列表请求失败不阻塞连接，已保存版本仍可继续使用。
+安装弹窗的 `RemoteSetupPrompt.targetVersion` 捕获本次安装 Profile 的 Codex 版本，分别展示目标版本
+和已检测版本；未开始安装时切换版本会废弃旧探测与弹窗，再探测新目标，迟到的旧结果不能覆盖新目标。
+安装准备和执行中禁止从任何服务器设置入口切换 Codex 版本，最小化恢复保留本次目标；
+安装失败后允许切换版本，重试使用当前服务器配置，异步保存、进度和完成回调均核对安装目标。
+开始或重试安装会清除上次字节、速度和耗时，安装中收起代理输入并移除其键盘焦点。
 
 OpenCode 使用独立的 `OpenCodeBootstrap` 探测与安装链路，固定 `opencode-ai 1.18.11` 和
 `jsonc-parser 3.3.1`，复用固定 Node `22.17.0`。安装先准备共享 Node，再通过国内 npm registry 安装
@@ -810,8 +815,12 @@ $HOME/.local/share/codex-remote/opencode
 $HOME/.local/bin/codex-remote-opencode-bridge
 ~~~
 
-进度协议为 `::progress::<overall>|<download>|<message>|<detail>|<downloadedBytes>|<totalBytes>|<bytesPerSecond>|<elapsedSeconds>`，并兼容旧四段格式；UI 分开显示总体与当前下载进度，
-展示已处理/下载大小、实时平均速度和耗时。总大小未知时当前阶段使用不确定进度，不伪造固定百分比；
+进度协议为 `::progress::<overall>|<download>|<message>|<detail>|<downloadedBytes>|<totalBytes>|<bytesPerSecond>|<elapsedSeconds>`，并兼容旧四段格式；UI 分开显示安装步骤与当前文件下载进度。
+Node 下载从 curl/wget 实际 GET 最终成功响应的 Content-Length 获取总大小，重定向会清除前一个响应的长度；
+206 续传响应仅采用有效 Content-Range 中的完整总量，不能把剩余正文长度当文件总量。
+未提供总大小或总量为 0 时，当前文件显示已下载量、速度和耗时，使用不确定进度且不显示固定百分比。
+有真实总大小时，文件进度由已下载字节与总字节计算；Codex npm 安装仅报告已安装组件数和耗时，
+不把磁盘占用当下载量，不把组件比例当下载百分比。
 最小化后会将总体进度保留在会话页对应 Agent 按钮中，点击后恢复原弹窗。
 
 Windows 原生 OpenCode 复用同一安装弹窗和进度协议：`WindowsLocalServerClient` 在

@@ -1135,10 +1135,13 @@ class _RuntimeAgent extends _FailingTurnAgent
     implements RemoteAgentRuntimeClient {
   bool installed = false;
   bool failNextInstall = false;
+  Completer<void>? inspectGate;
   Completer<void>? installGate;
   int inspectCalls = 0;
+  final List<String> inspectedVersions = [];
   int installCalls = 0;
   String? installedProxy;
+  String? installedVersion;
   String? connectedRemoteCommand;
 
   @override
@@ -1153,12 +1156,16 @@ class _RuntimeAgent extends _FailingTurnAgent
     RemoteServerClient host,
   ) async {
     inspectCalls++;
+    inspectedVersions.add(profile.codexVersion);
+    final gate = inspectGate;
+    inspectGate = null;
+    await gate?.future;
     return AgentRuntimeInspection(
       os: 'Linux',
       architecture: 'x86_64',
       home: '/root',
       libc: 'glibc',
-      managedVersion: installed ? 'codex-cli $pinnedCodexVersion' : null,
+      managedVersion: installed ? 'codex-cli $installedVersion' : null,
       managedPath: installed ? '/root/.local/bin/codex-remote' : null,
       hasShell: true,
       hasTar: true,
@@ -1166,6 +1173,7 @@ class _RuntimeAgent extends _FailingTurnAgent
       hasFlock: true,
       hasSetsidWait: true,
       downloader: 'curl',
+      expectedVersion: profile.codexVersion,
     );
   }
 
@@ -1191,6 +1199,7 @@ class _RuntimeAgent extends _FailingTurnAgent
       throw StateError('模拟下载失败');
     }
     installed = true;
+    installedVersion = profile.codexVersion;
     onProgress(
       const RemoteInstallProgress(
         percent: 100,
@@ -4231,7 +4240,10 @@ void main() {
   test(
     'probes, installs, verifies, and connects the managed runtime',
     () async {
-      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final profile = _firstProfile.copyWith(
+        workspacePromptShown: true,
+        codexVersion: '0.162.0',
+      );
       final store = _MemoryProfileStore(
         StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
       );
@@ -4255,15 +4267,21 @@ void main() {
 
       expect(controller.state.remoteSetup?.home, '/root');
       expect(controller.state.remoteSetup?.architecture, 'x86_64');
+      expect(controller.state.remoteSetup?.targetVersion, '0.162.0');
       expect(controller.state.setupInProgress, isFalse);
       expect(agent.inspectCalls, 1);
       expect(agent.connected, isFalse);
 
+      await controller.changeCodexVersion(profile.id, '0.162.1');
+      expect(controller.state.remoteSetup?.targetVersion, '0.162.1');
+      expect(agent.inspectCalls, 2);
+
       await controller.installRemoteSetup('http://127.0.0.1:7890');
 
       expect(agent.installCalls, 1);
-      expect(agent.inspectCalls, 2);
+      expect(agent.inspectCalls, 3);
       expect(agent.installedProxy, 'http://127.0.0.1:7890');
+      expect(agent.installedVersion, '0.162.1');
       expect(
         agent.connectedRemoteCommand,
         "'/root/.local/bin/codex-remote' app-server --listen stdio://",
@@ -4277,9 +4295,12 @@ void main() {
   );
 
   test(
-    'minimizes an active install and keeps failure available for retry',
+    'minimized install retains its target and failure can retry a new version',
     () async {
-      final profile = _firstProfile.copyWith(workspacePromptShown: true);
+      final profile = _firstProfile.copyWith(
+        workspacePromptShown: true,
+        codexVersion: '0.162.1',
+      );
       final store = _MemoryProfileStore(
         StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
       );
@@ -4307,6 +4328,7 @@ void main() {
       await _waitUntil(() => controller.state.setupInProgress);
       expect(controller.state.setupProgressPercent, 38);
       expect(controller.state.setupDownloadPercent, 37);
+      expect(controller.state.remoteSetup?.targetVersion, '0.162.1');
 
       controller.minimizeRemoteSetup();
       expect(controller.state.remoteSetup, isNull);
@@ -4316,11 +4338,28 @@ void main() {
         controller.state.agentSetupStates.values.single.downloadPercent,
         37,
       );
+      await expectLater(
+        controller.saveProfile(
+          controller.state.profiles.single.copyWith(codexVersion: '0.162.0'),
+        ),
+        throwsStateError,
+      );
+      expect(controller.state.profiles.single.codexVersion, '0.162.1');
+      expect(store.value.profiles.single.codexVersion, '0.162.1');
+      expect(
+        controller.state.agentSetupStates.values.single.prompt?.targetVersion,
+        '0.162.1',
+      );
+      expect(
+        controller.state.agentSetupStates.values.single.inProgress,
+        isTrue,
+      );
       controller.resumeRemoteSetup();
       expect(controller.state.remoteSetup, isNotNull);
       expect(controller.state.setupInProgress, isTrue);
       expect(controller.state.setupProgressPercent, 38);
       expect(controller.state.setupDownloadPercent, 37);
+      expect(controller.state.remoteSetup?.targetVersion, '0.162.1');
       controller.minimizeRemoteSetup();
       await controller.ensureActiveAgent();
       expect(controller.state.remoteSetup, isNotNull);
@@ -4333,8 +4372,65 @@ void main() {
       expect(controller.state.setupProgressDetail, contains('模拟下载失败'));
 
       agent.installGate = null;
+      await controller.changeCodexVersion(profile.id, '0.162.0');
+      expect(controller.state.remoteSetup?.targetVersion, '0.162.0');
+      expect(controller.state.profiles.single.codexVersion, '0.162.0');
       await controller.installRemoteSetup('https://proxy.example:8443');
       expect(agent.installCalls, 2);
+      expect(agent.installedVersion, '0.162.0');
+      expect(agent.connected, isTrue);
+      expect(controller.state.remoteSetup, isNull);
+    },
+  );
+
+  test(
+    'version change discards a suspended probe for the previous target',
+    () async {
+      final profile = _firstProfile.copyWith(
+        workspacePromptShown: true,
+        codexVersion: '0.162.0',
+      );
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final inspectGate = Completer<void>();
+      final agent = _RuntimeAgent()..inspectGate = inspectGate;
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        if (!inspectGate.isCompleted) inspectGate.complete();
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+
+      final connect = controller.requestConnect(profile);
+      await _waitUntil(() => agent.inspectCalls == 1);
+      expect(controller.state.remoteSetup, isNull);
+      final change = controller.changeCodexVersion(profile.id, '0.162.1');
+      await _waitUntil(
+        () => controller.state.profiles.single.codexVersion == '0.162.1',
+      );
+      inspectGate.complete();
+      await connect;
+      await change;
+      await _drainAsyncWork();
+
+      expect(agent.inspectedVersions, ['0.162.0', '0.162.1']);
+      expect(controller.state.remoteSetup?.targetVersion, '0.162.1');
+      expect(
+        controller.state.agentSetupStates.values.single.prompt?.targetVersion,
+        '0.162.1',
+      );
+      expect(controller.state.error, isNull);
+      await controller.installRemoteSetup('');
+      expect(agent.installedVersion, '0.162.1');
       expect(agent.connected, isTrue);
       expect(controller.state.remoteSetup, isNull);
     },

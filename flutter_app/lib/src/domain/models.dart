@@ -713,6 +713,7 @@ abstract class RemoteSetupPrompt with _$RemoteSetupPrompt {
     required String architecture,
     required String home,
     String? detectedVersion,
+    String? targetVersion,
     @Default(AgentKind.codex) AgentKind agent,
   }) = _RemoteSetupPrompt;
 }

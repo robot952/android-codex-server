@@ -344,27 +344,29 @@ RemoteInstallProgress? parseRemoteInstallProgressLine(String line) {
         extended &&
         parts.sublist(parts.length - 4).any((part) => part.trim().isNotEmpty);
     final detailEnd = extended ? parts.length - 4 : parts.length;
+    final reportedTotal = hasTransferStats
+        ? _boundedNullableBytes(parts[parts.length - 3])
+        : null;
+    final totalBytes = reportedTotal != null && reportedTotal > 0
+        ? reportedTotal
+        : null;
+    final indeterminate = hasTransferStats && totalBytes == null;
     return RemoteInstallProgress(
       percent: percent,
-      downloadPercent: _boundedPercent(parts[1]),
+      downloadPercent: indeterminate ? null : _boundedPercent(parts[1]),
       message: message,
       detail: parts.sublist(3, detailEnd).join('|').trim(),
       downloadedBytes: hasTransferStats
           ? _boundedBytes(parts[parts.length - 4])
           : null,
-      totalBytes: hasTransferStats
-          ? _boundedNullableBytes(parts[parts.length - 3])
-          : null,
+      totalBytes: totalBytes,
       bytesPerSecond: hasTransferStats
           ? _boundedBytes(parts[parts.length - 2])
           : null,
       elapsedSeconds: hasTransferStats
           ? _boundedBytes(parts[parts.length - 1])
           : null,
-      indeterminate:
-          hasTransferStats &&
-          (parts[parts.length - 3].trim().isEmpty ||
-              _boundedNullableBytes(parts[parts.length - 3]) == null),
+      indeterminate: indeterminate,
     );
   }
   final separator = value.indexOf('|');
@@ -428,15 +430,25 @@ file_size() {
     printf 0
   fi
 }
-download_size() {
-  DOWNLOAD_URL="$1"
-  if command -v curl >/dev/null 2>&1; then
-    curl --fail --location --silent --show-error --head --connect-timeout 15 "$DOWNLOAD_URL" 2>/dev/null |
-      awk 'tolower($1) == "content-length:" { size=$2 } END { gsub(/[^0-9]/, "", size); if (size != "") print size }'
-  elif command -v wget >/dev/null 2>&1; then
-    wget --spider --server-response --timeout=30 "$DOWNLOAD_URL" 2>&1 |
-      awk 'tolower($1) == "content-length:" { size=$2 } END { gsub(/[^0-9]/, "", size); if (size != "") print size }'
-  fi
+download_response_size() {
+  [ -f "$1" ] || return 0
+  awk '
+    { sub(/^[[:space:]]+/, ""); sub(/\r$/, "") }
+    /^HTTP\// { status=$2; size=""; range_total="" }
+    tolower($1) == "content-length:" && $2 ~ /^[0-9]+$/ { size=$2 }
+    tolower($1) == "content-range:" && tolower($2) == "bytes" {
+      range_total=""
+      if (split($3, range, "/") == 2 && split(range[1], bounds, "-") == 2 &&
+          bounds[1] ~ /^[0-9]+$/ && bounds[2] ~ /^[0-9]+$/ && range[2] ~ /^[0-9]+$/ &&
+          bounds[1] + 0 <= bounds[2] + 0 && bounds[2] + 0 < range[2] + 0) {
+        range_total=range[2]
+      }
+    }
+    END {
+      if (status == 206) { if (range_total > 0) print range_total }
+      else if (status >= 200 && status < 300 && size > 0) print size
+    }
+  ' "$1"
 }
 download_file() {
   DOWNLOAD_URL="$1"
@@ -444,23 +456,27 @@ download_file() {
   DOWNLOAD_FROM="$3"
   DOWNLOAD_TO="$4"
   DOWNLOAD_LABEL="$5"
-  DOWNLOAD_TOTAL="$(download_size "$DOWNLOAD_URL")"
-  case "$DOWNLOAD_TOTAL" in
-    ''|*[!0-9]*) DOWNLOAD_TOTAL=0 ;;
-  esac
-  progress "$DOWNLOAD_FROM" 0 "$DOWNLOAD_LABEL" '正在连接下载服务器'
+  DOWNLOAD_HEADERS="$DOWNLOAD_DEST.headers"
+  DOWNLOAD_TOTAL=0
+  progress "$DOWNLOAD_FROM" '' "$DOWNLOAD_LABEL" '正在连接下载服务器' 0 '' '' 0
   DOWNLOAD_STARTED="$(date +%s)"
   if command -v curl >/dev/null 2>&1; then
     curl --fail --location --retry 3 --connect-timeout 15 --silent --show-error \
-      --output "$DOWNLOAD_DEST" "$DOWNLOAD_URL" &
+      --dump-header "$DOWNLOAD_HEADERS" --output "$DOWNLOAD_DEST" "$DOWNLOAD_URL" &
   else
-    wget --tries=3 --timeout=30 --no-verbose --output-document="$DOWNLOAD_DEST" "$DOWNLOAD_URL" &
+    wget --tries=3 --timeout=30 --no-verbose --server-response \
+      --output-document="$DOWNLOAD_DEST" "$DOWNLOAD_URL" 2> "$DOWNLOAD_HEADERS" &
   fi
   DOWNLOAD_PID="$!"
   DOWNLOAD_LAST=-1
+  DOWNLOAD_LAST_TOTAL=-1
   DOWNLOAD_SPEED=0
   DOWNLOAD_ELAPSED=0
   while kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
+    DOWNLOAD_TOTAL="$(download_response_size "$DOWNLOAD_HEADERS")"
+    case "$DOWNLOAD_TOTAL" in
+      ''|*[!0-9]*) DOWNLOAD_TOTAL=0 ;;
+    esac
     DOWNLOAD_BYTES="$(file_size "$DOWNLOAD_DEST")"
     DOWNLOAD_NOW="$(date +%s)"
     DOWNLOAD_ELAPSED="$((DOWNLOAD_NOW - DOWNLOAD_STARTED))"
@@ -470,27 +486,34 @@ download_file() {
       DOWNLOAD_PERCENT="$((DOWNLOAD_BYTES * 100 / DOWNLOAD_TOTAL))"
       if [ "$DOWNLOAD_PERCENT" -gt 99 ]; then DOWNLOAD_PERCENT=99; fi
       DOWNLOAD_OVERALL="$((DOWNLOAD_FROM + (DOWNLOAD_TO - DOWNLOAD_FROM) * DOWNLOAD_PERCENT / 100))"
-      if [ "$DOWNLOAD_BYTES" != "$DOWNLOAD_LAST" ]; then
+      if [ "$DOWNLOAD_BYTES" != "$DOWNLOAD_LAST" ] || [ "$DOWNLOAD_TOTAL" != "$DOWNLOAD_LAST_TOTAL" ]; then
         progress "$DOWNLOAD_OVERALL" "$DOWNLOAD_PERCENT" "$DOWNLOAD_LABEL" \
           "$(format_bytes "$DOWNLOAD_BYTES") / $(format_bytes "$DOWNLOAD_TOTAL")" \
           "$DOWNLOAD_BYTES" "$DOWNLOAD_TOTAL" "$DOWNLOAD_SPEED" "$DOWNLOAD_ELAPSED"
         DOWNLOAD_LAST="$DOWNLOAD_BYTES"
+        DOWNLOAD_LAST_TOTAL="$DOWNLOAD_TOTAL"
       fi
-    elif [ "$DOWNLOAD_BYTES" != "$DOWNLOAD_LAST" ]; then
+    elif [ "$DOWNLOAD_BYTES" != "$DOWNLOAD_LAST" ] || [ "$DOWNLOAD_TOTAL" != "$DOWNLOAD_LAST_TOTAL" ]; then
       progress "$DOWNLOAD_FROM" '' "$DOWNLOAD_LABEL" \
         "已下载 $(format_bytes "$DOWNLOAD_BYTES")（服务器未提供总大小）" \
         "$DOWNLOAD_BYTES" '' "$DOWNLOAD_SPEED" "$DOWNLOAD_ELAPSED"
       DOWNLOAD_LAST="$DOWNLOAD_BYTES"
+      DOWNLOAD_LAST_TOTAL="$DOWNLOAD_TOTAL"
     fi
     sleep 1
   done
   if wait "$DOWNLOAD_PID"; then
+    DOWNLOAD_BYTES="$(file_size "$DOWNLOAD_DEST")"
+    DOWNLOAD_ELAPSED="$(( $(date +%s) - DOWNLOAD_STARTED ))"
+    if [ "$DOWNLOAD_ELAPSED" -gt 0 ]; then
+      DOWNLOAD_SPEED="$((DOWNLOAD_BYTES / DOWNLOAD_ELAPSED))"
+    fi
     progress "$DOWNLOAD_TO" 100 "$DOWNLOAD_LABEL" \
-      "$(format_bytes "$(file_size "$DOWNLOAD_DEST")") 下载完成" \
-      "$(file_size "$DOWNLOAD_DEST")" "$DOWNLOAD_TOTAL" "$DOWNLOAD_SPEED" \
-      "$(( $(date +%s) - DOWNLOAD_STARTED ))"
+      "$(format_bytes "$DOWNLOAD_BYTES") 下载完成" \
+      "$DOWNLOAD_BYTES" "$DOWNLOAD_BYTES" "$DOWNLOAD_SPEED" "$DOWNLOAD_ELAPSED"
   else
     DOWNLOAD_STATUS="$?"
+    if ! command -v curl >/dev/null 2>&1; then cat "$DOWNLOAD_HEADERS" >&2 || true; fi
     exit "$DOWNLOAD_STATUS"
   fi
 }
@@ -631,14 +654,10 @@ progress 60 '' '分析 Codex CLI 下载清单' '正在锁定版本和依赖关�
   PATH="$NODE_DIR/bin:$PATH" "$NODE_DIR/bin/npm" install --package-lock-only \
     --ignore-scripts --omit=dev --no-audit --no-fund --loglevel=error
 )
-PACKAGE_TOTAL="$(
-  "$NODE_DIR/bin/node" -e 'const lock = require(process.argv[1]); const packages = lock.packages || {}; console.log(Object.keys(packages).filter((path) => path.startsWith("node_modules/")).length)' \
-    "$TEMP_RELEASE/package-lock.json"
-)"
-case "$PACKAGE_TOTAL" in
-  ''|*[!0-9]*) PACKAGE_TOTAL=1 ;;
-esac
-progress 65 0 '下载并安装 Codex CLI __CODEX_VERSION__' "共 $PACKAGE_TOTAL 个组件"
+npm_component_count() {
+  find "$TEMP_RELEASE/node_modules" -type f -name package.json 2>/dev/null | wc -l | tr -d '[:space:]'
+}
+progress 65 '' '下载并安装 Codex CLI __CODEX_VERSION__' '正在安装锁定的依赖组件' '' '' '' 0
 NPM_LOG="$WORK/npm-install.log"
 NPM_STARTED="$(date +%s)"
 (
@@ -649,42 +668,27 @@ NPM_STARTED="$(date +%s)"
 NPM_PID="$!"
 NPM_LAST=
 while kill -0 "$NPM_PID" 2>/dev/null; do
-  NPM_COMPLETE="$(find "$TEMP_RELEASE/node_modules" -type f -name package.json 2>/dev/null | wc -l | tr -d '[:space:]')"
+  NPM_COMPLETE="$(npm_component_count)"
   case "$NPM_COMPLETE" in
     ''|*[!0-9]*) NPM_COMPLETE=0 ;;
   esac
-  if [ "$NPM_COMPLETE" -gt "$PACKAGE_TOTAL" ]; then PACKAGE_TOTAL="$NPM_COMPLETE"; fi
-  NPM_PERCENT="$((NPM_COMPLETE * 100 / PACKAGE_TOTAL))"
-  if [ "$NPM_PERCENT" -gt 99 ]; then NPM_PERCENT=99; fi
-  NPM_OVERALL="$((65 + NPM_PERCENT * 23 / 100))"
-  NPM_SIZE_KB="$(du -sk "$TEMP_RELEASE/node_modules" 2>/dev/null | awk 'NR == 1 { print $1 }')"
-  case "$NPM_SIZE_KB" in
-    ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
-  esac
-  NPM_DETAIL="已处理 $NPM_COMPLETE / $PACKAGE_TOTAL 个组件 · $(format_bytes "$((NPM_SIZE_KB * 1024))")"
   NPM_NOW="$(date +%s)"
   NPM_ELAPSED="$((NPM_NOW - NPM_STARTED))"
-  if [ "$NPM_ELAPSED" -lt 1 ]; then NPM_ELAPSED=1; fi
-  NPM_BYTES="$((NPM_SIZE_KB * 1024))"
-  NPM_SPEED="$((NPM_BYTES / NPM_ELAPSED))"
-  NPM_DETAIL="$NPM_DETAIL · 速度 $(format_bytes "$NPM_SPEED")/s · 已用时 ${NPM_ELAPSED}s"
-  if [ "$NPM_DETAIL" != "$NPM_LAST" ]; then
-    progress "$NPM_OVERALL" "$NPM_PERCENT" "下载并安装 Codex CLI __CODEX_VERSION__" "$NPM_DETAIL" \
-      "$NPM_BYTES" '' "$NPM_SPEED" "$NPM_ELAPSED"
-    NPM_LAST="$NPM_DETAIL"
+  NPM_DETAIL="已安装 $NPM_COMPLETE 个组件"
+  NPM_UPDATE="$NPM_DETAIL|$NPM_ELAPSED"
+  if [ "$NPM_UPDATE" != "$NPM_LAST" ]; then
+    progress 65 '' "下载并安装 Codex CLI __CODEX_VERSION__" "$NPM_DETAIL" \
+      '' '' '' "$NPM_ELAPSED"
+    NPM_LAST="$NPM_UPDATE"
   fi
   sleep 1
 done
 if wait "$NPM_PID"; then
   NPM_FINISHED_AT="$(date +%s)"
   NPM_ELAPSED="$((NPM_FINISHED_AT - NPM_STARTED))"
-  NPM_SIZE_KB="$(du -sk "$TEMP_RELEASE/node_modules" 2>/dev/null | awk 'NR == 1 { print $1 }')"
-  case "$NPM_SIZE_KB" in
-    ''|*[!0-9]*) NPM_SIZE_KB=0 ;;
-  esac
-  NPM_BYTES="$((NPM_SIZE_KB * 1024))"
-  progress 88 100 '下载并安装 Codex CLI __CODEX_VERSION__' "已完成 $PACKAGE_TOTAL 个组件 · 已用时 ${NPM_ELAPSED}s" \
-    "$NPM_BYTES" '' '' "$NPM_ELAPSED"
+  NPM_COMPLETE="$(npm_component_count)"
+  progress 88 '' '下载并安装 Codex CLI __CODEX_VERSION__' "已安装 $NPM_COMPLETE 个组件" \
+    '' '' '' "$NPM_ELAPSED"
 else
   NPM_STATUS="$?"
   cat "$NPM_LOG" >&2 || true

@@ -37,9 +37,11 @@ Future<_ShellResult> _runShell(
   String script, {
   String? home,
   List<String> arguments = const <String>['-s'],
+  Map<String, String> environmentOverrides = const <String, String>{},
 }) async {
   final environment = Map<String, String>.of(Platform.environment);
   if (home != null) environment['HOME'] = home;
+  environment.addAll(environmentOverrides);
   final process = await Process.start(
     'sh',
     arguments,
@@ -70,6 +72,13 @@ class _ShellResult {
   final String stderr;
   final int exitCode;
 }
+
+List<RemoteInstallProgress> _progressRecords(String output) =>
+    const LineSplitter()
+        .convert(output)
+        .map(parseRemoteInstallProgressLine)
+        .whereType<RemoteInstallProgress>()
+        .toList();
 
 void main() {
   group('remote probe', () {
@@ -260,6 +269,253 @@ __CODEX_REMOTE_DOWNLOADER=curl
         expect(legacy?.percent, 0);
         expect(legacy?.message, '准备环境');
         expect(parseRemoteInstallProgressLine('ordinary output'), isNull);
+      },
+    );
+
+    test(
+      'requires a positive total before displaying a download percentage',
+      () {
+        for (final total in <String>['', '0', '-1']) {
+          final progress = parseRemoteInstallProgressLine(
+            '::progress::68|14|下载依赖|进行中|1048576|$total|262144|4',
+          );
+          expect(progress?.downloadPercent, isNull, reason: 'total=$total');
+          expect(progress?.totalBytes, isNull, reason: 'total=$total');
+          expect(progress?.indeterminate, isTrue, reason: 'total=$total');
+        }
+        final known = parseRemoteInstallProgressLine(
+          '::progress::68|14|下载依赖|进行中|1048576|8388608|262144|4',
+        );
+        expect(known?.downloadPercent, 14);
+        expect(known?.totalBytes, 8388608);
+        expect(known?.indeterminate, isFalse);
+        final components = parseRemoteInstallProgressLine(
+          '::progress::65||安装依赖|已安装 1 个组件||||4',
+        );
+        expect(components?.downloadPercent, isNull);
+        expect(components?.downloadedBytes, isNull);
+        expect(components?.bytesPerSecond, isNull);
+        expect(components?.elapsedSeconds, 4);
+        expect(components?.indeterminate, isTrue);
+      },
+    );
+
+    test(
+      'partial responses use full Content-Range size or remain unknown',
+      () async {
+        final work = await Directory.systemTemp.createTemp(
+          'flutter-codex-download-range-',
+        );
+        try {
+          final script = RemoteBootstrap.installScript();
+          final helpers = script.substring(0, script.indexOf('\nROOT='));
+          final headers = '${work.path}/response.headers';
+          for (final (range, expected) in <(String?, String)>[
+            ('bytes 65536-131071/131072', '131072'),
+            (null, ''),
+            ('bytes 65536-131071/*', ''),
+            ('bytes 131071-65536/131072', ''),
+            ('bytes 65536-131071/65536', ''),
+            ('items 65536-131071/131072', ''),
+          ]) {
+            await _writeFile(headers, '''
+HTTP/1.1 200 OK
+Content-Length: 262144
+
+  HTTP/1.1 206 Partial Content
+  Content-Length: 65536
+${range == null ? '' : '  Content-Range: $range'}
+
+''');
+            final result = await _runShell(
+              '$helpers\ndownload_response_size ${shellQuote(headers)}\n',
+            );
+            expect(result.exitCode, 0, reason: result.stderr);
+            expect(result.stdout.trim(), expected, reason: 'range=$range');
+          }
+        } finally {
+          await work.delete(recursive: true);
+        }
+      },
+    );
+
+    for (final (knownSize, useWget) in <(bool, bool)>[
+      (true, false),
+      (false, false),
+      (true, true),
+      (false, true),
+    ]) {
+      test(
+        'reads GET total bytes and handles chunked redirects; known=$knownSize wget=$useWget',
+        () async {
+          final work = await Directory.systemTemp.createTemp(
+            'flutter-codex-download-progress-',
+          );
+          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          final payload = List<int>.filled(131072, 97);
+          var headRequests = 0;
+          server.listen((request) async {
+            if (request.method == 'HEAD') {
+              headRequests++;
+              request.response.statusCode = HttpStatus.methodNotAllowed;
+              await request.response.close();
+              return;
+            }
+            if (request.uri.path == '/redirect') {
+              request.response.statusCode = HttpStatus.found;
+              request.response.headers.set(HttpHeaders.locationHeader, '/file');
+              request.response.contentLength = 17;
+              request.response.write('redirect response');
+              await request.response.close();
+              return;
+            }
+            if (knownSize) request.response.contentLength = payload.length;
+            request.response.add(payload.sublist(0, 65536));
+            await request.response.flush();
+            await Future<void>.delayed(const Duration(milliseconds: 1800));
+            request.response.add(payload.sublist(65536));
+            await request.response.close();
+          });
+          try {
+            final environment = <String, String>{
+              'NO_PROXY': '127.0.0.1',
+              'no_proxy': '127.0.0.1',
+            };
+            if (useWget) {
+              final downloader = await Process.run('sh', <String>[
+                '-c',
+                'command -v wget',
+              ]);
+              if (downloader.exitCode != 0) {
+                markTestSkipped('备用下载器 wget 未安装');
+                return;
+              }
+              final bin = await Directory('${work.path}/bin').create();
+              for (final command in <String>[
+                'sh',
+                'wget',
+                'awk',
+                'date',
+                'wc',
+                'tr',
+                'sleep',
+              ]) {
+                final executable = await Process.run('sh', <String>[
+                  '-c',
+                  'command -v $command',
+                ]);
+                expect(executable.exitCode, 0, reason: command);
+                await Link(
+                  '${bin.path}/$command',
+                ).create('${executable.stdout}'.trim());
+              }
+              environment['PATH'] = bin.path;
+            }
+            final script = RemoteBootstrap.installScript();
+            final downloadHelpers = script.substring(
+              0,
+              script.indexOf('\nROOT='),
+            );
+            final endpoint =
+                'http://127.0.0.1:${server.port}/${knownSize ? 'file' : 'redirect'}';
+            final destination = '${work.path}/runtime.tar.gz';
+            final result = await _runShell(
+              '$downloadHelpers\ndownload_file ${shellQuote(endpoint)} ${shellQuote(destination)} 15 38 下载运行时\n',
+              environmentOverrides: environment,
+            );
+            expect(result.exitCode, 0, reason: result.stderr);
+            expect(headRequests, 0);
+            expect(await File(destination).readAsBytes(), payload);
+            final records = _progressRecords(result.stdout);
+            final active = records.where(
+              (record) =>
+                  record.percent < 38 && (record.downloadedBytes ?? 0) > 0,
+            );
+            expect(active, isNotEmpty, reason: result.stdout);
+            if (knownSize) {
+              expect(
+                active.every((record) => record.totalBytes == payload.length),
+                isTrue,
+              );
+              expect(
+                active.every((record) => record.downloadPercent != null),
+                isTrue,
+              );
+            } else {
+              expect(
+                active.every((record) => record.totalBytes == null),
+                isTrue,
+              );
+              expect(
+                active.every((record) => record.downloadPercent == null),
+                isTrue,
+              );
+              expect(active.every((record) => record.indeterminate), isTrue);
+            }
+            expect(records.last.percent, 38);
+            expect(records.last.downloadPercent, 100);
+            expect(records.last.downloadedBytes, payload.length);
+            expect(records.last.totalBytes, payload.length);
+          } finally {
+            await server.close(force: true);
+            await work.delete(recursive: true);
+          }
+        },
+      );
+    }
+
+    test(
+      'npm reports installed components without inventing transfer stats',
+      () async {
+        final work = await Directory.systemTemp.createTemp(
+          'flutter-codex-npm-progress-',
+        );
+        try {
+          final runtime = '${work.path}/runtime';
+          final release = '${work.path}/release';
+          await _writeFile('$runtime/bin/npm', '#!/bin/sh\nsleep 2\n');
+          final executable = await Process.run('chmod', <String>[
+            '700',
+            '$runtime/bin/npm',
+          ]);
+          expect(executable.exitCode, 0, reason: '${executable.stderr}');
+          await _writeFile(
+            '$release/node_modules/@openai/codex/package.json',
+            '{}',
+          );
+          await _writeFile(
+            '$release/node_modules/@openai/codex/binary',
+            'x' * 131072,
+          );
+          final script = RemoteBootstrap.installScript();
+          final helpers = script.substring(0, script.indexOf('\nROOT='));
+          final npmPhase = script.substring(
+            script.indexOf('\nnpm_component_count()'),
+            script.indexOf("\nprogress 90 '' '验证 Codex app-server'"),
+          );
+          final result = await _runShell('''
+$helpers
+WORK=${shellQuote(work.path)}
+NODE_DIR=${shellQuote(runtime)}
+TEMP_RELEASE=${shellQuote(release)}
+$npmPhase
+''');
+          expect(result.exitCode, 0, reason: result.stderr);
+          final records = _progressRecords(result.stdout);
+          expect(records.length, greaterThan(2));
+          expect(records.last.detail, contains('已安装 1 个组件'));
+          expect(records.last.percent, 88);
+          for (final record in records) {
+            expect(record.downloadPercent, isNull);
+            expect(record.downloadedBytes, isNull);
+            expect(record.totalBytes, isNull);
+            expect(record.bytesPerSecond, isNull);
+            expect(record.elapsedSeconds, isNotNull);
+            expect(record.indeterminate, isTrue);
+          }
+        } finally {
+          await work.delete(recursive: true);
+        }
       },
     );
   });
