@@ -58,6 +58,8 @@ Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它�
 `scripts/test-ci-android.sh` 会隔离模拟无预装 SDK、旧命令行工具目录、损坏/缺失包、许可证和
 并发缓存；本地工作流测试由 `scripts/test-workflow.sh` 一并调用。Gitee 预装目录只读时，
 通过实际写入探测自动切换到独立缓存；后续 Flutter/Gradle 使用回传的可写 SDK 路径。
+SDK 回归使用构建已有的 JDK 17 生成保留 Unix 可执行权限的测试 ZIP，文本断言使用 grep，
+无需额外安装 Python 或 ripgrep；脚本入口明确检查依赖，300 秒阶段上限保持不变。
 有挂载权限的 Linux 会额外自动执行真实只读挂载测试，也可显式运行：
 
 ```bash

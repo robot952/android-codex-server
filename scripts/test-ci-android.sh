@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for prerequisite in java bash curl unzip sha256sum flock timeout grep; do
+    if ! command -v "$prerequisite" >/dev/null 2>&1; then
+        echo "CI Android SDK tests require $prerequisite" >&2
+        exit 127
+    fi
+done
 mkdir -p "$ROOT_DIR/.workflow-cache"
 fixture="$(mktemp -d "$ROOT_DIR/.workflow-cache/test-ci-android.XXXXXX")"
 mounts=()
@@ -56,15 +62,31 @@ done
 echo 'packages installed'
 MANAGER
 chmod +x "$fixture/tools/cmdline-tools/bin/sdkmanager"
-python3 - "$fixture" <<'ZIP'
-import pathlib
-import sys
-import zipfile
-fixture = pathlib.Path(sys.argv[1])
-with zipfile.ZipFile(fixture / 'tools.zip', 'w') as archive:
-    for path in sorted((fixture / 'tools').rglob('*')):
-        archive.write(path, path.relative_to(fixture / 'tools'))
-ZIP
+# Use the build's JDK, retaining executable permissions for sdkmanager after unzip.
+cat > "$fixture/AndroidToolsArchive.java" <<'JAVA'
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+
+class AndroidToolsArchive {
+    public static void main(String[] args) throws Exception {
+        Path source = Path.of(args[0]);
+        try (var archive = FileSystems.newFileSystem(Path.of(args[1]),
+                Map.of("create", "true", "enablePosixFileAttributes", "true"));
+             var paths = Files.walk(source)) {
+            for (Path path : paths.sorted().toList()) {
+                if (path.equals(source)) continue;
+                Path target = archive.getPath("/" + source.relativize(path));
+                if (Files.isDirectory(path)) Files.createDirectories(target);
+                else Files.copy(path, target);
+                Files.setPosixFilePermissions(target, Files.getPosixFilePermissions(path));
+            }
+        }
+    }
+}
+JAVA
+java --source 17 "$fixture/AndroidToolsArchive.java" "$fixture/tools" "$fixture/tools.zip"
 export CODEX_ANDROID_TOOLS_URL="file://$fixture/tools.zip"
 export CODEX_ANDROID_TOOLS_SHA256="$(sha256sum "$fixture/tools.zip" | awk '{print $1}')"
 unset CODEX_ANDROID_REPOSITORY_URL
@@ -81,7 +103,7 @@ inode="$(stat -c %i "$sdk")"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(stat -c %i "$sdk")" == "$inode" && -f "$sdk/sentinel" ]]
 [[ "$(wc -l < "$sdk/calls")" == 2 ]]
-rg -Fxq 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
+grep -Fxq 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
 
 # A complete cached SDK needs neither archive access nor network/package installation.
 [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$sdk")" == "$sdk" ]]
@@ -138,7 +160,7 @@ mkdir -p "$license"
 touch "$license/fail-license"
 if prepare "$license" >"$fixture/out"; then echo 'License failure swallowed' >&2; exit 1; fi
 [[ ! -s "$fixture/out" ]]
-rg -q 'license preparation failed' "$fixture/last.log"
+grep -q 'license preparation failed' "$fixture/last.log"
 
 # Nonzero install exits retry a bounded three times, then fail; silent omissions fail too.
 failed="$fixture/failed"
@@ -150,7 +172,7 @@ silent="$fixture/silent"
 mkdir -p "$silent"
 touch "$silent/omit-packages"
 if prepare "$silent" >"$fixture/out"; then echo 'Incomplete SDK accepted' >&2; exit 1; fi
-rg -q 'package is incomplete' "$fixture/last.log"
+grep -q 'package is incomplete' "$fixture/last.log"
 
 # Concurrent jobs share a lock and do not install into the same cache simultaneously.
 concurrent="$fixture/concurrent"
@@ -194,7 +216,7 @@ chmod +x "$entry/scripts/publish-gitee-release.sh" "$entry/flutter/bin/flutter" 
 WORKSPACE="$entry" HOME="$entry/home" GRADLE_USER_HOME="$entry/gradle-cache" \
     EXPECTED_SDK="$sdk" ANDROID_HOME="$sdk" ANDROID_SDK_ROOT= \
     bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
-rg -q 'entry environment verified' "$fixture/entry.log"
+grep -q 'entry environment verified' "$fixture/entry.log"
 
 # A path that cannot be a directory must also fall back, without leaking stdout.
 not_directory="$fixture/not-a-directory"
@@ -219,7 +241,7 @@ if [[ "${1:-}" == --read-only-mounts ]]; then
     fi
     fallback="$fixture/writable-cache"
     [[ "$(prepare "$readonly_sdk" "$fallback")" == "$fallback" ]]
-    rg -Fq "using cache: $fallback" "$fixture/last.log"
+    grep -Fq "using cache: $fallback" "$fixture/last.log"
     [[ -x "$fallback/build-tools/36.0.0/apksigner" ]]
     # Subsequent jobs must reuse the writable cache even if env/PATH still point at the mount.
     [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$readonly_sdk" "$fallback")" == "$fallback" ]]
@@ -234,7 +256,7 @@ if [[ "${1:-}" == --read-only-mounts ]]; then
         echo 'Read-only fallback accepted' >&2; exit 1
     fi
     [[ ! -s "$fixture/out" ]]
-    rg -q 'Android SDK cache is not writable' "$fixture/last.log"
+    grep -q 'Android SDK cache is not writable' "$fixture/last.log"
     # Gitee entry must pass the FALLBACK SDK to the publisher/Gradle, not inherited env.
     mkdir -p "$entry/home/.cache/codex"
     cp -a "$fallback" "$entry/home/.cache/codex/android-sdk"
@@ -242,7 +264,7 @@ if [[ "${1:-}" == --read-only-mounts ]]; then
         GRADLE_USER_HOME="$entry/gradle-cache" \
         ANDROID_HOME="$readonly_sdk" ANDROID_SDK_ROOT="$readonly_sdk" \
         bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
-    rg -q 'entry environment verified' "$fixture/entry.log"
+    grep -q 'entry environment verified' "$fixture/entry.log"
     [[ "$(find "$readonly_sdk" -type f -exec sha256sum {} + | sort)" == "$before" ]]
     [[ ! -e "$readonly_sdk/.prepare.lock" ]]
     echo 'CI Android read-only mount tests passed (cold/warm cache, env/PATH, fallback failure, entry, unchanged SDK)'

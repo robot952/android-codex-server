@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.160+292，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.161+293，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1131,6 +1131,9 @@ SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK �
 将 SDK 的 `cmake/3.22.1/bin` 加入 PATH，避免直到 native 编译才发现缺少 Ninja。
 `test-ci-android.sh --read-only-mounts` 在独立 mount namespace 中使用真实只读挂载，验证冷/热缓存、
 环境变量和 PATH 探测、只读缓存报错、下游环境传递与原 SDK 内容不变；工作流自测在有挂载权限时自动执行。
+SDK 回归使用构建已有的 JDK 17 ZIP 文件系统生成测试工具包，保留 sdkmanager 的 Unix 可执行权限，
+文本断言使用基础 grep；不要求 Gitee 容器另外预装 Python 或 ripgrep。依赖缺失在脚本入口明确报错，
+回归仍受流水线 300 秒阶段上限约束。
 
 Gitee Android 容器不保证预装 Node。`prepare-ci-node.sh` 在 Flutter 测试前准备 Node 并导出其 bin 目录，
 已有 Node 18+ 可复用，否则下载固定 Node 22.17.0，核对官方 SHA-256 后在独立缓存内启用；

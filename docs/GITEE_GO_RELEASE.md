@@ -86,6 +86,9 @@ Gradle 的 HTTP 连接与读取各限 30 秒；Flutter 内部重试不重置 APK
 Android SDK 准备明确包含 `platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、
 `ndk;28.2.13676358` 和 `cmake;3.22.1`。应用固定 CMake 3.22.1，准备阶段实际执行 CMake/Ninja
 检查，将 SDK CMake 的 bin 目录加入 PATH；缺 Ninja 或 CMake 版本不匹配时补齐包后再次校验。
+SDK 回归的测试 ZIP 由构建已有的 JDK 17 生成，保留 sdkmanager 的 Unix 可执行权限；
+文本断言使用基础 grep，不依赖容器预装 Python 或 ripgrep。入口缺依赖明确报错，
+原有 SDK 回归项目与 300 秒超时均保留。
 
 Gitee Android 镜像可能没有 Node。`prepare-ci-node.sh` 复用已有 Node 18+，否则准备固定 22.17.0，
 下载后先核对官方 SHA-256，再启用 `~/.cache/codex/node` 中的独立缓存，不修改系统工具。
