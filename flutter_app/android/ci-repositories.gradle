@@ -1,0 +1,17 @@
+// Applied only to this Android build, never through an init script: Flutter's
+// included Gradle build must retain FAIL_ON_PROJECT_REPOS.
+if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
+    allprojects { target ->
+        // Flutter plugins can declare their own legacy buildscript classpaths.
+        // Seed mirrors before those plugins append google()/mavenCentral().
+        target.buildscript.repositories {
+            maven { url = uri('https://maven.aliyun.com/repository/google') }
+            maven { url = uri('https://maven.aliyun.com/repository/central') }
+            maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
+        }
+        target.repositories {
+            maven { url = uri('https://maven.aliyun.com/repository/google') }
+            maven { url = uri('https://maven.aliyun.com/repository/central') }
+        }
+    }
+}

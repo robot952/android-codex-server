@@ -85,7 +85,9 @@ cat > "$entry/scripts/publish-gitee-release.sh" <<'SH'
 set -euo pipefail
 [[ "$CODEX_RELEASE_BRANCH" == flutter-refactor ]]
 [[ "$CODEX_CI_PUB" == 1 && "$CODEX_BUILD_ONLINE" == 1 ]]
-[[ "$GRADLE_OPTS" == '-Dfixture=keep -Dorg.gradle.daemon=false' ]]
+[[ "$CODEX_CI_MAVEN_MIRRORS" == 1 && "$CODEX_CI_APK_BUILD_TIMEOUT" == 1200 ]]
+[[ "$GRADLE_OPTS" == '-Dfixture=keep -Dorg.gradle.daemon=false -Dorg.gradle.internal.http.connectionTimeout=30000 -Dorg.gradle.internal.http.socketTimeout=30000' ]]
+[[ "$PATH" == "$ANDROID_HOME/cmake/3.22.1/bin:$ANDROID_HOME/platform-tools:"* ]]
 [[ "$PUB_CACHE" == */custom-pub ]]
 [[ "$GRADLE_USER_HOME" == "$WORKSPACE/.workflow-cache/gradle-user-homes/"* ]]
 [[ "$(command -v node)" == "$WORKSPACE/node/bin/node" ]]

@@ -28,6 +28,11 @@ android {
     namespace = "top.asdb.agent"
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
+    externalNativeBuild {
+        cmake {
+            version = "3.22.1"
+        }
+    }
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true

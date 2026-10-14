@@ -1,3 +1,7 @@
+if (System.getenv("CODEX_CI_MAVEN_MIRRORS") == "1") {
+    apply(from = "ci-repositories.gradle")
+}
+
 allprojects {
     repositories {
         google()

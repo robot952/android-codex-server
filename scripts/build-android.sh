@@ -72,6 +72,7 @@ android_input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     keystore \
     scripts/android-sdk.sh \
     scripts/prepare-ci-pub.sh \
+    scripts/run-ci-stage.sh \
     scripts/build-android.sh \
     scripts/workflow-lib.sh)"
 java_identity="$(java -version 2>&1 | head -n 1)"
@@ -225,6 +226,18 @@ resolve_flutter_dependencies() {
     fi
 }
 
+run_apk_build() {
+    local label="$1"
+    shift
+    if [[ "${CODEX_CI_PUB:-0}" == 1 ]]; then
+        # Bound Flutter's complete invocation, including its internal Gradle
+        # download retry. The supervisor kills the entire owned process group.
+        bash "$ROOT_DIR/scripts/run-ci-stage.sh" "$label" "${CODEX_CI_APK_BUILD_TIMEOUT:-1200}" "$@"
+    else
+        "$@"
+    fi
+}
+
 cd "$FLUTTER_DIR"
 printf 'Flutter: %s\n' "$flutter_identity"
 printf 'Gradle cache: %s\n' "$GRADLE_USER_HOME"
@@ -241,14 +254,14 @@ else
     echo "Reusing analyze/test result from Android $WORKFLOW_ANDROID_PLAN_VALIDATION_SOURCE gate"
 fi
 if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == 1 ]]; then
-    run_timed_build_step "Debug APK build" "$FLUTTER_BIN" build apk --debug --no-pub
+    run_timed_build_step "Debug APK build" run_apk_build "Debug APK build" "$FLUTTER_BIN" build apk --debug --no-pub
 fi
 if [[ "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == 1 ]]; then
     # Flutter 3.44 only regenerates mode-specific native plugin registrants
     # with --pub. Reusing the Debug registrant would retain integration_test,
     # while Gradle deliberately excludes that dev-only plugin from Release.
     # The preceding dependency stage leaves pub's up-to-date cache reusable.
-    run_timed_build_step "Release APK build" "$FLUTTER_BIN" build apk --release --pub
+    run_timed_build_step "Release APK build" run_apk_build "Release APK build" "$FLUTTER_BIN" build apk --release --pub
 fi
 
 end_ns="$(date +%s%N)"

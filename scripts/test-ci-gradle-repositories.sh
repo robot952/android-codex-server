@@ -34,7 +34,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 project="$fixture/project"
 old_home="$fixture/old-home"
-mkdir -p "$project/gradle/wrapper" "$project/build-logic/src/main/java/fixture" "$old_home"
+mkdir -p "$project/gradle/wrapper" "$project/build-logic/src/main/java/fixture" "$project/fixture-plugin" "$old_home"
 cp "$ROOT_DIR/flutter_app/android/gradle/wrapper/gradle-wrapper.properties" \
     "$project/gradle/wrapper/gradle-wrapper.properties"
 ln -s -- "$wrapper_cache" "$old_home/wrapper"
@@ -135,16 +135,37 @@ printf 'throw new GradleException("%s")\n' "$negative_marker" > "$old_home/init.
 init_sha="$(sha256sum "$old_home/init.gradle" | cut -d ' ' -f 1)"
 export CODEX_FIXTURE_INCLUDED_MARKER="$fixture/included-build.marker"
 export CODEX_FIXTURE_PLUGIN_MARKER="$fixture/settings-plugin.marker"
+export CODEX_FIXTURE_REPOSITORY_MARKER="$fixture/project-repositories.marker"
+export CODEX_FIXTURE_REPOSITORY_POLICY="$ROOT_DIR/flutter_app/android/ci-repositories.gradle"
 
 cat > "$project/settings.gradle" <<'GROOVY'
 pluginManagement { includeBuild('build-logic') }
 plugins { id 'codex.fixture.settings-loader' }
 rootProject.name = 'gradle-repository-isolation-fixture'
+include ':fixture-plugin'
 GROOVY
 cat > "$project/build.gradle" <<'GROOVY'
+apply from: System.getenv('CODEX_FIXTURE_REPOSITORY_POLICY')
 tasks.named('help') {
     doLast { println 'CODEX_FIXTURE_ISOLATED_GRADLE_HELP_OK' }
 }
+GROOVY
+cat > "$project/fixture-plugin/build.gradle" <<'GROOVY'
+// Model a Flutter plugin's legacy classpath repositories. Mirrors must already
+// be present at buildscript evaluation time, before dependency resolution.
+buildscript {
+    repositories { google(); mavenCentral() }
+    def expected = ['google', 'central', 'gradle-plugin'].collect {
+        'https://maven.aliyun.com/repository/' + it
+    }
+    assert repositories.take(3).collect { it.url.toString() } == expected
+}
+repositories { google(); mavenCentral() }
+assert repositories.take(2).collect { it.url.toString() } == [
+    'https://maven.aliyun.com/repository/google',
+    'https://maven.aliyun.com/repository/central'
+]
+new File(System.getenv('CODEX_FIXTURE_REPOSITORY_MARKER')).text = 'mirrors-before-official\n'
 GROOVY
 cat > "$project/build-logic/settings.gradle" <<'GROOVY'
 import org.gradle.api.initialization.resolve.RepositoriesMode
@@ -196,7 +217,7 @@ JAVA
 
 run_gradle() {
     local home="$1" log="$2"
-    GRADLE_USER_HOME="$home" CODEX_FIXTURE_EXPECTED_HOME="$home" \
+    GRADLE_USER_HOME="$home" CODEX_FIXTURE_EXPECTED_HOME="$home" CODEX_CI_MAVEN_MIRRORS=1 \
         bash "$private_gradle" --project-dir "$project" --offline --no-daemon --console=plain \
         --max-workers=2 '-Dorg.gradle.jvmargs=-Xmx768m -Dfile.encoding=UTF-8' help > "$log" 2>&1
 }
@@ -204,7 +225,8 @@ status=0
 run_gradle "$old_home" "$fixture/old-home.log" || status=$?
 [[ "$status" == 1 ]] || fail 'the inherited-init negative control did not fail as expected'
 grep -Fq "$negative_marker" "$fixture/old-home.log" || fail 'the negative control missed its synthetic init marker'
-[[ ! -e "$CODEX_FIXTURE_INCLUDED_MARKER" && ! -e "$CODEX_FIXTURE_PLUGIN_MARKER" ]] || fail 'negative control evaluated the build before its init failure'
+[[ ! -e "$CODEX_FIXTURE_INCLUDED_MARKER" && ! -e "$CODEX_FIXTURE_PLUGIN_MARKER" &&
+   ! -e "$CODEX_FIXTURE_REPOSITORY_MARKER" ]] || fail 'negative control evaluated the build before its init failure'
 
 isolated_home="$(bash "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" "$old_home" "$fixture/isolated-homes")"
 for name in init.gradle init.gradle.kts init.d gradle.properties; do
@@ -213,7 +235,7 @@ done
 check_wrapper >/dev/null
 if ! run_gradle "$isolated_home" "$fixture/isolated-home.log"; then
     # Inherited JVM options can be printed by Java itself; never dump raw logs.
-    fail 'isolated offline Gradle failed to resolve the strict included-build Settings plugin'
+    fail 'isolated offline Gradle failed to load the strict included build or project repository policy'
 fi
 grep -Fq 'CODEX_FIXTURE_ISOLATED_GRADLE_HELP_OK' "$fixture/isolated-home.log" || fail 'the isolated help task did not execute'
 if grep -Fq "$negative_marker" "$fixture/isolated-home.log"; then
@@ -221,5 +243,6 @@ if grep -Fq "$negative_marker" "$fixture/isolated-home.log"; then
 fi
 [[ "$(<"$CODEX_FIXTURE_INCLUDED_MARKER")" == FAIL_ON_PROJECT_REPOS ]] || fail 'strict included build was not evaluated'
 [[ "$(<"$CODEX_FIXTURE_PLUGIN_MARKER")" == settings-plugin-applied ]] || fail 'local Settings plugin was not applied'
+[[ "$(<"$CODEX_FIXTURE_REPOSITORY_MARKER")" == mirrors-before-official ]] || fail 'plugin classpath and dependency mirrors were not applied before official repositories'
 [[ "$(sha256sum "$old_home/init.gradle" | cut -d ' ' -f 1)" == "$init_sha" ]] || fail 'the synthetic source init script changed'
-echo 'Real offline Gradle repository isolation passed (verified private distribution, inherited-init negative control, strict included build, Settings plugin, isolated user home)'
+echo 'Real offline Gradle repository isolation passed (verified private distribution, inherited-init negative control, strict included build, Settings plugin, isolated user home, plugin classpath mirrors)'

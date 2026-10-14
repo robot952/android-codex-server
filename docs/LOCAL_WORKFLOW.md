@@ -22,8 +22,10 @@ CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准�
 不删除；隔离目录在工作区忽略的 `.workflow-cache/gradle-user-homes/` 下，不作为全局配置缓存。
 发行包准备后运行 `test-ci-gradle-repositories.sh`（上限 240 秒），使用真实 Gradle、离线临时
 工程验证受污染目录和隔离后的严格 included-build 插件加载，失败时立即停止后续测试及出包。
-不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过向所有 project 强塞镜像仓库解决网络问题。
-Gitee 必须设置明确超时：环境与 Gradle 隔离回归上限 300/600 秒，发布总任务上限 5400 秒；
+不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过全局 init 向 included build 注入项目仓库。
+CI 通过 `CODEX_CI_MAVEN_MIRRORS=1` 仅为应用 Android 工程的插件解析、子项目 buildscript 和依赖
+启用阿里云镜像优先、官方源兜底；离线仓库预检覆盖插件 classpath 仓库顺序和 included build 隔离。
+Gitee 必须设置明确超时：环境、Android SDK 与 Gradle 隔离回归上限 300/300/600 秒，发布总任务上限 5400 秒；
 环境准备总预算 3600 秒，各 SDK/Gradle/引擎阶段均取自身上限与剩余预算的较小值。
 其中 Node 准备上限 900 秒，复用已有 Node 18+，否则固定下载并校验 Node 22.17.0，缓存于
 `~/.cache/codex/node`。其 bin 路径必须导出给 Flutter 测试；Gitee Android 镜像不保证带 Node，
@@ -31,6 +33,8 @@ Gitee 必须设置明确超时：环境与 Gradle 隔离回归上限 300/600 秒
 统一由 `run-ci-stage.sh` 执行，超时 TERM 后最多 30 秒 KILL，保留阶段名和非零退出码，不无限重试。
 嵌套阶段使用同一受校验的工作进程组；sdkmanager/Pub 的阶段超时终止任务，不继续叠加重试，
 临时网络响应错误仍可有限回退。CI 显式禁用 Gradle 常驻 daemon。
+Gradle HTTP 连接/读取各限 30 秒；Debug 和 Release 的整次 Flutter 编译各限 1200 秒，
+包含 Flutter 内部 Gradle 重试，重试不重置预算。到期停止整组编译进程并报告失败。
 强制 KILL 无法执行退出清理；失败重跑必须使用干净 checkout，不能直接发布残留临时锁文件映射的工作区。
 下载连接上限 20 秒、单次传输最多 300 秒，准备锁与 Wrapper 锁分别最多等待 300/120 秒。
 对应离线 fixture 为 `scripts/test-ci-environment.sh` 与 `scripts/test-ci-gradle.sh`，正式发布前在 Gitee 执行。
@@ -48,7 +52,9 @@ Gitee 依赖阶段启用 `CODEX_CI_PUB=1`：`prepare-ci-pub.sh` 对国内默认 
 并纳入 `scripts/test-workflow.sh`。
 Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它先探测现有 `sdkmanager`，
 缺少时从 `googledownloads.cn` 下载并校验固定 Android Command-line Tools 12.0，再用国内仓库
-安装所需 platform、Build Tools 和 NDK；完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
+安装所需 platform、Build Tools、NDK 和 `cmake;3.22.1`；完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
+应用固定 CMake 3.22.1，准备阶段检查 CMake 与随包 Ninja 可执行，并将其 bin 目录放到 PATH 首位。
+工具缺失或 CMake 版本错误必须在编译前修复，不能仅检查 SDK 目录存在。
 `scripts/test-ci-android.sh` 会隔离模拟无预装 SDK、旧命令行工具目录、损坏/缺失包、许可证和
 并发缓存；本地工作流测试由 `scripts/test-workflow.sh` 一并调用。Gitee 预装目录只读时，
 通过实际写入探测自动切换到独立缓存；后续 Flutter/Gradle 使用回传的可写 SDK 路径。

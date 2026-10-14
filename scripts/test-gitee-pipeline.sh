@@ -28,7 +28,7 @@ printf '%s %s\n' "$1" "$2" >> "$FIXTURE_STAGES"
 shift 2
 exec "$@"
 SH
-for stage_script in test-ci-environment.sh test-ci-gradle.sh publish-tag-release.sh; do
+for stage_script in test-ci-environment.sh test-ci-android.sh test-ci-gradle.sh publish-tag-release.sh; do
     cat > "$test_root/repo/scripts/$stage_script" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -54,19 +54,26 @@ assert_pipeline() {
     [[ "$(sed -n '1p' "$FIXTURE_STAGES")" == 'bootstrap-regression 300' ]]
     [[ "$(sed -n '1p' "$FIXTURE_COMMANDS")" == test-ci-environment.sh ]]
     if (( expected_count >= 2 )); then
-        [[ "$(sed -n '2p' "$FIXTURE_STAGES")" == 'gradle-regression 600' ]]
-        [[ "$(sed -n '2p' "$FIXTURE_COMMANDS")" == test-ci-gradle.sh ]]
+        [[ "$(sed -n '2p' "$FIXTURE_STAGES")" == 'android-sdk-regression 300' ]]
+        [[ "$(sed -n '2p' "$FIXTURE_COMMANDS")" == test-ci-android.sh ]]
     fi
-    if (( expected_count == 3 )); then
-        [[ "$(sed -n '3p' "$FIXTURE_STAGES")" == 'gitee-release 5400' ]]
-        [[ "$(sed -n '3p' "$FIXTURE_COMMANDS")" == publish-tag-release.sh ]]
+    if (( expected_count >= 3 )); then
+        [[ "$(sed -n '3p' "$FIXTURE_STAGES")" == 'gradle-regression 600' ]]
+        [[ "$(sed -n '3p' "$FIXTURE_COMMANDS")" == test-ci-gradle.sh ]]
+    fi
+    if (( expected_count == 4 )); then
+        [[ "$(sed -n '4p' "$FIXTURE_STAGES")" == 'gitee-release 5400' ]]
+        [[ "$(sed -n '4p' "$FIXTURE_COMMANDS")" == publish-tag-release.sh ]]
     fi
 }
 
-assert_pipeline none 0 3
+assert_pipeline none 0 4
 assert_pipeline test-ci-environment.sh 42 1
-assert_pipeline test-ci-gradle.sh 44 2
-assert_pipeline test-ci-gradle.sh 124 2
-assert_pipeline test-ci-gradle.sh 137 2
-assert_pipeline publish-tag-release.sh 45 3
+assert_pipeline test-ci-android.sh 42 2
+assert_pipeline test-ci-android.sh 124 2
+assert_pipeline test-ci-android.sh 137 2
+assert_pipeline test-ci-gradle.sh 44 3
+assert_pipeline test-ci-gradle.sh 124 3
+assert_pipeline test-ci-gradle.sh 137 3
+assert_pipeline publish-tag-release.sh 45 4
 echo 'Gitee pipeline fail-fast and stage deadline regressions passed'

@@ -126,7 +126,7 @@ if [[ -z "$manager" ]] || ! manager_deadline 30 "$manager" --sdk_root="$sdk_root
 fi
 echo "Using sdkmanager: $manager" >&2
 
-packages=("platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358")
+packages=("platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1")
 package_ready() {
     case "$1" in
         platform-tools) [[ -x "$sdk_root/platform-tools/adb" ]] ;;
@@ -134,6 +134,11 @@ package_ready() {
         'build-tools;36.0.0') [[ -x "$sdk_root/build-tools/36.0.0/aapt" &&
             -x "$sdk_root/build-tools/36.0.0/apksigner" && -x "$sdk_root/build-tools/36.0.0/zipalign" ]] ;;
         'ndk;28.2.13676358') [[ -x "$sdk_root/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]] ;;
+        'cmake;3.22.1')
+            [[ -x "$sdk_root/cmake/3.22.1/bin/cmake" && -x "$sdk_root/cmake/3.22.1/bin/ninja" ]] &&
+                timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/cmake" --version 2>/dev/null |
+                    grep -Fxq 'cmake version 3.22.1' &&
+                timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 ;;
     esac
 }
 missing=()
@@ -168,4 +173,5 @@ for package in "${packages[@]}"; do
 done
 [[ -s "$sdk_root/licenses/android-sdk-license" ]] || { echo "Android SDK license is missing" >&2; exit 1; }
 echo "Android SDK ready: $sdk_root" >&2
+echo "Native build tools ready: CMake 3.22.1, bundled Ninja" >&2
 printf '%s\n' "$sdk_root"

@@ -42,6 +42,9 @@ Gitee 插件中的 `gradleVersion` 不能替代项目 Wrapper 所需的发行包
 冲突；不能直接修改 Flutter SDK 或改为宽松策略掩盖问题。
 发行包准备后先执行 `test-ci-gradle-repositories.sh`：真实离线 Gradle 负例确认合成 init 生效，
 正例确认隔离后严格 included-build 插件能加载，且 Gradle 实际使用隔离目录。
+CI 用 `CODEX_CI_MAVEN_MIRRORS=1` 在应用 Android 工程内启用阿里云 Maven 镜像优先、官方源兜底。
+策略覆盖 settings 插件解析，以及 Flutter 插件子项目的 legacy buildscript classpath 和普通依赖，
+不通过全局 init 注入 Flutter SDK included build。离线预检同时验证镜像顺序与严格仓库策略兼容。
 预检还检查被复用发行版的 init 脚本；若发行版自身受污染则停止，不修改共享目录。
 `test-gitee-pipeline.sh` 覆盖阶段顺序、非零退出码透传及失败后不再运行发布，由环境回归一并执行。
 
@@ -57,8 +60,11 @@ Gitee 插件中的 `gradleVersion` 不能替代项目 Wrapper 所需的发行包
 | 阶段 | 上限 | 范围 |
 | --- | --- | --- |
 | `test-ci-environment.sh` | 300 秒（5 分钟） | 环境准备脚本回归 |
+| `test-ci-android.sh` | 300 秒（5 分钟） | SDK 缓存、缺失 CMake/Ninja、版本检查与环境传递回归 |
 | `test-ci-gradle.sh` | 600 秒（10 分钟） | Gradle 缓存与下载脚本回归 |
 | `publish-tag-release.sh` | 5400 秒（90 分钟） | 包含环境准备、Flutter 门禁、编译、验签与构件归档的整次发布 |
+| Debug APK 编译 | 1200 秒（20 分钟） | 整次 Flutter 调用及内部 Gradle 重试，包含在发布总预算内 |
+| Release APK 编译 | 1200 秒（20 分钟） | 整次 Flutter 调用及内部 Gradle 重试，包含在发布总预算内 |
 
 共享 `prepare_ci_environment` 另设 **3600 秒（60 分钟）的总准备预算**，
 下列各阶段实际可用时间均取“本阶段上限”和“总准备预算剩余时间”的较小值：
@@ -75,6 +81,11 @@ Gitee 插件中的 `gradleVersion` 不能替代项目 Wrapper 所需的发行包
 
 这些时间不能相加理解为更长的准备窗口；阶段切换、镜像回退和重试都不重置总预算。
 下载重试次数与超时均有界，超时后需依据日志修复或重新触发，不能在后台留下持续下载或编译的子进程。
+Gradle 的 HTTP 连接与读取各限 30 秒；Flutter 内部重试不重置 APK 编译的 20 分钟预算。
+
+Android SDK 准备明确包含 `platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、
+`ndk;28.2.13676358` 和 `cmake;3.22.1`。应用固定 CMake 3.22.1，准备阶段实际执行 CMake/Ninja
+检查，将 SDK CMake 的 bin 目录加入 PATH；缺 Ninja 或 CMake 版本不匹配时补齐包后再次校验。
 
 Gitee Android 镜像可能没有 Node。`prepare-ci-node.sh` 复用已有 Node 18+，否则准备固定 22.17.0，
 下载后先核对官方 SHA-256，再启用 `~/.cache/codex/node` 中的独立缓存，不修改系统工具。

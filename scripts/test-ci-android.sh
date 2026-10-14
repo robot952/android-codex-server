@@ -40,11 +40,16 @@ for package in "$@"; do
         'platforms;android-36') paths=(platforms/android-36/android.jar) ;;
         'build-tools;36.0.0') paths=(build-tools/36.0.0/{aapt,apksigner,zipalign}) ;;
         'ndk;28.2.13676358') paths=(ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang) ;;
+        'cmake;3.22.1') paths=(cmake/3.22.1/bin/{cmake,ninja}) ;;
         *) exit 9 ;;
     esac
     for path in "${paths[@]}"; do
         mkdir -p "$root/$(dirname "$path")"
-        printf '#!/bin/sh\nexit 0\n' > "$root/$path"
+        case "$path" in
+            */bin/cmake) printf '#!/bin/sh\necho "cmake version 3.22.1"\n' > "$root/$path" ;;
+            */bin/ninja) printf '#!/bin/sh\necho "1.10.2"\n' > "$root/$path" ;;
+            *) printf '#!/bin/sh\nexit 0\n' > "$root/$path" ;;
+        esac
         chmod +x "$root/$path"
     done
 done
@@ -76,7 +81,7 @@ inode="$(stat -c %i "$sdk")"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(stat -c %i "$sdk")" == "$inode" && -f "$sdk/sentinel" ]]
 [[ "$(wc -l < "$sdk/calls")" == 2 ]]
-rg -Fxq 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358' "$sdk/calls"
+rg -Fxq 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
 
 # A complete cached SDK needs neither archive access nor network/package installation.
 [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$sdk")" == "$sdk" ]]
@@ -100,6 +105,16 @@ ln -s "$sdk/cmdline-tools/17.0/bin/sdkmanager" "$fixture/bin/sdkmanager"
 rm "$sdk/build-tools/36.0.0/apksigner"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(tail -n 1 "$sdk/calls")" == 'build-tools;36.0.0' ]]
+
+# A cached CMake without its bundled Ninja must be repaired before compilation.
+rm "$sdk/cmake/3.22.1/bin/ninja"
+[[ "$(prepare "$sdk")" == "$sdk" ]]
+[[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+[[ "$("$sdk/cmake/3.22.1/bin/ninja" --version)" == 1.10.2 ]]
+printf '#!/bin/sh\necho "cmake version 3.10.2"\n' > "$sdk/cmake/3.22.1/bin/cmake"
+[[ "$(prepare "$sdk")" == "$sdk" ]]
+[[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+[[ "$("$sdk/cmake/3.22.1/bin/cmake" --version)" == 'cmake version 3.22.1' ]]
 
 # Broken preinstalled launchers are replaced only after validating a fresh tools archive.
 broken="$fixture/broken"
@@ -164,6 +179,10 @@ test "$CODEX_RELEASE_BRANCH" = flutter-refactor
 test "$ANDROID_HOME" = "$EXPECTED_SDK"
 test "$ANDROID_SDK_ROOT" = "$EXPECTED_SDK"
 test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+test "$(command -v cmake)" = "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
+test "$(command -v ninja)" = "$ANDROID_HOME/cmake/3.22.1/bin/ninja"
+test "$(cmake --version)" = 'cmake version 3.22.1'
+test "$(ninja --version)" = 1.10.2
 test "$CODEX_FLUTTER_BIN" = "$WORKSPACE/flutter/bin/flutter"
 test "$(command -v node)" = "$WORKSPACE/node/bin/node"
 test -L "$GRADLE_USER_HOME/caches"

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.159+291，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.160+292，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1071,7 +1071,7 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 不并用手动重跑与标签推送。普通分支提交不触发当前发布流水线。
 
 Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh`，由同一个严格 Shell 顺序执行环境准备和
-Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
+Android SDK 和 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
 不能依赖平台多条 commands 自动停止。Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
 不依赖 Flutter 准备后才生成的、被忽略的 Android Wrapper JAR。
 仅检出提交而没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
@@ -1091,15 +1091,21 @@ CI 的 `prepare-ci-gradle-home.sh` 在 `.workflow-cache/gradle-user-homes/` 创�
 `GRADLE_USER_HOME`，只链接原目录的 `caches` 和 `wrapper`；不继承用户级 `init.gradle(.kts)`、
 `init.d` 或 `gradle.properties`，也不删除原配置、挂载根或依赖缓存。平台注入的项目仓库可能与
 Flutter included build 的 `FAIL_ON_PROJECT_REPOS` 冲突，不能通过修改 SDK 或放宽仓库策略绕过。
+CI 仅在应用 Android 工程启用 `CODEX_CI_MAVEN_MIRRORS=1`：settings 的插件仓库和
+`ci-repositories.gradle` 中应用及插件子项目的 buildscript/依赖仓库优先使用阿里云镜像，官方源兜底。
+该策略由 Android 根项目应用，不是全局 init，不进入 Flutter SDK included build。
+仓库预检同时验证插件的 legacy buildscript 在解析依赖前已取得镜像，并保持 included build 的严格策略。
 隔离阶段最多 60 秒；发行包准备后以 240 秒上限运行真实离线 Gradle 仓库预检，验证受污染的
 合成用户目录会失败、隔离目录能加载严格仓库策略的 included-build 插件，并核对实际用户目录。
 预检只使用临时工程和已校验的固定 Gradle 发行包；不改平台配置，也不向日志输出配置正文。
-CI 必须有超时：`run-ci-stage.sh` 为隔离回归设置 300/600 秒，发布总任务上限 5400 秒；
+CI 必须有超时：`run-ci-stage.sh` 为环境/Android SDK/Gradle 隔离回归分别设置 300/300/600 秒，发布总任务上限 5400 秒；
 共享环境准备预算 3600 秒，Node、Flutter SDK、Android SDK、Gradle 和引擎阶段分别最多 900/1200/1800/2400/600 秒，
 每阶段还受剩余总预算约束。超时先 TERM，最多再等 30 秒强制结束，退出 124/137 并标出阶段；
 中断必须清理当前任务子进程，不允许无限等待、无限重试或把超时当作成功。
 顶层监督器独立于工作进程组，嵌套阶段复用并校验同一 PGID；sdkmanager/Pub 的阶段超时直接中止任务，
 不会留下上一轮子进程继续重试。CI 显式禁用 Gradle 常驻 daemon，避免构建结束后保留无关守护进程。
+Gradle HTTP 连接和读取各限 30 秒；Debug 与 Release APK 编译分别最多 1200 秒，
+由外层监督整次 Flutter 调用，内部 Gradle 重试不会重新计算这 20 分钟预算。
 强制 KILL 后退出 trap 无法恢复临时 Pub 锁文件映射，失败重跑必须使用干净 checkout；发布入口仍拒绝脏工作区。
 Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行：国内默认 Pub 源最多
 尝试两次，遇到 HTTP 408/424/429/5xx、连接错误或超时后允许回退 `pub.dev`（同样最多两次），
@@ -1113,7 +1119,7 @@ Android 工具准备由 `prepare-ci-android.sh` 单独负责，不再把 Gitee A
 `sdkmanager` 当作前置条件。脚本会从 `ANDROID_HOME`/`ANDROID_SDK_ROOT`、PATH 中的 sdkmanager、
 常见 SDK 目录和缓存目录依次探测；缺少命令行工具时从 `googledownloads.cn` 下载固定的
 Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根目录、许可证和
-`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;28.2.13676358`
+`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;28.2.13676358`、`cmake;3.22.1`
 安装到选定的可写 SDK 目录，默认缓存为 `~/.cache/codex/android-sdk`。sdkmanager 的仓库地址通过固定工具实现提供的
 `SDK_TEST_BASE_URL` 指向国内下载端点；已有完整 SDK 直接复用，缺失包按三次有限重试补齐。
 缓存根目录、下载和安装均有锁，工具包、许可证、包内容和失败路径都有
@@ -1121,6 +1127,8 @@ Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根
 并发、下载失败、许可证失败和流水线入口环境传递。对 Gitee 导出的只读 SDK（如
 `/mnt/pipeline-tools/standard/android/sdk`），先实际创建临时文件验证可写性；失败后切换到独立
 SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK 不会被改写或重新挂载。
+应用显式固定 CMake 3.22.1，准备阶段执行 CMake/Ninja 版本检查，缺失或损坏时补齐对应包；
+将 SDK 的 `cmake/3.22.1/bin` 加入 PATH，避免直到 native 编译才发现缺少 Ninja。
 `test-ci-android.sh --read-only-mounts` 在独立 mount namespace 中使用真实只读挂载，验证冷/热缓存、
 环境变量和 PATH 探测、只读缓存报错、下游环境传递与原 SDK 内容不变；工作流自测在有挂载权限时自动执行。
 

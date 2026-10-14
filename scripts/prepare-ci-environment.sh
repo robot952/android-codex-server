@@ -14,8 +14,10 @@ prepare_ci_environment() {
     export PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
     export CODEX_BUILD_ONLINE=1
     export CODEX_CI_PUB=1
+    export CODEX_CI_MAVEN_MIRRORS=1
+    export CODEX_CI_APK_BUILD_TIMEOUT=1200
     export GRADLE_OPTS="${GRADLE_OPTS:--Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=4}"
-    export GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.daemon=false"
+    export GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.daemon=false -Dorg.gradle.internal.http.connectionTimeout=30000 -Dorg.gradle.internal.http.socketTimeout=30000"
     mkdir -p "$PUB_CACHE" || return $?
 
     # Gitee's global init scripts can add project repositories to Flutter's
@@ -42,7 +44,7 @@ prepare_ci_environment() {
         "$HOME/.cache/codex/android-sdk")" || return $?
     export ANDROID_HOME
     export ANDROID_SDK_ROOT="$ANDROID_HOME"
-    export PATH="$ANDROID_HOME/platform-tools:$PATH"
+    export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$ANDROID_HOME/platform-tools:$PATH"
     ci_prepare_stage 'Gradle distribution' 2400 env CODEX_CI_GRADLE_BOUNDED=1 bash "$root/scripts/prepare-ci-gradle.sh" \
         "$HOME/.cache/codex/gradle" "$root/flutter_app/android/gradle/wrapper/gradle-wrapper.properties" >&2 || return $?
     ci_prepare_stage 'Gradle repository preflight' 240 bash "$root/scripts/test-ci-gradle-repositories.sh" >&2 || return $?
