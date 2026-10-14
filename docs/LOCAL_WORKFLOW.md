@@ -8,6 +8,8 @@
 分支 `flutter-refactor` 上进行；修改前应确认自己没有误在 `main` 或其他人的分支上工作。
 
 Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只响应 `v` 前缀的 Git 标签；普通提交不会触发云端构建。
+`.workflow/` 只保留 `流水线-flutter-refactor-编译.yml`。历史 `流水线-202608021802.yml` 必须从对应
+分支删除，并在 Gitee Go 核对旧“构建”入口已移除，再发送新标签；不要同时手动重跑和推送标签。
 标签脚本会核对标签与 `pubspec.yaml` 版本一致，再执行发布构建，避免错误标签消耗构建额度。
 YAML 只执行 `bash scripts/run-gitee-release.sh`，通过严格 Shell 串行调用回归与发布，失败或超时
 不能继续下一阶段。干净检出缺少本地标签时，限时 60 秒获取 origin 的精确标签并校验其提交；不创建或移动标签。
@@ -17,6 +19,9 @@ Gradle 回归只依赖已跟踪的根 Wrapper JAR，不依赖本机生成的 Flu
 续传；校验后的 ZIP 预填原 URL 对应的 Wrapper 缓存，缓存挂载根目录与已解压发行版保持不变。
 Gitee 必须设置明确超时：环境与 Gradle 隔离回归上限 300/600 秒，发布总任务上限 5400 秒；
 环境准备总预算 3600 秒，各 SDK/Gradle/引擎阶段均取自身上限与剩余预算的较小值。
+其中 Node 准备上限 900 秒，复用已有 Node 18+，否则固定下载并校验 Node 22.17.0，缓存于
+`~/.cache/codex/node`。其 bin 路径必须导出给 Flutter 测试；Gitee Android 镜像不保证带 Node，
+缺失时不得跳过 Claude 安装集成测试或对空路径创建符号链接。
 统一由 `run-ci-stage.sh` 执行，超时 TERM 后最多 30 秒 KILL，保留阶段名和非零退出码，不无限重试。
 嵌套阶段使用同一受校验的工作进程组；sdkmanager/Pub 的阶段超时终止任务，不继续叠加重试，
 临时网络响应错误仍可有限回退。CI 显式禁用 Gradle 常驻 daemon。

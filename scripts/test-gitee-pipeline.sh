@@ -4,6 +4,17 @@ set -euo pipefail
 # Exercise the real orchestration with isolated stage/command stubs. There are
 # no SDK downloads, application builds, real releases or recursive regressions.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Keep exactly one registered source configuration. A second YAML can register
+# another webhook and consume two builds for the same release tag. Platform-side
+# legacy registrations must also be disabled before pushing a new tag.
+shopt -s nullglob
+pipeline_configs=("$ROOT_DIR"/.workflow/*.yml "$ROOT_DIR"/.workflow/*.yaml)
+[[ "${#pipeline_configs[@]}" == 1 &&
+   "${pipeline_configs[0]}" == "$ROOT_DIR/.workflow/流水线-flutter-refactor-编译.yml" ]] || {
+    echo 'Expected exactly one Gitee Go pipeline: Flutter Refactor 发布' >&2
+    exit 1
+}
+shopt -u nullglob
 mkdir -p "$ROOT_DIR/.workflow-cache"
 test_root="$(mktemp -d "$ROOT_DIR/.workflow-cache/gitee-pipeline-test.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT

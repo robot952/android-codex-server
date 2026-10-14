@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.157+289，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.158+290，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1064,8 +1064,11 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 Gitee Go 的 Flutter 发布流水线只响应 `v` 前缀的 Git 标签，使用固定 Flutter `3.44.8`、JDK 17、Android
 Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
 `scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。流水线仍归档
-`dist/` 供构建页直接下载；标签脚本不会再次创建或触发标签，避免重复出包。旧的分支触发配置已一并改为
-相同的 `v` 前缀标签触发规则，不再因普通提交消耗构建额度。
+`dist/` 供构建页直接下载；标签脚本不会再次创建或触发标签，避免重复出包。
+仓库只保留 `.workflow/流水线-flutter-refactor-编译.yml` 一个 Gitee Go 配置，历史
+`流水线-202608021802.yml` 已移除，防止同一 `v` 标签被两个入口重复构建。按 Gitee Go 删除提示，
+历史分支上的旧入口也需在对应分支删除；发布前核对平台只保留“Flutter Refactor 发布”自动入口，
+不并用手动重跑与标签推送。普通分支提交不触发当前发布流水线。
 
 Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh`，由同一个严格 Shell 顺序执行环境准备和
 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
@@ -1085,7 +1088,7 @@ HTTP/1.1、连接上限 20 秒、每次上限 300 秒、60 秒低速保护，固
 保留独立 ZIP 缓存，并按原 `distributionUrl` 的 MD5/base36 写入标准 Wrapper 缓存；不改写仓库 URL、
 不伪造 `.ok`、不删除缓存挂载根目录。Wrapper properties 同步固定哈希与 60000ms 网络超时。
 CI 必须有超时：`run-ci-stage.sh` 为隔离回归设置 300/600 秒，发布总任务上限 5400 秒；
-共享环境准备预算 3600 秒，Flutter SDK、Android SDK、Gradle 和引擎阶段分别最多 1200/1800/2400/600 秒，
+共享环境准备预算 3600 秒，Node、Flutter SDK、Android SDK、Gradle 和引擎阶段分别最多 900/1200/1800/2400/600 秒，
 每阶段还受剩余总预算约束。超时先 TERM，最多再等 30 秒强制结束，退出 124/137 并标出阶段；
 中断必须清理当前任务子进程，不允许无限等待、无限重试或把超时当作成功。
 顶层监督器独立于工作进程组，嵌套阶段复用并校验同一 PGID；sdkmanager/Pub 的阶段超时直接中止任务，
@@ -1113,6 +1116,11 @@ Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根
 SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK 不会被改写或重新挂载。
 `test-ci-android.sh --read-only-mounts` 在独立 mount namespace 中使用真实只读挂载，验证冷/热缓存、
 环境变量和 PATH 探测、只读缓存报错、下游环境传递与原 SDK 内容不变；工作流自测在有挂载权限时自动执行。
+
+Gitee Android 容器不保证预装 Node。`prepare-ci-node.sh` 在 Flutter 测试前准备 Node 并导出其 bin 目录，
+已有 Node 18+ 可复用，否则下载固定 Node 22.17.0，核对官方 SHA-256 后在独立缓存内启用；
+下载、锁等待和总阶段均有超时，不改系统 Node。Claude Linux 安装回归仍执行，不能因缺 Node 跳过；
+fixture 在创建临时 HOME 前检查依赖，避免把缺工具误报为符号链接路径错误。
 
 构建必须保持 `packaging.jniLibs.useLegacyPackaging = true` 和最终 Manifest 的
 `extractNativeLibs=true`。这是原生库压缩交付及 PRoot 从 `nativeLibraryDir` 执行的共同契约；发布门禁使用
@@ -1390,6 +1398,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 33. 服务器连接弹窗只显示转动圆环及下方“取消连接”按钮，不增加服务器名、“连接中”或阶段说明文字。
     保留连接超时与取消机制；读屏标签可保留，但不渲染成可见文案。
 34. MCP 工具调用默认折叠，用户点击后才显示详情；运行中、完成和失败均使用同一交互，状态更新不能自动展开。
+35. Gitee 同一版本只保留一个自动构建入口；清理历史分支的旧流水线 YAML 后再推送标签，不同时手动重跑。
+    保留发布总超时、阶段超时和有限重试，不能为让构建变绿而跳过失败测试。
 
 ## 15. 修改影响图和顺序
 

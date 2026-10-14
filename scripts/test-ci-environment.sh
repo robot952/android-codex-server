@@ -8,18 +8,31 @@ trap 'rm -rf -- "$fixture"' EXIT
 # Timeout-failure fixtures must own their groups rather than kill this test.
 unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE FAIL_PHASE
 entry="$fixture/repo"
-mkdir -p "$entry/scripts" "$entry/flutter/bin" "$entry/android/platform-tools" "$entry/dist" "$fixture/home"
+mkdir -p "$entry/scripts" "$entry/node/bin" "$entry/flutter/bin" "$entry/android/platform-tools" "$entry/dist" "$fixture/home"
 cp "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" \
     "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/publish-tag-release.sh" "$entry/scripts/"
 export WORKSPACE="$entry" HOME="$fixture/home" FIXTURE_STAGES="$fixture/stages"
 export PUB_CACHE="$fixture/custom-pub" GRADLE_USER_HOME="$fixture/custom-gradle"
 export GRADLE_OPTS=-Dfixture=keep
 export FLUTTER_STORAGE_BASE_URL=https://fixture.invalid/flutter PUB_HOSTED_URL=https://fixture.invalid/pub
+cat > "$entry/scripts/prepare-ci-node.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo node >> "$FIXTURE_STAGES"
+[[ "${FAIL_PHASE:-}" != node ]] || exit 42
+[[ "$1" == "$HOME/.cache/codex/node" ]]
+printf '%s\n' "$WORKSPACE/node/bin"
+SH
+cat > "$entry/node/bin/node" <<'SH'
+#!/bin/sh
+printf 'v22.17.0\n'
+SH
 cat > "$entry/scripts/prepare-ci-flutter.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 echo flutter >> "$FIXTURE_STAGES"
 [[ "${FAIL_PHASE:-}" != flutter ]] || exit 42
+[[ "$(command -v node)" == "$WORKSPACE/node/bin/node" && "$(node --version)" == v22.17.0 ]]
 [[ "$2" == 3.44.8 && "$3" == 058e0af2c2b57e369d905a03ac9748b0ebf543c6 ]]
 [[ "$4" == https://fixture.invalid/flutter/* && "$5" == 672089e001571a9fbb209a495c583580c0c6c73ef98999264ba07fa93ace332d ]]
 printf '%s\n' "$WORKSPACE/flutter"
@@ -49,6 +62,7 @@ set -euo pipefail
 echo precache >> "$FIXTURE_STAGES"
 [[ "${FAIL_PHASE:-}" != precache ]] || exit 42
 [[ "$*" == 'precache --android' ]]
+[[ "$(command -v node)" == "$WORKSPACE/node/bin/node" ]]
 SH
 cat > "$entry/scripts/publish-gitee-release.sh" <<'SH'
 #!/usr/bin/env bash
@@ -57,13 +71,14 @@ set -euo pipefail
 [[ "$CODEX_CI_PUB" == 1 && "$CODEX_BUILD_ONLINE" == 1 ]]
 [[ "$GRADLE_OPTS" == '-Dfixture=keep -Dorg.gradle.daemon=false' ]]
 [[ "$PUB_CACHE" == */custom-pub && "$GRADLE_USER_HOME" == */custom-gradle ]]
+[[ "$(command -v node)" == "$WORKSPACE/node/bin/node" ]]
 echo publish >> "$FIXTURE_STAGES"
 SH
-chmod +x "$entry/flutter/bin/flutter" "$entry/scripts/publish-gitee-release.sh"
+chmod +x "$entry/node/bin/node" "$entry/flutter/bin/flutter" "$entry/scripts/publish-gitee-release.sh"
 bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'flutter android gradle precache publish ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache publish ' ]]
 
-for phase in flutter android gradle precache; do
+for phase in node flutter android gradle precache; do
     : > "$FIXTURE_STAGES"
     status=0
     FAIL_PHASE="$phase" bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/failure.log" 2>&1 || status=$?
@@ -81,6 +96,7 @@ cat > "$entry/scripts/build-android.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$*" == 'all --force' && "$CODEX_CI_PUB" == 1 ]]
+[[ "$(command -v node)" == "$WORKSPACE/node/bin/node" && "$(node --version)" == v22.17.0 ]]
 echo build >> "$FIXTURE_STAGES"
 # Stop before packaging: this regression never creates/publishes an APK.
 exit 43
@@ -99,7 +115,7 @@ git -C "$entry" tag v1.2.3
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 43 ]]
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'flutter android gradle precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache build ' ]]
 : > "$FIXTURE_STAGES"
 status=0
 CODEX_RELEASE_BUILD_MODE=invalid bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
@@ -132,7 +148,7 @@ assert_release_status() {
 shallow="$fixture/shallow"
 clone_release_fixture "$shallow" "$origin"
 assert_release_status "$shallow" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'flutter android gradle precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache build ' ]]
 [[ "$(git -C "$shallow" rev-parse 'FETCH_HEAD^{commit}')" == "$(git -C "$shallow" rev-parse HEAD)" ]]
 [[ -z "$(git -C "$shallow" tag --list)" ]]
 
@@ -173,7 +189,7 @@ git --git-dir="$annotated_origin" -c user.name=Fixture -c user.email=fixture@exa
 annotated_checkout="$fixture/annotated-tag"
 clone_release_fixture "$annotated_checkout" "$annotated_origin"
 assert_release_status "$annotated_checkout" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'flutter android gradle precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache build ' ]]
 [[ -z "$(git -C "$annotated_checkout" tag --list)" ]]
 
 : > "$FIXTURE_STAGES"
@@ -222,5 +238,6 @@ for mode in direct nested outer; do
     done
     [[ -z "$state" || "$state" == Z* ]] || { echo "Leaked child after $mode timeout" >&2; exit 1; }
 done
+bash "$ROOT_DIR/scripts/test-ci-node.sh"
 bash "$ROOT_DIR/scripts/test-gitee-pipeline.sh"
 echo 'CI environment, tag validation and bounded cancellation regressions passed'

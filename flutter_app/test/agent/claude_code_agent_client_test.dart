@@ -183,15 +183,29 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
   );
 
   test(
+    'missing CI Node reports the prerequisite before creating a fixture',
+    () async {
+      final emptyPath = await Directory.systemTemp.createTemp('no-node-');
+      addTearDown(() => emptyPath.delete(recursive: true));
+      await expectLater(
+        _requireNodeExecutable(path: emptyPath.path),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('Node.js is required'),
+          ),
+        ),
+      );
+    },
+    skip: _linuxInstallerSkip,
+  );
+
+  test(
     'uses managed Node when the SSH PATH has no Node executable',
     () async {
       final fixture = await _RuntimeFixture.create();
       addTearDown(fixture.close);
-      final nodeResult = await Process.run('/bin/sh', [
-        '-c',
-        'command -v node',
-      ]);
-      final node = (nodeResult.stdout as String).trim();
       final tools = Directory('${fixture.directory.path}/tools');
       await tools.create();
       for (final command in [
@@ -213,7 +227,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
         '${fixture.directory.path}/.local/share/codex-remote/runtime/node-test/bin/node',
       );
       await managed.parent.create(recursive: true);
-      await Link(managed.path).create(node);
+      await Link(managed.path).create(fixture.nodeExecutable);
       final result = await fixture.script(
         ClaudeCodeBootstrap.installScript(
           bridgeSource: 'console.log("managed-node-ok");',
@@ -462,21 +476,38 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
   );
 }
 
+Future<String> _requireNodeExecutable({String? path}) async {
+  final result = await Process.run('/bin/sh', [
+    '-c',
+    'command -v node',
+  ], environment: path == null ? null : {'PATH': path});
+  final executable = (result.stdout as String).trim();
+  if (result.exitCode != 0 || executable.isEmpty) {
+    throw StateError(
+      'Node.js is required for Linux installer integration tests. '
+      'Prepare the CI Node runtime and export its bin directory in PATH.',
+    );
+  }
+  return executable;
+}
+
 class _RuntimeFixture {
-  _RuntimeFixture(this.directory);
+  _RuntimeFixture(this.directory, this.nodeExecutable);
   final Directory directory;
+  final String nodeExecutable;
 
   static Future<_RuntimeFixture> create() async {
+    final nodeExecutable = await _requireNodeExecutable();
     final fixture = _RuntimeFixture(
       await Directory.systemTemp.createTemp('claude bootstrap '),
+      nodeExecutable,
     );
     await Directory(
       '${fixture.directory.path}/.local/bin',
     ).create(recursive: true);
-    final node = await Process.run('/bin/sh', ['-c', 'command -v node']);
     await Link(
       '${fixture.directory.path}/.local/bin/node',
-    ).create((node.stdout as String).trim());
+    ).create(nodeExecutable);
     await Directory('${fixture.directory.path}/.claude').create();
     await Directory('${fixture.directory.path}/.codex').create();
     await File(
