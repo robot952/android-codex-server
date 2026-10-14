@@ -2,12 +2,16 @@
 
 当前 `.workflow/流水线-flutter-refactor-编译.yml` 和历史流水线配置
 `.workflow/流水线-202608021802.yml` 都只响应 **`v` 前缀的 Git 标签推送**；
-普通 `flutter-refactor` 或 `release` 分支提交不会触发构建。两条配置均通过
-`scripts/run-ci-stage.sh` 限时调用 `bash scripts/publish-tag-release.sh`，先核对 `v<versionName>` 指向当前 HEAD，
+普通 `flutter-refactor` 或 `release` 分支提交不会触发构建。两条配置均只调用
+`bash scripts/run-gitee-release.sh`，在同一个严格 Shell 中通过 `scripts/run-ci-stage.sh` 限时执行回归
+与 `bash scripts/publish-tag-release.sh`。任一阶段失败或超时就退出，不依赖平台多条命令的失败处理。
+发布先核对 `v<versionName>` 指向当前 HEAD，
 再构建、验证稳定签名并将 `Agent-<version>.apk` 和 `release-metadata.txt` 归档到 `dist/`。
 
 该入口不创建或移动标签，也不自动创建 Gitee Release 或上传 Release 附件。构建成功后，
 APK 可从 Gitee Go 对应运行记录的 `dist/` 构件获取；不能把构件归档等同于应用内更新发布。
+平台只检出提交、没有取回标签时，入口限时 60 秒从 origin 获取精确的 `refs/tags/v<versionName>`，
+再解析其提交与 HEAD 比较；已有错误标签不会被覆盖，缺失远端标签、网络失败或提交不匹配均停止。
 如果平台同时启用了两个配置，应在 Gitee Go 页面核对启用的流水线，避免一次标签推送重复构建。
 
 当前标签入口与旧 `scripts/build-gitee-release.sh` 共用
@@ -26,6 +30,9 @@ Pub 依赖优先使用 `pub.flutter-io.cn`。遇到 424/429/5xx 等临时网络�
 校验下载内容，并预热标准 `GRADLE_USER_HOME/wrapper/dists` 缓存。下载对镜像和官方源执行
 有界重试及回退；只有完整校验成功的压缩包才可供 Wrapper 使用，不删除已有有效缓存。
 Gitee 插件中的 `gradleVersion` 不能替代项目 Wrapper 所需的发行包。
+缓存目录回归使用已提交的根 `gradle/wrapper/gradle-wrapper.jar` 独立核对 PathAssembler 结果；
+不能引用 Flutter 准备后才生成、Git 忽略的 `flutter_app/android/gradle/wrapper/gradle-wrapper.jar`。
+`test-gitee-pipeline.sh` 覆盖阶段顺序、非零退出码透传及失败后不再运行发布，由环境回归一并执行。
 
 ## 超时与重试上限
 

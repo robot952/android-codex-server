@@ -5,6 +5,11 @@ set -euo pipefail
 # production checksum stays immutable; only this private script copy accepts the
 # tiny fixture's checksum. Java still independently hashes every published ZIP.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+wrapper_jar="$ROOT_DIR/gradle/wrapper/gradle-wrapper.jar"
+[[ -f "$wrapper_jar" ]] || {
+    echo 'The tracked Gradle wrapper JAR is required for independent cache-path verification' >&2
+    exit 1
+}
 mkdir -p "$ROOT_DIR/.workflow-cache"
 test_root="$(mktemp -d "$ROOT_DIR/.workflow-cache/ci-gradle-test.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
@@ -112,8 +117,10 @@ wrapper_zip="${wrapper_zips[0]}"
 cmp "$fixture" "$wrapper_zip"
 [[ ! -e "$wrapper_zip.ok" ]]
 
-# Verify base36 identity independently with the repository's wrapper PathAssembler,
+# Verify base36 identity independently with the tracked root wrapper PathAssembler,
 # so a self-consistent but incorrect MD5 directory implementation cannot pass.
+# The Flutter Android wrapper JAR is generated and ignored, and is not present in
+# a clean CI checkout before Flutter prepares that project.
 cat > "$test_root/WrapperPath.java" <<'JAVA'
 import java.net.URI;
 import java.io.File;
@@ -127,13 +134,13 @@ class WrapperPath {
         configuration.setDistributionPath("wrapper/dists");
         configuration.setZipBase("GRADLE_USER_HOME");
         configuration.setZipPath("wrapper/dists");
-        System.out.println(new PathAssembler(new File(args[0]))
+        System.out.println(new PathAssembler(new File(args[0]), new File(args[1]))
             .getDistribution(configuration).getZipFile().getAbsolutePath());
     }
 }
 JAVA
-expected_zip="$(java --class-path "$ROOT_DIR/flutter_app/android/gradle/wrapper/gradle-wrapper.jar" \
-    "$test_root/WrapperPath.java" "$GRADLE_USER_HOME")"
+expected_zip="$(java --class-path "$wrapper_jar" \
+    "$test_root/WrapperPath.java" "$GRADLE_USER_HOME" "$ROOT_DIR")"
 [[ "$wrapper_zip" == "$expected_zip" ]]
 
 # A wrapper may consume/delete its ZIP. Repopulate without network or clearing

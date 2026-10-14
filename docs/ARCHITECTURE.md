@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.135+267，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.157+289，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1067,7 +1067,12 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 `dist/` 供构建页直接下载；标签脚本不会再次创建或触发标签，避免重复出包。旧的分支触发配置已一并改为
 相同的 `v` 前缀标签触发规则，不再因普通提交消耗构建额度。
 
-Gitee 在发布前执行环境准备和 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`。
+Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh`，由同一个严格 Shell 顺序执行环境准备和
+Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
+不能依赖平台多条 commands 自动停止。Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
+不依赖 Flutter 准备后才生成的、被忽略的 Android Wrapper JAR。
+仅检出提交而没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
+之后仍严格核对标签提交与 HEAD；已有错误标签、远端缺失或获取失败必须拒绝发布，不创建或移动标签。
 标签入口与旧分支入口统一通过 `prepare-ci-environment.sh` 准备 Flutter、Android SDK、Gradle 和引擎，
 标签、版本和工作区校验通过后才下载，不能绕过旧入口已有的准备逻辑。Shell 变量在仓库脚本中展开，
 避免 YAML 的变量预处理清空 SDK 路径。Flutter 缓存根目录可能是平台挂载点，禁止删除；

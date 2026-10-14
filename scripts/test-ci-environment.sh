@@ -89,6 +89,8 @@ chmod +x "$entry/scripts/build-android.sh"
 git -C "$entry" init --quiet
 git -C "$entry" add .
 git -C "$entry" -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m fixture
+older_commit="$(git -C "$entry" rev-parse HEAD)"
+git -C "$entry" -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet --allow-empty -m release
 : > "$FIXTURE_STAGES"
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
@@ -102,6 +104,79 @@ bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=
 status=0
 CODEX_RELEASE_BUILD_MODE=invalid bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 2 && ! -s "$FIXTURE_STAGES" ]]
+
+# Real file:// shallow clones reproduce Gitee's commit-only checkout without
+# contacting a hosting service. All transport commands have the same deadline.
+stage="$ROOT_DIR/scripts/run-ci-stage.sh"
+origin="$fixture/origin.git"
+bash "$stage" fixture-origin 60 git clone --quiet --bare "$entry" "$origin" >"$fixture/clone.log" 2>&1
+clone_release_fixture() {
+    local destination="$1" remote="$2"
+    bash "$stage" fixture-clone 60 env GIT_TERMINAL_PROMPT=0 git clone \
+        --quiet --no-tags --depth=1 "file://$remote" "$destination" >"$fixture/clone.log" 2>&1
+    [[ "$(git -C "$destination" rev-parse --is-shallow-repository)" == true ]]
+    [[ -z "$(git -C "$destination" tag --list)" ]]
+}
+assert_release_status() {
+    local checkout="$1" expected="$2"
+    : > "$FIXTURE_STAGES"
+    status=0
+    WORKSPACE="$checkout" bash "$checkout/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
+    if [[ "$status" != "$expected" ]]; then
+        cat "$fixture/tag.log" >&2
+        echo "Expected release status $expected, got $status" >&2
+        exit 1
+    fi
+}
+
+shallow="$fixture/shallow"
+clone_release_fixture "$shallow" "$origin"
+assert_release_status "$shallow" 43
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'flutter android gradle precache build ' ]]
+[[ "$(git -C "$shallow" rev-parse 'FETCH_HEAD^{commit}')" == "$(git -C "$shallow" rev-parse HEAD)" ]]
+[[ -z "$(git -C "$shallow" tag --list)" ]]
+
+# These wrong/missing refs exist only in isolated bare fixture repositories.
+wrong_origin="$fixture/wrong-origin.git"
+bash "$stage" fixture-origin 60 git clone --quiet --bare "$entry" "$wrong_origin" >"$fixture/clone.log" 2>&1
+git --git-dir="$wrong_origin" update-ref refs/tags/v1.2.3 "$older_commit"
+wrong_checkout="$fixture/wrong-tag"
+clone_release_fixture "$wrong_checkout" "$wrong_origin"
+assert_release_status "$wrong_checkout" 1
+[[ ! -s "$FIXTURE_STAGES" && -z "$(git -C "$wrong_checkout" tag --list)" ]]
+
+missing_origin="$fixture/missing-origin.git"
+bash "$stage" fixture-origin 60 git clone --quiet --bare "$entry" "$missing_origin" >"$fixture/clone.log" 2>&1
+git --git-dir="$missing_origin" update-ref -d refs/tags/v1.2.3
+missing_checkout="$fixture/missing-tag"
+clone_release_fixture "$missing_checkout" "$missing_origin"
+# A previous successful fetch at HEAD must not authorize a later missing tag;
+# a same-named branch must not be accepted instead of the exact tag either.
+bash "$stage" fixture-fetch 60 git -C "$missing_checkout" fetch --quiet --no-tags origin HEAD >"$fixture/clone.log" 2>&1
+[[ "$(git -C "$missing_checkout" rev-parse 'FETCH_HEAD^{commit}')" == "$(git -C "$missing_checkout" rev-parse HEAD)" ]]
+git -C "$missing_checkout" branch v1.2.3
+assert_release_status "$missing_checkout" 128
+[[ ! -s "$FIXTURE_STAGES" && -z "$(git -C "$missing_checkout" tag --list)" ]]
+
+local_wrong="$fixture/local-wrong-tag"
+bash "$stage" fixture-clone 60 git clone --quiet --no-tags "file://$origin" "$local_wrong" >"$fixture/clone.log" 2>&1
+git -C "$local_wrong" tag v1.2.3 "$older_commit"
+assert_release_status "$local_wrong" 1
+[[ ! -s "$FIXTURE_STAGES" ]]
+[[ "$(git -C "$local_wrong" rev-parse 'refs/tags/v1.2.3^{commit}')" == "$older_commit" ]]
+
+# Annotated tags fetched without local refs still peel to the release commit.
+annotated_origin="$fixture/annotated-origin.git"
+bash "$stage" fixture-origin 60 git clone --quiet --bare --no-tags "$entry" "$annotated_origin" >"$fixture/clone.log" 2>&1
+git --git-dir="$annotated_origin" update-ref -d refs/tags/v1.2.3
+git --git-dir="$annotated_origin" -c user.name=Fixture -c user.email=fixture@example.invalid tag -a v1.2.3 -m release
+annotated_checkout="$fixture/annotated-tag"
+clone_release_fixture "$annotated_checkout" "$annotated_origin"
+assert_release_status "$annotated_checkout" 43
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'flutter android gradle precache build ' ]]
+[[ -z "$(git -C "$annotated_checkout" tag --list)" ]]
+
+: > "$FIXTURE_STAGES"
 printf '\n# dirty fixture\n' >> "$entry/scripts/build-android.sh"
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
@@ -147,4 +222,5 @@ for mode in direct nested outer; do
     done
     [[ -z "$state" || "$state" == Z* ]] || { echo "Leaked child after $mode timeout" >&2; exit 1; }
 done
+bash "$ROOT_DIR/scripts/test-gitee-pipeline.sh"
 echo 'CI environment, tag validation and bounded cancellation regressions passed'

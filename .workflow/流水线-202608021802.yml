@@ -15,9 +15,7 @@ stages:
     buildToolsVersion: "36.0.0"
     ndkVersion: 28.2.13676358
     commands:
-    - bash scripts/run-ci-stage.sh bootstrap-regression 300 bash scripts/test-ci-environment.sh
-    - bash scripts/run-ci-stage.sh gradle-regression 600 bash scripts/test-ci-gradle.sh
-    - bash scripts/run-ci-stage.sh gitee-release 5400 bash scripts/publish-tag-release.sh
+    - bash scripts/run-gitee-release.sh
     artifacts:
     - name: BUILD_ARTIFACT
       path:
