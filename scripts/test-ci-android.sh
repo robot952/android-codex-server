@@ -149,11 +149,13 @@ cmp "$fixture/one" "$fixture/two"
 entry="$fixture/entry"
 mkdir -p "$entry/scripts" "$entry/flutter/bin" "$entry/node/bin" "$entry/dist" "$entry/home"
 cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-android.sh" \
+    "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
     "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$entry/scripts/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/flutter"\n' > "$entry/scripts/prepare-ci-flutter.sh"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/node/bin"\n' > "$entry/scripts/prepare-ci-node.sh"
 printf '#!/bin/sh\nprintf "v22.17.0\\n"\n' > "$entry/node/bin/node"
 printf '#!/bin/sh\nexit 0\n' > "$entry/scripts/prepare-ci-gradle.sh"
+printf '#!/bin/sh\nexit 0\n' > "$entry/scripts/test-ci-gradle-repositories.sh"
 printf '#!/bin/sh\ntest "$1 $2" = "precache --android"\n' > "$entry/flutter/bin/flutter"
 cat > "$entry/scripts/publish-gitee-release.sh" <<'PUBLISH'
 #!/bin/sh
@@ -164,10 +166,14 @@ test "$ANDROID_SDK_ROOT" = "$EXPECTED_SDK"
 test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
 test "$CODEX_FLUTTER_BIN" = "$WORKSPACE/flutter/bin/flutter"
 test "$(command -v node)" = "$WORKSPACE/node/bin/node"
+test -L "$GRADLE_USER_HOME/caches"
+test -L "$GRADLE_USER_HOME/wrapper"
+test ! -e "$GRADLE_USER_HOME/init.d"
 echo 'entry environment verified'
 PUBLISH
 chmod +x "$entry/scripts/publish-gitee-release.sh" "$entry/flutter/bin/flutter" "$entry/node/bin/node"
-WORKSPACE="$entry" HOME="$entry/home" EXPECTED_SDK="$sdk" ANDROID_HOME="$sdk" ANDROID_SDK_ROOT= \
+WORKSPACE="$entry" HOME="$entry/home" GRADLE_USER_HOME="$entry/gradle-cache" \
+    EXPECTED_SDK="$sdk" ANDROID_HOME="$sdk" ANDROID_SDK_ROOT= \
     bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
 rg -q 'entry environment verified' "$fixture/entry.log"
 
@@ -214,6 +220,7 @@ if [[ "${1:-}" == --read-only-mounts ]]; then
     mkdir -p "$entry/home/.cache/codex"
     cp -a "$fallback" "$entry/home/.cache/codex/android-sdk"
     WORKSPACE="$entry" HOME="$entry/home" EXPECTED_SDK="$entry/home/.cache/codex/android-sdk" \
+        GRADLE_USER_HOME="$entry/gradle-cache" \
         ANDROID_HOME="$readonly_sdk" ANDROID_SDK_ROOT="$readonly_sdk" \
         bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
     rg -q 'entry environment verified' "$fixture/entry.log"

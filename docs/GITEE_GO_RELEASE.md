@@ -35,6 +35,14 @@ Pub 依赖优先使用 `pub.flutter-io.cn`。遇到 424/429/5xx 等临时网络�
 Gitee 插件中的 `gradleVersion` 不能替代项目 Wrapper 所需的发行包。
 缓存目录回归使用已提交的根 `gradle/wrapper/gradle-wrapper.jar` 独立核对 PathAssembler 结果；
 不能引用 Flutter 准备后才生成、Git 忽略的 `flutter_app/android/gradle/wrapper/gradle-wrapper.jar`。
+`prepare-ci-gradle-home.sh` 为本次运行建立独立 `GRADLE_USER_HOME`，只链接旧目录的
+`caches`/`wrapper`，保留缓存挂载与原文件，不读取或继承用户级 init 脚本、`gradle.properties`。
+隔离目录位于工作区 `.workflow-cache/gradle-user-homes/`，不会被流水线作为全局配置缓存。
+这避免平台全局 init 向 Flutter included build 添加项目仓库，与其 `FAIL_ON_PROJECT_REPOS`
+冲突；不能直接修改 Flutter SDK 或改为宽松策略掩盖问题。
+发行包准备后先执行 `test-ci-gradle-repositories.sh`：真实离线 Gradle 负例确认合成 init 生效，
+正例确认隔离后严格 included-build 插件能加载，且 Gradle 实际使用隔离目录。
+预检还检查被复用发行版的 init 脚本；若发行版自身受污染则停止，不修改共享目录。
 `test-gitee-pipeline.sh` 覆盖阶段顺序、非零退出码透传及失败后不再运行发布，由环境回归一并执行。
 
 ## 超时与重试上限
@@ -57,10 +65,12 @@ Gitee 插件中的 `gradleVersion` 不能替代项目 Wrapper 所需的发行包
 
 | 工具准备阶段 | 单阶段上限 |
 | --- | --- |
+| Gradle 用户目录隔离 | 60 秒（1 分钟） |
 | Node | 900 秒（15 分钟） |
 | Flutter SDK | 1200 秒（20 分钟） |
 | Android SDK | 1800 秒（30 分钟） |
 | Gradle | 2400 秒（40 分钟） |
+| Gradle 仓库预检 | 240 秒（4 分钟） |
 | Flutter precache | 600 秒（10 分钟） |
 
 这些时间不能相加理解为更长的准备窗口；阶段切换、镜像回退和重试都不重置总预算。

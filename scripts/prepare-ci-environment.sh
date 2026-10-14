@@ -6,17 +6,24 @@ prepare_ci_environment() {
     local root="${1:?repository root required}"
     local ci_prepare_deadline=$((SECONDS + 3600))
     local flutter_archive_url flutter_archive_sha256 node_bin
+    local gradle_cache_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
     export FLUTTER_VERSION=3.44.8
     export FLUTTER_REVISION=058e0af2c2b57e369d905a03ac9748b0ebf543c6
     export FLUTTER_STORAGE_BASE_URL="${FLUTTER_STORAGE_BASE_URL:-https://storage.flutter-io.cn}"
     export PUB_HOSTED_URL="${PUB_HOSTED_URL:-https://pub.flutter-io.cn}"
     export PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
-    export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
     export CODEX_BUILD_ONLINE=1
     export CODEX_CI_PUB=1
     export GRADLE_OPTS="${GRADLE_OPTS:--Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=4}"
     export GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.daemon=false"
-    mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME" || return $?
+    mkdir -p "$PUB_CACHE" || return $?
+
+    # Gitee's global init scripts can add project repositories to Flutter's
+    # included build, which explicitly forbids them. Reuse only cache data,
+    # never inherited Gradle configuration or credentials.
+    GRADLE_USER_HOME="$(ci_prepare_stage 'Gradle user home' 60 bash "$root/scripts/prepare-ci-gradle-home.sh" \
+        "$gradle_cache_home" "$root/.workflow-cache/gradle-user-homes")" || return $?
+    export GRADLE_USER_HOME
 
     node_bin="$(ci_prepare_stage 'Node SDK' 900 bash "$root/scripts/prepare-ci-node.sh" \
         "$HOME/.cache/codex/node")" || return $?
@@ -38,6 +45,7 @@ prepare_ci_environment() {
     export PATH="$ANDROID_HOME/platform-tools:$PATH"
     ci_prepare_stage 'Gradle distribution' 2400 env CODEX_CI_GRADLE_BOUNDED=1 bash "$root/scripts/prepare-ci-gradle.sh" \
         "$HOME/.cache/codex/gradle" "$root/flutter_app/android/gradle/wrapper/gradle-wrapper.properties" >&2 || return $?
+    ci_prepare_stage 'Gradle repository preflight' 240 bash "$root/scripts/test-ci-gradle-repositories.sh" >&2 || return $?
     ci_prepare_stage 'Flutter Android precache' 600 "$CODEX_FLUTTER_BIN" precache --android >&2 || return $?
 }
 

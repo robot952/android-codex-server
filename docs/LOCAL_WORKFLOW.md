@@ -17,6 +17,12 @@ Gradle 回归只依赖已跟踪的根 Wrapper JAR，不依赖本机生成的 Flu
 标签与旧分支入口共用 `scripts/prepare-ci-environment.sh`，不能跳过 Flutter/Android/Gradle 环境准备。
 `prepare-ci-gradle.sh` 固定 Gradle 9.1.0-all 与官方 SHA-256，国内镜像失败可回退官方，最多六次限时
 续传；校验后的 ZIP 预填原 URL 对应的 Wrapper 缓存，缓存挂载根目录与已解压发行版保持不变。
+CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准备上限 60 秒），只链接原
+`GRADLE_USER_HOME` 的 `caches`/`wrapper`。用户级 init 脚本和 `gradle.properties` 不继承，原文件
+不删除；隔离目录在工作区忽略的 `.workflow-cache/gradle-user-homes/` 下，不作为全局配置缓存。
+发行包准备后运行 `test-ci-gradle-repositories.sh`（上限 240 秒），使用真实 Gradle、离线临时
+工程验证受污染目录和隔离后的严格 included-build 插件加载，失败时立即停止后续测试及出包。
+不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过向所有 project 强塞镜像仓库解决网络问题。
 Gitee 必须设置明确超时：环境与 Gradle 隔离回归上限 300/600 秒，发布总任务上限 5400 秒；
 环境准备总预算 3600 秒，各 SDK/Gradle/引擎阶段均取自身上限与剩余预算的较小值。
 其中 Node 准备上限 900 秒，复用已有 Node 18+，否则固定下载并校验 Node 22.17.0，缓存于

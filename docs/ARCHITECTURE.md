@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.158+290，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.159+291，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1087,6 +1087,13 @@ Gradle `9.1.0-all` 由 `prepare-ci-gradle.sh` 提前下载，华为镜像与两�
 HTTP/1.1、连接上限 20 秒、每次上限 300 秒、60 秒低速保护，固定官方 SHA-256 校验后才启用。
 保留独立 ZIP 缓存，并按原 `distributionUrl` 的 MD5/base36 写入标准 Wrapper 缓存；不改写仓库 URL、
 不伪造 `.ok`、不删除缓存挂载根目录。Wrapper properties 同步固定哈希与 60000ms 网络超时。
+CI 的 `prepare-ci-gradle-home.sh` 在 `.workflow-cache/gradle-user-homes/` 创建每次独立的
+`GRADLE_USER_HOME`，只链接原目录的 `caches` 和 `wrapper`；不继承用户级 `init.gradle(.kts)`、
+`init.d` 或 `gradle.properties`，也不删除原配置、挂载根或依赖缓存。平台注入的项目仓库可能与
+Flutter included build 的 `FAIL_ON_PROJECT_REPOS` 冲突，不能通过修改 SDK 或放宽仓库策略绕过。
+隔离阶段最多 60 秒；发行包准备后以 240 秒上限运行真实离线 Gradle 仓库预检，验证受污染的
+合成用户目录会失败、隔离目录能加载严格仓库策略的 included-build 插件，并核对实际用户目录。
+预检只使用临时工程和已校验的固定 Gradle 发行包；不改平台配置，也不向日志输出配置正文。
 CI 必须有超时：`run-ci-stage.sh` 为隔离回归设置 300/600 秒，发布总任务上限 5400 秒；
 共享环境准备预算 3600 秒，Node、Flutter SDK、Android SDK、Gradle 和引擎阶段分别最多 900/1200/1800/2400/600 秒，
 每阶段还受剩余总预算约束。超时先 TERM，最多再等 30 秒强制结束，退出 124/137 并标出阶段；

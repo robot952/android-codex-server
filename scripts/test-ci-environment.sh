@@ -10,9 +10,14 @@ unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE FA
 entry="$fixture/repo"
 mkdir -p "$entry/scripts" "$entry/node/bin" "$entry/flutter/bin" "$entry/android/platform-tools" "$entry/dist" "$fixture/home"
 cp "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" \
+    "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
     "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/publish-tag-release.sh" "$entry/scripts/"
 export WORKSPACE="$entry" HOME="$fixture/home" FIXTURE_STAGES="$fixture/stages"
 export PUB_CACHE="$fixture/custom-pub" GRADLE_USER_HOME="$fixture/custom-gradle"
+export FIXTURE_GRADLE_CACHE="$GRADLE_USER_HOME"
+mkdir -p "$GRADLE_USER_HOME/init.d"
+printf 'throw new GradleException("inherited init must not run")\n' > "$GRADLE_USER_HOME/init.d/injected.gradle"
+printf '.workflow-cache/\n' > "$entry/.gitignore"
 export GRADLE_OPTS=-Dfixture=keep
 export FLUTTER_STORAGE_BASE_URL=https://fixture.invalid/flutter PUB_HOSTED_URL=https://fixture.invalid/pub
 cat > "$entry/scripts/prepare-ci-node.sh" <<'SH'
@@ -54,6 +59,10 @@ echo gradle >> "$FIXTURE_STAGES"
 [[ "$2" == "$WORKSPACE/flutter_app/android/gradle/wrapper/gradle-wrapper.properties" ]]
 [[ "$ANDROID_HOME" == "$WORKSPACE/android" && "$ANDROID_SDK_ROOT" == "$ANDROID_HOME" ]]
 [[ "$CODEX_CI_GRADLE_BOUNDED" == 1 && "$CODEX_CI_PROCESS_GROUP" =~ ^[1-9][0-9]*$ ]]
+[[ "$GRADLE_USER_HOME" == "$WORKSPACE/.workflow-cache/gradle-user-homes/"* ]]
+[[ "$(readlink "$GRADLE_USER_HOME/caches")" == "$FIXTURE_GRADLE_CACHE/caches" ]]
+[[ "$(readlink "$GRADLE_USER_HOME/wrapper")" == "$FIXTURE_GRADLE_CACHE/wrapper" ]]
+[[ ! -e "$GRADLE_USER_HOME/init.d" && ! -e "$GRADLE_USER_HOME/gradle.properties" ]]
 echo fixture.zip
 SH
 cat > "$entry/flutter/bin/flutter" <<'SH'
@@ -64,26 +73,41 @@ echo precache >> "$FIXTURE_STAGES"
 [[ "$*" == 'precache --android' ]]
 [[ "$(command -v node)" == "$WORKSPACE/node/bin/node" ]]
 SH
+cat > "$entry/scripts/test-ci-gradle-repositories.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo repository-preflight >> "$FIXTURE_STAGES"
+[[ "${FAIL_PHASE:-}" != repository-preflight ]] || exit 42
+[[ "$GRADLE_USER_HOME" == "$WORKSPACE/.workflow-cache/gradle-user-homes/"* ]]
+SH
 cat > "$entry/scripts/publish-gitee-release.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$CODEX_RELEASE_BRANCH" == flutter-refactor ]]
 [[ "$CODEX_CI_PUB" == 1 && "$CODEX_BUILD_ONLINE" == 1 ]]
 [[ "$GRADLE_OPTS" == '-Dfixture=keep -Dorg.gradle.daemon=false' ]]
-[[ "$PUB_CACHE" == */custom-pub && "$GRADLE_USER_HOME" == */custom-gradle ]]
+[[ "$PUB_CACHE" == */custom-pub ]]
+[[ "$GRADLE_USER_HOME" == "$WORKSPACE/.workflow-cache/gradle-user-homes/"* ]]
 [[ "$(command -v node)" == "$WORKSPACE/node/bin/node" ]]
 echo publish >> "$FIXTURE_STAGES"
 SH
 chmod +x "$entry/node/bin/node" "$entry/flutter/bin/flutter" "$entry/scripts/publish-gitee-release.sh"
 bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache publish ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache publish ' ]]
 
-for phase in node flutter android gradle precache; do
+for phase in node flutter android gradle repository-preflight precache; do
     : > "$FIXTURE_STAGES"
     status=0
     FAIL_PHASE="$phase" bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/failure.log" 2>&1 || status=$?
     [[ "$status" == 42 && "$(tail -n 1 "$FIXTURE_STAGES")" == "$phase" ]]
 done
+
+# A failed home isolation must stop before downloading or publishing anything.
+: > "$FIXTURE_STAGES"
+printf 'not a directory\n' > "$fixture/invalid-gradle-home"
+status=0
+GRADLE_USER_HOME="$fixture/invalid-gradle-home" bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/home-failure.log" 2>&1 || status=$?
+[[ "$status" != 0 && ! -s "$FIXTURE_STAGES" ]]
 
 # Prove a tag cannot bypass preparation, and invalid/dirty tags never download.
 cat > "$entry/scripts/apk-lib.sh" <<'SH'
@@ -97,6 +121,8 @@ cat > "$entry/scripts/build-android.sh" <<'SH'
 set -euo pipefail
 [[ "$*" == 'all --force' && "$CODEX_CI_PUB" == 1 ]]
 [[ "$(command -v node)" == "$WORKSPACE/node/bin/node" && "$(node --version)" == v22.17.0 ]]
+[[ "$GRADLE_USER_HOME" == "$WORKSPACE/.workflow-cache/gradle-user-homes/"* ]]
+[[ "$(readlink "$GRADLE_USER_HOME/wrapper")" == "$FIXTURE_GRADLE_CACHE/wrapper" ]]
 echo build >> "$FIXTURE_STAGES"
 # Stop before packaging: this regression never creates/publishes an APK.
 exit 43
@@ -115,7 +141,7 @@ git -C "$entry" tag v1.2.3
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 43 ]]
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache build ' ]]
 : > "$FIXTURE_STAGES"
 status=0
 CODEX_RELEASE_BUILD_MODE=invalid bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
@@ -148,7 +174,7 @@ assert_release_status() {
 shallow="$fixture/shallow"
 clone_release_fixture "$shallow" "$origin"
 assert_release_status "$shallow" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache build ' ]]
 [[ "$(git -C "$shallow" rev-parse 'FETCH_HEAD^{commit}')" == "$(git -C "$shallow" rev-parse HEAD)" ]]
 [[ -z "$(git -C "$shallow" tag --list)" ]]
 
@@ -189,7 +215,7 @@ git --git-dir="$annotated_origin" -c user.name=Fixture -c user.email=fixture@exa
 annotated_checkout="$fixture/annotated-tag"
 clone_release_fixture "$annotated_checkout" "$annotated_origin"
 assert_release_status "$annotated_checkout" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache build ' ]]
 [[ -z "$(git -C "$annotated_checkout" tag --list)" ]]
 
 : > "$FIXTURE_STAGES"
@@ -239,5 +265,6 @@ for mode in direct nested outer; do
     [[ -z "$state" || "$state" == Z* ]] || { echo "Leaked child after $mode timeout" >&2; exit 1; }
 done
 bash "$ROOT_DIR/scripts/test-ci-node.sh"
+bash "$ROOT_DIR/scripts/test-ci-gradle-home.sh"
 bash "$ROOT_DIR/scripts/test-gitee-pipeline.sh"
 echo 'CI environment, tag validation and bounded cancellation regressions passed'
