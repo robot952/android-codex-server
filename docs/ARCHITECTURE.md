@@ -1067,12 +1067,25 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 `dist/` 供构建页直接下载；标签脚本不会再次创建或触发标签，避免重复出包。旧的分支触发配置已一并改为
 相同的 `v` 前缀标签触发规则，不再因普通提交消耗构建额度。
 
-Gitee 的构建命令只调用 `bash scripts/publish-tag-release.sh`，Shell 变量在仓库脚本中展开，
+Gitee 在发布前执行环境准备和 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`。
+标签入口与旧分支入口统一通过 `prepare-ci-environment.sh` 准备 Flutter、Android SDK、Gradle 和引擎，
+标签、版本和工作区校验通过后才下载，不能绕过旧入口已有的准备逻辑。Shell 变量在仓库脚本中展开，
 避免 YAML 的变量预处理清空 SDK 路径。Flutter 缓存根目录可能是平台挂载点，禁止删除；
 `prepare-ci-flutter.sh` 在根目录内加锁，从国内 `storage.flutter-io.cn` 下载固定版本的 SDK 压缩包，
 核对发布清单固定的 SHA-256 并验证解压后的 revision，再启用子目录 SDK，兼容完整旧缓存。
 工具准备不再从 GitHub 克隆；下载采用 HTTP/1.1、每次最多 300 秒、三次尝试和断点续传，失败保留
 `.part` 文件供下一轮恢复。Pub 和 Flutter 引擎下载默认使用 Flutter 中国社区镜像，可由环境变量覆盖。
+Gradle `9.1.0-all` 由 `prepare-ci-gradle.sh` 提前下载，华为镜像与两个官方地址各最多两次尝试，
+HTTP/1.1、连接上限 20 秒、每次上限 300 秒、60 秒低速保护，固定官方 SHA-256 校验后才启用。
+保留独立 ZIP 缓存，并按原 `distributionUrl` 的 MD5/base36 写入标准 Wrapper 缓存；不改写仓库 URL、
+不伪造 `.ok`、不删除缓存挂载根目录。Wrapper properties 同步固定哈希与 60000ms 网络超时。
+CI 必须有超时：`run-ci-stage.sh` 为隔离回归设置 300/600 秒，发布总任务上限 5400 秒；
+共享环境准备预算 3600 秒，Flutter SDK、Android SDK、Gradle 和引擎阶段分别最多 1200/1800/2400/600 秒，
+每阶段还受剩余总预算约束。超时先 TERM，最多再等 30 秒强制结束，退出 124/137 并标出阶段；
+中断必须清理当前任务子进程，不允许无限等待、无限重试或把超时当作成功。
+顶层监督器独立于工作进程组，嵌套阶段复用并校验同一 PGID；sdkmanager/Pub 的阶段超时直接中止任务，
+不会留下上一轮子进程继续重试。CI 显式禁用 Gradle 常驻 daemon，避免构建结束后保留无关守护进程。
+强制 KILL 后退出 trap 无法恢复临时 Pub 锁文件映射，失败重跑必须使用干净 checkout；发布入口仍拒绝脏工作区。
 Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行：国内默认 Pub 源最多
 尝试两次，遇到 HTTP 408/424/429/5xx、连接错误或超时后允许回退 `pub.dev`（同样最多两次），
 单次限时 300 秒。每次均使用 `--enforce-lockfile`；镜像尝试只临时映射公共源 URL，保留所有版本

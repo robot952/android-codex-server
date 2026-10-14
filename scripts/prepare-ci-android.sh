@@ -72,10 +72,19 @@ export ANDROID_HOME="$sdk_root" ANDROID_SDK_ROOT="$sdk_root"
 # Use Google's China download endpoint for metadata AND package archives.
 export SDK_TEST_BASE_URL="${repository_url%/}/"
 exec 9>"$sdk_root/.prepare.lock"
-flock 9
+flock -w 300 9 || { echo 'Timed out waiting for Android SDK cache lock' >&2; exit 1; }
+manager_deadline() {
+    local seconds="$1"
+    shift
+    if [[ -n "${CODEX_CI_PROCESS_GROUP:-}" ]]; then
+        bash "$(dirname "${BASH_SOURCE[0]}")/run-ci-stage.sh" 'Android sdkmanager' "$seconds" "$@"
+    else
+        timeout --kill-after=30s "$seconds" "$@"
+    fi
+}
 
 manager="$(find_sdkmanager "$sdk_root" || true)"
-if [[ -z "$manager" ]] || ! timeout 30 "$manager" --sdk_root="$sdk_root" --version >/dev/null 2>&1; then
+if [[ -z "$manager" ]] || ! manager_deadline 30 "$manager" --sdk_root="$sdk_root" --version >/dev/null; then
     echo "Preparing Android command-line tools $tools_version in $sdk_root" >&2
     for command in curl unzip sha256sum java; do
         command -v "$command" >/dev/null || { echo "Required tool missing: $command" >&2; exit 1; }
@@ -109,7 +118,7 @@ if [[ -z "$manager" ]] || ! timeout 30 "$manager" --sdk_root="$sdk_root" --versi
     [[ -x "$staged_manager" && -d "$staging/cmdline-tools/lib" ]] || {
         echo "Incomplete Android command-line tools archive" >&2; exit 1;
     }
-    timeout 30 "$staged_manager" --sdk_root="$sdk_root" --version >&2
+    manager_deadline 30 "$staged_manager" --sdk_root="$sdk_root" --version >&2
     target="$sdk_root/cmdline-tools/$tools_version"
     if [[ -e "$target" || -L "$target" ]]; then mv -- "$target" "$staging/previous-tools"; fi
     mv -- "$staging/cmdline-tools" "$target"
@@ -136,7 +145,7 @@ run_manager() {
     # yes normally exits with SIGPIPE. Propagate sdkmanager's status, not yes's.
     local statuses
     set +e
-    yes | timeout 1800 "$manager" --sdk_root="$sdk_root" "$@" >&2
+    yes | manager_deadline 1800 "$manager" --sdk_root="$sdk_root" "$@" >&2
     statuses=("${PIPESTATUS[@]}")
     set -e
     return "${statuses[1]}"

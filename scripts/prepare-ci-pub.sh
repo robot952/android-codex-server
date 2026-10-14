@@ -3,11 +3,16 @@ set -euo pipefail
 
 flutter_bin="${1:?Flutter executable required}"
 project="${2:?Flutter project directory required}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project"
 [[ -f pubspec.lock ]] || { echo 'CI requires pubspec.lock' >&2; exit 1; }
 primary="${PUB_HOSTED_URL:-https://pub.flutter-io.cn}"
 primary="${primary%/}"
 sources=("$primary")
+pub_deadline=(timeout --kill-after=15 300)
+if [[ -n "${CODEX_CI_PROCESS_GROUP:-}" ]]; then
+    pub_deadline=(bash "$script_dir/run-ci-stage.sh" 'Flutter dependencies' 300)
+fi
 # Do not send private package requests to public servers when a custom host is set.
 if [[ "$primary" == https://pub.flutter-io.cn ]]; then
     sources+=(https://pub.dev)
@@ -33,7 +38,7 @@ for source in "${sources[@]}"; do
     for attempt in 1 2; do
         echo "Fetching locked Flutter dependencies (source $source, attempt $attempt/2)"
         set +e
-        PUB_HOSTED_URL="$source" timeout --kill-after=15 300 \
+        PUB_HOSTED_URL="$source" "${pub_deadline[@]}" \
             "$flutter_bin" pub get --enforce-lockfile 2>&1 | tee "$temporary/output"
         statuses=("${PIPESTATUS[@]}")
         set -e

@@ -9,6 +9,17 @@
 
 Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只响应 `v` 前缀的 Git 标签；普通提交不会触发云端构建。
 标签脚本会核对标签与 `pubspec.yaml` 版本一致，再执行发布构建，避免错误标签消耗构建额度。
+标签与旧分支入口共用 `scripts/prepare-ci-environment.sh`，不能跳过 Flutter/Android/Gradle 环境准备。
+`prepare-ci-gradle.sh` 固定 Gradle 9.1.0-all 与官方 SHA-256，国内镜像失败可回退官方，最多六次限时
+续传；校验后的 ZIP 预填原 URL 对应的 Wrapper 缓存，缓存挂载根目录与已解压发行版保持不变。
+Gitee 必须设置明确超时：环境与 Gradle 隔离回归上限 300/600 秒，发布总任务上限 5400 秒；
+环境准备总预算 3600 秒，各 SDK/Gradle/引擎阶段均取自身上限与剩余预算的较小值。
+统一由 `run-ci-stage.sh` 执行，超时 TERM 后最多 30 秒 KILL，保留阶段名和非零退出码，不无限重试。
+嵌套阶段使用同一受校验的工作进程组；sdkmanager/Pub 的阶段超时终止任务，不继续叠加重试，
+临时网络响应错误仍可有限回退。CI 显式禁用 Gradle 常驻 daemon。
+强制 KILL 无法执行退出清理；失败重跑必须使用干净 checkout，不能直接发布残留临时锁文件映射的工作区。
+下载连接上限 20 秒、单次传输最多 300 秒，准备锁与 Wrapper 锁分别最多等待 300/120 秒。
+对应离线 fixture 为 `scripts/test-ci-environment.sh` 与 `scripts/test-ci-gradle.sh`，正式发布前在 Gitee 执行。
 GitHub 的跨平台出包由 `.github/workflows/flutter-refactor-ios.yml` 响应 `flutter-refactor-v*` 标签。
 Android 的 Ubuntu job 和 iOS 的 macOS job 都执行完整 analyze/test；Claude Linux SSH 安装脚本的五项
 集成测试只在 Linux 执行，由 Android job 把关，其他 adapter、协议及 API 测试仍在两端执行。

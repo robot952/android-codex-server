@@ -104,7 +104,12 @@ rg -Fq '      - v' "$flutter_gitee_workflow"
 rg -Fq '      - v' "$ROOT_DIR/.workflow/流水线-202608021802.yml"
 rg -Fq '"$ROOT_DIR/scripts/publish-gitee-release.sh"' "$ROOT_DIR/scripts/build-gitee-release.sh"
 rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
+rg -Fq 'bash scripts/run-ci-stage.sh gitee-release 5400 bash scripts/publish-tag-release.sh' "$flutter_gitee_workflow"
+rg -Fq '~/.cache/codex/gradle' "$flutter_gitee_workflow"
+rg -Fq 'prepare_ci_environment "$ROOT_DIR"' "$ROOT_DIR/scripts/publish-tag-release.sh"
 bash "$ROOT_DIR/scripts/test-ci-flutter.sh"
+bash "$ROOT_DIR/scripts/test-ci-environment.sh"
+bash "$ROOT_DIR/scripts/test-ci-gradle.sh"
 node "$ROOT_DIR/scripts/test-ci-pub.cjs"
 if command -v unshare >/dev/null && unshare --mount --propagation private true 2>/dev/null; then
     unshare --mount --propagation private bash "$ROOT_DIR/scripts/test-ci-android.sh" --read-only-mounts

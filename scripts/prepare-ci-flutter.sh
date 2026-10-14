@@ -16,7 +16,7 @@ archive_sha256="${5:?Flutter SDK archive SHA-256 required}"
 mkdir -p "$cache_root"
 cache_root="$(cd "$cache_root" && pwd -P)"
 exec 9>"$cache_root/.prepare.lock"
-flock 9
+flock -w 300 9 || { echo 'Timed out waiting for Flutter SDK cache lock' >&2; exit 1; }
 
 valid_sdk() {
     [[ -d "$1/.git" && -x "$1/bin/flutter" ]] &&

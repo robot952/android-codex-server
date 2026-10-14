@@ -26,8 +26,6 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 1
 fi
 
-resolve_android_sdk "$ROOT_DIR"
-
 build_mode="${CODEX_RELEASE_BUILD_MODE:-all}"
 case "$build_mode" in
     release|all) ;;
@@ -36,6 +34,10 @@ case "$build_mode" in
         exit 2
         ;;
 esac
+
+source "$ROOT_DIR/scripts/prepare-ci-environment.sh"
+prepare_ci_environment "$ROOT_DIR"
+resolve_android_sdk "$ROOT_DIR"
 
 "$ROOT_DIR/scripts/build-android.sh" "$build_mode" --force
 certificate_sha256="$(apk_verify_stable_signature "$ANDROID_HOME" "$APK_PATH")"

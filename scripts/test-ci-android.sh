@@ -148,8 +148,10 @@ cmp "$fixture/one" "$fixture/two"
 # Exercise the actual Gitee entry without publishing anything externally.
 entry="$fixture/entry"
 mkdir -p "$entry/scripts" "$entry/flutter/bin" "$entry/dist" "$entry/home"
-cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-android.sh" "$entry/scripts/"
+cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-android.sh" \
+    "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$entry/scripts/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/flutter"\n' > "$entry/scripts/prepare-ci-flutter.sh"
+printf '#!/bin/sh\nexit 0\n' > "$entry/scripts/prepare-ci-gradle.sh"
 printf '#!/bin/sh\ntest "$1 $2" = "precache --android"\n' > "$entry/flutter/bin/flutter"
 cat > "$entry/scripts/publish-gitee-release.sh" <<'PUBLISH'
 #!/bin/sh
