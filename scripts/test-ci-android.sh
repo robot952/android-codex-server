@@ -63,9 +63,12 @@ if [[ -f "$root/fail-mirror" && "$SDK_TEST_BASE_URL" == https://googledownloads.
 fi
 [[ ! -f "$root/omit-packages" ]] || exit 0
 for package in "$@"; do
+    if [[ "$package" == 'platforms;android-35' && -f "$root/omit-platform-35" ]]; then continue; fi
     case "$package" in
         platform-tools) package_dir=platform-tools; paths=(platform-tools/adb) ;;
-        'platforms;android-36') package_dir=platforms/android-36; paths=(platforms/android-36/android.jar) ;;
+        'platforms;android-34'|'platforms;android-35'|'platforms;android-36')
+            package_dir="platforms/android-${package#platforms;android-}"
+            paths=("$package_dir/android.jar") ;;
         'build-tools;36.0.0') package_dir=build-tools/36.0.0; paths=(build-tools/36.0.0/{aapt,apksigner,zipalign}) ;;
         'ndk;28.2.13676358') package_dir=ndk/28.2.13676358; paths=(ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang) ;;
         'cmake;3.22.1') package_dir=cmake/3.22.1; paths=(cmake/3.22.1/bin/{cmake,ninja}) ;;
@@ -83,7 +86,7 @@ for package in "$@"; do
     done
     case "$package" in
         platform-tools) property='Pkg.Revision=37.0.0' ;;
-        'platforms;android-36') property='AndroidVersion.ApiLevel=36' ;;
+        'platforms;android-'*) property="AndroidVersion.ApiLevel=${package#platforms;android-}" ;;
         'build-tools;36.0.0') property='Pkg.Revision=36.0.0' ;;
         'ndk;28.2.13676358') property='Pkg.Revision = 28.2.13676358' ;;
         'cmake;3.22.1') property='Pkg.Revision = 3.22.1' ;;
@@ -134,7 +137,7 @@ inode="$(stat -c %i "$sdk")"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(stat -c %i "$sdk")" == "$inode" && -f "$sdk/sentinel" ]]
 [[ "$(wc -l < "$sdk/calls")" == 2 ]]
-grep -Fxq 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
+grep -Fxq 'platform-tools platforms;android-34 platforms;android-35 platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
 [[ "$(cat "$sdk/package-sources")" == https://googledownloads.cn/android/repository/ ]]
 
 # A missing default-mirror archive falls back to official downloads, preserving the SDK root.
@@ -206,6 +209,17 @@ rm "$sdk/build-tools/36.0.0/apksigner"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(tail -n 1 "$sdk/calls")" == 'build-tools;36.0.0' ]]
 
+# A cache from the old API-36-only bootstrap must acquire the plugin platforms
+# before Gradle starts. Directory names without the right API metadata are invalid.
+rm "$sdk/platforms/android-34/android.jar"
+printf 'AndroidVersion.ApiLevel=36\n' > "$sdk/platforms/android-35/source.properties"
+[[ "$(prepare "$sdk")" == "$sdk" ]]
+[[ "$(tail -n 2 "$sdk/calls")" == $'licenses accepted\nplatforms;android-34 platforms;android-35' ]]
+for api in 34 35 36; do
+    [[ -s "$sdk/platforms/android-$api/android.jar" ]]
+    grep -Fxq "AndroidVersion.ApiLevel=$api" "$sdk/platforms/android-$api/source.properties"
+done
+
 # A cached CMake without its bundled Ninja must be repaired before compilation.
 rm "$sdk/cmake/3.22.1/bin/ninja"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
@@ -270,6 +284,16 @@ touch "$silent/omit-packages"
 if prepare "$silent" >"$fixture/out"; then echo 'Incomplete SDK accepted' >&2; exit 1; fi
 grep -q 'package is incomplete' "$fixture/last.log"
 
+# A successful sdkmanager exit must not hide a missing plugin-only platform.
+silent_platform="$fixture/silent-platform"
+mkdir -p "$silent_platform"
+touch "$silent_platform/omit-platform-35"
+if prepare "$silent_platform" >"$fixture/out"; then
+    echo 'Missing plugin platform accepted after SDK installation' >&2; exit 1
+fi
+[[ ! -s "$fixture/out" && -s "$silent_platform/platforms/android-36/android.jar" ]]
+grep -Fq 'Android SDK package is incomplete: platforms;android-35' "$fixture/last.log"
+
 # Concurrent jobs share a lock and do not install into the same cache simultaneously.
 concurrent="$fixture/concurrent"
 prepare "$concurrent" >"$fixture/one" & one=$!
@@ -298,6 +322,10 @@ test "$CODEX_RELEASE_BRANCH" = flutter-refactor
 test "$ANDROID_HOME" = "$EXPECTED_SDK"
 test "$ANDROID_SDK_ROOT" = "$EXPECTED_SDK"
 test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+for api in 34 35 36; do
+    test -s "$ANDROID_HOME/platforms/android-$api/android.jar"
+    grep -Fxq "AndroidVersion.ApiLevel=$api" "$ANDROID_HOME/platforms/android-$api/source.properties"
+done
 test "$(command -v cmake)" = "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
 test "$(command -v ninja)" = "$ANDROID_HOME/cmake/3.22.1/bin/ninja"
 cmake --version | grep -Fxq 'cmake version 3.22.1-g37088a8'
@@ -369,7 +397,11 @@ read_only_mounts=0
     complete_cache="$fixture/complete-cache"
     [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$readonly_complete" "$complete_cache")" == "$complete_cache" ]]
     grep -Fq 'Reusing preinstalled Android command-line tools:' "$fixture/last.log"
-    [[ "$(grep -Fc 'Reusing preinstalled Android SDK package:' "$fixture/last.log")" == 5 ]]
+    [[ "$(grep -Fc 'Reusing preinstalled Android SDK package:' "$fixture/last.log")" == 7 ]]
+    for api in 34 35 36; do
+        grep -Fq "Reusing preinstalled Android SDK package: platforms;android-$api" "$fixture/last.log"
+        [[ -s "$complete_cache/platforms/android-$api/android.jar" && ! -L "$complete_cache/platforms/android-$api" ]]
+    done
     [[ ! -e "$complete_cache/calls" && ! -e "$complete_cache/.downloads" ]]
     [[ ! -L "$complete_cache/ndk/28.2.13676358" && -x "$complete_cache/cmdline-tools/preinstalled/bin/sdkmanager" ]]
     # Reuse needs no original mount, tools archive or package download on a later job.
@@ -435,6 +467,22 @@ read_only_mounts=0
     [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$wrong_sdk" "$wrong_cache")" == "$wrong_cache" ]]
     [[ "$(cat "$wrong_cache/build-tools/36.0.0/cache-sentinel")" == keep ]]
     [[ "$(cat "$wrong_cache/calls")" == $'licenses accepted\nbuild-tools;36.0.0' ]]
+    # A runner can have API 36 and only part of the older plugin platforms.
+    # Reuse all valid packages, downloading only missing/corrupt platform SDKs.
+    platform_sdk="$fixture/pipeline-tools/partial-platform-sdk"
+    mkdir -p "$platform_sdk"
+    cp -a "$sdk/." "$platform_sdk/"
+    rm "$platform_sdk/platforms/android-35/android.jar"
+    printf 'AndroidVersion.ApiLevel=33\n' > "$platform_sdk/platforms/android-34/source.properties"
+    platform_before="$(find "$platform_sdk" -type f -exec sha256sum {} + | sort)"
+    make_readonly "$platform_sdk"
+    platform_cache="$fixture/platform-cache"
+    [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$platform_sdk" "$platform_cache")" == "$platform_cache" ]]
+    [[ "$(cat "$platform_cache/calls")" == $'licenses accepted\nplatforms;android-34 platforms;android-35' ]]
+    grep -Fq 'Reusing preinstalled Android SDK package: platforms;android-36' "$fixture/last.log"
+    [[ "$(find "$platform_sdk" -type f -exec sha256sum {} + | sort)" == "$platform_before" ]]
+    [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$platform_sdk" "$platform_cache")" == "$platform_cache" ]]
+    [[ "$(wc -l < "$platform_cache/calls")" == 2 ]]
     echo 'CI Android preinstalled SDK tests passed (complete/partial copies, version rejection, cache reuse, fallback, entry, unchanged SDK)'
 }
 export PATH="$original_path"

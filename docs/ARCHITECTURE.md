@@ -1137,13 +1137,19 @@ Android 工具准备由 `prepare-ci-android.sh` 单独负责，不再把 Gitee A
 `sdkmanager` 当作前置条件。脚本会从 `ANDROID_HOME`/`ANDROID_SDK_ROOT`、PATH 中的 sdkmanager、
 常见 SDK 目录和缓存目录依次探测；缺少命令行工具时从 `googledownloads.cn` 下载固定的
 Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根目录、许可证和
-`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;28.2.13676358`、`cmake;3.22.1`
+`platform-tools`、`platforms;android-34`、`platforms;android-35`、`platforms;android-36`、
+`build-tools;36.0.0`、`ndk;28.2.13676358`、`cmake;3.22.1`
 安装到选定的可写 SDK 目录，默认缓存为 `~/.cache/codex/android-sdk`。sdkmanager 的仓库地址通过固定工具实现提供的
 `SDK_TEST_BASE_URL` 默认指向国内下载端点；已有完整 SDK 直接复用。缺失包第一次安装失败后，
 余下尝试切换到 Google 官方仓库，仍由 sdkmanager 下载并校验，总计最多三次；显式设置
 `CODEX_ANDROID_REPOSITORY_URL` 时不自动替换源。超时或取消立即退出，不触发重试或源切换；
 SDK 总阶段仍受 1800 秒及共享环境剩余预算限制。隔离回归覆盖默认源缺包后的回退、
 两个源均失败、自定义源保持不变，以及超时/取消不重试。
+准备清单覆盖锁定插件自己的 compileSdk，而不仅是应用的 API 36：`jni`/`jni_flutter` 使用 API 35，
+`package_info_plus`/`share_plus` 使用 API 34。三套 platform 均在准备阶段校验 `android.jar` 和 API 元数据，
+优先复用有效缓存或 Gitee 预装，只补缺项；不强改插件 compileSdk，也不延长 APK 的 1200 秒上限。
+回归覆盖旧 API-36-only 缓存补齐、只读预装三版本复用、缺失/错误 API 定向修复和 sdkmanager 假成功漏包，
+避免 AGP 到 assembleRelease 才联网补装 SDK，耗尽编译预算。依赖升级时应同时复核所需 platform 清单。
 缓存根目录、下载和安装均有锁，工具包、许可证、包内容和失败路径都有
 `scripts/test-ci-android.sh` 的隔离回归，覆盖无预装 SDK、旧目录布局、空目录、缓存复用、
 并发、下载失败、许可证失败和流水线入口环境传递。对 Gitee 导出的只读 SDK（如

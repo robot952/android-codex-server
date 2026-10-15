@@ -65,6 +65,10 @@ Gitee 依赖阶段启用 `CODEX_CI_PUB=1`：`prepare-ci-pub.sh` 对国内默认 
 Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它先探测现有 `sdkmanager`，
 缺少时从 `googledownloads.cn` 下载并校验固定 Android Command-line Tools 12.0，再用国内仓库
 安装所需 platform、Build Tools、NDK 和 `cmake;3.22.1`；完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
+platform 清单包含 API 34/35/36：应用使用 36，锁定的 `jni`/`jni_flutter` 使用 35，
+`package_info_plus`/`share_plus` 使用 34。每个版本核对 `android.jar` 与 API 元数据，优先复用有效缓存
+或复制 Gitee 预装，只补缺失/损坏项，不能等 AGP 在 APK 编译阶段临时下载。插件升级时复核清单，
+不靠修改插件 compileSdk 或延长 1200 秒编译超时解决缺包。
 默认仓库的包安装失败后，剩余尝试回退 Google 官方仓库，总计最多三次；显式设置
 `CODEX_ANDROID_REPOSITORY_URL` 时保持自定义源。超时或取消立即停止，不换源重试，
 SDK 总阶段 1800 秒和共享环境剩余预算继续生效，下载校验仍由 sdkmanager 执行。

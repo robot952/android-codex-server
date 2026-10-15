@@ -29,19 +29,24 @@ find_sdkmanager() {
     return 1
 }
 
-packages=("platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1")
+# The app uses API 36, but locked Android plugins also compile against 34/35.
+# Prepare every required platform here, including copies from a read-only SDK;
+# otherwise AGP downloads them during assembleRelease and consumes its deadline.
+packages=("platform-tools" "platforms;android-34" "platforms;android-35" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1")
 property_matches() {
     local file="$1" key="$2" value="$3"
     [[ -f "$file" ]] || return 1
     grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*${value}[[:space:]]*$" "$file"
 }
 package_ready() {
-    local cmake_version sdk_root="${2:-$sdk_root}"
+    local cmake_version api sdk_root="${2:-$sdk_root}"
     case "$1" in
         platform-tools) [[ -x "$sdk_root/platform-tools/adb" ]] &&
             property_matches "$sdk_root/platform-tools/source.properties" 'Pkg\.Revision' '[0-9]+(\.[0-9]+)+' ;;
-        'platforms;android-36') [[ -s "$sdk_root/platforms/android-36/android.jar" ]] &&
-            property_matches "$sdk_root/platforms/android-36/source.properties" 'AndroidVersion\.ApiLevel' '36' ;;
+        'platforms;android-'*)
+            api="${1#platforms;android-}"
+            [[ "$api" =~ ^[0-9]+$ && -s "$sdk_root/platforms/android-$api/android.jar" ]] &&
+                property_matches "$sdk_root/platforms/android-$api/source.properties" 'AndroidVersion\.ApiLevel' "$api" ;;
         'build-tools;36.0.0') [[ -x "$sdk_root/build-tools/36.0.0/aapt" &&
             -x "$sdk_root/build-tools/36.0.0/apksigner" && -x "$sdk_root/build-tools/36.0.0/zipalign" ]] &&
             property_matches "$sdk_root/build-tools/36.0.0/source.properties" 'Pkg\.Revision' '36\.0\.0' ;;
@@ -65,6 +70,7 @@ package_ready() {
             timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 || {
                 echo 'Android SDK Ninja --version failed or timed out' >&2; return 1;
             } ;;
+        *) return 1 ;;
     esac
 }
 
@@ -160,7 +166,7 @@ seed_preinstalled_packages() {
         fi
         case "$package" in
             platform-tools) relative=platform-tools ;;
-            'platforms;android-36') relative=platforms/android-36 ;;
+            'platforms;android-'*) relative="platforms/android-${package#platforms;android-}" ;;
             'build-tools;36.0.0') relative=build-tools/36.0.0 ;;
             'ndk;28.2.13676358') relative=ndk/28.2.13676358 ;;
             'cmake;3.22.1') relative=cmake/3.22.1 ;;
