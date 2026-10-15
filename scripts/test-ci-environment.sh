@@ -7,6 +7,8 @@ fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 # Timeout-failure fixtures must own their groups rather than kill this test.
 unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE FAIL_PHASE
+# The isolated tag entry stops at its fake build, before release publication.
+export CODEX_RELEASE_TOKEN=fixture-token-not-a-secret
 entry="$fixture/repo"
 mkdir -p "$entry/scripts" "$entry/node/bin" "$entry/flutter/bin" "$entry/android/platform-tools" "$entry/dist" "$fixture/home"
 cp "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" \
@@ -142,6 +144,12 @@ status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 1 && ! -s "$FIXTURE_STAGES" ]]
 git -C "$entry" tag v1.2.3
+for missing_token in '' '   '; do
+    status=0
+    CODEX_RELEASE_TOKEN="$missing_token" bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
+    [[ "$status" == 2 && ! -s "$FIXTURE_STAGES" ]]
+    grep -Fq 'CODEX_RELEASE_TOKEN is required' "$fixture/tag.log"
+done
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 43 ]]

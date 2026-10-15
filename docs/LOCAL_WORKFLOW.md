@@ -11,6 +11,13 @@ Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只响�
 `.workflow/` 只保留 `流水线-flutter-refactor-编译.yml`。历史 `流水线-202608021802.yml` 必须从对应
 分支删除，并在 Gitee Go 核对旧“构建”入口已移除，再发送新标签；不要同时手动重跑和推送标签。
 标签脚本会核对标签与 `pubspec.yaml` 版本一致，再执行发布构建，避免错误标签消耗构建额度。
+正式发布还要求对标签构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；不得在日志或聊天中提供令牌。
+缺失时在环境下载前失败，编译前通过 Node 发布预检检查身份与仓库访问。构建并验签后，
+`publish-gitee-artifact.cjs` 为已有标签创建非预览 Release、上传同一 `Agent-<version>.apk`，并公开下载核对
+大小与 SHA-256。只有回验成功才输出 Published and verified；`dist/release-publication.json` 留存非敏感发布结果。
+发布不创建/移动标签，不再次编译，同名附件必须回验且不能覆盖。`dist/` 暂存下载与正式 Release 同时保留。
+发布回归/预检各限 120 秒，发布整体限 900 秒（API 单次 30 秒，上传/回验各 300 秒），继续受总发布预算约束。
+`test-gitee-release.cjs` 仅使用 loopback 和假令牌，在云端检查幂等、失败、公开附件哈希、令牌隔离和超时。
 YAML 只执行 `bash scripts/run-gitee-release.sh`，通过严格 Shell 串行调用回归与发布，失败或超时
 不能继续下一阶段。干净检出缺少本地标签时，限时 60 秒获取 origin 的精确标签并校验其提交；不创建或移动标签。
 Gitee YAML 使用 `caches: []` 关闭跨构建缓存传输，避免整个 SDK/Gradle 等目录上传 HTTP 413 后

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.164+296，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.169+301，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1063,8 +1063,14 @@ flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
 Gitee Go 的 Flutter 发布流水线只响应 `v` 前缀的 Git 标签，使用固定 Flutter `3.44.8`、JDK 17、Android
 Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
-`scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。流水线仍归档
-`dist/` 供构建页直接下载；标签脚本不会再次创建或触发标签，避免重复出包。
+`scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。随后调用
+`scripts/publish-gitee-artifact.cjs` 创建正式 Gitee Release、上传同一 APK，并从公开下载地址回验大小和
+SHA-256；全部完成才报告发布成功，不能把构建页的暂存构件当成 Release。仍保留 `dist/` 构件和发布结果元数据。
+Gitee Go 必须配置对标签构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；缺失立即退出，
+编译前检查身份与仓库访问。令牌只从环境读取，不进入命令参数、输出或下载请求，鉴权 API 不跟随重定向。
+发布前再次核对 origin 已有标签指向构建提交，不创建或移动标签、不重复编译；同名附件只回验，不覆盖。
+发布回归/预检分别上限 120 秒，发布上限 900 秒；API 单次 30 秒、上传及整包回验各 300 秒，仍受总任务预算限制。
+`test-gitee-release.cjs` 在云端以 loopback fixture 覆盖创建、补传、幂等、错误哈希、令牌隔离及超时。
 仓库只保留 `.workflow/流水线-flutter-refactor-编译.yml` 一个 Gitee Go 配置，历史
 `流水线-202608021802.yml` 已移除，防止同一 `v` 标签被两个入口重复构建。按 Gitee Go 删除提示，
 历史分支上的旧入口也需在对应分支删除；发布前核对平台只保留“Flutter Refactor 发布”自动入口，

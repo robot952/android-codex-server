@@ -62,9 +62,20 @@ if [[ "$tag_commit" != "$head_commit" ]]; then
     exit 1
 fi
 
+release_token="${CODEX_RELEASE_TOKEN:-}"
+if [[ -z "${release_token//[[:space:]]/}" ]]; then
+    echo 'CODEX_RELEASE_TOKEN is required: configure a secret Gitee Go variable available to tag builds with repository write permission' >&2
+    exit 2
+fi
+
 source "$ROOT_DIR/scripts/prepare-ci-environment.sh"
 prepare_ci_environment "$ROOT_DIR"
 resolve_android_sdk "$ROOT_DIR"
+
+bash "$ROOT_DIR/scripts/run-ci-stage.sh" release-publish-regression 120 \
+    node "$ROOT_DIR/scripts/test-gitee-release.cjs"
+bash "$ROOT_DIR/scripts/run-ci-stage.sh" release-preflight 120 \
+    node "$ROOT_DIR/scripts/publish-gitee-artifact.cjs" --preflight
 
 "$ROOT_DIR/scripts/build-android.sh" "$build_mode" --force
 certificate_sha256="$(apk_verify_stable_signature "$ANDROID_HOME" "$APK_PATH")"
@@ -78,6 +89,7 @@ artifact_version_code="$(apk_version_code_from_apk "$ANDROID_HOME" "$artifact_pa
 {
     printf 'tag=%s\n' "$expected_tag"
     printf 'versionName=%s\n' "$version_name"
+    printf 'versionCode=%s\n' "$artifact_version_code"
     printf 'gitCommit=%s\n' "$head_commit"
     printf 'apkSha256=%s\n' "$artifact_sha256"
     printf 'certificateSha256=%s\n' "$certificate_sha256"
@@ -145,3 +157,5 @@ if [[ -n "$verify_urls" ]]; then
 fi
 
 echo "Release artifact: $artifact_path"
+bash "$ROOT_DIR/scripts/run-ci-stage.sh" 'Gitee Release publication' 900 \
+    node "$ROOT_DIR/scripts/publish-gitee-artifact.cjs" "$output_dir"

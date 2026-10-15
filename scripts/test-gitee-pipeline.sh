@@ -40,6 +40,14 @@ grep -Fxq '    artifacts:' "$pipeline_config" &&
     echo 'Gitee must retain the dist release artifact archive' >&2
     exit 1
 }
+# A build artifact alone is not a Release. The tag path must publish the already
+# signed APK exactly once, within a deadline, without using the rebuilding entry.
+grep -Fq "'Gitee Release publication' 900" "$ROOT_DIR/scripts/publish-tag-release.sh"
+grep -Fq 'node "$ROOT_DIR/scripts/publish-gitee-artifact.cjs" "$output_dir"' "$ROOT_DIR/scripts/publish-tag-release.sh"
+if grep -Fq 'scripts/publish-gitee-release.sh' "$ROOT_DIR/scripts/publish-tag-release.sh"; then
+    echo 'Tag publication must not invoke the rebuilding/tag-creating branch entry' >&2
+    exit 1
+fi
 mkdir -p "$ROOT_DIR/.workflow-cache"
 test_root="$(mktemp -d "$ROOT_DIR/.workflow-cache/gitee-pipeline-test.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
@@ -113,4 +121,4 @@ assert_pipeline test-ci-gradle.sh 44 3
 assert_pipeline test-ci-gradle.sh 124 3
 assert_pipeline test-ci-gradle.sh 137 3
 assert_pipeline publish-tag-release.sh 45 4
-echo 'Gitee pipeline Release-only build, artifact-only upload, fail-fast and stage deadline regressions passed'
+echo 'Gitee pipeline Release-only build, bounded publication, cache policy and stage deadline regressions passed'
