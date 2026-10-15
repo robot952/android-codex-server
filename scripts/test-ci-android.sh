@@ -27,7 +27,10 @@ set -euo pipefail
 root="${1#--sdk_root=}"
 shift
 [[ "$ANDROID_HOME" == "$root" && "$ANDROID_SDK_ROOT" == "$root" ]]
-[[ "$SDK_TEST_BASE_URL" == https://googledownloads.cn/android/repository/ ]]
+case "$SDK_TEST_BASE_URL" in
+    https://googledownloads.cn/android/repository/|https://dl.google.com/android/repository/|https://sdk.fixture.invalid/repository/) ;;
+    *) echo 'Unexpected SDK repository' >&2; exit 9 ;;
+esac
 case "$1" in
     --version) echo '12.0'; exit 0 ;;
     --licenses)
@@ -38,7 +41,13 @@ case "$1" in
         exit 0 ;;
 esac
 printf '%s\n' "$*" >> "$root/calls"
+printf '%s\n' "$SDK_TEST_BASE_URL" >> "$root/package-sources"
+if [[ -f "$root/install-status" ]]; then exit "$(cat "$root/install-status")"; fi
 [[ ! -f "$root/fail-install" ]] || exit 8
+if [[ -f "$root/fail-mirror" && "$SDK_TEST_BASE_URL" == https://googledownloads.cn/android/repository/ ]]; then
+    echo 'Package archive returned HTTP 404' >&2
+    exit 8
+fi
 [[ ! -f "$root/omit-packages" ]] || exit 0
 for package in "$@"; do
     case "$package" in
@@ -104,6 +113,47 @@ inode="$(stat -c %i "$sdk")"
 [[ "$(stat -c %i "$sdk")" == "$inode" && -f "$sdk/sentinel" ]]
 [[ "$(wc -l < "$sdk/calls")" == 2 ]]
 grep -Fxq 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
+[[ "$(cat "$sdk/package-sources")" == https://googledownloads.cn/android/repository/ ]]
+
+# A missing default-mirror archive falls back to official downloads, preserving the SDK root.
+fallback="$fixture/fallback"
+mkdir -p "$fallback"
+touch "$fallback/fail-mirror" "$fallback/sentinel"
+[[ "$(prepare "$fallback")" == "$fallback" ]]
+[[ -f "$fallback/sentinel" && "$(wc -l < "$fallback/package-sources")" == 2 ]]
+[[ "$(head -n 1 "$fallback/package-sources")" == https://googledownloads.cn/android/repository/ ]]
+[[ "$(tail -n 1 "$fallback/package-sources")" == https://dl.google.com/android/repository/ ]]
+[[ "$("$fallback/cmake/3.22.1/bin/cmake" --version)" == 'cmake version 3.22.1' ]]
+[[ "$("$fallback/cmake/3.22.1/bin/ninja" --version)" == 1.10.2 ]]
+
+# Explicit repository choices remain authoritative, whether installation succeeds or fails.
+custom="$fixture/custom"
+[[ "$(CODEX_ANDROID_REPOSITORY_URL=https://sdk.fixture.invalid/repository prepare "$custom")" == "$custom" ]]
+[[ "$(cat "$custom/package-sources")" == https://sdk.fixture.invalid/repository/ ]]
+custom_failed="$fixture/custom-failed"
+mkdir -p "$custom_failed"
+touch "$custom_failed/fail-install"
+if CODEX_ANDROID_REPOSITORY_URL=https://sdk.fixture.invalid/repository/ prepare "$custom_failed" >"$fixture/out"; then
+    echo 'Custom repository failure swallowed' >&2; exit 1
+fi
+[[ ! -s "$fixture/out" && "$(wc -l < "$custom_failed/package-sources")" == 3 ]]
+[[ "$(sort -u "$custom_failed/package-sources")" == https://sdk.fixture.invalid/repository/ ]]
+
+# Timeout and cancellation statuses stop after one attempt, without retrying another source.
+for status in 124 137 129 130 143; do
+    stopped="$fixture/stopped-$status"
+    mkdir -p "$stopped"
+    printf '%s\n' "$status" > "$stopped/install-status"
+    # These are simulated exit codes; do not let the nested CI supervisor cancel
+    # the real regression job. The outer regression deadline remains in force.
+    if CODEX_CI_PROCESS_GROUP= prepare "$stopped" >"$fixture/out"; then
+        echo 'SDK timeout or cancellation swallowed' >&2; exit 1
+    else
+        actual_status=$?
+    fi
+    [[ "$actual_status" == "$status" && ! -s "$fixture/out" ]]
+    [[ "$(cat "$stopped/package-sources")" == https://googledownloads.cn/android/repository/ ]]
+done
 
 # A complete cached SDK needs neither archive access nor network/package installation.
 [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$sdk")" == "$sdk" ]]
@@ -168,6 +218,8 @@ mkdir -p "$failed"
 touch "$failed/fail-install"
 if prepare "$failed" >"$fixture/out"; then echo 'Install failure swallowed' >&2; exit 1; fi
 [[ "$(wc -l < "$failed/calls")" == 4 && ! -s "$fixture/out" ]]
+[[ "$(head -n 1 "$failed/package-sources")" == https://googledownloads.cn/android/repository/ ]]
+[[ "$(grep -Fxc 'https://dl.google.com/android/repository/' "$failed/package-sources")" == 2 ]]
 silent="$fixture/silent"
 mkdir -p "$silent"
 touch "$silent/omit-packages"

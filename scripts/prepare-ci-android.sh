@@ -163,8 +163,23 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Installing Android SDK packages: ${missing[*]}" >&2
     installed=0
     for attempt in 1 2 3; do
-        if run_manager "${missing[@]}"; then installed=1; break; fi
-        echo "Android SDK package installation failed (attempt $attempt/3)" >&2
+        if run_manager "${missing[@]}"; then
+            installed=1
+            break
+        else
+            install_status=$?
+        fi
+        echo "Android SDK package installation failed (attempt $attempt/3, exit $install_status)" >&2
+        # A deadline or cancellation ends this stage; it must not start another download.
+        case "$install_status" in
+            124|137|129|130|143) exit "$install_status" ;;
+        esac
+        if [[ "$attempt" == 1 && -z "${CODEX_ANDROID_REPOSITORY_URL:-}" ]]; then
+            # The default mirror may list packages whose archives return 404.
+            # Keep sdkmanager's checksum checks and the same three-attempt budget.
+            export SDK_TEST_BASE_URL=https://dl.google.com/android/repository/
+            echo 'Default Android SDK repository failed; retrying with Google official repository' >&2
+        fi
     done
     [[ "$installed" == 1 ]] || exit 1
 fi

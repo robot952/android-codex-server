@@ -53,6 +53,9 @@ Gitee 依赖阶段启用 `CODEX_CI_PUB=1`：`prepare-ci-pub.sh` 对国内默认 
 Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它先探测现有 `sdkmanager`，
 缺少时从 `googledownloads.cn` 下载并校验固定 Android Command-line Tools 12.0，再用国内仓库
 安装所需 platform、Build Tools、NDK 和 `cmake;3.22.1`；完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
+默认仓库的包安装失败后，剩余尝试回退 Google 官方仓库，总计最多三次；显式设置
+`CODEX_ANDROID_REPOSITORY_URL` 时保持自定义源。超时或取消立即停止，不换源重试，
+SDK 总阶段 1800 秒和共享环境剩余预算继续生效，下载校验仍由 sdkmanager 执行。
 应用固定 CMake 3.22.1，准备阶段检查 CMake 与随包 Ninja 可执行，并将其 bin 目录放到 PATH 首位。
 工具缺失或 CMake 版本错误必须在编译前修复，不能仅检查 SDK 目录存在。
 `scripts/test-ci-android.sh` 会隔离模拟无预装 SDK、旧命令行工具目录、损坏/缺失包、许可证和

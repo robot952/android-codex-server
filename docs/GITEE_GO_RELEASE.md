@@ -86,6 +86,9 @@ Gradle 的 HTTP 连接与读取各限 30 秒；Flutter 内部重试不重置 APK
 Android SDK 准备明确包含 `platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、
 `ndk;28.2.13676358` 和 `cmake;3.22.1`。应用固定 CMake 3.22.1，准备阶段实际执行 CMake/Ninja
 检查，将 SDK CMake 的 bin 目录加入 PATH；缺 Ninja 或 CMake 版本不匹配时补齐包后再次校验。
+默认国内仓库可能有元数据但缺少对应压缩包；首次包安装失败后，余下尝试切换 Google 官方仓库，
+总计最多三次，并保留 sdkmanager 校验。显式配置 `CODEX_ANDROID_REPOSITORY_URL` 不自动换源。
+超时或取消立即停止，不进入重试，SDK 1800 秒总阶段和共享环境剩余预算保持不变。
 SDK 回归的测试 ZIP 由构建已有的 JDK 17 生成，保留 sdkmanager 的 Unix 可执行权限；
 文本断言使用基础 grep，不依赖容器预装 Python 或 ripgrep。入口缺依赖明确报错，
 原有 SDK 回归项目与 300 秒超时均保留。

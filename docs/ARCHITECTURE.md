@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.161+293，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.162+294，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1121,7 +1121,11 @@ Android 工具准备由 `prepare-ci-android.sh` 单独负责，不再把 Gitee A
 Android Command-line Tools 12.0（SHA-256 校验后才启用），并把 SDK 根目录、许可证和
 `platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;28.2.13676358`、`cmake;3.22.1`
 安装到选定的可写 SDK 目录，默认缓存为 `~/.cache/codex/android-sdk`。sdkmanager 的仓库地址通过固定工具实现提供的
-`SDK_TEST_BASE_URL` 指向国内下载端点；已有完整 SDK 直接复用，缺失包按三次有限重试补齐。
+`SDK_TEST_BASE_URL` 默认指向国内下载端点；已有完整 SDK 直接复用。缺失包第一次安装失败后，
+余下尝试切换到 Google 官方仓库，仍由 sdkmanager 下载并校验，总计最多三次；显式设置
+`CODEX_ANDROID_REPOSITORY_URL` 时不自动替换源。超时或取消立即退出，不触发重试或源切换；
+SDK 总阶段仍受 1800 秒及共享环境剩余预算限制。隔离回归覆盖默认源缺包后的回退、
+两个源均失败、自定义源保持不变，以及超时/取消不重试。
 缓存根目录、下载和安装均有锁，工具包、许可证、包内容和失败路径都有
 `scripts/test-ci-android.sh` 的隔离回归，覆盖无预装 SDK、旧目录布局、空目录、缓存复用、
 并发、下载失败、许可证失败和流水线入口环境传递。对 Gitee 导出的只读 SDK（如
