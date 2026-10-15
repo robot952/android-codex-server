@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-for prerequisite in java bash curl unzip sha256sum flock timeout grep; do
+for prerequisite in java bash curl unzip sha256sum flock timeout grep git; do
     if ! command -v "$prerequisite" >/dev/null 2>&1; then
         echo "CI Android SDK tests require $prerequisite" >&2
         exit 127
     fi
 done
+bash "$ROOT_DIR/scripts/test-ci-dependency.sh"
 mkdir -p "$ROOT_DIR/.workflow-cache"
 fixture="$(mktemp -d "$ROOT_DIR/.workflow-cache/test-ci-android.XXXXXX")"
 mounts=()
@@ -157,6 +158,35 @@ grep -Fq 'Installed and verified CMake 3.22.1 with bundled Ninja' "$fixture/last
 # metadata or build-tools to the slow official repository (the real Gitee failure).
 ! grep -Fq 'cmake;3.22.1' "$sdk/calls"
 [[ -x "$sdk/cmake/3.22.1/bin/cmake" && -x "$sdk/cmake/3.22.1/bin/ninja" ]]
+
+# The production default must select the pinned Gitee object, not a floating
+# branch, Google URL or inherited custom hash. Simulate a fetch failure to prove
+# it stops preparation instead of falling through to another downloader.
+default_sdk="$fixture/default-cmake-sdk"
+mkdir -p "$fixture/default-scripts"
+cp -a "$sdk" "$default_sdk"
+rm -rf "$default_sdk/cmake/3.22.1"
+cp "$ROOT_DIR/scripts/prepare-ci-android.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$fixture/default-scripts/"
+cat > "$fixture/default-scripts/fetch-ci-dependency.sh" <<'FETCH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 6 ]]
+[[ "$1" == https://gitee.com/YanGanYuan/android-codex-server.git ]]
+[[ "$2" == refs/tags/ci-deps-cmake-3.22.1-linux-x86_64 ]]
+[[ "$3" == 598abbd92d9711f953613ee51987bd5c71b23b4f ]]
+[[ "$4" == cmake/cmake-3.22.1-linux.zip ]]
+[[ "$5" == 9196644852a978012caf7a4067ba1898debf6cc204c3341562771e31080d6869 ]]
+[[ "$6" == "$ANDROID_HOME/.downloads/cmake-3.22.1-linux.zip" ]]
+echo 'pinned Gitee dependency selected' >&2
+exit 73
+FETCH
+default_status=0
+ANDROID_HOME="$default_sdk" env -u CODEX_ANDROID_CMAKE_URL \
+    bash "$fixture/default-scripts/prepare-ci-android.sh" "$default_sdk" >"$fixture/out" 2>"$fixture/last.log" || default_status=$?
+[[ "$default_status" == 73 ]]
+grep -Fq 'pinned Gitee dependency selected' "$fixture/last.log"
+! grep -Fq 'Downloading CMake' "$fixture/last.log"
+[[ ! -e "$default_sdk/cmake/3.22.1" ]]
 
 # A matching CMake/Ninja already on PATH is copied with its modules, without a download.
 system_sdk="$fixture/system-cmake-sdk"
@@ -388,6 +418,7 @@ cmp "$fixture/one" "$fixture/two"
 entry="$fixture/entry"
 mkdir -p "$entry/scripts" "$entry/flutter/bin" "$entry/node/bin" "$entry/dist" "$entry/home"
 cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-android.sh" \
+    "$ROOT_DIR/scripts/fetch-ci-dependency.sh" \
     "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
     "$ROOT_DIR/scripts/ci-flutter-repositories.init.gradle" \
     "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$entry/scripts/"

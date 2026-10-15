@@ -183,10 +183,10 @@ reuse_system_cmake() {
 
 prepare_cmake_archive() {
     local url archive partial expected_sha status http_status attempt staging payload
-    # The China repository lists this package but its ZIP returns 404. Fetch only
-    # this small archive from Google, keeping all other SDK metadata/downloads on
-    # the selected repository. Never make sdkmanager rediscover the entire SDK.
-    url="${CODEX_ANDROID_CMAKE_URL:-https://dl.google.com/android/repository/cmake-3.22.1-linux.zip}"
+    # The China mirror returns 404 and Gitee workers cannot reliably reach Google.
+    # Default to our immutable dependency branch, containing the untouched official
+    # archive. Other SDK packages stay on their selected repository.
+    url="${CODEX_ANDROID_CMAKE_URL:-}"
     # Official repository SHA-1: fd0a48b4a758310df8c7aa51f59840ed48fe7ed8.
     expected_sha=9196644852a978012caf7a4067ba1898debf6cc204c3341562771e31080d6869
     if [[ -n "${CODEX_ANDROID_CMAKE_URL:-}" ]]; then
@@ -199,6 +199,14 @@ prepare_cmake_archive() {
     cmake_archive_valid() {
         [[ -f "$1" && "$(sha256sum "$1" | awk '{print $1}')" == "$expected_sha" ]]
     }
+    if [[ -z "$url" ]] && ! cmake_archive_valid "$archive"; then
+        echo 'Preparing official CMake 3.22.1 archive from Gitee ci-deps (22,308,647 bytes)' >&2
+        bash "$(dirname "${BASH_SOURCE[0]}")/fetch-ci-dependency.sh" \
+            https://gitee.com/YanGanYuan/android-codex-server.git \
+            refs/tags/ci-deps-cmake-3.22.1-linux-x86_64 \
+            598abbd92d9711f953613ee51987bd5c71b23b4f \
+            cmake/cmake-3.22.1-linux.zip "$expected_sha" "$archive" || return $?
+    fi
     if ! cmake_archive_valid "$archive"; then
         for attempt in 1 2; do
             cmake_archive_valid "$partial" && break

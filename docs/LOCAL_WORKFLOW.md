@@ -91,12 +91,21 @@ SDK 总阶段 1800 秒和共享环境剩余预算继续生效，下载校验仍�
 应用固定 CMake 3.22.1，准备阶段检查 CMake 与随包 Ninja 可执行，并将其 bin 目录放到 PATH 首位。
 优先复用完整 SDK/预装包，也探测 PATH 中匹配的 CMake 和 Ninja；系统安装仅复制对应二进制及
 `share/cmake-3.22`，不复制整个 `/usr`，不改变其他版本或系统安装。国内仓库的 CMake ZIP 返回 404，
-默认源下的缺失 CMake 改为从 Google 官方静态地址单独获取，校验固定 SHA-256 后在临时目录验证工具，
-通过才替换目标版本。它不经过 sdkmanager 的全仓库回退，其他 SDK 包仍走国内源。
-CMake 下载连接上限 20 秒、单次最多 180 秒、低速上限 30 秒，最多两次，支持断点续传；
-HTTP 400/401/403/404 直接失败，错误哈希或不完整工具不得替换旧安装，继续受 SDK 总预算约束。
+且 Gitee runner 连接 Google 超时，因此默认缺包从本仓库 Gitee 的独立 `ci-deps` 分支托管归档获取。
+`fetch-ci-dependency.sh` 浅取 `refs/tags/ci-deps-cmake-3.22.1-linux-x86_64`，严格核对提交
+`598abbd92d9711f953613ee51987bd5c71b23b4f` 和归档 SHA-256
+`9196644852a978012caf7a4067ba1898debf6cc204c3341562771e31080d6869`。
+仅复制 22,308,647 字节的官方原样 ZIP，包含随包 Ninja、模块、版权和许可证，不包含完整 SDK。
+通过无凭据公共 HTTPS 获取，不读取发布令牌，不 checkout、不执行 hooks，不改变应用 Git 工作区。
+浅取最多两次、每次 180 秒、低速保护 30 秒；超时/取消立即终止、不重置阶段预算。
+有效 ZIP 缓存不联网，失败保留原归档和安装；哈希/版本/工具校验通过才替换对应 CMake 目录。
+该分支为独立历史，不合并 main、不移动标签、不使用 LFS、不包含工作流；两端仍只响应 main 推送一次。
+其他 SDK 包仍走原国内仓库，不因 CMake 失败触发全仓库回退，也不依赖 GitHub 或 Google 下载。
 自定义 `CODEX_ANDROID_CMAKE_URL` 必须同时提供 `CODEX_ANDROID_CMAKE_SHA256`；显式指定
-`CODEX_ANDROID_REPOSITORY_URL` 时 CMake 仍完全交由该源的 sdkmanager 安装，不自动访问官方静态地址。
+`CODEX_ANDROID_REPOSITORY_URL` 时 CMake 仍完全交由该源的 sdkmanager 安装，不自动访问依赖分支。
+自定义静态 URL 保留连接 20 秒、传输 180 秒、低速 30 秒、两次续传限制；HTTP 400/401/403/404 直接失败。
+`test-ci-dependency.sh` 随 Android SDK 回归在云端执行，用本地 Git fixture 验证固定提交、哈希、离线缓存、
+失败保留原文件和有界退出；SDK 回归同时锁定默认 Gitee 参数并确认获取失败后不继续安装。
 工具缺失或 CMake 版本错误必须在编译前修复，不能仅检查 SDK 目录存在。
 匹配完整版本首行，接受 `3.22.1` 和官方 Android 包的十六进制构建后缀（如
 `3.22.1-g37088a8`）；其他补丁版本、预发布后缀和非零退出仍需修复，不把成功安装误判为缺包。
