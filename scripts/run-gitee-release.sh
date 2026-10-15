@@ -10,4 +10,8 @@ cd "$ROOT_DIR"
 bash scripts/run-ci-stage.sh bootstrap-regression 300 bash scripts/test-ci-environment.sh
 bash scripts/run-ci-stage.sh android-sdk-regression 300 bash scripts/test-ci-android.sh
 bash scripts/run-ci-stage.sh gradle-regression 600 bash scripts/test-ci-gradle.sh
-bash scripts/run-ci-stage.sh gitee-release 5400 bash scripts/publish-tag-release.sh
+# Only the signed Release APK is published. Do not spend a cold CI job building
+# a Debug APK first; release mode still runs analyze, the full tests and signing
+# checks. Keep an explicit `all` override for diagnosing both build variants.
+CODEX_RELEASE_BUILD_MODE="${CODEX_RELEASE_BUILD_MODE:-release}" \
+    bash scripts/run-ci-stage.sh gitee-release 5400 bash scripts/publish-tag-release.sh

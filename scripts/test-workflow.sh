@@ -82,6 +82,10 @@ assert_android_plan debug 1 1 0 0 1 1 0 0
 assert_android_plan all 1 1 1 1 0 0 0 1
 # --force ignores otherwise valid stamps.
 assert_android_plan all 0 1 1 1 1 1 1 0
+# Gitee publishes Release only, but --force must retain full validation even
+# when a prior artifact or validation stamp is present.
+assert_android_plan release 0 0 0 0 1 0 1 0
+assert_android_plan release 0 1 1 1 1 0 1 0
 [[ "$(workflow_format_duration_ms 292379)" == 4m52.379s ]]
 
 # The timer tests own their state directory; active developer tasks are preserved.
@@ -103,8 +107,7 @@ rg -Fq '      - v' "$flutter_gitee_workflow"
 rg -Fq '"$ROOT_DIR/scripts/publish-gitee-release.sh"' "$ROOT_DIR/scripts/build-gitee-release.sh"
 rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
 rg -Fq 'bash scripts/run-ci-stage.sh gitee-release 5400 bash scripts/publish-tag-release.sh' "$ROOT_DIR/scripts/run-gitee-release.sh"
-rg -Fq '~/.cache/codex/gradle' "$flutter_gitee_workflow"
-rg -Fq '~/.cache/codex/node' "$flutter_gitee_workflow"
+rg -Fxq '    caches: []' "$flutter_gitee_workflow"
 rg -Fq 'prepare_ci_environment "$ROOT_DIR"' "$ROOT_DIR/scripts/publish-tag-release.sh"
 bash "$ROOT_DIR/scripts/test-ci-flutter.sh"
 bash "$ROOT_DIR/scripts/test-ci-environment.sh"

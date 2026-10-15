@@ -239,6 +239,7 @@ run_apk_build() {
 }
 
 cd "$FLUTTER_DIR"
+print_build_plan
 printf 'Flutter: %s\n' "$flutter_identity"
 printf 'Gradle cache: %s\n' "$GRADLE_USER_HOME"
 printf 'Pub cache: %s\n' "$PUB_CACHE"

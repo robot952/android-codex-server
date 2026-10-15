@@ -20,8 +20,17 @@ fi
 
 temporary="$(mktemp -d .ci-pub.XXXXXX)"
 cp -p pubspec.lock "$temporary/pubspec.lock"
+dependencies_ready=0
 cleanup() {
     cp -p "$temporary/pubspec.lock" pubspec.lock
+    if [[ "$dependencies_ready" == 1 ]]; then
+        # Flutter's implicit --pub step requires the lockfile to be newer than
+        # pubspec.yaml. Restoring its checkout timestamp forces another solve
+        # against the unmapped source, wasting downloads and changing versions
+        # after the tests. Keep the original bytes/mode, but mark this successful
+        # locked resolution as current. Failed resolutions keep the old mtime.
+        touch pubspec.lock
+    fi
     rm -rf -- "$temporary"
 }
 trap cleanup EXIT
@@ -45,6 +54,7 @@ for source in "${sources[@]}"; do
         status="${statuses[0]}"
         [[ "${statuses[1]}" == 0 ]] || exit "${statuses[1]}"
         if [[ "$status" == 0 ]]; then
+            dependencies_ready=1
             echo 'Locked Flutter dependencies ready'
             exit 0
         fi

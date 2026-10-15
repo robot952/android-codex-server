@@ -367,6 +367,11 @@ UI 验收推荐使用约 1.5K 画布：
 Flutter 3.44 的 Android Release 构建须保留 `--pub`，以按 Release 模式重新生成原生插件注册表，
 剔除仅测试使用的 `integration_test`；直接沿用 Debug 注册表并使用 `--no-pub` 会编译失败。
 已解析依赖仍由 Pub 的 up-to-date 检查复用，不清理缓存。
+CI 的 `prepare-ci-pub.sh` 成功后恢复锁文件原内容和权限，但刷新时间戳，避免 checkout 时锁文件早于
+`pubspec.yaml` 触发第二次无锁解析；失败恢复原时间戳。版本和包哈希仍由 `--enforce-lockfile` 校验。
+Gitee 的 `run-gitee-release.sh` 默认只构建 Release APK，保留 analyze、全量 Flutter tests、验签和超时；
+不再编未交付的 Debug APK。仅需要诊断双变体时设置 `CODEX_RELEASE_BUILD_MODE=all`；本机入口不变。
+该优化不会消除首次 Release 的依赖下载/Gradle 冷启动成本，不能把旧日志整段 Debug 耗时当作确定节省量。
 设备测试入口同样保留默认 Pub 步骤，以在 Release 后重新生成含测试插件的 Debug 注册表。
 
 普通 Agent 模式的真实 Codex 工具路由回归使用已安装二进制，不下载/升级、不读取真实认证：

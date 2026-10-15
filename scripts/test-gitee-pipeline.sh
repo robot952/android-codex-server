@@ -4,6 +4,15 @@ set -euo pipefail
 # Exercise the real orchestration with isolated stage/command stubs. There are
 # no SDK downloads, application builds, real releases or recursive regressions.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/workflow-lib.sh"
+# Release-only is a build-variant optimization, never a validation bypass.
+for prior_stamp in 0 1; do
+    workflow_android_gate_plan release 0 "$prior_stamp" "$prior_stamp" "$prior_stamp"
+    [[ "$WORKFLOW_ANDROID_PLAN_VALIDATE" == 1 &&
+       "$WORKFLOW_ANDROID_PLAN_BUILD_DEBUG" == 0 &&
+       "$WORKFLOW_ANDROID_PLAN_BUILD_RELEASE" == 1 &&
+       "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == 0 ]]
+done
 # Keep exactly one registered source configuration. A second YAML can register
 # another webhook and consume two builds for the same release tag. Platform-side
 # legacy registrations must also be disabled before pushing a new tag.
@@ -50,6 +59,12 @@ for stage_script in test-ci-environment.sh test-ci-android.sh test-ci-gradle.sh 
 set -euo pipefail
 script="${0##*/}"
 printf '%s\n' "$script" >> "$FIXTURE_COMMANDS"
+if [[ "$script" == publish-tag-release.sh ]]; then
+    [[ "${CODEX_RELEASE_BUILD_MODE:-}" == "$FIXTURE_EXPECTED_BUILD_MODE" ]] || {
+        echo 'Gitee release build mode was not forwarded correctly' >&2
+        exit 46
+    }
+fi
 if [[ "$script" == "$FIXTURE_FAIL_SCRIPT" ]]; then
     exit "$FIXTURE_FAIL_STATUS"
 fi
@@ -59,11 +74,15 @@ done
 export FIXTURE_STAGES="$test_root/stages" FIXTURE_COMMANDS="$test_root/commands"
 assert_pipeline() {
     local fail_script="$1" expected_status="$2" expected_count="$3" status=0
+    local build_mode="${4:-}" expected_build_mode="${4:-release}"
     : > "$FIXTURE_STAGES"
     : > "$FIXTURE_COMMANDS"
     # Call from outside the fixture repo: the entry must anchor its own cwd.
     (cd "$test_root" && FIXTURE_FAIL_SCRIPT="$fail_script" \
-        FIXTURE_FAIL_STATUS="$expected_status" bash repo/scripts/run-gitee-release.sh) || status=$?
+        FIXTURE_FAIL_STATUS="$expected_status" \
+        FIXTURE_EXPECTED_BUILD_MODE="$expected_build_mode" \
+        CODEX_RELEASE_BUILD_MODE="$build_mode" \
+        bash repo/scripts/run-gitee-release.sh) || status=$?
     [[ "$status" == "$expected_status" ]]
     [[ "$(wc -l < "$FIXTURE_STAGES" | tr -d '[:space:]')" == "$expected_count" ]]
     [[ "$(wc -l < "$FIXTURE_COMMANDS" | tr -d '[:space:]')" == "$expected_count" ]]
@@ -84,6 +103,8 @@ assert_pipeline() {
 }
 
 assert_pipeline none 0 4
+assert_pipeline none 0 4 release
+assert_pipeline none 0 4 all
 assert_pipeline test-ci-environment.sh 42 1
 assert_pipeline test-ci-android.sh 42 2
 assert_pipeline test-ci-android.sh 124 2
@@ -92,4 +113,4 @@ assert_pipeline test-ci-gradle.sh 44 3
 assert_pipeline test-ci-gradle.sh 124 3
 assert_pipeline test-ci-gradle.sh 137 3
 assert_pipeline publish-tag-release.sh 45 4
-echo 'Gitee pipeline artifact-only upload, fail-fast and stage deadline regressions passed'
+echo 'Gitee pipeline Release-only build, artifact-only upload, fail-fast and stage deadline regressions passed'

@@ -38,6 +38,12 @@ function run(name, scenario, source = 'https://pub.flutter-io.cn') {
   fs.mkdirSync(project);
   fs.writeFileSync(path.join(project, 'pubspec.lock'), lock, { mode: 0o640 });
   fs.writeFileSync(path.join(project, 'pubspec.yaml'), 'name: fixture\n');
+  // Git checkout can write the lockfile before pubspec.yaml. Flutter's implicit
+  // build --pub step considers that stale even after an enforced resolution.
+  const originalLockTime = new Date('2025-01-01T00:00:00Z');
+  const manifestTime = new Date('2025-01-02T00:00:00Z');
+  fs.utimesSync(path.join(project, 'pubspec.lock'), originalLockTime, originalLockTime);
+  fs.utimesSync(path.join(project, 'pubspec.yaml'), manifestTime, manifestTime);
   fs.mkdirSync(path.join(project, 'cache'));
   fs.writeFileSync(path.join(project, 'cache/sentinel'), 'keep');
   const result = spawnSync('bash', [path.join(root, 'scripts/prepare-ci-pub.sh'), runner, project], {
@@ -47,6 +53,15 @@ function run(name, scenario, source = 'https://pub.flutter-io.cn') {
   if (result.error) throw result.error;
   assert.equal(fs.readFileSync(path.join(project, 'pubspec.lock'), 'utf8'), lock);
   assert.equal(fs.statSync(path.join(project, 'pubspec.lock')).mode & 0o777, 0o640);
+  const restoredLockTime = fs.statSync(path.join(project, 'pubspec.lock')).mtimeMs;
+  if (result.status === 0) {
+    assert.ok(restoredLockTime > manifestTime.getTime(),
+      'A successful locked resolution must remain current for build --pub');
+  } else {
+    assert.equal(restoredLockTime, originalLockTime.getTime(),
+      'A failed resolution must not make the original lockfile appear current');
+  }
+  assert.equal(fs.statSync(path.join(project, 'pubspec.yaml')).mtimeMs, manifestTime.getTime());
   assert.equal(fs.readFileSync(path.join(project, 'cache/sentinel'), 'utf8'), 'keep');
   assert.ok(!fs.readdirSync(project).some(name => name.startsWith('.ci-pub.')));
   const calls = fs.readFileSync(path.join(project, 'calls'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -65,6 +80,11 @@ try {
   assert.equal(success.calls.length, 1);
   assert.match(success.calls[0].lock, /url: "https:\/\/pub.flutter-io.cn"/);
 
+  const official = run('official', 'success', 'https://pub.dev');
+  assert.equal(official.status, 0, official.stdout + official.stderr);
+  assert.equal(official.calls.length, 1);
+  assert.equal(official.calls[0].lock, lock);
+
   const fallback = run('fallback', 'fallback');
   assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
   assert.deepEqual(fallback.calls.map(call => call.source), ['https://pub.flutter-io.cn', 'https://pub.flutter-io.cn', 'https://pub.dev']);
@@ -82,7 +102,7 @@ try {
   assert.equal(privateHost.status, 69);
   assert.deepEqual(privateHost.calls.map(call => call.source), ['https://private.example', 'https://private.example']);
   assert.equal(privateHost.calls[0].lock, lock);
-  console.log('CI Pub tests passed: mirror retry/fallback, locked versions/hashes, no private-host fallback, failure cleanup');
+  console.log('CI Pub tests passed: mirror retry/fallback, locked versions/hashes, build freshness, no private-host fallback, failure cleanup');
 } finally {
   fs.rmSync(fixture, { recursive: true, force: true });
 }

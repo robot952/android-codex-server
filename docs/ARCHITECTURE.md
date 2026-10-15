@@ -1072,7 +1072,10 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 
 Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh`，由同一个严格 Shell 顺序执行环境准备和
 Android SDK 和 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
-不能依赖平台多条 commands 自动停止。Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
+不能依赖平台多条 commands 自动停止。Gitee 默认传入 `CODEX_RELEASE_BUILD_MODE=release`，只编译交付的
+Release APK，不再先编未发布的 Debug APK；仍强制执行 analyze、全量 Flutter tests、稳定验签和原阶段超时。
+需要诊断双变体时可显式覆盖为 `all`；其他发布入口的默认行为不变。构建日志打印实际门禁计划。
+Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
 不依赖 Flutter 准备后才生成的、被忽略的 Android Wrapper JAR。
 仅检出提交而没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
 之后仍严格核对标签提交与 HEAD；已有错误标签、远端缺失或获取失败必须拒绝发布，不创建或移动标签。
@@ -1110,8 +1113,11 @@ Gradle HTTP 连接和读取各限 30 秒；Debug 与 Release APK 编译分别最
 Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行：国内默认 Pub 源最多
 尝试两次，遇到 HTTP 408/424/429/5xx、连接错误或超时后允许回退 `pub.dev`（同样最多两次），
 单次限时 300 秒。每次均使用 `--enforce-lockfile`；镜像尝试只临时映射公共源 URL，保留所有版本
-和 SHA-256，结束后恢复原锁文件。版本冲突、哈希不一致或鉴权失败立即停止；自定义源不自动回退公共源。
-本机默认离线依赖流程保持原行为。`test-ci-pub.cjs` 覆盖重试、回退、锁文件保留和失败清理。
+和 SHA-256，结束后恢复原锁文件。成功时刷新锁文件时间戳，避免恢复 checkout 旧时间戳后被 Release 的
+`--pub` 判为过期，重复解析、下载并在测试之后漂移依赖版本；失败时仍保留原内容、权限和时间戳。
+Release 继续保留 `--pub` 及模式对应的原生插件注册步骤，不用 `--no-pub` 绕过它。
+版本冲突、哈希不一致或鉴权失败立即停止；自定义源不自动回退公共源。
+本机默认离线依赖流程保持原行为。`test-ci-pub.cjs` 覆盖重试、回退、锁文件内容/权限及成功与失败的时间戳。
 下载失败、半成品和错误 revision 不得破坏缓存挂载点。`scripts/test-ci-flutter.sh` 覆盖缓存与挂载，
 `scripts/test-ci-flutter-download.cjs` 覆盖 HTTP 中断续传、Range 不支持回退和错误哈希拒绝。
 
