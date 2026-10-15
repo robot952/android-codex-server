@@ -38,8 +38,24 @@ property_matches() {
     [[ -f "$file" ]] || return 1
     grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*${value}[[:space:]]*$" "$file"
 }
+cmake_tools_ready() {
+    local cmake="$1" ninja="$2" version
+    [[ -x "$cmake" && -x "$ninja" ]] || {
+        echo 'Android SDK CMake or bundled Ninja executable is missing' >&2; return 1;
+    }
+    version="$(timeout --kill-after=5s 10 "$cmake" --version 2>/dev/null)" || {
+        echo 'Android SDK CMake --version failed or timed out' >&2; return 1;
+    }
+    # Google's Android package reports 3.22.1-g37088a8; upstream reports 3.22.1.
+    [[ "${version%%$'\n'*}" =~ ^cmake\ version\ 3\.22\.1(-g[0-9a-f]+)?$ ]] || {
+        printf 'Android SDK CMake version mismatch: %s\n' "${version%%$'\n'*}" >&2; return 1;
+    }
+    timeout --kill-after=5s 10 "$ninja" --version >/dev/null 2>&1 || {
+        echo 'Android SDK Ninja --version failed or timed out' >&2; return 1;
+    }
+}
 package_ready() {
-    local cmake_version api sdk_root="${2:-$sdk_root}"
+    local api sdk_root="${2:-$sdk_root}"
     case "$1" in
         platform-tools) [[ -x "$sdk_root/platform-tools/adb" ]] &&
             property_matches "$sdk_root/platform-tools/source.properties" 'Pkg\.Revision' '[0-9]+(\.[0-9]+)+' ;;
@@ -53,23 +69,10 @@ package_ready() {
         'ndk;28.2.13676358') [[ -x "$sdk_root/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]] &&
             property_matches "$sdk_root/ndk/28.2.13676358/source.properties" 'Pkg\.Revision' '28\.2\.13676358' ;;
         'cmake;3.22.1')
-            [[ -x "$sdk_root/cmake/3.22.1/bin/cmake" && -x "$sdk_root/cmake/3.22.1/bin/ninja" ]] || {
-                echo 'Android SDK CMake or bundled Ninja executable is missing' >&2; return 1;
-            }
             property_matches "$sdk_root/cmake/3.22.1/source.properties" 'Pkg\.Revision' '3\.22\.1' || {
                 echo 'Android SDK CMake package revision mismatch' >&2; return 1;
             }
-            cmake_version="$(timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/cmake" --version 2>/dev/null)" || {
-                echo 'Android SDK CMake --version failed or timed out' >&2; return 1;
-            }
-            # Google's Android 3.22.1 package reports 3.22.1-g37088a8.
-            # Match the complete first line, retaining the exact release check.
-            [[ "${cmake_version%%$'\n'*}" =~ ^cmake\ version\ 3\.22\.1(-g[0-9a-f]+)?$ ]] || {
-                printf 'Android SDK CMake version mismatch: %s\n' "${cmake_version%%$'\n'*}" >&2; return 1;
-            }
-            timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 || {
-                echo 'Android SDK Ninja --version failed or timed out' >&2; return 1;
-            } ;;
+            cmake_tools_ready "$sdk_root/cmake/3.22.1/bin/cmake" "$sdk_root/cmake/3.22.1/bin/ninja" ;;
         *) return 1 ;;
     esac
 }
@@ -149,6 +152,79 @@ reuse_directory() {
     if [[ -e "$target" || -L "$target" ]]; then mv -- "$target" "$staging/previous"; fi
     mv -- "$staging/payload" "$target"
     rm -rf -- "$staging"
+}
+
+reuse_system_cmake() {
+    local cmake ninja prefix staging payload tool
+    cmake="$(command -v cmake || true)"
+    ninja="$(command -v ninja || true)"
+    [[ -n "$cmake" && -n "$ninja" ]] || return 0
+    echo "Inspecting system CMake/Ninja: $cmake, $ninja" >&2
+    cmake_tools_ready "$cmake" "$ninja" || return 0
+    cmake="$(readlink -f "$cmake")"
+    prefix="${cmake%/bin/cmake}"
+    # Copy only CMake's runtime files, never an entire system prefix such as /usr.
+    [[ -f "$prefix/share/cmake-3.22/Modules/CMake.cmake" ]] || return 0
+    staging="$(mktemp -d "$sdk_root/.cmake-reuse.XXXXXX")"
+    staging_directories+=("$staging")
+    payload="$staging/cmake/3.22.1"
+    mkdir -p "$payload/bin" "$payload/share"
+    cp -L -- "$cmake" "$payload/bin/cmake"
+    cp -L -- "$ninja" "$payload/bin/ninja"
+    for tool in ctest cpack; do
+        if [[ -x "$prefix/bin/$tool" ]]; then cp -L -- "$prefix/bin/$tool" "$payload/bin/"; fi
+    done
+    manager_deadline 60 cp -a --reflink=auto -- "$prefix/share/cmake-3.22" "$payload/share/"
+    printf 'Pkg.Revision = 3.22.1\nPkg.Path = cmake;3.22.1\nPkg.Desc = CMake 3.22.1\n' > "$payload/source.properties"
+    package_ready 'cmake;3.22.1' "$staging"
+    reuse_directory "$payload" "$sdk_root/cmake/3.22.1"
+    echo 'Reusing system CMake 3.22.1 and Ninja; no CMake download needed' >&2
+}
+
+prepare_cmake_archive() {
+    local url archive partial expected_sha status http_status attempt staging payload
+    # The China repository lists this package but its ZIP returns 404. Fetch only
+    # this small archive from Google, keeping all other SDK metadata/downloads on
+    # the selected repository. Never make sdkmanager rediscover the entire SDK.
+    url="${CODEX_ANDROID_CMAKE_URL:-https://dl.google.com/android/repository/cmake-3.22.1-linux.zip}"
+    # Official repository SHA-1: fd0a48b4a758310df8c7aa51f59840ed48fe7ed8.
+    expected_sha=9196644852a978012caf7a4067ba1898debf6cc204c3341562771e31080d6869
+    if [[ -n "${CODEX_ANDROID_CMAKE_URL:-}" ]]; then
+        expected_sha="${CODEX_ANDROID_CMAKE_SHA256:?A custom CMake archive needs its SHA-256}"
+    fi
+    [[ "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || return 2
+    mkdir -p "$sdk_root/.downloads"
+    archive="$sdk_root/.downloads/cmake-3.22.1-linux.zip"
+    partial="$archive.part"
+    cmake_archive_valid() {
+        [[ -f "$1" && "$(sha256sum "$1" | awk '{print $1}')" == "$expected_sha" ]]
+    }
+    if ! cmake_archive_valid "$archive"; then
+        for attempt in 1 2; do
+            cmake_archive_valid "$partial" && break
+            echo "Downloading CMake 3.22.1 only (attempt $attempt/2, timeout 180s, SHA-256 verified)" >&2
+            status=0
+            http_status="$(curl --http1.1 --fail --location --silent --show-error \
+                --connect-timeout 20 --max-time 180 --speed-time 30 --speed-limit 1024 \
+                --continue-at - --output "$partial" --write-out '%{http_code}' "$url")" || status=$?
+            cmake_archive_valid "$partial" && break
+            case "$status" in 124|137|129|130|143) return "$status" ;; esac
+            if [[ "$status" == 0 || "$status" == 33 || "$http_status" == 416 ]]; then rm -f -- "$partial"; fi
+            # A missing archive or invalid credentials cannot be fixed by retrying.
+            case "$http_status" in 400|401|403|404) break ;; esac
+        done
+        cmake_archive_valid "$partial" || { echo 'CMake download failed or SHA-256 mismatch; SDK repository was not switched' >&2; return 1; }
+        mv -f -- "$partial" "$archive"
+    fi
+    staging="$(mktemp -d "$sdk_root/.cmake-install.XXXXXX")"
+    staging_directories+=("$staging")
+    payload="$staging/cmake/3.22.1"
+    mkdir -p "$payload"
+    manager_deadline 60 unzip -q "$archive" -d "$payload"
+    # Reject corrupt/incomplete tools before replacing any previous installation.
+    package_ready 'cmake;3.22.1' "$staging"
+    reuse_directory "$payload" "$sdk_root/cmake/3.22.1"
+    echo 'Installed and verified CMake 3.22.1 with bundled Ninja' >&2
 }
 
 seed_preinstalled_packages() {
@@ -249,6 +325,9 @@ if [[ -z "$manager" ]]; then
     manager="$target/bin/sdkmanager"
 fi
 if [[ -n "$manager" ]]; then echo "Using sdkmanager: $manager" >&2; fi
+if [[ -z "${CODEX_ANDROID_REPOSITORY_URL:-}" ]] && ! package_ready 'cmake;3.22.1'; then
+    reuse_system_cmake
+fi
 missing=()
 for package in "${packages[@]}"; do
     package_ready "$package" || missing+=("$package")
@@ -266,6 +345,15 @@ run_manager() {
 if [[ ${#missing[@]} -gt 0 || ! -s "$sdk_root/licenses/android-sdk-license" ]]; then
     echo "Accepting Android SDK licenses" >&2
     run_manager --licenses || { echo "Android SDK license preparation failed" >&2; exit 1; }
+fi
+# An explicit repository remains authoritative, including for CMake. Otherwise
+# prepare CMake separately so its known mirror 404 cannot redirect other packages.
+if [[ -z "${CODEX_ANDROID_REPOSITORY_URL:-}" ]] && ! package_ready 'cmake;3.22.1'; then
+    prepare_cmake_archive
+    missing=()
+    for package in "${packages[@]}"; do
+        package_ready "$package" || missing+=("$package")
+    done
 fi
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Installing Android SDK packages: ${missing[*]}" >&2

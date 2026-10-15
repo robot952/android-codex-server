@@ -123,6 +123,18 @@ JAVA
 java --source 17 "$fixture/AndroidToolsArchive.java" "$fixture/tools" "$fixture/tools.zip"
 export CODEX_ANDROID_TOOLS_URL="file://$fixture/tools.zip"
 export CODEX_ANDROID_TOOLS_SHA256="$(sha256sum "$fixture/tools.zip" | awk '{print $1}')"
+mkdir -p "$fixture/cmake/bin" "$fixture/cmake/share/cmake-3.22/Modules" "$fixture/no-system-cmake"
+printf '#!/bin/sh\necho "cmake version 3.22.1-g37088a8"\n' > "$fixture/cmake/bin/cmake"
+printf '#!/bin/sh\necho "1.10.2"\n' > "$fixture/cmake/bin/ninja"
+printf 'Pkg.Revision = 3.22.1\n' > "$fixture/cmake/source.properties"
+printf '# fixture module\n' > "$fixture/cmake/share/cmake-3.22/Modules/CMake.cmake"
+# Tests must not accidentally reuse the host's CMake instead of exercising downloads.
+printf '#!/bin/sh\nexit 1\n' > "$fixture/no-system-cmake/cmake"
+chmod +x "$fixture/cmake/bin/"* "$fixture/no-system-cmake/cmake"
+export PATH="$fixture/no-system-cmake:$PATH"
+java --source 17 "$fixture/AndroidToolsArchive.java" "$fixture/cmake" "$fixture/cmake.zip"
+export CODEX_ANDROID_CMAKE_URL="file://$fixture/cmake.zip"
+export CODEX_ANDROID_CMAKE_SHA256="$(sha256sum "$fixture/cmake.zip" | awk '{print $1}')"
 unset CODEX_ANDROID_REPOSITORY_URL
 prepare() {
     ANDROID_HOME="$1" ANDROID_SDK_ROOT="$fixture/stale-sdk-root" \
@@ -137,8 +149,76 @@ inode="$(stat -c %i "$sdk")"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(stat -c %i "$sdk")" == "$inode" && -f "$sdk/sentinel" ]]
 [[ "$(wc -l < "$sdk/calls")" == 2 ]]
-grep -Fxq 'platform-tools platforms;android-34 platforms;android-35 platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358 cmake;3.22.1' "$sdk/calls"
+grep -Fxq 'platform-tools platforms;android-34 platforms;android-35 platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358' "$sdk/calls"
 [[ "$(cat "$sdk/package-sources")" == https://googledownloads.cn/android/repository/ ]]
+grep -Fq 'Installed and verified CMake 3.22.1 with bundled Ninja' "$fixture/last.log"
+
+# CMake is acquired independently: a mirror missing only that ZIP never changes
+# metadata or build-tools to the slow official repository (the real Gitee failure).
+! grep -Fq 'cmake;3.22.1' "$sdk/calls"
+[[ -x "$sdk/cmake/3.22.1/bin/cmake" && -x "$sdk/cmake/3.22.1/bin/ninja" ]]
+
+# A matching CMake/Ninja already on PATH is copied with its modules, without a download.
+system_sdk="$fixture/system-cmake-sdk"
+[[ "$(PATH="$fixture/cmake/bin:$PATH" CODEX_ANDROID_CMAKE_URL=file:///missing-cmake.zip \
+    prepare "$system_sdk")" == "$system_sdk" ]]
+grep -Fq 'Reusing system CMake 3.22.1 and Ninja' "$fixture/last.log"
+cmp "$fixture/cmake/share/cmake-3.22/Modules/CMake.cmake" "$system_sdk/cmake/3.22.1/share/cmake-3.22/Modules/CMake.cmake"
+[[ ! -e "$system_sdk/.downloads/cmake-3.22.1-linux.zip" ]]
+
+# An incompatible system version must not bypass the pinned, verified package.
+mkdir -p "$fixture/wrong-system/bin"
+printf '#!/bin/sh\necho "cmake version 3.10.2"\n' > "$fixture/wrong-system/bin/cmake"
+cp "$fixture/cmake/bin/ninja" "$fixture/wrong-system/bin/ninja"
+chmod +x "$fixture/wrong-system/bin/cmake"
+[[ "$(PATH="$fixture/wrong-system/bin:$PATH" prepare "$fixture/wrong-system/sdk")" == "$fixture/wrong-system/sdk" ]]
+grep -Fq 'CMake version mismatch: cmake version 3.10.2' "$fixture/last.log"
+[[ -e "$fixture/wrong-system/sdk/.downloads/cmake-3.22.1-linux.zip" ]]
+
+# Invalid hashes cannot replace a previous installation or proceed to other SDK downloads.
+bad_cmake="$fixture/bad-cmake-sdk"
+mkdir -p "$bad_cmake/cmake/3.22.1"
+printf 'preserve\n' > "$bad_cmake/cmake/3.22.1/sentinel"
+if CODEX_ANDROID_CMAKE_SHA256="$(printf '0%.0s' {1..64})" prepare "$bad_cmake" >"$fixture/out"; then
+    echo 'Invalid CMake hash accepted' >&2; exit 1
+fi
+[[ ! -s "$fixture/out" && "$(cat "$bad_cmake/cmake/3.22.1/sentinel")" == preserve ]]
+[[ "$(cat "$bad_cmake/calls")" == 'licenses accepted' && ! -e "$bad_cmake/package-sources" ]]
+grep -Fq 'CMake download failed or SHA-256 mismatch' "$fixture/last.log"
+
+# Even a correctly hashed ZIP must contain runnable CMake AND Ninja before activation.
+mkdir -p "$fixture/incomplete-cmake"
+cp -a "$fixture/cmake/." "$fixture/incomplete-cmake/"
+rm "$fixture/incomplete-cmake/bin/ninja"
+java --source 17 "$fixture/AndroidToolsArchive.java" "$fixture/incomplete-cmake" "$fixture/incomplete-cmake.zip"
+if CODEX_ANDROID_CMAKE_URL="file://$fixture/incomplete-cmake.zip" \
+    CODEX_ANDROID_CMAKE_SHA256="$(sha256sum "$fixture/incomplete-cmake.zip" | awk '{print $1}')" \
+    prepare "$bad_cmake" >"$fixture/out"; then
+    echo 'Incomplete CMake ZIP accepted' >&2; exit 1
+fi
+[[ ! -s "$fixture/out" && "$(cat "$bad_cmake/cmake/3.22.1/sentinel")" == preserve ]]
+[[ ! -e "$bad_cmake/package-sources" ]]
+grep -Fq 'CMake or bundled Ninja executable is missing' "$fixture/last.log"
+
+# Every CMake request is bounded, and a persistent network failure has two tries.
+mkdir -p "$fixture/bounded-cmake/bin" "$fixture/bounded-cmake/sdk/cmdline-tools/12.0"
+cp -a "$fixture/tools/cmdline-tools/." "$fixture/bounded-cmake/sdk/cmdline-tools/12.0/"
+cat > "$fixture/bounded-cmake/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$CMAKE_CURL_CALLS"
+[[ " $* " == *' --connect-timeout 20 '* && " $* " == *' --max-time 180 '* ]]
+[[ " $* " == *' --speed-time 30 '* && " $* " == *' --continue-at - '* ]]
+printf '000'
+exit 28
+CURL
+chmod +x "$fixture/bounded-cmake/bin/curl"
+if PATH="$fixture/bounded-cmake/bin:$PATH" CMAKE_CURL_CALLS="$fixture/bounded-cmake/calls" \
+    prepare "$fixture/bounded-cmake/sdk" >"$fixture/out"; then
+    echo 'CMake download timeout swallowed' >&2; exit 1
+fi
+[[ ! -s "$fixture/out" && "$(wc -l < "$fixture/bounded-cmake/calls")" == 2 ]]
+[[ ! -e "$fixture/bounded-cmake/sdk/package-sources" ]]
 
 # A missing default-mirror archive falls back to official downloads, preserving the SDK root.
 fallback="$fixture/fallback"
@@ -155,6 +235,8 @@ touch "$fallback/fail-mirror" "$fallback/sentinel"
 custom="$fixture/custom"
 [[ "$(CODEX_ANDROID_REPOSITORY_URL=https://sdk.fixture.invalid/repository prepare "$custom")" == "$custom" ]]
 [[ "$(cat "$custom/package-sources")" == https://sdk.fixture.invalid/repository/ ]]
+grep -Fq 'cmake;3.22.1' "$custom/calls"
+[[ ! -e "$custom/.downloads/cmake-3.22.1-linux.zip" ]]
 custom_failed="$fixture/custom-failed"
 mkdir -p "$custom_failed"
 touch "$custom_failed/fail-install"
@@ -181,7 +263,7 @@ for status in 124 137 129 130 143; do
 done
 
 # A complete cached SDK needs neither archive access nor network/package installation.
-[[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$sdk")" == "$sdk" ]]
+[[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip CODEX_ANDROID_CMAKE_URL=file:///missing.zip prepare "$sdk")" == "$sdk" ]]
 [[ "$(wc -l < "$sdk/calls")" == 2 ]]
 
 # Existing installations often use cmdline-tools/tools or a numbered subdirectory, not latest.
@@ -223,16 +305,16 @@ done
 # A cached CMake without its bundled Ninja must be repaired before compilation.
 rm "$sdk/cmake/3.22.1/bin/ninja"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
-[[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+[[ "$(tail -n 1 "$sdk/calls")" == 'licenses accepted' ]]
 [[ "$("$sdk/cmake/3.22.1/bin/ninja" --version)" == 1.10.2 ]]
 # Wrong releases and non-build suffixes must still trigger a targeted repair.
 for wrong_version in 3.10.2 3.22.10 3.22.1-rc1 3.22.1-gINVALID; do
     calls_before="$(wc -l < "$sdk/calls")"
     printf '#!/bin/sh\necho "cmake version %s"\n' "$wrong_version" > "$sdk/cmake/3.22.1/bin/cmake"
     [[ "$(prepare "$sdk")" == "$sdk" ]]
-    # A repair confirms licenses before its single targeted package installation.
-    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 2))" ]]
-    [[ "$(tail -n 2 "$sdk/calls")" == $'licenses accepted\ncmake;3.22.1' ]]
+    # Only license confirmation reaches sdkmanager; CMake uses the verified ZIP.
+    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 1))" ]]
+    [[ "$(tail -n 1 "$sdk/calls")" == 'licenses accepted' ]]
     grep -Fq "CMake version mismatch: cmake version $wrong_version" "$fixture/last.log"
     "$sdk/cmake/3.22.1/bin/cmake" --version | grep -Fxq 'cmake version 3.22.1-g37088a8'
 done
@@ -241,8 +323,8 @@ for native_tool in cmake ninja; do
     calls_before="$(wc -l < "$sdk/calls")"
     printf '\nexit 1\n' >> "$sdk/cmake/3.22.1/bin/$native_tool"
     [[ "$(prepare "$sdk")" == "$sdk" ]]
-    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 2))" ]]
-    [[ "$(tail -n 2 "$sdk/calls")" == $'licenses accepted\ncmake;3.22.1' ]]
+    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 1))" ]]
+    [[ "$(tail -n 1 "$sdk/calls")" == 'licenses accepted' ]]
     grep -Fq -- '--version failed or timed out' "$fixture/last.log"
 done
 

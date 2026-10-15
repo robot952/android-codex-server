@@ -80,7 +80,7 @@ Gitee 依赖阶段启用 `CODEX_CI_PUB=1`：`prepare-ci-pub.sh` 对国内默认 
 并纳入 `scripts/test-workflow.sh`。
 Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它先探测现有 `sdkmanager`，
 缺少时从 `googledownloads.cn` 下载并校验固定 Android Command-line Tools 12.0，再用国内仓库
-安装所需 platform、Build Tools、NDK 和 `cmake;3.22.1`；完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
+安装所需 platform、Build Tools 和 NDK；CMake 3.22.1 单独准备，完整 SDK 缓存位于 `~/.cache/codex/android-sdk`。
 platform 清单包含 API 34/35/36：应用使用 36，锁定的 `jni`/`jni_flutter` 使用 35，
 `package_info_plus`/`share_plus` 使用 34。每个版本核对 `android.jar` 与 API 元数据，优先复用有效缓存
 或复制 Gitee 预装，只补缺失/损坏项，不能等 AGP 在 APK 编译阶段临时下载。插件升级时复核清单，
@@ -89,6 +89,14 @@ platform 清单包含 API 34/35/36：应用使用 36，锁定的 `jni`/`jni_flut
 `CODEX_ANDROID_REPOSITORY_URL` 时保持自定义源。超时或取消立即停止，不换源重试，
 SDK 总阶段 1800 秒和共享环境剩余预算继续生效，下载校验仍由 sdkmanager 执行。
 应用固定 CMake 3.22.1，准备阶段检查 CMake 与随包 Ninja 可执行，并将其 bin 目录放到 PATH 首位。
+优先复用完整 SDK/预装包，也探测 PATH 中匹配的 CMake 和 Ninja；系统安装仅复制对应二进制及
+`share/cmake-3.22`，不复制整个 `/usr`，不改变其他版本或系统安装。国内仓库的 CMake ZIP 返回 404，
+默认源下的缺失 CMake 改为从 Google 官方静态地址单独获取，校验固定 SHA-256 后在临时目录验证工具，
+通过才替换目标版本。它不经过 sdkmanager 的全仓库回退，其他 SDK 包仍走国内源。
+CMake 下载连接上限 20 秒、单次最多 180 秒、低速上限 30 秒，最多两次，支持断点续传；
+HTTP 400/401/403/404 直接失败，错误哈希或不完整工具不得替换旧安装，继续受 SDK 总预算约束。
+自定义 `CODEX_ANDROID_CMAKE_URL` 必须同时提供 `CODEX_ANDROID_CMAKE_SHA256`；显式指定
+`CODEX_ANDROID_REPOSITORY_URL` 时 CMake 仍完全交由该源的 sdkmanager 安装，不自动访问官方静态地址。
 工具缺失或 CMake 版本错误必须在编译前修复，不能仅检查 SDK 目录存在。
 匹配完整版本首行，接受 `3.22.1` 和官方 Android 包的十六进制构建后缀（如
 `3.22.1-g37088a8`）；其他补丁版本、预发布后缀和非零退出仍需修复，不把成功安装误判为缺包。
@@ -101,7 +109,8 @@ NDK、CMake/Ninja 复制到缓存；只补装缺失或不兼容的组件。预�
 普通 Gitee 回归无需挂载权限即可覆盖完整/部分预装复用、错误版本拒绝和独立缓存；完整预装不联网下载。
 SDK 回归使用构建已有的 JDK 17 生成保留 Unix 可执行权限的测试 ZIP，文本断言使用 grep，
 无需额外安装 Python 或 ripgrep；脚本入口明确检查依赖，300 秒阶段上限保持不变。
-定向修复会先确认许可证再安装单个包，回归断言分别核对这两次调用；完整缓存不触发安装。
+定向修复会先确认许可证再安装单个包；默认源的 CMake 修复仅用 sdkmanager 确认许可证，随后复用
+经过校验的 ZIP。回归覆盖系统工具复用、独立下载、错误哈希、不完整包、有界失败和自定义源隔离；完整缓存不触发安装。
 断言失败会输出失败行号和隔离 SDK/入口日志的最后 60 行，保留原退出码并清理临时目录。
 有挂载权限的 Linux 会额外自动执行真实只读挂载测试，也可显式运行：
 
