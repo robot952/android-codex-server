@@ -101,9 +101,9 @@ flutter_gitee_workflow="$ROOT_DIR/.workflow/流水线-flutter-refactor-编译.ym
 rg -Fq 'bash scripts/run-gitee-release.sh' "$flutter_gitee_workflow"
 [[ ! -e "$ROOT_DIR/.workflow/流水线-202608021802.yml" ]]
 [[ "$(rg -c '^    - bash scripts/' "$flutter_gitee_workflow")" == 1 ]]
-rg -Fq '    tags:' "$flutter_gitee_workflow"
-! rg -Fq '    branches:' "$flutter_gitee_workflow"
-rg -Fq '      - v' "$flutter_gitee_workflow"
+! rg -Fq '    tags:' "$flutter_gitee_workflow"
+rg -Fq '    branches:' "$flutter_gitee_workflow"
+rg -Fq '      - main' "$flutter_gitee_workflow"
 rg -Fq '"$ROOT_DIR/scripts/publish-gitee-release.sh"' "$ROOT_DIR/scripts/build-gitee-release.sh"
 rg -q '^[[:space:]]*- CODEX_RELEASE_TOKEN$' "$flutter_gitee_workflow"
 rg -Fq 'bash scripts/run-ci-stage.sh gitee-release 5400 bash scripts/publish-tag-release.sh' "$ROOT_DIR/scripts/run-gitee-release.sh"

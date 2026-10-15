@@ -1061,29 +1061,32 @@ flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ~~~
 
-Gitee Go 的 Flutter 发布流水线只响应 `v` 前缀的 Git 标签，使用固定 Flutter `3.44.8`、JDK 17、Android
+Flutter 迁移已合并到 main；向 GitHub 和 Gitee 推送 main 分别触发一次发布，功能分支及标签推送不自动出包。
+Gitee Go 的 Flutter 发布流水线只响应 main 推送，使用固定 Flutter `3.44.8`、JDK 17、Android
 Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
 `scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。随后调用
 `scripts/publish-gitee-artifact.cjs` 创建正式 Gitee Release、上传同一 APK，并从公开下载地址回验大小和
 SHA-256；全部完成才报告发布成功，不能把构建页的暂存构件当成 Release。仍保留 `dist/` 构件和发布结果元数据。
-Gitee Go 必须配置对标签构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；缺失立即退出，
+Gitee Go 必须配置对 main 构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；缺失立即退出，
 编译前检查身份与仓库访问。令牌只从环境读取，不进入命令参数、输出或下载请求，鉴权 API 不跟随重定向。
-发布前再次核对 origin 已有标签指向构建提交，不创建或移动标签、不重复编译；同名附件只回验，不覆盖。
+main 发布预检核对 origin/main == HEAD，按 Pubspec 创建缺失的 v<version> 标签；已存在且指向别处则拒绝，
+要求先递增版本。上传前再次核对 origin 标签指向构建提交，不移动标签、不重复编译；同名附件只回验，不覆盖。
 发布回归/预检分别上限 120 秒，发布上限 900 秒；API 单次 30 秒、上传及整包回验各 300 秒，仍受总任务预算限制。
 `test-gitee-release.cjs` 在云端以 loopback fixture 覆盖创建、补传、幂等、错误哈希、令牌隔离及超时。
 仓库只保留 `.workflow/流水线-flutter-refactor-编译.yml` 一个 Gitee Go 配置，历史
-`流水线-202608021802.yml` 已移除，防止同一 `v` 标签被两个入口重复构建。按 Gitee Go 删除提示，
-历史分支上的旧入口也需在对应分支删除；发布前核对平台只保留“Flutter Refactor 发布”自动入口，
-不并用手动重跑与标签推送。普通分支提交不触发当前发布流水线。
+`流水线-202608021802.yml` 已移除，旧入口在平台关闭；沿用现有 YAML 文件，自动入口显示为“Main 发布”。
+不并用手动重跑与分支推送，创建发布标签不再触发第二轮构建。
+GitHub 沿用 `.github/workflows/flutter-refactor-ios.yml`，main 构建三个平台成功后将附件上传 draft，
+下载比对后发布正式 v<version> Release。预检/编译/发布分别限时 5/60/15 分钟，已有标签和附件不可覆盖。
 
-Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh`，由同一个严格 Shell 顺序执行环境准备和
+Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh main`，由同一个严格 Shell 顺序执行环境准备和
 Android SDK 和 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
 不能依赖平台多条 commands 自动停止。Gitee 默认传入 `CODEX_RELEASE_BUILD_MODE=release`，只编译交付的
 Release APK，不再先编未发布的 Debug APK；仍强制执行 analyze、全量 Flutter tests、稳定验签和原阶段超时。
 需要诊断双变体时可显式覆盖为 `all`；其他发布入口的默认行为不变。构建日志打印实际门禁计划。
 Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
 不依赖 Flutter 准备后才生成的、被忽略的 Android Wrapper JAR。
-仅检出提交而没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
+手动使用旧标签模式且没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
 之后仍严格核对标签提交与 HEAD；已有错误标签、远端缺失或获取失败必须拒绝发布，不创建或移动标签。
 标签入口与旧分支入口统一通过 `prepare-ci-environment.sh` 准备 Flutter、Android SDK、Gradle 和引擎，
 标签、版本和工作区校验通过后才下载，不能绕过旧入口已有的准备逻辑。Shell 变量在仓库脚本中展开，

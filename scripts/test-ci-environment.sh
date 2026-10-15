@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 # Timeout-failure fixtures must own their groups rather than kill this test.
-unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE FAIL_PHASE
+unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE CODEX_RELEASE_BRANCH FAIL_PHASE
 # The isolated tag entry stops at its fake build, before release publication.
 export CODEX_RELEASE_TOKEN=fixture-token-not-a-secret
 entry="$fixture/repo"

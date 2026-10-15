@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CI entry point for a protected v<versionName> tag. It is intentionally usable
+# CI entry point for main or a protected v<versionName> tag. It is intentionally usable
 # by any self-hosted Gitee runner without storing the signing key in Git.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -31,7 +31,15 @@ case "$build_mode" in
 esac
 
 tag_ref="refs/tags/$expected_tag"
-if git show-ref --verify --quiet "$tag_ref"; then
+release_branch="${CODEX_RELEASE_BRANCH:-}"
+if [[ "$release_branch" == main ]]; then
+    # The authenticated preflight below checks origin/main == HEAD and creates
+    # only a missing version tag. Tag pushes do not trigger either workflow.
+    echo "[Release] Preparing main publication for $expected_tag"
+elif [[ -n "$release_branch" ]]; then
+    echo 'Only main is supported for branch-triggered publication' >&2
+    exit 2
+elif git show-ref --verify --quiet "$tag_ref"; then
     # An existing wrong tag is an error, never something a fetch may overwrite.
     tag_commit="$(git rev-parse --verify "$tag_ref^{commit}" 2>/dev/null || true)"
 else
@@ -57,14 +65,14 @@ else
         exit "$status"
     fi
 fi
-if [[ "$tag_commit" != "$head_commit" ]]; then
+if [[ "$release_branch" != main && "${tag_commit:-}" != "$head_commit" ]]; then
     echo "Release must run from tag $expected_tag pointing at HEAD ($head_commit)" >&2
     exit 1
 fi
 
 release_token="${CODEX_RELEASE_TOKEN:-}"
 if [[ -z "${release_token//[[:space:]]/}" ]]; then
-    echo 'CODEX_RELEASE_TOKEN is required: configure a secret Gitee Go variable available to tag builds with repository write permission' >&2
+    echo 'CODEX_RELEASE_TOKEN is required: configure a secret Gitee Go variable available to main builds with repository write permission' >&2
     exit 2
 fi
 
@@ -74,8 +82,10 @@ resolve_android_sdk "$ROOT_DIR"
 
 bash "$ROOT_DIR/scripts/run-ci-stage.sh" release-publish-regression 120 \
     node "$ROOT_DIR/scripts/test-gitee-release.cjs"
+preflight_mode=--preflight
+if [[ "$release_branch" == main ]]; then preflight_mode=--prepare-main; fi
 bash "$ROOT_DIR/scripts/run-ci-stage.sh" release-preflight 120 \
-    node "$ROOT_DIR/scripts/publish-gitee-artifact.cjs" --preflight
+    node "$ROOT_DIR/scripts/publish-gitee-artifact.cjs" "$preflight_mode"
 
 "$ROOT_DIR/scripts/build-android.sh" "$build_mode" --force
 certificate_sha256="$(apk_verify_stable_signature "$ANDROID_HOME" "$APK_PATH")"

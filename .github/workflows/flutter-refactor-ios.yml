@@ -1,22 +1,46 @@
-name: Flutter Refactor Cross-platform Release
+name: Main Cross-platform Release
 
 on:
   push:
-    tags:
-      - 'flutter-refactor-v*'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: flutter-refactor-cross-platform-${{ github.ref }}
-  cancel-in-progress: true
+  group: main-cross-platform-release
+  cancel-in-progress: false
 
 jobs:
+  release-preflight:
+    name: Validate main release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check branch, version and immutable tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          version="$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)\+[0-9]+[[:space:]]*$/\1/p' flutter_app/pubspec.yaml)"
+          test -n "$version"
+          tag="v$version"
+          refs="$(timeout 60 git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+          tag_commit="$(printf '%s\n' "$refs" | awk '$2 ~ /\^\{\}$/ {print $1}')"
+          if [[ -z "$tag_commit" ]]; then tag_commit="$(printf '%s\n' "$refs" | awk 'NR == 1 {print $1}')"; fi
+          if [[ -n "$tag_commit" && "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo 'Version already belongs to another commit; bump pubspec before pushing main' >&2
+            exit 1
+          fi
+
   ios-compile:
+    needs: release-preflight
     name: iOS unsigned compile
     runs-on: macos-15
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: flutter_app
@@ -115,7 +139,7 @@ jobs:
           test -s "$ipa_path"
           ipa_sha256="$(shasum -a 256 "$ipa_path" | awk '{print $1}')"
           {
-            printf 'sourceBranch=flutter-refactor\n'
+            printf 'sourceBranch=main\n'
             printf 'gitCommit=%s\n' "${GITHUB_SHA}"
             printf 'version=%s\n' "$version"
             printf 'codesign=adhoc-no-apple-certificate\n'
@@ -141,8 +165,10 @@ jobs:
             flutter_app/build/ios/metadata/flutter-refactor-ios-build.txt
 
   android-compile:
+    needs: release-preflight
     name: Android release compile
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: flutter_app
@@ -189,7 +215,7 @@ jobs:
           install -m 0644 "$source_apk" "$output_dir/$apk_name"
           apk_sha256="$(sha256sum "$output_dir/$apk_name" | awk '{print $1}')"
           {
-            printf 'sourceBranch=flutter-refactor\n'
+            printf 'sourceBranch=main\n'
             printf 'gitCommit=%s\n' "${GITHUB_SHA}"
             printf 'version=%s\n' "$version"
             printf 'apk=%s\n' "$apk_name"
@@ -205,8 +231,10 @@ jobs:
           path: flutter_app/dist/android
 
   windows-compile:
+    needs: release-preflight
     name: Windows x64 release compile
     runs-on: windows-2022
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: flutter_app
@@ -259,7 +287,7 @@ jobs:
           }
           $zipSha256 = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
           @(
-            "sourceBranch=flutter-refactor"
+            "sourceBranch=main"
             "gitCommit=$env:GITHUB_SHA"
             "version=$version"
             "architecture=x64"
@@ -362,12 +390,13 @@ jobs:
             flutter_app/dist/windows/flutter-refactor-windows-build.txt
 
   publish-release:
-    name: Publish cross-platform prerelease
+    name: Publish cross-platform Release
     needs:
       - ios-compile
       - android-compile
       - windows-compile
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -392,21 +421,16 @@ jobs:
           name: codex-remote-windows-x64-${{ github.sha }}
           path: release-assets/windows
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
           version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' flutter_app/pubspec.yaml | head -n 1)"
           release_version="${version%%+*}"
-          short_sha="${GITHUB_SHA:0:7}"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tag="${GITHUB_REF_NAME}"
-            title="Flutter refactor ${tag#flutter-refactor-}"
-          else
-            # Keep manual workflow_dispatch runs publishable from a branch.
-            tag="flutter-refactor-v${release_version}-${short_sha}"
-            title="Flutter refactor v${release_version} (${short_sha})"
-          fi
+          tag="v${release_version}"
+          title="Agent ${release_version}"
           notes_file="release-assets/flutter-refactor-release.md"
           mapfile -t assets < <(
             find release-assets -type f \
@@ -416,7 +440,7 @@ jobs:
           test "${#assets[@]}" -eq 8
 
           {
-            printf 'Cross-platform builds from `flutter-refactor`.\n\n'
+            printf 'Cross-platform builds from `main`.\n\n'
             printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- Android: signed Release APK for standard Android devices\n'
             printf -- '- iOS AppSync/TrollStore: ad-hoc signed unsigned IPA\n'
@@ -424,14 +448,32 @@ jobs:
             printf -- '- Windows x64: unsigned setup EXE and portable ZIP\n'
           } > "$notes_file"
 
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" "${assets[@]}" \
-              --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$tag" "${assets[@]}" \
+          refs="$(timeout 60 git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+          tag_commit="$(printf '%s\n' "$refs" | awk '$2 ~ /\^\{\}$/ {print $1}')"
+          if [[ -z "$tag_commit" ]]; then tag_commit="$(printf '%s\n' "$refs" | awk 'NR == 1 {print $1}')"; fi
+          test -z "$tag_commit" || test "$tag_commit" = "$GITHUB_SHA"
+          existing_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish 2>/dev/null || true)"
+          if [[ -n "$existing_target" && -z "$tag_commit" ]]; then
+            test "$existing_target" = "$GITHUB_SHA"
+          fi
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "$title" \
               --notes-file "$notes_file" \
-              --prerelease
+              --draft
           fi
+          # Resume partial uploads without replacing an existing release asset.
+          existing_assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          for asset in "${assets[@]}"; do
+            name="${asset##*/}"
+            if ! printf '%s\n' "$existing_assets" | grep -Fxq "$name"; then
+              gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$verify_dir"
+            cmp "$asset" "$verify_dir/$name"
+          done
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest

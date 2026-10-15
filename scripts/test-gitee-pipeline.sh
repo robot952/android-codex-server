@@ -14,8 +14,8 @@ for prior_stamp in 0 1; do
        "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == 0 ]]
 done
 # Keep exactly one registered source configuration. A second YAML can register
-# another webhook and consume two builds for the same release tag. Platform-side
-# legacy registrations must also be disabled before pushing a new tag.
+# another webhook and consume two builds for the same main push. Platform-side
+# legacy registrations must also stay disabled.
 shopt -s nullglob
 pipeline_configs=("$ROOT_DIR"/.workflow/*.yml "$ROOT_DIR"/.workflow/*.yaml)
 [[ "${#pipeline_configs[@]}" == 1 &&
@@ -28,6 +28,12 @@ shopt -u nullglob
 # disabled until a size-bounded cross-job cache policy has been verified.
 # Do not remove the actual release artifact while fixing oversized caches.
 pipeline_config="${pipeline_configs[0]}"
+grep -Fxq '    branches:' "$pipeline_config"
+grep -Fxq '      - main' "$pipeline_config"
+if grep -Eq '^[[:space:]]*tags:' "$pipeline_config"; then
+    echo 'Release tag creation must not trigger another Gitee build' >&2
+    exit 1
+fi
 [[ "$(grep -Ec '^[[:space:]]*caches:' "$pipeline_config")" == 1 ]] &&
     grep -Eq '^    caches: \[\][[:space:]]*$' "$pipeline_config" || {
     echo 'Gitee cross-job cache upload must stay disabled to avoid HTTP 413' >&2
@@ -68,6 +74,7 @@ set -euo pipefail
 script="${0##*/}"
 printf '%s\n' "$script" >> "$FIXTURE_COMMANDS"
 if [[ "$script" == publish-tag-release.sh ]]; then
+    [[ "${CODEX_RELEASE_BRANCH:-}" == "${FIXTURE_EXPECTED_BRANCH:-}" ]] || exit 47
     [[ "${CODEX_RELEASE_BUILD_MODE:-}" == "$FIXTURE_EXPECTED_BUILD_MODE" ]] || {
         echo 'Gitee release build mode was not forwarded correctly' >&2
         exit 46
@@ -82,15 +89,16 @@ done
 export FIXTURE_STAGES="$test_root/stages" FIXTURE_COMMANDS="$test_root/commands"
 assert_pipeline() {
     local fail_script="$1" expected_status="$2" expected_count="$3" status=0
-    local build_mode="${4:-}" expected_build_mode="${4:-release}"
+    local build_mode="${4:-}" expected_build_mode="${4:-release}" branch="${5:-}"
     : > "$FIXTURE_STAGES"
     : > "$FIXTURE_COMMANDS"
     # Call from outside the fixture repo: the entry must anchor its own cwd.
     (cd "$test_root" && FIXTURE_FAIL_SCRIPT="$fail_script" \
         FIXTURE_FAIL_STATUS="$expected_status" \
         FIXTURE_EXPECTED_BUILD_MODE="$expected_build_mode" \
+        FIXTURE_EXPECTED_BRANCH="$branch" CODEX_RELEASE_BRANCH= \
         CODEX_RELEASE_BUILD_MODE="$build_mode" \
-        bash repo/scripts/run-gitee-release.sh) || status=$?
+        bash repo/scripts/run-gitee-release.sh ${branch:+"$branch"}) || status=$?
     [[ "$status" == "$expected_status" ]]
     [[ "$(wc -l < "$FIXTURE_STAGES" | tr -d '[:space:]')" == "$expected_count" ]]
     [[ "$(wc -l < "$FIXTURE_COMMANDS" | tr -d '[:space:]')" == "$expected_count" ]]
@@ -113,6 +121,7 @@ assert_pipeline() {
 assert_pipeline none 0 4
 assert_pipeline none 0 4 release
 assert_pipeline none 0 4 all
+assert_pipeline none 0 4 release main
 assert_pipeline test-ci-environment.sh 42 1
 assert_pipeline test-ci-android.sh 42 2
 assert_pipeline test-ci-android.sh 124 2

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Upload the already built/signed artifact. Never build, create/move a Git tag,
-// overwrite an attachment, or forward the release token to download hosts.
+// Upload the already built/signed artifact. Only --prepare-main may create a
+// missing tag. Never move tags, overwrite assets or send tokens to download hosts.
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
@@ -29,7 +29,7 @@ function createPublisher({ token, owner = 'YanGanYuan', repo = 'android-codex-se
   apiBase = 'https://gitee.com/api/v5', webBase = 'https://gitee.com',
   apiTimeoutMs = 30000, transferTimeoutMs = 300000, log = console.log } = {}) {
   requireValue(typeof token === 'string' && token.trim().length > 0,
-    'CODEX_RELEASE_TOKEN is required and must be available to tag builds');
+    'CODEX_RELEASE_TOKEN is required and must be available to main builds');
   requireValue([owner, repo].every(v => /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(v)),
     'Invalid release repository');
   const api = safeUrl(apiBase);
@@ -92,6 +92,25 @@ function createPublisher({ token, owner = 'YanGanYuan', repo = 'android-codex-se
     requireValue(project?.permission?.push !== false || project?.permission?.admin === true,
       'Release token does not have repository write permission');
     log('[Release] Authenticated repository access checked; publishing requires write permission');
+  }
+
+  async function ensureMainTag({ tag, commit, mainCommit, tagCommit }) {
+    requireValue(/^v\d+\.\d+\.\d+$/.test(tag) && /^[a-f0-9]{40}$/.test(commit),
+      'Invalid main release version or commit');
+    requireValue(mainCommit === commit, 'Release must run from origin/main pointing at HEAD');
+    requireValue(!tagCommit || tagCommit === commit,
+      'Version tag already points at another commit; bump the app version before pushing main');
+    await preflight();
+    if (tagCommit) {
+      log(`[Release] Using existing tag ${tag}`);
+      return;
+    }
+    // A single bounded POST. On an ambiguous failure a rerun reads Git refs
+    // again; it must never force-update a tag or blindly repeat the write.
+    await request(`${repoPath}/tags`, { method: 'POST', fields: {
+      tag_name: tag, refs: commit,
+    } });
+    log(`[Release] Created main version tag ${tag}; verifying its Git target`);
   }
 
   function validateRelease(release, artifact) {
@@ -195,26 +214,15 @@ function createPublisher({ token, owner = 'YanGanYuan', repo = 'android-codex-se
     return { tag: artifact.tag, commit: artifact.commit, sha256: artifact.hash,
       bytes: artifact.bytes.length, releaseUrl, downloadUrl };
   }
-  return { preflight, publish };
+  return { preflight, ensureMainTag, publish };
 }
 
-function loadArtifact(root, outputDir, owner = 'YanGanYuan', repo = 'android-codex-server') {
-  const metadataPath = path.join(outputDir, 'release-metadata.txt');
-  requireValue(fs.statSync(metadataPath).size <= 8192, 'Release metadata exceeds limit');
-  const metadata = Object.fromEntries(fs.readFileSync(metadataPath, 'utf8').trim().split('\n')
-    .map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
-  const pubspec = fs.readFileSync(path.join(root, 'flutter_app/pubspec.yaml'), 'utf8');
-  const version = /^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$/m.exec(pubspec);
-  requireValue(version && metadata.versionName === version[1] && metadata.versionCode === version[2] &&
-    metadata.tag === `v${version[1]}` && /^[a-f0-9]{64}$/.test(metadata.apkSha256),
-  'Release metadata does not match pubspec');
+function releaseGit(root, owner, repo) {
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8',
     timeout: 60000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never',
       GIT_ASKPASS: '/bin/false', SSH_ASKPASS: '/bin/false',
       GIT_SSH_COMMAND: 'ssh -oBatchMode=yes -oConnectTimeout=20' } });
-  requireValue(git(['rev-parse', 'HEAD']).trim() === metadata.gitCommit,
-    'Release metadata does not match HEAD');
   const origin = git(['remote', 'get-url', 'origin']).trim();
   let originPath;
   const sshOrigin = /^(?:[^@/:]+@)?gitee\.com:(.+)$/.exec(origin);
@@ -227,6 +235,45 @@ function loadArtifact(root, outputDir, owner = 'YanGanYuan', repo = 'android-cod
   }
   requireValue(originPath.replace(/\.git$/, '').toLowerCase() === `${owner}/${repo}`.toLowerCase(),
     'Release API repository does not match Git origin');
+  return git;
+}
+
+async function prepareMainRelease(root, owner, repo, publisher) {
+  const git = releaseGit(root, owner, repo);
+  requireValue(!git(['status', '--porcelain', '--untracked-files=no']).trim(),
+    'Refusing main publication from modified tracked files');
+  const pubspec = fs.readFileSync(path.join(root, 'flutter_app/pubspec.yaml'), 'utf8');
+  const version = /^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$/m.exec(pubspec);
+  requireValue(version, 'Invalid release version in pubspec');
+  const tag = `v${version[1]}`;
+  const commit = git(['rev-parse', 'HEAD']).trim();
+  const tagRef = `refs/tags/${tag}`;
+  const readRefs = () => new Map(git(['ls-remote', 'origin', 'refs/heads/main', tagRef, `${tagRef}^{}`])
+    .trim().split('\n').map(line => { const [sha, ref] = line.split(/\s+/); return [ref, sha]; }));
+  let refs = readRefs();
+  await publisher.ensureMainTag({ tag, commit, mainCommit: refs.get('refs/heads/main'),
+    tagCommit: refs.get(`${tagRef}^{}`) || refs.get(tagRef) });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    refs = readRefs();
+    if ((refs.get(`${tagRef}^{}`) || refs.get(tagRef)) === commit) return;
+    requireValue(attempt < 2, 'Main version tag does not point at HEAD after creation');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+}
+
+function loadArtifact(root, outputDir, owner = 'YanGanYuan', repo = 'android-codex-server') {
+  const metadataPath = path.join(outputDir, 'release-metadata.txt');
+  requireValue(fs.statSync(metadataPath).size <= 8192, 'Release metadata exceeds limit');
+  const metadata = Object.fromEntries(fs.readFileSync(metadataPath, 'utf8').trim().split('\n')
+    .map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
+  const pubspec = fs.readFileSync(path.join(root, 'flutter_app/pubspec.yaml'), 'utf8');
+  const version = /^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$/m.exec(pubspec);
+  requireValue(version && metadata.versionName === version[1] && metadata.versionCode === version[2] &&
+    metadata.tag === `v${version[1]}` && /^[a-f0-9]{64}$/.test(metadata.apkSha256),
+  'Release metadata does not match pubspec');
+  const git = releaseGit(root, owner, repo);
+  requireValue(git(['rev-parse', 'HEAD']).trim() === metadata.gitCommit,
+    'Release metadata does not match HEAD');
   const tagRef = `refs/tags/${metadata.tag}`;
   const remoteTags = new Map(git(['ls-remote', 'origin', tagRef, `${tagRef}^{}`]).trim()
     .split('\n').map(line => { const [sha, ref] = line.split(/\s+/); return [ref, sha]; }));
@@ -250,6 +297,7 @@ async function main() {
     owner, repo,
     apiBase: process.env.CODEX_GITEE_API_BASE });
   if (process.argv[2] === '--preflight') return publisher.preflight();
+  if (process.argv[2] === '--prepare-main') return prepareMainRelease(root, owner, repo, publisher);
   requireValue(process.argv.length === 3, 'Usage: publish-gitee-artifact.cjs OUTPUT_DIR | --preflight');
   const outputDir = path.resolve(process.argv[2]);
   const artifact = loadArtifact(root, outputDir, owner, repo);

@@ -17,6 +17,7 @@ const repoPath = '/api/v5/repos/fixture/repo';
 
 async function fixture(options, check) {
   const state = { requests: [], logs: [], creates: 0, uploads: 0, downloads: 0,
+    tagCreates: 0,
     attached: !!options.existingAsset, created: !!options.existingRelease };
   const release = () => ({ name: 'fixture', id: 42, tag_name: options.wrongTag || artifact.tag,
     prerelease: !!options.prerelease,
@@ -49,6 +50,15 @@ async function fixture(options, check) {
         if (options.invalidJson) { res.writeHead(200); return res.end(token); }
         if (!state.created) return json(404, {});
         return json(200, release());
+      }
+      if (url.pathname === `${repoPath}/tags` && req.method === 'POST') {
+        state.tagCreates++;
+        const form = new URLSearchParams(body);
+        assert.equal(form.get('access_token'), token);
+        assert.equal(form.get('tag_name'), artifact.tag);
+        assert.equal(form.get('refs'), artifact.commit);
+        if (options.tagFailure) return json(403, { message: token });
+        return json(201, { name: artifact.tag, commit: { sha: artifact.commit } });
       }
       if (url.pathname === `${repoPath}/releases` && req.method === 'POST') {
         state.creates++;
@@ -109,7 +119,7 @@ async function fixture(options, check) {
     assert.equal(state.handlerError, undefined);
     assert.ok(!state.logs.join('\n').includes(token));
     assert.ok(state.requests.every(r => !['DELETE', 'PATCH'].includes(r.method)));
-    assert.ok(state.requests.every(r => !r.pathname.endsWith('/tags')));
+    if (!options.prepareMain) assert.equal(state.tagCreates, 0);
     assert.ok(state.requests.every(r => r.pathname !== '/api/v5/user'));
   } finally {
     server.closeAllConnections();
@@ -118,6 +128,30 @@ async function fixture(options, check) {
 }
 
 async function main() {
+  const mainVersion = { tag: artifact.tag, commit: artifact.commit, mainCommit: artifact.commit };
+  await fixture({ prepareMain: true }, async (publisher, state) => {
+    await publisher.ensureMainTag(mainVersion);
+    assert.equal(state.tagCreates, 1);
+    await publisher.ensureMainTag({ ...mainVersion, tagCommit: artifact.commit });
+    assert.equal(state.tagCreates, 1);
+    assert.equal(state.creates, 0);
+  });
+  for (const overrides of [
+    { mainCommit: 'b'.repeat(40) }, { mainCommit: undefined },
+    { tagCommit: 'b'.repeat(40) }, { tag: 'main' },
+  ]) {
+    await fixture({ prepareMain: true }, async (publisher, state) => {
+      await assert.rejects(publisher.ensureMainTag({ ...mainVersion, ...overrides }));
+      assert.equal(state.requests.length, 0);
+    });
+  }
+  for (const options of [{ readOnly: true }, { authFailure: true }, { tagFailure: true }]) {
+    await fixture({ ...options, prepareMain: true }, async (publisher, state) => {
+      await assert.rejects(publisher.ensureMainTag(mainVersion), error => !error.message.includes(token));
+      assert.equal(state.tagCreates, options.tagFailure ? 1 : 0);
+      assert.equal(state.uploads, 0);
+    });
+  }
   for (const empty of [undefined, '', '  \n']) {
     assert.throws(() => createPublisher({ token: empty }), /CODEX_RELEASE_TOKEN/);
   }
