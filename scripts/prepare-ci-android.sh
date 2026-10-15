@@ -128,6 +128,7 @@ echo "Using sdkmanager: $manager" >&2
 
 packages=("platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1")
 package_ready() {
+    local cmake_version
     case "$1" in
         platform-tools) [[ -x "$sdk_root/platform-tools/adb" ]] ;;
         'platforms;android-36') [[ -s "$sdk_root/platforms/android-36/android.jar" ]] ;;
@@ -135,10 +136,20 @@ package_ready() {
             -x "$sdk_root/build-tools/36.0.0/apksigner" && -x "$sdk_root/build-tools/36.0.0/zipalign" ]] ;;
         'ndk;28.2.13676358') [[ -x "$sdk_root/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]] ;;
         'cmake;3.22.1')
-            [[ -x "$sdk_root/cmake/3.22.1/bin/cmake" && -x "$sdk_root/cmake/3.22.1/bin/ninja" ]] &&
-                timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/cmake" --version 2>/dev/null |
-                    grep -Fxq 'cmake version 3.22.1' &&
-                timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 ;;
+            [[ -x "$sdk_root/cmake/3.22.1/bin/cmake" && -x "$sdk_root/cmake/3.22.1/bin/ninja" ]] || {
+                echo 'Android SDK CMake or bundled Ninja executable is missing' >&2; return 1;
+            }
+            cmake_version="$(timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/cmake" --version 2>/dev/null)" || {
+                echo 'Android SDK CMake --version failed or timed out' >&2; return 1;
+            }
+            # Google's Android 3.22.1 package reports 3.22.1-g37088a8.
+            # Match the complete first line, retaining the exact release check.
+            [[ "${cmake_version%%$'\n'*}" =~ ^cmake\ version\ 3\.22\.1(-g[0-9a-f]+)?$ ]] || {
+                printf 'Android SDK CMake version mismatch: %s\n' "${cmake_version%%$'\n'*}" >&2; return 1;
+            }
+            timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 || {
+                echo 'Android SDK Ninja --version failed or timed out' >&2; return 1;
+            } ;;
     esac
 }
 missing=()

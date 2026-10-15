@@ -61,7 +61,8 @@ for package in "$@"; do
     for path in "${paths[@]}"; do
         mkdir -p "$root/$(dirname "$path")"
         case "$path" in
-            */bin/cmake) printf '#!/bin/sh\necho "cmake version 3.22.1"\n' > "$root/$path" ;;
+            # Match the official Android archive, including its build suffix and footer.
+            */bin/cmake) printf '#!/bin/sh\necho "cmake version 3.22.1-g37088a8"\necho\necho "CMake suite maintained and supported by Kitware (kitware.com/cmake)."\n' > "$root/$path" ;;
             */bin/ninja) printf '#!/bin/sh\necho "1.10.2"\n' > "$root/$path" ;;
             *) printf '#!/bin/sh\nexit 0\n' > "$root/$path" ;;
         esac
@@ -123,7 +124,7 @@ touch "$fallback/fail-mirror" "$fallback/sentinel"
 [[ -f "$fallback/sentinel" && "$(wc -l < "$fallback/package-sources")" == 2 ]]
 [[ "$(head -n 1 "$fallback/package-sources")" == https://googledownloads.cn/android/repository/ ]]
 [[ "$(tail -n 1 "$fallback/package-sources")" == https://dl.google.com/android/repository/ ]]
-[[ "$("$fallback/cmake/3.22.1/bin/cmake" --version)" == 'cmake version 3.22.1' ]]
+"$fallback/cmake/3.22.1/bin/cmake" --version | grep -Fxq 'cmake version 3.22.1-g37088a8'
 [[ "$("$fallback/cmake/3.22.1/bin/ninja" --version)" == 1.10.2 ]]
 
 # Explicit repository choices remain authoritative, whether installation succeeds or fails.
@@ -173,6 +174,12 @@ ln -s "$sdk/cmdline-tools/17.0/bin/sdkmanager" "$fixture/bin/sdkmanager"
 [[ "$(ANDROID_HOME= ANDROID_SDK_ROOT="$sdk" \
     bash "$ROOT_DIR/scripts/prepare-ci-android.sh" "$fixture/unused" 2>"$fixture/last.log")" == "$sdk" ]]
 
+# Both Google's suffixed build and an exact upstream version reuse the cache.
+calls_before="$(wc -l < "$sdk/calls")"
+printf '#!/bin/sh\necho "cmake version 3.22.1"\n' > "$sdk/cmake/3.22.1/bin/cmake"
+[[ "$(prepare "$sdk")" == "$sdk" ]]
+[[ "$(wc -l < "$sdk/calls")" == "$calls_before" ]]
+
 # An incomplete package triggers only the missing package install, not a full re-download.
 rm "$sdk/build-tools/36.0.0/apksigner"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
@@ -183,10 +190,25 @@ rm "$sdk/cmake/3.22.1/bin/ninja"
 [[ "$(prepare "$sdk")" == "$sdk" ]]
 [[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
 [[ "$("$sdk/cmake/3.22.1/bin/ninja" --version)" == 1.10.2 ]]
-printf '#!/bin/sh\necho "cmake version 3.10.2"\n' > "$sdk/cmake/3.22.1/bin/cmake"
-[[ "$(prepare "$sdk")" == "$sdk" ]]
-[[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
-[[ "$("$sdk/cmake/3.22.1/bin/cmake" --version)" == 'cmake version 3.22.1' ]]
+# Wrong releases and non-build suffixes must still trigger a targeted repair.
+for wrong_version in 3.10.2 3.22.10 3.22.1-rc1 3.22.1-gINVALID; do
+    calls_before="$(wc -l < "$sdk/calls")"
+    printf '#!/bin/sh\necho "cmake version %s"\n' "$wrong_version" > "$sdk/cmake/3.22.1/bin/cmake"
+    [[ "$(prepare "$sdk")" == "$sdk" ]]
+    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 1))" ]]
+    [[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+    grep -Fq "CMake version mismatch: cmake version $wrong_version" "$fixture/last.log"
+    "$sdk/cmake/3.22.1/bin/cmake" --version | grep -Fxq 'cmake version 3.22.1-g37088a8'
+done
+# Version text alone cannot hide a broken executable's nonzero exit.
+for native_tool in cmake ninja; do
+    calls_before="$(wc -l < "$sdk/calls")"
+    printf '\nexit 1\n' >> "$sdk/cmake/3.22.1/bin/$native_tool"
+    [[ "$(prepare "$sdk")" == "$sdk" ]]
+    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 1))" ]]
+    [[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+    grep -Fq -- '--version failed or timed out' "$fixture/last.log"
+done
 
 # Broken preinstalled launchers are replaced only after validating a fresh tools archive.
 broken="$fixture/broken"
@@ -255,7 +277,7 @@ test "$ANDROID_SDK_ROOT" = "$EXPECTED_SDK"
 test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
 test "$(command -v cmake)" = "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
 test "$(command -v ninja)" = "$ANDROID_HOME/cmake/3.22.1/bin/ninja"
-test "$(cmake --version)" = 'cmake version 3.22.1'
+cmake --version | grep -Fxq 'cmake version 3.22.1-g37088a8'
 test "$(ninja --version)" = 1.10.2
 test "$CODEX_FLUTTER_BIN" = "$WORKSPACE/flutter/bin/flutter"
 test "$(command -v node)" = "$WORKSPACE/node/bin/node"

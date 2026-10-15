@@ -86,6 +86,8 @@ Gradle 的 HTTP 连接与读取各限 30 秒；Flutter 内部重试不重置 APK
 Android SDK 准备明确包含 `platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、
 `ndk;28.2.13676358` 和 `cmake;3.22.1`。应用固定 CMake 3.22.1，准备阶段实际执行 CMake/Ninja
 检查，将 SDK CMake 的 bin 目录加入 PATH；缺 Ninja 或 CMake 版本不匹配时补齐包后再次校验。
+版本首行接受准确的 `3.22.1` 及官方 Android 构建后缀（如 `3.22.1-g37088a8`），
+仍拒绝其他补丁版本、预发布后缀和工具运行失败，避免安装成功后因后缀误报不完整。
 默认国内仓库可能有元数据但缺少对应压缩包；首次包安装失败后，余下尝试切换 Google 官方仓库，
 总计最多三次，并保留 sdkmanager 校验。显式配置 `CODEX_ANDROID_REPOSITORY_URL` 不自动换源。
 超时或取消立即停止，不进入重试，SDK 1800 秒总阶段和共享环境剩余预算保持不变。

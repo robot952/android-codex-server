@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.162+294，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.163+295，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1132,6 +1132,9 @@ SDK 总阶段仍受 1800 秒及共享环境剩余预算限制。隔离回归覆�
 `/mnt/pipeline-tools/standard/android/sdk`），先实际创建临时文件验证可写性；失败后切换到独立
 SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK 不会被改写或重新挂载。
 应用显式固定 CMake 3.22.1，准备阶段执行 CMake/Ninja 版本检查，缺失或损坏时补齐对应包；
+版本检查接受官方 Android 包的 `3.22.1-g37088a8`（`-g` 加十六进制构建标识）及无后缀的
+`3.22.1`，完整匹配首行，拒绝不同补丁版本和预发布后缀；工具非零退出仍判定损坏。
+回归使用官方多行版本输出，并覆盖缓存复用、错误版本和工具运行失败；失败日志区分缺失、版本不符与运行失败。
 将 SDK 的 `cmake/3.22.1/bin` 加入 PATH，避免直到 native 编译才发现缺少 Ninja。
 `test-ci-android.sh --read-only-mounts` 在独立 mount namespace 中使用真实只读挂载，验证冷/热缓存、
 环境变量和 PATH 探测、只读缓存报错、下游环境传递与原 SDK 内容不变；工作流自测在有挂载权限时自动执行。
