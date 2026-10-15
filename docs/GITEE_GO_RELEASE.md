@@ -17,6 +17,14 @@ Gitee Go 的删除入口提示按对应分支删除 YAML；迁移时还要核对
 再推送新版本标签；没有确认前不要用新标签试触发，也不要同时点击手动重跑。
 `test-gitee-pipeline.sh` 在云端检查 `.workflow/` 只有一个配置，防止重新引入重复入口。
 
+流水线显式设置 `caches: []`，关闭跨构建缓存下载/压缩/上传，只保留 `dist/` 的 APK 与发布元数据构件。
+2026-10-15 的 1.8.165 构建已完成测试、编译及构件归档，但整套 Flutter/Android/Gradle/Node/Pub
+缓存压缩耗时 287 秒后，上传被 HTTP 413 拒绝，阻断后续产出暂存。不能只把该错误隐藏或继续重试大包。
+本次作业内的磁盘缓存、Debug/Release 复用及 Gitee 预装 SDK 复用保持不变，不删除本机缓存；
+全新 runner 可能需要重新获取未预装依赖。恢复跨构建缓存前需另行验证体积受控的缓存策略与平台限制，
+不能直接重新加入整个 SDK 或 Gradle 目录。云端回归同时检查空缓存配置与 `dist/` 构件配置，
+所有原有构建、验签、超时和单标签触发规则不变。
+
 当前标签入口与旧 `scripts/build-gitee-release.sh` 共用
 `scripts/prepare-ci-environment.sh` 准备 Flutter、Android SDK 和 Gradle，统一传递在线依赖、
 Pub 镜像和工具缓存环境。平台导出的

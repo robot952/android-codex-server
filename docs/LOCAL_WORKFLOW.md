@@ -13,6 +13,9 @@ Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只响�
 标签脚本会核对标签与 `pubspec.yaml` 版本一致，再执行发布构建，避免错误标签消耗构建额度。
 YAML 只执行 `bash scripts/run-gitee-release.sh`，通过严格 Shell 串行调用回归与发布，失败或超时
 不能继续下一阶段。干净检出缺少本地标签时，限时 60 秒获取 origin 的精确标签并校验其提交；不创建或移动标签。
+Gitee YAML 使用 `caches: []` 关闭跨构建缓存传输，避免整个 SDK/Gradle 等目录上传 HTTP 413 后
+阻断 APK 产出暂存；`dist/` 构件上传保持开启。作业内磁盘缓存、预装 SDK 复用及本机缓存不受影响，
+但全新 runner 不再从平台恢复这些缓存。云端回归锁定空缓存配置和发布构件配置，恢复缓存前必须验证体积上限。
 Gradle 回归只依赖已跟踪的根 Wrapper JAR，不依赖本机生成的 Flutter Android Wrapper 文件。
 标签与旧分支入口共用 `scripts/prepare-ci-environment.sh`，不能跳过 Flutter/Android/Gradle 环境准备。
 `prepare-ci-gradle.sh` 固定 Gradle 9.1.0-all 与官方 SHA-256，国内镜像失败可回退官方，最多六次限时

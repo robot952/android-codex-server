@@ -1115,6 +1115,10 @@ Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行
 下载失败、半成品和错误 revision 不得破坏缓存挂载点。`scripts/test-ci-flutter.sh` 覆盖缓存与挂载，
 `scripts/test-ci-flutter-download.cjs` 覆盖 HTTP 中断续传、Range 不支持回退和错误哈希拒绝。
 
+Gitee YAML 的 `caches: []` 关闭跨构建缓存打包与上传，避免整套工具缓存
+触发 HTTP 413 后阻断产出暂存；保留 `dist/` APK/元数据构件、作业内缓存及预装 SDK 复用。
+不清理本机缓存，不跳过测试、验签或超时；全新 runner 可能重新下载未预装依赖。
+`test-gitee-pipeline.sh` 检查该上传策略，恢复跨构建缓存前须验证体积受控方案。
 Android 工具准备由 `prepare-ci-android.sh` 单独负责，不再把 Gitee Android 插件是否预装
 `sdkmanager` 当作前置条件。脚本会从 `ANDROID_HOME`/`ANDROID_SDK_ROOT`、PATH 中的 sdkmanager、
 常见 SDK 目录和缓存目录依次探测；缺少命令行工具时从 `googledownloads.cn` 下载固定的

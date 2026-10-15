@@ -15,6 +15,22 @@ pipeline_configs=("$ROOT_DIR"/.workflow/*.yml "$ROOT_DIR"/.workflow/*.yaml)
     exit 1
 }
 shopt -u nullglob
+# Cache upload runs before artifact publication on Gitee. Keep it explicitly
+# disabled until a size-bounded cross-job cache policy has been verified.
+# Do not remove the actual release artifact while fixing oversized caches.
+pipeline_config="${pipeline_configs[0]}"
+[[ "$(grep -Ec '^[[:space:]]*caches:' "$pipeline_config")" == 1 ]] &&
+    grep -Eq '^    caches: \[\][[:space:]]*$' "$pipeline_config" || {
+    echo 'Gitee cross-job cache upload must stay disabled to avoid HTTP 413' >&2
+    exit 1
+}
+grep -Fxq '    artifacts:' "$pipeline_config" &&
+    grep -Fxq '    - name: FLUTTER_REFACTOR_BUILD_ARTIFACT' "$pipeline_config" &&
+    grep -Fxq '      - dist' "$pipeline_config" &&
+    grep -Fxq '      type: .tar.gz' "$pipeline_config" || {
+    echo 'Gitee must retain the dist release artifact archive' >&2
+    exit 1
+}
 mkdir -p "$ROOT_DIR/.workflow-cache"
 test_root="$(mktemp -d "$ROOT_DIR/.workflow-cache/gitee-pipeline-test.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
@@ -76,4 +92,4 @@ assert_pipeline test-ci-gradle.sh 44 3
 assert_pipeline test-ci-gradle.sh 124 3
 assert_pipeline test-ci-gradle.sh 137 3
 assert_pipeline publish-tag-release.sh 45 4
-echo 'Gitee pipeline fail-fast and stage deadline regressions passed'
+echo 'Gitee pipeline artifact-only upload, fail-fast and stage deadline regressions passed'

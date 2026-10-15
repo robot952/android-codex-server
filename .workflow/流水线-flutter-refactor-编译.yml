@@ -21,14 +21,10 @@ stages:
       path:
       - dist
       type: .tar.gz
-    caches:
-    - "~/.cache/codex/flutter-3.44.8"
-    - "~/.cache/codex/android-sdk"
-    - "~/.cache/codex/gradle"
-    - "~/.cache/codex/node"
-    - "~/.pub-cache"
-    - "~/.gradle/caches"
-    - "~/.gradle/wrapper"
+    # Upload only dist artifacts. Whole SDK/Gradle caches caused HTTP 413 and
+    # prevented artifact publication after a successful build. In-job caches
+    # and Gitee's preinstalled SDK reuse remain enabled in the build scripts.
+    caches: []
     strategy:
       retry: "0"
       resource:
