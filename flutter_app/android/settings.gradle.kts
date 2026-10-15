@@ -13,14 +13,20 @@ pluginManagement {
     repositories {
         if (System.getenv("CODEX_CI_MAVEN_MIRRORS") == "1") {
             maven("https://maven.aliyun.com/repository/google") {
-                content { excludeGroupByRegex("org\\.jetbrains(\\..*)?") }
+                content {
+                    excludeGroupByRegex("org[.]jetbrains([.].*)?")
+                    excludeGroup("org.ow2.asm")
+                }
             }
             maven("https://maven.aliyun.com/repository/central")
             maven("https://maven.aliyun.com/repository/gradle-plugin")
         }
         google {
             if (System.getenv("CODEX_CI_MAVEN_MIRRORS") == "1") {
-                content { excludeGroupByRegex("org\\.jetbrains(\\..*)?") }
+                content {
+                    excludeGroupByRegex("org[.]jetbrains([.].*)?")
+                    excludeGroup("org.ow2.asm")
+                }
             }
         }
         mavenCentral()

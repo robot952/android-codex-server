@@ -159,12 +159,13 @@ export CODEX_FIXTURE_KOTLIN_MARKER="$fixture/kotlin-routing.marker"
 # Duplicate poison artifacts make consulting the wrong repository observable.
 write_module() {
     local repository="$1" group="$2" artifact="$3" content="$4"
-    local directory="$CODEX_FIXTURE_MAVEN_ROOT/$repository/${group//.//}/$artifact/0.0-fixture"
+    local version="${5:-0.0-fixture}" dependencies="${6:-}"
+    local directory="$CODEX_FIXTURE_MAVEN_ROOT/$repository/${group//.//}/$artifact/$version"
     mkdir -p "$directory"
-    printf '<project><modelVersion>4.0.0</modelVersion><groupId>%s</groupId><artifactId>%s</artifactId><version>0.0-fixture</version></project>\n' \
-        "$group" "$artifact" > "$directory/$artifact-0.0-fixture.pom"
+    printf '<project><modelVersion>4.0.0</modelVersion><groupId>%s</groupId><artifactId>%s</artifactId><version>%s</version>%s</project>\n' \
+        "$group" "$artifact" "$version" "$dependencies" > "$directory/$artifact-$version.pom"
     printf '%s' "$content" > "$fixture/module.txt"
-    jar --create --file "$directory/$artifact-0.0-fixture.jar" -C "$fixture" module.txt
+    jar --create --file "$directory/$artifact-$version.jar" -C "$fixture" module.txt
 }
 for artifact in armeabi_v7a_release arm64_v8a_release x86_64_release flutter_embedding_release; do
     write_module flutter io.flutter "$artifact" flutter-engine
@@ -176,6 +177,29 @@ write_module google org.jetbrains.kotlin kotlin-assignment-compiler-plugin-embed
 write_module google com.android.fixture android-library android-google
 write_module central com.android.fixture android-library WRONG-CENTRAL
 write_module central org.example.fixture ordinary-library ordinary-central
+write_module fallback org.example.fixture ordinary-library WRONG-FALLBACK
+
+# Reproduce the failing AGP -> gradle-api -> ASM compile classpath, plus other
+# Central groups. Central's mirror must resolve ALL transitives; fallback-only
+# success must not hide a mirror accidentally restricted to Kotlin.
+agp_dependencies='<dependencies>
+<dependency><groupId>org.ow2.asm</groupId><artifactId>asm</artifactId><version>9.7.1</version></dependency>
+<dependency><groupId>org.ow2.asm</groupId><artifactId>asm-commons</artifactId><version>9.7.1</version></dependency>
+<dependency><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>33.3.1-jre</version></dependency>
+<dependency><groupId>com.google.code.gson</groupId><artifactId>gson</artifactId><version>2.11.0</version></dependency>
+</dependencies>'
+write_module google com.android.tools.build gradle-api android-gradle-api 8.11.1 "$agp_dependencies"
+write_module central com.android.tools.build gradle-api WRONG-CENTRAL 8.11.1
+write_module central org.ow2.asm asm asm-central 9.7.1
+write_module central org.ow2.asm asm-commons asm-commons-central 9.7.1
+write_module google org.ow2.asm asm WRONG-GOOGLE 9.7.1
+write_module google org.ow2.asm asm-commons WRONG-GOOGLE 9.7.1
+write_module central com.google.guava guava guava-central 33.3.1-jre
+write_module central com.google.code.gson gson gson-central 2.11.0
+write_module fallback org.ow2.asm asm WRONG-FALLBACK 9.7.1
+write_module fallback org.ow2.asm asm-commons WRONG-FALLBACK 9.7.1
+write_module fallback com.google.guava guava WRONG-FALLBACK 33.3.1-jre
+write_module fallback com.google.code.gson gson WRONG-FALLBACK 2.11.0
 
 cat > "$project/settings.gradle" <<'GROOVY'
 pluginManagement { includeBuild(System.getenv('FLUTTER_ROOT') + '/packages/flutter_tools/gradle') }
@@ -200,13 +224,21 @@ buildscript {
     }
     assert repositories.take(3).collect { it.url.toString() } == expected
     repositories.each { repository ->
-        def kind = repository.url.toString().contains('google') ? 'google' : 'central'
+        def url = repository.url.toString()
+        def kind = url.contains('google') ? 'google' :
+            url == 'https://maven.aliyun.com/repository/central' ? 'central' : 'fallback'
         repository.url = new File(System.getenv('CODEX_FIXTURE_MAVEN_ROOT'), kind).toURI()
     }
-    dependencies { classpath 'org.jetbrains.kotlin:kotlin-assignment-compiler-plugin-embeddable:0.0-fixture' }
-    assert configurations.classpath.files.every { artifact ->
-        new java.util.zip.ZipFile(artifact).withCloseable { it.getInputStream(it.getEntry('module.txt')).text } == 'kotlin-central'
+    dependencies {
+        classpath 'org.jetbrains.kotlin:kotlin-assignment-compiler-plugin-embeddable:0.0-fixture'
+        classpath 'com.android.tools.build:gradle-api:8.11.1'
+        classpath 'org.example.fixture:ordinary-library:0.0-fixture'
     }
+    def actual = configurations.classpath.files.collect { artifact ->
+        new java.util.zip.ZipFile(artifact).withCloseable { it.getInputStream(it.getEntry('module.txt')).text }
+    }.sort()
+    assert actual == ['kotlin-central', 'android-gradle-api', 'asm-central', 'asm-commons-central',
+        'guava-central', 'gson-central', 'ordinary-central'].sort()
 }
 repositories {
     google(); mavenCentral()
@@ -219,7 +251,8 @@ assert repositories.take(2).collect { it.url.toString() } == [
 ]
 repositories.each { repository ->
     def url = repository.url.toString()
-    def kind = url.endsWith('/download.flutter.io') ? 'flutter' : url.contains('google') ? 'google' : 'central'
+    def kind = url.endsWith('/download.flutter.io') ? 'flutter' : url.contains('google') ? 'google' :
+        url == 'https://maven.aliyun.com/repository/central' ? 'central' : 'fallback'
     repository.url = new File(System.getenv('CODEX_FIXTURE_MAVEN_ROOT'), kind).toURI()
 }
 configurations { routing }
@@ -230,6 +263,7 @@ dependencies {
     routing 'org.jetbrains.kotlin:kotlin-assignment-compiler-plugin-embeddable:0.0-fixture'
     routing 'com.android.fixture:android-library:0.0-fixture'
     routing 'org.example.fixture:ordinary-library:0.0-fixture'
+    routing 'com.android.tools.build:gradle-api:8.11.1'
 }
 tasks.register('verifyRouting') {
     doLast {
@@ -237,7 +271,8 @@ tasks.register('verifyRouting') {
             new java.util.zip.ZipFile(artifact).withCloseable { it.getInputStream(it.getEntry('module.txt')).text }
         }.sort()
         assert actual == ['flutter-engine', 'flutter-engine', 'flutter-engine', 'flutter-engine',
-            'kotlin-central', 'android-google', 'ordinary-central'].sort()
+            'kotlin-central', 'android-google', 'ordinary-central', 'android-gradle-api',
+            'asm-central', 'asm-commons-central', 'guava-central', 'gson-central'].sort()
     }
 }
 new File(System.getenv('CODEX_FIXTURE_REPOSITORY_MARKER')).text = 'mirrors-before-official\n'
@@ -255,7 +290,9 @@ gradle.settingsEvaluated { settings ->
         'https://maven.aliyun.com/repository/gradle-plugin'
     ]
     settings.dependencyResolutionManagement.repositories.each { repository ->
-        def kind = repository.url.toString().contains('google') ? 'google' : 'central'
+        def url = repository.url.toString()
+        def kind = url.contains('google') ? 'google' :
+            url == 'https://maven.aliyun.com/repository/central' ? 'central' : 'fallback'
         repository.url = new File(System.getenv('CODEX_FIXTURE_MAVEN_ROOT'), kind).toURI()
     }
 }
@@ -266,13 +303,21 @@ GROOVY
 cat > "$flutter_build/build.gradle" <<'GROOVY'
 plugins { id 'java-gradle-plugin' }
 configurations { routing }
-dependencies { routing 'org.jetbrains.kotlin:kotlin-assignment-compiler-plugin-embeddable:0.0-fixture' }
+dependencies {
+    routing 'org.jetbrains.kotlin:kotlin-assignment-compiler-plugin-embeddable:0.0-fixture'
+    routing 'com.android.tools.build:gradle-api:8.11.1'
+    routing 'org.example.fixture:ordinary-library:0.0-fixture'
+    // Exercise compileClasspath as well as the explicitly resolved fixture.
+    compileOnly 'com.android.tools.build:gradle-api:8.11.1'
+}
 tasks.register('verifyKotlinRouting') {
     doLast {
-        assert new java.util.zip.ZipFile(configurations.routing.singleFile).withCloseable {
-            it.getInputStream(it.getEntry('module.txt')).text
-        } == 'kotlin-central'
-        new File(System.getenv('CODEX_FIXTURE_KOTLIN_MARKER')).text = 'kotlin-central\n'
+        def actual = configurations.routing.files.collect { artifact ->
+            new java.util.zip.ZipFile(artifact).withCloseable { it.getInputStream(it.getEntry('module.txt')).text }
+        }.sort()
+        assert actual == ['kotlin-central', 'android-gradle-api', 'asm-central', 'asm-commons-central',
+            'guava-central', 'gson-central', 'ordinary-central'].sort()
+        new File(System.getenv('CODEX_FIXTURE_KOTLIN_MARKER')).text = 'central-transitives-verified\n'
     }
 }
 tasks.named('jar') { dependsOn 'verifyKotlinRouting' }
@@ -346,6 +391,6 @@ fi
 [[ "$(<"$CODEX_FIXTURE_INCLUDED_MARKER")" == FAIL_ON_PROJECT_REPOS ]] || fail 'strict included build was not evaluated'
 [[ "$(<"$CODEX_FIXTURE_PLUGIN_MARKER")" == settings-plugin-applied ]] || fail 'local Settings plugin was not applied'
 [[ "$(<"$CODEX_FIXTURE_REPOSITORY_MARKER")" == mirrors-before-official ]] || fail 'plugin classpath and dependency mirrors were not applied before official repositories'
-[[ "$(<"$CODEX_FIXTURE_KOTLIN_MARKER")" == kotlin-central ]] || fail 'Flutter included build resolved Kotlin from the wrong repository'
+[[ "$(<"$CODEX_FIXTURE_KOTLIN_MARKER")" == central-transitives-verified ]] || fail 'Flutter included build resolved Kotlin or AGP transitives from the wrong repository'
 [[ "$(sha256sum "$old_home/init.gradle" | cut -d ' ' -f 1)" == "$init_sha" ]] || fail 'the synthetic source init script changed'
-echo 'Real offline Gradle repository routing passed (verified distribution, inherited-init rejection, strict scoped Settings, Kotlin classpaths, three Flutter engine ABIs, Android and Central dependencies)'
+echo 'Real offline Gradle repository routing passed (verified distribution, inherited-init rejection, strict scoped Settings, Kotlin and AGP/ASM/Guava/Gson classpaths, three Flutter engine ABIs, Android and unrestricted Central mirror)'

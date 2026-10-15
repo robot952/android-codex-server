@@ -2,6 +2,23 @@
 // change Gitee's init scripts, and never inject project repositories into the
 // Flutter included build: it deliberately uses FAIL_ON_PROJECT_REPOS.
 if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
+    // Do not use exclusiveContent on Central: it also limits Central itself
+    // to the selected groups, hiding ASM/Guava and other AGP transitives.
+    // Keep Central unrestricted and exclude known Central-only groups from
+    // other sources, including google() appended later by Flutter Settings.
+    def routeCentralDependencies = { repositories ->
+        repositories.withType(org.gradle.api.artifacts.repositories.MavenArtifactRepository).all { repository ->
+            def url = repository.url.toString().replaceAll('/+$', '')
+            if (!(url in ['https://maven.aliyun.com/repository/central',
+                          'https://repo.maven.apache.org/maven2',
+                          'https://repo1.maven.org/maven2'])) {
+                repository.content {
+                    excludeGroupByRegex 'org[.]jetbrains([.].*)?'
+                    excludeGroup 'org.ow2.asm'
+                }
+            }
+        }
+    }
     def flutterRoot = System.getenv('FLUTTER_ROOT')
     if (!flutterRoot) {
         throw new GradleException('CI Flutter repository routing requires FLUTTER_ROOT')
@@ -11,10 +28,14 @@ if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
         if (settings.settingsDir.canonicalFile != flutterBuild) {
             return
         }
+        routeCentralDependencies(settings.dependencyResolutionManagement.repositories)
         settings.pluginManagement.repositories {
             maven {
                 url = uri('https://maven.aliyun.com/repository/google')
-                content { excludeGroupByRegex 'org\\.jetbrains(\\..*)?' }
+                content {
+                    excludeGroupByRegex 'org[.]jetbrains([.].*)?'
+                    excludeGroup 'org.ow2.asm'
+                }
             }
             maven { url = uri('https://maven.aliyun.com/repository/central') }
             maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
@@ -23,14 +44,8 @@ if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
         }
         settings.dependencyResolutionManagement.repositories {
             maven { url = uri('https://maven.aliyun.com/repository/google') }
-            def centralMirror = maven { url = uri('https://maven.aliyun.com/repository/central') }
-            def central = mavenCentral()
-            // This also excludes Kotlin from google() added later by Flutter's
-            // settings. A Google timeout must not block a Maven Central module.
-            exclusiveContent {
-                forRepositories(centralMirror, central)
-                filter { includeGroupByRegex 'org\\.jetbrains(\\..*)?' }
-            }
+            maven { url = uri('https://maven.aliyun.com/repository/central') }
+            mavenCentral()
         }
     }
 }

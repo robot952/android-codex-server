@@ -2,27 +2,36 @@
 // separate settings-level CI policy and retains FAIL_ON_PROJECT_REPOS.
 if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
     def flutterStorage = (System.getenv('FLUTTER_STORAGE_BASE_URL') ?: 'https://storage.flutter-io.cn').replaceAll('/+$', '')
+    // Central must remain open to all groups (including AGP transitives).
+    // exclusiveContent would restrict Central itself to Kotlin and ASM too.
+    def routeCentralDependencies = { repositories ->
+        repositories.withType(org.gradle.api.artifacts.repositories.MavenArtifactRepository).all { repository ->
+            def url = repository.url.toString().replaceAll('/+$', '')
+            if (!(url in ['https://maven.aliyun.com/repository/central',
+                          'https://repo.maven.apache.org/maven2',
+                          'https://repo1.maven.org/maven2'])) {
+                repository.content {
+                    excludeGroupByRegex 'org[.]jetbrains([.].*)?'
+                    excludeGroup 'org.ow2.asm'
+                }
+            }
+        }
+    }
     allprojects { target ->
         // Flutter plugins can declare their own legacy buildscript classpaths.
         // Seed mirrors before those plugins append google()/mavenCentral().
+        routeCentralDependencies(target.buildscript.repositories)
+        routeCentralDependencies(target.repositories)
         target.buildscript.repositories {
             maven { url = uri('https://maven.aliyun.com/repository/google') }
-            def centralMirror = maven { url = uri('https://maven.aliyun.com/repository/central') }
+            maven { url = uri('https://maven.aliyun.com/repository/central') }
             maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
-            def central = mavenCentral()
-            exclusiveContent {
-                forRepositories(centralMirror, central)
-                filter { includeGroupByRegex 'org\\.jetbrains(\\..*)?' }
-            }
+            mavenCentral()
         }
         target.repositories {
             maven { url = uri('https://maven.aliyun.com/repository/google') }
-            def centralMirror = maven { url = uri('https://maven.aliyun.com/repository/central') }
-            def central = mavenCentral()
-            exclusiveContent {
-                forRepositories(centralMirror, central)
-                filter { includeGroupByRegex 'org\\.jetbrains(\\..*)?' }
-            }
+            maven { url = uri('https://maven.aliyun.com/repository/central') }
+            mavenCentral()
             // Engine artifacts exist in Flutter's repository, not Google's
             // Android Maven repository. Exclude io.flutter from every other
             // repository, including ones appended by plugins after this block.

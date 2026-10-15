@@ -34,12 +34,17 @@ CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准�
 工程验证受污染目录和隔离后的严格 included-build 插件加载，失败时立即停止后续测试及出包。
 不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过 init 向 included build 注入项目仓库。
 CI 通过 `CODEX_CI_MAVEN_MIRRORS=1` 为应用插件解析、子项目 buildscript 和依赖启用阿里云镜像。
-Kotlin 只使用 Central 镜像/官方源，Flutter `io.flutter` 只使用
+Kotlin 和 `org.ow2.asm` 只使用 Central 镜像/官方源，Flutter `io.flutter` 只使用
 `$FLUTTER_STORAGE_BASE_URL/download.flutter.io`，避免从 Google Maven 查找这些依赖导致长时间超时。
+Central 仓库必须保留所有 group 的解析能力：不能把它放进仅匹配 Kotlin 的 `exclusiveContent`，
+该 API 同时收窄目标仓库，会把 ASM、Guava、Gson 等 AGP 传递依赖排除在 Central 镜像之外。
+Kotlin/ASM 改为在其他仓库上排除，规则也覆盖插件后续追加的 Google 仓库；Flutter 专用仓库仍可独占。
 私有 home 的 `init.d` 仅安装仓库审核的 `ci-flutter-repositories.init.gradle`，匹配当前 SDK 精确路径，
 仅在 Settings 层为 Flutter included build 补齐插件/依赖镜像；其他 included build 和本机构建不受影响。
-离线仓库预检实际解析包含错误来源对照包的 Kotlin、Flutter 三 ABI/embedding、Android 和 Central
-依赖，继续验证原 init 隔离与严格仓库策略；私有测试目录清理最多重试 5 次，兼容 Gradle registry 收尾。
+离线仓库预检实际解析 Kotlin、Flutter 三 ABI/embedding、Android 和 Central 依赖，并覆盖
+`gradle-api:8.11.1 -> asm:9.7.1`、ASM Commons、Guava、Gson 在 included-build compileClasspath、
+app buildscript 和普通依赖中的传递解析。Google 错误包及官方回退对照包用于确保 Central 镜像没有被收窄，
+不能只靠官方回退通过检查。继续验证原 init 隔离与严格仓库策略；私有目录清理最多重试 5 次。
 已有 Gitee JDK、匹配 Android SDK 组件与 Gradle 依赖/Wrapper 缓存继续复用；不会为了镜像配置重新下载
 全部 SDK，也不恢复已导致 HTTP 413 的整目录缓存上传。
 Gitee 必须设置明确超时：环境、Android SDK 与 Gradle 隔离回归上限 300/300/600 秒，发布总任务上限 5400 秒；

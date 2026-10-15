@@ -1102,13 +1102,19 @@ CI 的 `prepare-ci-gradle-home.sh` 在 `.workflow-cache/gradle-user-homes/` 创�
 Flutter included build 的 `FAIL_ON_PROJECT_REPOS` 冲突，不能通过修改 SDK 或放宽仓库策略绕过。
 CI 启用 `CODEX_CI_MAVEN_MIRRORS=1`：应用 settings 的插件仓库和
 `ci-repositories.gradle` 中应用及插件子项目的 buildscript/依赖仓库优先使用阿里云镜像，官方源兜底。
-Kotlin 的 `org.jetbrains` 依赖只交给 Maven Central 镜像/官方源；`io.flutter` 引擎与 embedding
+Kotlin 的 `org.jetbrains` 与 ASM 的 `org.ow2.asm` 依赖只交给 Maven Central 镜像/官方源；`io.flutter` 引擎与 embedding
 只交给 `$FLUTTER_STORAGE_BASE_URL/download.flutter.io`，防止 Google Maven 超时阻断本不属于它的依赖。
+Central 必须保持完整 group 解析能力，不能再对它使用仅匹配 Kotlin 的 `exclusiveContent`：
+该 API 同时收窄目标仓库，使 ASM、Guava、Gson 等 AGP 传递依赖错过国内 Central 镜像。
+改为从其他仓库排除 Kotlin/ASM，覆盖后续添加的 Google 仓库；Flutter 专用仓库仍保持独占策略。
 私有 Gradle home 只额外安装仓库内审核的 `ci-flutter-repositories.init.gradle`，按当前 Flutter SDK
-的规范路径精确匹配 included build，通过 Settings 层补齐插件/依赖镜像与 Kotlin 路由；不修改 SDK、
+的规范路径精确匹配 included build，通过 Settings 层补齐插件/依赖镜像与 Kotlin/ASM 路由；不修改 SDK、
 不往其项目层添加仓库、不放宽 `FAIL_ON_PROJECT_REPOS`，不继承 Gitee 原 init 或凭据配置。
-仓库预检使用含错误来源对照包的离线 Maven fixture，实际解析 Kotlin 编译插件、三个 ABI 的 Flutter
-引擎、embedding、Android 与普通 Central 依赖，同时验证 app legacy buildscript 和严格 included build。
+仓库预检使用含 Google 错误包与官方回退对照包的离线 Maven fixture，实际解析 Kotlin 编译插件、
+三个 ABI 的 Flutter 引擎、embedding、Android 与普通 Central 依赖，并覆盖
+`gradle-api:8.11.1 -> asm:9.7.1`、ASM Commons、Guava、Gson 传递依赖。
+included-build compileClasspath、app legacy buildscript 和普通依赖均须使用完整 Central 镜像，
+不能用官方回退掩盖镜像过滤错误；严格 included-build 仓库策略保持不变。
 单次 Gradle 退出后清理其私有目录最多重试 5 次，避免 registry 收尾写入造成偶发“目录非空”误失败。
 隔离阶段最多 60 秒；发行包准备后以 240 秒上限运行真实离线 Gradle 仓库预检，验证受污染的
 合成用户目录会失败、隔离目录能加载严格仓库策略的 included-build 插件，并核对实际用户目录。
