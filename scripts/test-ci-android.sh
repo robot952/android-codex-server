@@ -64,11 +64,11 @@ fi
 [[ ! -f "$root/omit-packages" ]] || exit 0
 for package in "$@"; do
     case "$package" in
-        platform-tools) paths=(platform-tools/adb) ;;
-        'platforms;android-36') paths=(platforms/android-36/android.jar) ;;
-        'build-tools;36.0.0') paths=(build-tools/36.0.0/{aapt,apksigner,zipalign}) ;;
-        'ndk;28.2.13676358') paths=(ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang) ;;
-        'cmake;3.22.1') paths=(cmake/3.22.1/bin/{cmake,ninja}) ;;
+        platform-tools) package_dir=platform-tools; paths=(platform-tools/adb) ;;
+        'platforms;android-36') package_dir=platforms/android-36; paths=(platforms/android-36/android.jar) ;;
+        'build-tools;36.0.0') package_dir=build-tools/36.0.0; paths=(build-tools/36.0.0/{aapt,apksigner,zipalign}) ;;
+        'ndk;28.2.13676358') package_dir=ndk/28.2.13676358; paths=(ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang) ;;
+        'cmake;3.22.1') package_dir=cmake/3.22.1; paths=(cmake/3.22.1/bin/{cmake,ninja}) ;;
         *) exit 9 ;;
     esac
     for path in "${paths[@]}"; do
@@ -81,6 +81,14 @@ for package in "$@"; do
         esac
         chmod +x "$root/$path"
     done
+    case "$package" in
+        platform-tools) property='Pkg.Revision=37.0.0' ;;
+        'platforms;android-36') property='AndroidVersion.ApiLevel=36' ;;
+        'build-tools;36.0.0') property='Pkg.Revision=36.0.0' ;;
+        'ndk;28.2.13676358') property='Pkg.Revision = 28.2.13676358' ;;
+        'cmake;3.22.1') property='Pkg.Revision = 3.22.1' ;;
+    esac
+    printf '%s\n' "$property" > "$root/$package_dir/source.properties"
 done
 echo 'packages installed'
 MANAGER
@@ -312,28 +320,85 @@ printf 'keep\n' > "$not_directory"
 [[ "$(prepare "$not_directory/sdk" "$sdk")" == "$sdk" ]]
 [[ "$(cat "$not_directory")" == keep ]]
 
-# Run in an isolated mount namespace, including when the test runs as root:
+# The ordinary Gitee regression does not require mount privileges. Emulate only the
+# write probe's EROFS result; package copying, version checks and sdkmanager
+# still execute against real fixture files. Optional mount mode repeats these
+# same checks on actual read-only mounts, including when running as root:
 # unshare --mount --propagation private bash scripts/test-ci-android.sh --read-only-mounts
-if [[ "${1:-}" == --read-only-mounts ]]; then
+original_path="$PATH"
+if [[ "${1:-}" != --read-only-mounts ]]; then
+    export FIXTURE_MKTEMP="$(command -v mktemp)"
+    export FIXTURE_READONLY_ROOT="$fixture/pipeline-tools"
+    mkdir -p "$fixture/readonly-bin"
+    cat > "$fixture/readonly-bin/mktemp" <<'MKTEMP'
+#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+    case "$argument" in
+        */.codex-write-test.*)
+            directory="$(cd "${argument%/*}" && pwd -P)"
+            case "$directory" in "$FIXTURE_READONLY_ROOT"/*) exit 1 ;; esac ;;
+    esac
+done
+exec "$FIXTURE_MKTEMP" "$@"
+MKTEMP
+    chmod +x "$fixture/readonly-bin/mktemp"
+    export PATH="$fixture/readonly-bin:$PATH"
+fi
+make_readonly() {
+    if [[ "${read_only_mounts:-0}" == 1 ]]; then
+        mount --bind "$1" "$1"
+        mounts+=("$1")
+        mount -o remount,bind,ro "$1"
+        if (touch "$1/must-not-write") 2>/dev/null; then
+            echo 'Test SDK is not actually read-only' >&2; exit 1
+        fi
+    fi
+}
+read_only_mounts=0
+[[ "${1:-}" != --read-only-mounts ]] || read_only_mounts=1
+{
+    readonly_complete="$fixture/pipeline-tools/complete-sdk"
+    mkdir -p "$readonly_complete"
+    cp -a "$sdk/." "$readonly_complete/"
+    rm -f -- "$readonly_complete/.prepare.lock"
+    chmod a-w "$readonly_complete/licenses/android-sdk-license"
+    complete_before="$(find "$readonly_complete" -type f -exec sha256sum {} + | sort)"
+    make_readonly "$readonly_complete"
+    complete_cache="$fixture/complete-cache"
+    [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$readonly_complete" "$complete_cache")" == "$complete_cache" ]]
+    grep -Fq 'Reusing preinstalled Android command-line tools:' "$fixture/last.log"
+    [[ "$(grep -Fc 'Reusing preinstalled Android SDK package:' "$fixture/last.log")" == 5 ]]
+    [[ ! -e "$complete_cache/calls" && ! -e "$complete_cache/.downloads" ]]
+    [[ ! -L "$complete_cache/ndk/28.2.13676358" && -x "$complete_cache/cmdline-tools/preinstalled/bin/sdkmanager" ]]
+    # Reuse needs no original mount, tools archive or package download on a later job.
+    [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$complete_cache")" == "$complete_cache" ]]
+    [[ ! -e "$complete_cache/calls" ]]
+    [[ "$(find "$readonly_complete" -type f -exec sha256sum {} + | sort)" == "$complete_before" ]]
+
     readonly_sdk="$fixture/pipeline-tools/standard/android/sdk"
     mkdir -p "$readonly_sdk"
     cp -a "$sdk/." "$readonly_sdk/"
     # Model a partial platform SDK; never install missing packages into this mount.
     rm "$readonly_sdk/build-tools/36.0.0/apksigner" "$readonly_sdk/.prepare.lock"
     before="$(find "$readonly_sdk" -type f -exec sha256sum {} + | sort)"
-    mount --bind "$readonly_sdk" "$readonly_sdk"
-    mounts+=("$readonly_sdk")
-    mount -o remount,bind,ro "$readonly_sdk"
-    if (touch "$readonly_sdk/must-not-write") 2>/dev/null; then
-        echo 'Test SDK is not actually read-only' >&2; exit 1
-    fi
+    make_readonly "$readonly_sdk"
     fallback="$fixture/writable-cache"
+    # Replace an incomplete cached NDK from the validated preinstalled package.
+    mkdir -p "$fallback/ndk/28.2.13676358"
+    printf 'partial\n' > "$fallback/ndk/28.2.13676358/partial-download"
     [[ "$(prepare "$readonly_sdk" "$fallback")" == "$fallback" ]]
     grep -Fq "using cache: $fallback" "$fixture/last.log"
     [[ -x "$fallback/build-tools/36.0.0/apksigner" ]]
+    [[ ! -L "$fallback/platform-tools" && ! -L "$fallback/platforms/android-36" &&
+        ! -L "$fallback/ndk/28.2.13676358" && ! -L "$fallback/cmake/3.22.1" ]]
+    [[ ! -e "$fallback/ndk/28.2.13676358/partial-download" ]]
+    [[ ! -L "$fallback/build-tools/36.0.0" ]]
+    [[ "$(cat "$fallback/calls")" == $'licenses accepted\nbuild-tools;36.0.0' ]]
+    [[ "$(cat "$fallback/package-sources")" == https://googledownloads.cn/android/repository/ ]]
     # Subsequent jobs must reuse the writable cache even if env/PATH still point at the mount.
     [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$readonly_sdk" "$fallback")" == "$fallback" ]]
-    [[ "$(wc -l < "$fallback/calls")" == 2 ]]
+    [[ "$(cat "$fallback/calls")" == $'licenses accepted\nbuild-tools;36.0.0' ]]
     [[ "$(ANDROID_HOME= ANDROID_SDK_ROOT="$readonly_sdk" \
         bash "$ROOT_DIR/scripts/prepare-ci-android.sh" "$fallback" 2>"$fixture/last.log")" == "$fallback" ]]
     [[ "$(ANDROID_HOME= ANDROID_SDK_ROOT= PATH="$readonly_sdk/cmdline-tools/17.0/bin:$PATH" \
@@ -355,6 +420,21 @@ if [[ "${1:-}" == --read-only-mounts ]]; then
     grep -q 'entry environment verified' "$fixture/entry.log"
     [[ "$(find "$readonly_sdk" -type f -exec sha256sum {} + | sort)" == "$before" ]]
     [[ ! -e "$readonly_sdk/.prepare.lock" ]]
-    echo 'CI Android read-only mount tests passed (cold/warm cache, env/PATH, fallback failure, entry, unchanged SDK)'
-fi
+    # Directory names alone cannot prove package versions. A wrong preinstalled
+    # revision must not be copied, while an already valid cache remains intact.
+    wrong_sdk="$fixture/pipeline-tools/wrong-version-sdk"
+    mkdir -p "$wrong_sdk"
+    cp -a "$sdk/." "$wrong_sdk/"
+    printf 'Pkg.Revision=35.0.0\n' > "$wrong_sdk/build-tools/36.0.0/source.properties"
+    make_readonly "$wrong_sdk"
+    wrong_cache="$fixture/wrong-version-cache"
+    [[ "$(prepare "$wrong_sdk" "$wrong_cache")" == "$wrong_cache" ]]
+    [[ "$(cat "$wrong_cache/calls")" == $'licenses accepted\nbuild-tools;36.0.0' ]]
+    printf 'keep\n' > "$wrong_cache/build-tools/36.0.0/cache-sentinel"
+    [[ "$(CODEX_ANDROID_TOOLS_URL=file:///missing.zip prepare "$wrong_sdk" "$wrong_cache")" == "$wrong_cache" ]]
+    [[ "$(cat "$wrong_cache/build-tools/36.0.0/cache-sentinel")" == keep ]]
+    [[ "$(cat "$wrong_cache/calls")" == $'licenses accepted\nbuild-tools;36.0.0' ]]
+    echo 'CI Android preinstalled SDK tests passed (complete/partial copies, version rejection, cache reuse, fallback, entry, unchanged SDK)'
+}
+export PATH="$original_path"
 echo 'CI Android SDK tests passed (bootstrap, discovery, cache, failure, concurrency, entry)'

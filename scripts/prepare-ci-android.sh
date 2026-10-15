@@ -29,6 +29,45 @@ find_sdkmanager() {
     return 1
 }
 
+packages=("platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1")
+property_matches() {
+    local file="$1" key="$2" value="$3"
+    [[ -f "$file" ]] || return 1
+    grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*${value}[[:space:]]*$" "$file"
+}
+package_ready() {
+    local cmake_version sdk_root="${2:-$sdk_root}"
+    case "$1" in
+        platform-tools) [[ -x "$sdk_root/platform-tools/adb" ]] &&
+            property_matches "$sdk_root/platform-tools/source.properties" 'Pkg\.Revision' '[0-9]+(\.[0-9]+)+' ;;
+        'platforms;android-36') [[ -s "$sdk_root/platforms/android-36/android.jar" ]] &&
+            property_matches "$sdk_root/platforms/android-36/source.properties" 'AndroidVersion\.ApiLevel' '36' ;;
+        'build-tools;36.0.0') [[ -x "$sdk_root/build-tools/36.0.0/aapt" &&
+            -x "$sdk_root/build-tools/36.0.0/apksigner" && -x "$sdk_root/build-tools/36.0.0/zipalign" ]] &&
+            property_matches "$sdk_root/build-tools/36.0.0/source.properties" 'Pkg\.Revision' '36\.0\.0' ;;
+        'ndk;28.2.13676358') [[ -x "$sdk_root/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]] &&
+            property_matches "$sdk_root/ndk/28.2.13676358/source.properties" 'Pkg\.Revision' '28\.2\.13676358' ;;
+        'cmake;3.22.1')
+            [[ -x "$sdk_root/cmake/3.22.1/bin/cmake" && -x "$sdk_root/cmake/3.22.1/bin/ninja" ]] || {
+                echo 'Android SDK CMake or bundled Ninja executable is missing' >&2; return 1;
+            }
+            property_matches "$sdk_root/cmake/3.22.1/source.properties" 'Pkg\.Revision' '3\.22\.1' || {
+                echo 'Android SDK CMake package revision mismatch' >&2; return 1;
+            }
+            cmake_version="$(timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/cmake" --version 2>/dev/null)" || {
+                echo 'Android SDK CMake --version failed or timed out' >&2; return 1;
+            }
+            # Google's Android 3.22.1 package reports 3.22.1-g37088a8.
+            # Match the complete first line, retaining the exact release check.
+            [[ "${cmake_version%%$'\n'*}" =~ ^cmake\ version\ 3\.22\.1(-g[0-9a-f]+)?$ ]] || {
+                printf 'Android SDK CMake version mismatch: %s\n' "${cmake_version%%$'\n'*}" >&2; return 1;
+            }
+            timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 || {
+                echo 'Android SDK Ninja --version failed or timed out' >&2; return 1;
+            } ;;
+    esac
+}
+
 sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 path_manager="$(command -v sdkmanager || true)"
 if [[ -z "$sdk_root" && -n "$path_manager" ]]; then
@@ -52,6 +91,7 @@ sdk_root="${sdk_root:-$cache_root}"
 # Hosted runners can export a preinstalled SDK on a read-only bind mount.
 # Check actual writes (not just mode bits, which are misleading for root/ACLs)
 # before opening the lock, accepting licenses or installing any packages.
+readonly_sdk_root=
 writable_directory() {
     local directory="$1" probe
     mkdir -p -- "$directory" 2>/dev/null || return 1
@@ -59,6 +99,9 @@ writable_directory() {
     rm -f -- "$probe"
 }
 if ! writable_directory "$sdk_root"; then
+    # Invalid inherited paths may not even be directories. Retain only a real
+    # preinstalled root; otherwise the normal writable-cache bootstrap applies.
+    if [[ -d "$sdk_root" ]]; then readonly_sdk_root="$(cd "$sdk_root" && pwd -P)"; fi
     echo "Android SDK directory is not writable: $sdk_root; using cache: $cache_root" >&2
     sdk_root="$cache_root"
     if ! writable_directory "$sdk_root"; then
@@ -71,8 +114,6 @@ export ANDROID_HOME="$sdk_root" ANDROID_SDK_ROOT="$sdk_root"
 # The pinned Android command-line tools support this repository override.
 # Use Google's China download endpoint for metadata AND package archives.
 export SDK_TEST_BASE_URL="${repository_url%/}/"
-exec 9>"$sdk_root/.prepare.lock"
-flock -w 300 9 || { echo 'Timed out waiting for Android SDK cache lock' >&2; exit 1; }
 manager_deadline() {
     local seconds="$1"
     shift
@@ -83,8 +124,85 @@ manager_deadline() {
     fi
 }
 
+staging_directories=()
+cleanup() {
+    local directory
+    for directory in "${staging_directories[@]}"; do rm -rf -- "$directory"; done
+}
+trap cleanup EXIT
+reuse_directory() {
+    local source="$1" target="$2" staging
+    staging="$(mktemp -d "$sdk_root/.reuse.XXXXXX")"
+    staging_directories+=("$staging")
+    mkdir -p -- "$staging/payload" "$(dirname "$target")"
+    # Copy only required, validated packages. Reflinks save local I/O where
+    # available; independent writable copies also survive later runner mounts.
+    # Never link sdkmanager's installation targets back into a read-only SDK.
+    manager_deadline 300 cp -a --reflink=auto -- "$source/." "$staging/payload/"
+    manager_deadline 60 chmod -R u+w -- "$staging/payload"
+    if [[ -e "$target" || -L "$target" ]]; then mv -- "$target" "$staging/previous"; fi
+    mv -- "$staging/payload" "$target"
+    rm -rf -- "$staging"
+}
+
+seed_preinstalled_packages() {
+    local package relative target license
+    [[ -n "$readonly_sdk_root" ]] || return 0
+    echo "Inspecting preinstalled Android SDK: $readonly_sdk_root" >&2
+    for package in "${packages[@]}"; do
+        if package_ready "$package"; then
+            echo "Reusing cached Android SDK package: $package" >&2
+            continue
+        fi
+        if ! package_ready "$package" "$readonly_sdk_root"; then
+            echo "Preinstalled Android SDK package missing or incompatible: $package" >&2
+            continue
+        fi
+        case "$package" in
+            platform-tools) relative=platform-tools ;;
+            'platforms;android-36') relative=platforms/android-36 ;;
+            'build-tools;36.0.0') relative=build-tools/36.0.0 ;;
+            'ndk;28.2.13676358') relative=ndk/28.2.13676358 ;;
+            'cmake;3.22.1') relative=cmake/3.22.1 ;;
+        esac
+        target="$sdk_root/$relative"
+        echo "Reusing preinstalled Android SDK package: $package" >&2
+        reuse_directory "$readonly_sdk_root/$relative" "$target"
+    done
+    mkdir -p -- "$sdk_root/licenses"
+    for license in "$readonly_sdk_root"/licenses/*; do
+        [[ -f "$license" ]] || continue
+        target="$sdk_root/licenses/${license##*/}"
+        if [[ ! -s "$target" ]]; then
+            cp --remove-destination -- "$license" "$target"
+            chmod u+w -- "$target"
+        fi
+    done
+}
+
+exec 9>"$sdk_root/.prepare.lock"
+flock -w 300 9 || { echo 'Timed out waiting for Android SDK cache lock' >&2; exit 1; }
+seed_preinstalled_packages
 manager="$(find_sdkmanager "$sdk_root" || true)"
 if [[ -z "$manager" ]] || ! manager_deadline 30 "$manager" --sdk_root="$sdk_root" --version >/dev/null; then
+    manager=
+    preinstalled_manager=
+    if [[ -n "$readonly_sdk_root" ]]; then
+        preinstalled_manager="$(find_sdkmanager "$readonly_sdk_root" || true)"
+    fi
+    if [[ -n "$preinstalled_manager" ]] &&
+        manager_deadline 30 "$preinstalled_manager" --sdk_root="$sdk_root" --version >/dev/null; then
+        echo "Reusing preinstalled Android command-line tools: $preinstalled_manager" >&2
+        case "$preinstalled_manager" in
+            */cmdline-tools/*/bin/sdkmanager) target="$sdk_root/cmdline-tools/preinstalled" ;;
+            */tools/bin/sdkmanager) target="$sdk_root/tools" ;;
+        esac
+        reuse_directory "${preinstalled_manager%/bin/sdkmanager}" "$target"
+        manager="$target/bin/sdkmanager"
+        manager_deadline 30 "$manager" --sdk_root="$sdk_root" --version >/dev/null
+    fi
+fi
+if [[ -z "$manager" ]]; then
     echo "Preparing Android command-line tools $tools_version in $sdk_root" >&2
     for command in curl unzip sha256sum java; do
         command -v "$command" >/dev/null || { echo "Required tool missing: $command" >&2; exit 1; }
@@ -112,7 +230,7 @@ if [[ -z "$manager" ]] || ! manager_deadline 30 "$manager" --sdk_root="$sdk_root
         mv -f -- "$partial" "$archive"
     fi
     staging="$(mktemp -d "$sdk_root/.prepare.XXXXXX")"
-    trap 'rm -rf -- "$staging"' EXIT
+    staging_directories+=("$staging")
     unzip -q "$archive" -d "$staging"
     staged_manager="$staging/cmdline-tools/bin/sdkmanager"
     [[ -x "$staged_manager" && -d "$staging/cmdline-tools/lib" ]] || {
@@ -124,34 +242,7 @@ if [[ -z "$manager" ]] || ! manager_deadline 30 "$manager" --sdk_root="$sdk_root
     mv -- "$staging/cmdline-tools" "$target"
     manager="$target/bin/sdkmanager"
 fi
-echo "Using sdkmanager: $manager" >&2
-
-packages=("platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1")
-package_ready() {
-    local cmake_version
-    case "$1" in
-        platform-tools) [[ -x "$sdk_root/platform-tools/adb" ]] ;;
-        'platforms;android-36') [[ -s "$sdk_root/platforms/android-36/android.jar" ]] ;;
-        'build-tools;36.0.0') [[ -x "$sdk_root/build-tools/36.0.0/aapt" &&
-            -x "$sdk_root/build-tools/36.0.0/apksigner" && -x "$sdk_root/build-tools/36.0.0/zipalign" ]] ;;
-        'ndk;28.2.13676358') [[ -x "$sdk_root/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]] ;;
-        'cmake;3.22.1')
-            [[ -x "$sdk_root/cmake/3.22.1/bin/cmake" && -x "$sdk_root/cmake/3.22.1/bin/ninja" ]] || {
-                echo 'Android SDK CMake or bundled Ninja executable is missing' >&2; return 1;
-            }
-            cmake_version="$(timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/cmake" --version 2>/dev/null)" || {
-                echo 'Android SDK CMake --version failed or timed out' >&2; return 1;
-            }
-            # Google's Android 3.22.1 package reports 3.22.1-g37088a8.
-            # Match the complete first line, retaining the exact release check.
-            [[ "${cmake_version%%$'\n'*}" =~ ^cmake\ version\ 3\.22\.1(-g[0-9a-f]+)?$ ]] || {
-                printf 'Android SDK CMake version mismatch: %s\n' "${cmake_version%%$'\n'*}" >&2; return 1;
-            }
-            timeout --kill-after=5s 10 "$sdk_root/cmake/3.22.1/bin/ninja" --version >/dev/null 2>&1 || {
-                echo 'Android SDK Ninja --version failed or timed out' >&2; return 1;
-            } ;;
-    esac
-}
+if [[ -n "$manager" ]]; then echo "Using sdkmanager: $manager" >&2; fi
 missing=()
 for package in "${packages[@]}"; do
     package_ready "$package" || missing+=("$package")
