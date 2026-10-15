@@ -1,0 +1,151 @@
+[
+  {
+    "id": "android-platform-34",
+    "filename": "platform-34-ext7_r03.zip",
+    "source": "https://dl.google.com/android/repository/platform-34-ext7_r03.zip",
+    "size": 63180081,
+    "sha256": "16fdb74c55e59ae3ef52def135aec713508467bd56d7dabcd8c9be31fa8b20f3",
+    "parts": [
+      {
+        "path": "packages/android-platform-34/part-000",
+        "size": 40000000,
+        "sha256": "dc173e6465a1a80ec07edf3404b40a413234d5780694fd7b9045f805389fa79f"
+      },
+      {
+        "path": "packages/android-platform-34/part-001",
+        "size": 23180081,
+        "sha256": "cf8c3937ecc4aa66ae5184dbba7af43ee0de71601fcf51c3cca61c4d4e2670ba"
+      }
+    ],
+    "upstreamSha1": "1f2e9478d6a7601425ceaa553311dc43191f103d",
+    "tag": "ci-deps-android-platform-34-v1",
+    "commit": "6fec7a0039ae262862285252cfd590b744a480c2",
+    "entry": "packages/android-platform-34"
+  },
+  {
+    "id": "android-platform-35",
+    "filename": "platform-35_r02.zip",
+    "source": "https://dl.google.com/android/repository/platform-35_r02.zip",
+    "size": 64273788,
+    "sha256": "0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0",
+    "parts": [
+      {
+        "path": "packages/android-platform-35/part-000",
+        "size": 40000000,
+        "sha256": "19d6bfbd642cbbb98ea8064cbd29eb00b74db64fecf9ae5738eca9a4cb018d9f"
+      },
+      {
+        "path": "packages/android-platform-35/part-001",
+        "size": 24273788,
+        "sha256": "45dbadae79cb3cef74b34272ca98a3da4fb386fef4d54f161e9f4b9922a0fc86"
+      }
+    ],
+    "upstreamSha1": "0bb560a90a7a2cbd0dd8348224d518b638fe7949",
+    "tag": "ci-deps-android-platform-35-v1",
+    "commit": "fb87be66c4fdcfe53ed21421e86bb14e91abf11f",
+    "entry": "packages/android-platform-35"
+  },
+  {
+    "id": "android-platform-36",
+    "filename": "platform-36_r02.zip",
+    "source": "https://dl.google.com/android/repository/platform-36_r02.zip",
+    "size": 65878410,
+    "sha256": "37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e",
+    "parts": [
+      {
+        "path": "packages/android-platform-36/part-000",
+        "size": 40000000,
+        "sha256": "a6ef184b7969d87f7ccab7226eda2cba9970263e2857c5058e77f87a29895574"
+      },
+      {
+        "path": "packages/android-platform-36/part-001",
+        "size": 25878410,
+        "sha256": "b7a1b624a770bb003aea7aea3f6057912bbd996aa302263cab3db3a41ef967ee"
+      }
+    ],
+    "upstreamSha1": "2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576",
+    "tag": "ci-deps-android-platform-36-v1",
+    "commit": "260f766d3e8f42b17b742cf98a3f3834ad68436e",
+    "entry": "packages/android-platform-36"
+  },
+  {
+    "id": "android-build-tools-36",
+    "filename": "build-tools_r36_linux.zip",
+    "source": "https://dl.google.com/android/repository/build-tools_r36_linux.zip",
+    "size": 63737259,
+    "sha256": "5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b",
+    "parts": [
+      {
+        "path": "packages/android-build-tools-36/part-000",
+        "size": 40000000,
+        "sha256": "c9e7991dd6f93db78e790557b71fd7dddb1b65a79d55258cd14f1e79b8ba77c4"
+      },
+      {
+        "path": "packages/android-build-tools-36/part-001",
+        "size": 23737259,
+        "sha256": "35c896b902c9c8541e39d4903a58bb64327e1f3093e56cc030f47c174efb8d04"
+      }
+    ],
+    "upstreamSha1": "b0b6376977657e8ad9b969bacf4093601da2c6fb",
+    "tag": "ci-deps-android-build-tools-36-v1",
+    "commit": "de99e37217a8f7e187195b594feff8b3625b8065",
+    "entry": "packages/android-build-tools-36"
+  },
+  {
+    "id": "android-platform-tools",
+    "filename": "platform-tools_r37.0.1-linux.zip",
+    "source": "https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip",
+    "size": 9054187,
+    "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+    "parts": [
+      {
+        "path": "packages/android-platform-tools/part-000",
+        "size": 9054187,
+        "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1"
+      }
+    ],
+    "upstreamSha1": "477254aa5f903c15cf51001717bdf347fb6b53e0",
+    "tag": "ci-deps-android-platform-tools-v1",
+    "commit": "1b4deb6de0845d5956d93e15056b41f1609cf4e5",
+    "entry": "packages/android-platform-tools"
+  },
+  {
+    "id": "node-22.17.0-linux-x64",
+    "filename": "node-v22.17.0-linux-x64.tar.gz",
+    "source": "https://nodejs.org/dist/v22.17.0/node-v22.17.0-linux-x64.tar.gz",
+    "size": 54926669,
+    "sha256": "0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a",
+    "parts": [
+      {
+        "path": "packages/node-22.17.0-linux-x64/part-000",
+        "size": 40000000,
+        "sha256": "b4abac00ba68711d8dc2c76a887d835abbf8e775708d3846c1e6088bbf8074b4"
+      },
+      {
+        "path": "packages/node-22.17.0-linux-x64/part-001",
+        "size": 14926669,
+        "sha256": "d00c7e925547730cbb5a101126c7ca7f3cd1b487b47ff458c3fe82fea73c6241"
+      }
+    ],
+    "tag": "ci-deps-node-22.17.0-linux-x64-v1",
+    "commit": "049a9b5203ca148cf2a3823976d3d3410237910f",
+    "entry": "packages/node-22.17.0-linux-x64"
+  },
+  {
+    "id": "android-test-maven-v1",
+    "filename": "android-test-maven-v1.zip",
+    "source": "Google Maven and Maven Central; see the bundled PROVENANCE.json",
+    "size": 1578786,
+    "sha256": "ae8cf93de6259639087e5a48c0a3977d5851b1944742bc87ad90536c571ec800",
+    "parts": [
+      {
+        "path": "maven/android-test-maven-v1.zip",
+        "size": 1578786,
+        "sha256": "ae8cf93de6259639087e5a48c0a3977d5851b1944742bc87ad90536c571ec800"
+      }
+    ],
+    "tag": "ci-deps-android-test-maven-v1",
+    "commit": "4df09e6b63b5f81209847b4015fc710a58515aba",
+    "entry": "maven/android-test-maven-v1.zip"
+  }
+]
