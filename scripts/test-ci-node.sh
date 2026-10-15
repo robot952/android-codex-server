@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Offline prerequisite regression: no host Node, network, SDK or APK is used.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+unset CODEX_CI_HOSTED_DEPENDENCIES
 fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 prepare="$ROOT_DIR/scripts/prepare-ci-node.sh"
@@ -11,7 +12,7 @@ export FIXTURE_REAL_SHA="$(command -v sha256sum)" FIXTURE_REAL_CP="$(command -v 
 export FIXTURE_ARCHIVE="$fixture/node.tar.gz" FIXTURE_CALLS="$fixture/calls"
 export FIXTURE_ARCH=x86_64 FIXTURE_MODE=success
 mkdir -p "$fixture/tools" "$fixture/source/node-v22.17.0-linux-x64/bin" "$fixture/existing"
-for tool in awk dirname flock gzip head mkdir mktemp mv rm tar timeout; do
+for tool in awk bash dirname flock gzip head mkdir mktemp mv rm tar timeout; do
     ln -s "$(command -v "$tool")" "$fixture/tools/$tool"
 done
 cat > "$fixture/source/node-v22.17.0-linux-x64/bin/node" <<'SH'
@@ -133,6 +134,29 @@ export FIXTURE_MODE=partial
 result="$(run_prepare "$fixture/partial")"
 [[ -x "$result/node" && "$(wc -l < "$FIXTURE_CALLS")" == 2 ]]
 tail -n 1 "$FIXTURE_CALLS" | grep -q '^https://nodejs.org/dist/.*resume=yes'
+
+# Hosted x64 packages replace only the cold-download path. Existing Node and
+# verified caches still win, and a failed hosted fetch must not fall through.
+mkdir -p "$fixture/hosted/scripts" "$fixture/hosted/protocol"
+cp "$prepare" "$fixture/hosted/scripts/prepare-ci-node.sh"
+cp "$ROOT_DIR/protocol/node-version.txt" "$fixture/hosted/protocol/"
+cat > "$fixture/hosted/scripts/fetch-ci-package.sh" <<'SH'
+#!/bin/bash
+set -euo pipefail
+[[ "$1" == node-22.17.0-linux-x64 && "$2" == *linux-x64-*.tar.gz ]]
+echo hosted >> "$FIXTURE_CALLS"
+[[ "${FIXTURE_HOSTED_FAIL:-0}" == 0 ]] || exit 74
+"$FIXTURE_REAL_CP" "$FIXTURE_ARCHIVE" "$2"
+SH
+: > "$FIXTURE_CALLS"
+result="$(CODEX_CI_HOSTED_DEPENDENCIES=1 PATH="$fixture/tools" "$bash_bin" \
+    "$fixture/hosted/scripts/prepare-ci-node.sh" "$fixture/hosted-cache" 2>"$fixture/prepare.log")"
+[[ -x "$result/node" && "$(cat "$FIXTURE_CALLS")" == hosted ]]
+: > "$FIXTURE_CALLS"
+status=0
+CODEX_CI_HOSTED_DEPENDENCIES=1 FIXTURE_HOSTED_FAIL=1 PATH="$fixture/tools" "$bash_bin" \
+    "$fixture/hosted/scripts/prepare-ci-node.sh" "$fixture/hosted-failure" >"$fixture/result" 2>"$fixture/prepare.log" || status=$?
+[[ "$status" == 74 && ! -s "$fixture/result" && "$(cat "$FIXTURE_CALLS")" == hosted ]]
 
 # A correctly hashed archive must still contain the expected executable version.
 sed -i 's/v22.17.0/v16.20.2/' "$fixture/source/node-v22.17.0-linux-x64/bin/node"

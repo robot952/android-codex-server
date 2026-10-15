@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+unset CODEX_CI_HOSTED_DEPENDENCIES CODEX_CI_MAVEN_REPOSITORY
 for prerequisite in java bash curl unzip sha256sum flock timeout grep git; do
     if ! command -v "$prerequisite" >/dev/null 2>&1; then
         echo "CI Android SDK tests require $prerequisite" >&2
@@ -424,6 +425,7 @@ cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-andr
     "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$entry/scripts/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/flutter"\n' > "$entry/scripts/prepare-ci-flutter.sh"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/node/bin"\n' > "$entry/scripts/prepare-ci-node.sh"
+printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/hosted-maven"\n' > "$entry/scripts/prepare-ci-maven.sh"
 printf '#!/bin/sh\nprintf "v22.17.0\\n"\n' > "$entry/node/bin/node"
 printf '#!/bin/sh\nexit 0\n' > "$entry/scripts/prepare-ci-gradle.sh"
 printf '#!/bin/sh\nexit 0\n' > "$entry/scripts/test-ci-gradle-repositories.sh"
@@ -455,6 +457,77 @@ WORKSPACE="$entry" HOME="$entry/home" GRADLE_USER_HOME="$entry/gradle-cache" \
     EXPECTED_SDK="$sdk" ANDROID_HOME="$sdk" ANDROID_SDK_ROOT= \
     bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
 grep -q 'entry environment verified' "$fixture/entry.log"
+
+# Exercise missing hosted packages with real ZIP extraction/version checks,
+# without network or a second install. Complete SDKs must not call the fetcher.
+mkdir -p "$fixture/hosted-scripts" "$fixture/hosted-build-tools"
+cp "$ROOT_DIR/scripts/prepare-ci-android.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$fixture/hosted-scripts/"
+cp -a "$sdk/build-tools/36.0.0" "$fixture/hosted-build-tools/android-16"
+java --source 17 "$fixture/AndroidToolsArchive.java" "$sdk/platforms" "$fixture/hosted-platforms.zip"
+java --source 17 "$fixture/AndroidToolsArchive.java" "$fixture/hosted-build-tools" "$fixture/hosted-build-tools.zip"
+export FIXTURE_HOSTED_ROOT="$fixture" FIXTURE_HOSTED_CALLS="$fixture/hosted-calls"
+cat > "$fixture/hosted-scripts/fetch-ci-package.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1" >> "$FIXTURE_HOSTED_CALLS"
+[[ "${FIXTURE_HOSTED_FAIL:-0}" == 0 ]] || exit 74
+case "$1" in
+    android-platform-34|android-platform-35|android-platform-36)
+        cp "$FIXTURE_HOSTED_ROOT/hosted-platforms.zip" "$2" ;;
+    android-build-tools-36) cp "$FIXTURE_HOSTED_ROOT/hosted-build-tools.zip" "$2" ;;
+    *) exit 99 ;;
+esac
+SH
+hosted_sdk="$fixture/hosted-sdk"
+cp -a "$sdk" "$hosted_sdk"
+rm -f "$hosted_sdk/calls" "$hosted_sdk/package-sources"
+rm -rf "$hosted_sdk/platforms" "$hosted_sdk/build-tools/36.0.0"
+: > "$FIXTURE_HOSTED_CALLS"
+ANDROID_HOME="$hosted_sdk" CODEX_CI_HOSTED_DEPENDENCIES=1 \
+    bash "$fixture/hosted-scripts/prepare-ci-android.sh" "$hosted_sdk" >"$fixture/out" 2>"$fixture/last.log"
+[[ "$(cat "$fixture/out")" == "$hosted_sdk" && "$(wc -l < "$FIXTURE_HOSTED_CALLS")" == 4 ]]
+[[ "$(cat "$hosted_sdk/calls")" == 'licenses accepted' ]]
+[[ -x "$hosted_sdk/build-tools/36.0.0/apksigner" && -s "$hosted_sdk/platforms/android-35/android.jar" ]]
+: > "$FIXTURE_HOSTED_CALLS"
+ANDROID_HOME="$hosted_sdk" CODEX_CI_HOSTED_DEPENDENCIES=1 FIXTURE_HOSTED_FAIL=1 \
+    bash "$fixture/hosted-scripts/prepare-ci-android.sh" "$hosted_sdk" >"$fixture/out" 2>"$fixture/last.log"
+[[ ! -s "$FIXTURE_HOSTED_CALLS" ]]
+rm -rf "$hosted_sdk/platforms/android-35"
+status=0
+ANDROID_HOME="$hosted_sdk" CODEX_CI_HOSTED_DEPENDENCIES=1 FIXTURE_HOSTED_FAIL=1 \
+    bash "$fixture/hosted-scripts/prepare-ci-android.sh" "$hosted_sdk" >"$fixture/out" 2>"$fixture/last.log" || status=$?
+[[ "$status" == 74 && ! -s "$fixture/out" && ! -e "$hosted_sdk/platforms/android-35" ]]
+# Explicit repositories remain authoritative even with hosting enabled.
+: > "$FIXTURE_HOSTED_CALLS"
+ANDROID_HOME="$hosted_sdk" CODEX_CI_HOSTED_DEPENDENCIES=1 FIXTURE_HOSTED_FAIL=1 \
+    CODEX_ANDROID_REPOSITORY_URL=https://sdk.fixture.invalid/repository \
+    bash "$fixture/hosted-scripts/prepare-ci-android.sh" "$hosted_sdk" >"$fixture/out" 2>"$fixture/last.log"
+[[ ! -s "$FIXTURE_HOSTED_CALLS" && -s "$hosted_sdk/platforms/android-35/android.jar" ]]
+
+# Maven preparation extracts only a verified package and never reuses a mutable
+# installed repository. Keep this Java ZIP fixture independent of Python/Node.
+mkdir -p "$fixture/maven-fixture/repository/fixture/library/1" "$fixture/maven-entry/scripts"
+printf 'fixture bytes\n' > "$fixture/maven-fixture/repository/fixture/library/1/library-1.jar"
+printf 'fixture\tlibrary\t1\n' > "$fixture/maven-fixture/modules.tsv"
+(cd "$fixture/maven-fixture" && sha256sum modules.tsv repository/fixture/library/1/library-1.jar > SHA256SUMS)
+java --source 17 "$fixture/AndroidToolsArchive.java" "$fixture/maven-fixture" "$fixture/maven.zip"
+cp "$ROOT_DIR/scripts/prepare-ci-maven.sh" "$fixture/maven-entry/scripts/"
+export FIXTURE_MAVEN_ARCHIVE="$fixture/maven.zip"
+cat > "$fixture/maven-entry/scripts/fetch-ci-package.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == android-test-maven-v1 ]]
+[[ "${FIXTURE_HOSTED_FAIL:-0}" == 0 ]] || exit 74
+mkdir -p "$(dirname "$2")"
+cp "$FIXTURE_MAVEN_ARCHIVE" "$2"
+SH
+maven_root="$(bash "$fixture/maven-entry/scripts/prepare-ci-maven.sh" "$fixture/maven-cache" "$fixture/maven-destinations")"
+printf corrupt > "$maven_root/repository/fixture/library/1/library-1.jar"
+next_maven="$(bash "$fixture/maven-entry/scripts/prepare-ci-maven.sh" "$fixture/maven-cache" "$fixture/maven-destinations")"
+[[ "$maven_root" != "$next_maven" && "$(cat "$next_maven/repository/fixture/library/1/library-1.jar")" == 'fixture bytes' ]]
+status=0
+FIXTURE_HOSTED_FAIL=1 bash "$fixture/maven-entry/scripts/prepare-ci-maven.sh" "$fixture/maven-cache" "$fixture/maven-failure" >"$fixture/out" || status=$?
+[[ "$status" == 74 && ! -s "$fixture/out" && ! -e "$fixture/maven-failure" ]]
 
 # A path that cannot be a directory must also fall back, without leaking stdout.
 not_directory="$fixture/not-a-directory"

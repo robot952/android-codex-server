@@ -1,0 +1,7 @@
+android-platform-34	ci-deps-android-platform-34-v1	6fec7a0039ae262862285252cfd590b744a480c2	packages/android-platform-34	16fdb74c55e59ae3ef52def135aec713508467bd56d7dabcd8c9be31fa8b20f3	63180081
+android-platform-35	ci-deps-android-platform-35-v1	fb87be66c4fdcfe53ed21421e86bb14e91abf11f	packages/android-platform-35	0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0	64273788
+android-platform-36	ci-deps-android-platform-36-v1	260f766d3e8f42b17b742cf98a3f3834ad68436e	packages/android-platform-36	37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e	65878410
+android-build-tools-36	ci-deps-android-build-tools-36-v1	de99e37217a8f7e187195b594feff8b3625b8065	packages/android-build-tools-36	5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b	63737259
+android-platform-tools	ci-deps-android-platform-tools-v1	1b4deb6de0845d5956d93e15056b41f1609cf4e5	packages/android-platform-tools	d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1	9054187
+node-22.17.0-linux-x64	ci-deps-node-22.17.0-linux-x64-v1	049a9b5203ca148cf2a3823976d3d3410237910f	packages/node-22.17.0-linux-x64	0fa01328a0f3d10800623f7107fbcd654a60ec178fab1ef5b9779e94e0419e1a	54926669
+android-test-maven-v1	ci-deps-android-test-maven-v1	4df09e6b63b5f81209847b4015fc710a58515aba	maven/android-test-maven-v1.zip	ae8cf93de6259639087e5a48c0a3977d5851b1944742bc87ad90536c571ec800	1578786

@@ -15,6 +15,7 @@ prepare_ci_environment() {
     export CODEX_BUILD_ONLINE=1
     export CODEX_CI_PUB=1
     export CODEX_CI_MAVEN_MIRRORS=1
+    export CODEX_CI_HOSTED_DEPENDENCIES=1
     export CODEX_CI_APK_BUILD_TIMEOUT=1200
     export GRADLE_OPTS="${GRADLE_OPTS:--Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.workers.max=4}"
     export GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.daemon=false -Dorg.gradle.internal.http.connectionTimeout=30000 -Dorg.gradle.internal.http.socketTimeout=30000"
@@ -30,6 +31,10 @@ prepare_ci_environment() {
     node_bin="$(ci_prepare_stage 'Node SDK' 900 bash "$root/scripts/prepare-ci-node.sh" \
         "$HOME/.cache/codex/node")" || return $?
     export PATH="$node_bin:$PATH"
+
+    CODEX_CI_MAVEN_REPOSITORY="$(ci_prepare_stage 'Hosted Maven dependencies' 420 bash "$root/scripts/prepare-ci-maven.sh" \
+        "$HOME/.cache/codex/maven" "$root/.workflow-cache/maven-repositories")" || return $?
+    export CODEX_CI_MAVEN_REPOSITORY
 
     flutter_archive_url="$FLUTTER_STORAGE_BASE_URL/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz"
     flutter_archive_sha256=672089e001571a9fbb209a495c583580c0c6c73ef98999264ba07fa93ace332d

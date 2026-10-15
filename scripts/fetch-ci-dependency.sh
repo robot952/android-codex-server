@@ -64,7 +64,29 @@ actual_commit="$(git --git-dir="$staging/repo.git" rev-parse 'FETCH_HEAD^{commit
 [[ "$actual_commit" == "$commit" ]] || {
     echo 'CI dependency commit mismatch; refusing moved tag/branch' >&2; exit 1;
 }
-git --git-dir="$staging/repo.git" cat-file blob "$commit:$entry" > "$staging/archive"
+kind="$(git --git-dir="$staging/repo.git" cat-file -t "$commit:$entry")"
+if [[ "$kind" == blob ]]; then
+    git --git-dir="$staging/repo.git" cat-file blob "$commit:$entry" > "$staging/archive"
+elif [[ "$kind" == tree ]]; then
+    # Per-package tags contain only this package, even though ci-deps indexes all
+    # packages. Fetch once, concatenate 40 MB parts, then verify the ORIGINAL
+    # archive hash. Never fetch the growing dependency branch once per part.
+    mapfile -t parts < <(git --git-dir="$staging/repo.git" ls-tree --name-only "$commit:$entry")
+    [[ ${#parts[@]} -ge 1 && ${#parts[@]} -le 5 ]] || exit 2
+    : > "$staging/archive"
+    for index in "${!parts[@]}"; do
+        printf -v expected_name 'part-%03d' "$index"
+        [[ "${parts[$index]}" == "$expected_name" ]] || exit 2
+        object="$commit:$entry/$expected_name"
+        [[ "$(git --git-dir="$staging/repo.git" cat-file -t "$object")" == blob ]] || exit 2
+        size="$(git --git-dir="$staging/repo.git" cat-file -s "$object")"
+        (( size > 0 && size <= 40000000 )) || exit 2
+        git --git-dir="$staging/repo.git" cat-file blob "$object" >> "$staging/archive"
+    done
+else
+    echo 'CI dependency must be an archive or a numbered parts directory' >&2
+    exit 2
+fi
 valid_archive "$staging/archive" || { echo 'CI dependency SHA-256 mismatch' >&2; exit 1; }
 mv -f -- "$staging/archive" "$output"
 echo "CI dependency verified: commit $commit, SHA-256 $expected_sha" >&2

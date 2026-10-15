@@ -2,6 +2,25 @@
 // separate settings-level CI policy and retains FAIL_ON_PROJECT_REPOS.
 if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
     def flutterStorage = (System.getenv('FLUTTER_STORAGE_BASE_URL') ?: 'https://storage.flutter-io.cn').replaceAll('/+$', '')
+    def hostedPath = System.getenv('CODEX_CI_MAVEN_REPOSITORY')
+    def hostedRoot = hostedPath ? new File(hostedPath) : null
+    if (System.getenv('CODEX_CI_HOSTED_DEPENDENCIES') == '1' && hostedRoot == null) {
+        throw new GradleException('Prepare the verified CI Maven repository before building')
+    }
+    def hostedModules = []
+    if (hostedRoot != null) {
+        def inventory = new File(hostedRoot, 'modules.tsv')
+        if (!inventory.isFile() || !new File(hostedRoot, 'repository').isDirectory()) {
+            throw new GradleException('Verified CI Maven repository is incomplete')
+        }
+        hostedModules = inventory.readLines('UTF-8').collect { line ->
+            def fields = line.split('\t', -1)
+            if (fields.length != 3 || !fields.every { it ==~ /[a-zA-Z0-9_.-]+/ }) {
+                throw new GradleException('Invalid CI Maven module inventory')
+            }
+            fields
+        }
+    }
     // Central must remain open to all groups (including AGP transitives).
     // exclusiveContent would restrict Central itself to Kotlin and ASM too.
     def routeCentralDependencies = { repositories ->
@@ -32,6 +51,32 @@ if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
             maven { url = uri('https://maven.aliyun.com/repository/google') }
             maven { url = uri('https://maven.aliyun.com/repository/central') }
             mavenCentral()
+            if (hostedRoot != null) {
+                exclusiveContent {
+                    forRepository {
+                        maven {
+                            name = 'codexHostedDependencies'
+                            url = new File(hostedRoot, 'repository').toURI()
+                            metadataSources { mavenPom(); ignoreGradleMetadataRedirection() }
+                        }
+                    }
+                    filter {
+                        hostedModules.each { module ->
+                            // These three Flutter declarations use '+' ranges.
+                            // Only our bounded metadata lists may answer them;
+                            // later plugin repositories must not query Google.
+                            if ((module[0] == 'androidx.test' && module[1] in ['runner', 'rules']) ||
+                                (module[0] == 'androidx.test.espresso' && module[1] == 'espresso-core')) {
+                                includeModule(module[0], module[1])
+                            } else {
+                                // Other versions remain available to normal
+                                // app/plugin dependencies; do not downgrade them.
+                                includeVersion(module[0], module[1], module[2])
+                            }
+                        }
+                    }
+                }
+            }
             // Engine artifacts exist in Flutter's repository, not Google's
             // Android Maven repository. Exclude io.flutter from every other
             // repository, including ones appended by plugins after this block.

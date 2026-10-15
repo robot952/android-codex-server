@@ -235,6 +235,32 @@ prepare_cmake_archive() {
     echo 'Installed and verified CMake 3.22.1 with bundled Ninja' >&2
 }
 
+prepare_hosted_android_package() {
+    local package="$1" key relative archive_root archive staging
+    case "$package" in
+        platform-tools) key=android-platform-tools; relative=platform-tools; archive_root=platform-tools ;;
+        'platforms;android-'*)
+            key="android-platform-${package#platforms;android-}"
+            relative="platforms/android-${package#platforms;android-}"
+            archive_root="android-${package#platforms;android-}" ;;
+        'build-tools;36.0.0') key=android-build-tools-36; relative=build-tools/36.0.0; archive_root=android-16 ;;
+        *) return 0 ;;
+    esac
+    mkdir -p "$sdk_root/.downloads"
+    archive="$sdk_root/.downloads/$key.zip"
+    bash "$(dirname "${BASH_SOURCE[0]}")/fetch-ci-package.sh" "$key" "$archive" || return $?
+    staging="$(mktemp -d "$sdk_root/.hosted-install.XXXXXX")"
+    staging_directories+=("$staging")
+    mkdir -p "$staging/extracted" "$(dirname "$staging/sdk/$relative")"
+    manager_deadline 60 unzip -q "$archive" -d "$staging/extracted" || return $?
+    mv -- "$staging/extracted/$archive_root" "$staging/sdk/$relative" || return $?
+    package_ready "$package" "$staging/sdk" || {
+        echo "Hosted Android SDK package is incomplete: $package" >&2; return 1;
+    }
+    reuse_directory "$staging/sdk/$relative" "$sdk_root/$relative"
+    echo "Installed verified hosted Android SDK package: $package" >&2
+}
+
 seed_preinstalled_packages() {
     local package relative target license
     [[ -n "$readonly_sdk_root" ]] || return 0
@@ -358,6 +384,17 @@ fi
 # prepare CMake separately so its known mirror 404 cannot redirect other packages.
 if [[ -z "${CODEX_ANDROID_REPOSITORY_URL:-}" ]] && ! package_ready 'cmake;3.22.1'; then
     prepare_cmake_archive
+    missing=()
+    for package in "${packages[@]}"; do
+        package_ready "$package" || missing+=("$package")
+    done
+fi
+if [[ "${CODEX_CI_HOSTED_DEPENDENCIES:-0}" == 1 && -z "${CODEX_ANDROID_REPOSITORY_URL:-}" ]]; then
+    # Reuse preinstalled/cached packages first. Only small missing components are
+    # hosted; the NDK remains on sdkmanager and custom repositories stay in control.
+    for package in "${missing[@]}"; do
+        prepare_hosted_android_package "$package"
+    done
     missing=()
     for package in "${packages[@]}"; do
         package_ready "$package" || missing+=("$package")

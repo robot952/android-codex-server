@@ -35,6 +35,20 @@ CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准�
 工程验证受污染目录和隔离后的严格 included-build 插件加载，失败时立即停止后续测试及出包。
 不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过 init 向 included build 注入项目仓库。
 CI 通过 `CODEX_CI_MAVEN_MIRRORS=1` 为应用插件解析、子项目 buildscript 和依赖启用阿里云镜像。
+`1.8.174+306`：Gitee 同时启用 `CODEX_CI_HOSTED_DEPENDENCIES=1`。`ci-dependencies.tsv` 固定
+每个小组件的标签、提交、路径、原包 SHA-256 和大小；`fetch-ci-package.sh` 共用有界 Git 下载器。
+`ci-deps` 原包总计 344,937,827 字节，单文件最多 40 MB；不超过用户 400 MB 依赖预算，并遵守
+免费仓库 500 MB / 单文件 50 MB 限制。40 MB 分片按序合并、校验原包，不另存完整重复包。
+独立不可变标签只含一个组件，与 ci-deps 分支共享 Git blob；下载单个组件不拉整个分支。
+托管 CMake、Node Linux x64、Android Platform 34/35/36、Build Tools 36.0.0、Platform Tools 和
+AndroidX 测试依赖小包；保留全部上游许可证/来源摘要。NDK、Flutter SDK、Gradle 与命令行工具不纳入。
+后续更新必须计算所有保留版本及历史对象的容量，达到预算即停止增加，不自动改写历史。
+Gitee 预装和有效缓存仍优先，自定义 Android 仓库不会被托管下载覆盖。
+Node 后新增最多 420 秒的 Maven 准备阶段，取剩余环境预算；重新从校验后的 ZIP 解压并验证逐文件摘要，
+将私有目录通过 `CODEX_CI_MAVEN_REPOSITORY` 传给 Gradle。仅 `runner`、`rules`、`espresso-core`
+独占本地模块元数据，覆盖 Flutter 的 `1.2+` / `3.3+` 声明及插件后来追加的 Google 仓库；
+传递依赖只限定归档内具体版本，其他版本仍走普通镜像，不降低应用已有依赖版本。
+离线 Gradle 仓库预检用较新的错误远端版本验证动态范围没有逃逸，并确认未托管版本仍可用。
 Kotlin 和 `org.ow2.asm` 只使用 Central 镜像/官方源，Flutter `io.flutter` 只使用
 `$FLUTTER_STORAGE_BASE_URL/download.flutter.io`，避免从 Google Maven 查找这些依赖导致长时间超时。
 Central 仓库必须保留所有 group 的解析能力：不能把它放进仅匹配 Kotlin 的 `exclusiveContent`，

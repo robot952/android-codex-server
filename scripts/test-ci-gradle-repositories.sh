@@ -154,6 +154,11 @@ export CODEX_FIXTURE_REPOSITORY_MARKER="$fixture/project-repositories.marker"
 export CODEX_FIXTURE_REPOSITORY_POLICY="$ROOT_DIR/flutter_app/android/ci-repositories.gradle"
 export CODEX_FIXTURE_MAVEN_ROOT="$fixture/maven"
 export CODEX_FIXTURE_KOTLIN_MARKER="$fixture/kotlin-routing.marker"
+export CODEX_CI_MAVEN_REPOSITORY="$fixture/hosted"
+export CODEX_CI_HOSTED_DEPENDENCIES=1
+mkdir -p "$CODEX_CI_MAVEN_REPOSITORY" "$CODEX_FIXTURE_MAVEN_ROOT/hosted"
+ln -s "$CODEX_FIXTURE_MAVEN_ROOT/hosted" "$CODEX_CI_MAVEN_REPOSITORY/repository"
+printf 'androidx.test\trunner\t1.2.0\nandroidx.test\tmonitor\t1.3.0\n' > "$CODEX_CI_MAVEN_REPOSITORY/modules.tsv"
 
 # Real offline dependency resolution, not repository-order assertions alone.
 # Duplicate poison artifacts make consulting the wrong repository observable.
@@ -200,6 +205,24 @@ write_module fallback org.ow2.asm asm WRONG-FALLBACK 9.7.1
 write_module fallback org.ow2.asm asm-commons WRONG-FALLBACK 9.7.1
 write_module fallback com.google.guava guava WRONG-FALLBACK 33.3.1-jre
 write_module fallback com.google.code.gson gson WRONG-FALLBACK 2.11.0
+
+# A later repository advertises a newer matching dynamic version. Merely putting
+# hosted first still queries other repositories and picks poison. Exclusive
+# module metadata must keep the '+' range inside the hosted archive, while an
+# unrelated version of a transitive module must retain normal mirror routing.
+write_module hosted androidx.test monitor hosted-monitor 1.3.0
+write_module hosted androidx.test runner hosted-runner 1.2.0 '<dependencies><dependency><groupId>androidx.test</groupId><artifactId>monitor</artifactId><version>1.3.0</version></dependency></dependencies>'
+write_module google androidx.test monitor unhosted-google 9.0.0
+for repository in hosted google central fallback; do
+    version=1.2.0
+    if [[ "$repository" != hosted ]]; then
+        version=1.2.99
+        write_module "$repository" androidx.test runner WRONG-DYNAMIC "$version"
+        write_module "$repository" androidx.test monitor WRONG-TRANSITIVE 1.3.0
+    fi
+    printf '<metadata><groupId>androidx.test</groupId><artifactId>runner</artifactId><versioning><versions><version>%s</version></versions></versioning></metadata>\n' \
+        "$version" > "$CODEX_FIXTURE_MAVEN_ROOT/$repository/androidx/test/runner/maven-metadata.xml"
+done
 
 cat > "$project/settings.gradle" <<'GROOVY'
 pluginManagement { includeBuild(System.getenv('FLUTTER_ROOT') + '/packages/flutter_tools/gradle') }
@@ -250,12 +273,13 @@ assert repositories.take(2).collect { it.url.toString() } == [
     'https://maven.aliyun.com/repository/central'
 ]
 repositories.each { repository ->
+    if (repository.name == 'codexHostedDependencies') return
     def url = repository.url.toString()
     def kind = url.endsWith('/download.flutter.io') ? 'flutter' : url.contains('google') ? 'google' :
         url == 'https://maven.aliyun.com/repository/central' ? 'central' : 'fallback'
     repository.url = new File(System.getenv('CODEX_FIXTURE_MAVEN_ROOT'), kind).toURI()
 }
-configurations { routing }
+configurations { routing; unhosted }
 dependencies {
     ['armeabi_v7a_release', 'arm64_v8a_release', 'x86_64_release', 'flutter_embedding_release'].each {
         routing "io.flutter:$it:0.0-fixture"
@@ -264,6 +288,8 @@ dependencies {
     routing 'com.android.fixture:android-library:0.0-fixture'
     routing 'org.example.fixture:ordinary-library:0.0-fixture'
     routing 'com.android.tools.build:gradle-api:8.11.1'
+    routing 'androidx.test:runner:1.2+'
+    unhosted 'androidx.test:monitor:9.0.0'
 }
 tasks.register('verifyRouting') {
     doLast {
@@ -272,7 +298,12 @@ tasks.register('verifyRouting') {
         }.sort()
         assert actual == ['flutter-engine', 'flutter-engine', 'flutter-engine', 'flutter-engine',
             'kotlin-central', 'android-google', 'ordinary-central', 'android-gradle-api',
-            'asm-central', 'asm-commons-central', 'guava-central', 'gson-central'].sort()
+            'asm-central', 'asm-commons-central', 'guava-central', 'gson-central',
+            'hosted-runner', 'hosted-monitor'].sort()
+        def other = configurations.unhosted.singleFile
+        new java.util.zip.ZipFile(other).withCloseable {
+            assert it.getInputStream(it.getEntry('module.txt')).text == 'unhosted-google'
+        }
     }
 }
 new File(System.getenv('CODEX_FIXTURE_REPOSITORY_MARKER')).text = 'mirrors-before-official\n'

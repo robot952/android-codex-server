@@ -55,6 +55,11 @@ if valid_sdk "$sdk_root"; then
 fi
 
 if ! valid_archive "$archive"; then
+    if [[ "${CODEX_CI_HOSTED_DEPENDENCIES:-0}" == 1 && "$arch" == x64 ]]; then
+        bash "$ROOT_DIR/scripts/fetch-ci-package.sh" "node-$version-linux-$arch" "$archive"
+    fi
+fi
+if ! valid_archive "$archive"; then
     downloaded=0
     # A domestic mirror first, then the official distribution; never unbounded.
     for base_url in https://npmmirror.com/mirrors/node https://nodejs.org/dist https://nodejs.org/dist; do

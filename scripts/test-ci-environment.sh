@@ -7,6 +7,7 @@ fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 # Timeout-failure fixtures must own their groups rather than kill this test.
 unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE CODEX_RELEASE_BRANCH FAIL_PHASE
+unset CODEX_CI_HOSTED_DEPENDENCIES CODEX_CI_MAVEN_REPOSITORY
 # The isolated tag entry stops at its fake build, before release publication.
 export CODEX_RELEASE_TOKEN=fixture-token-not-a-secret
 entry="$fixture/repo"
@@ -44,6 +45,15 @@ echo flutter >> "$FIXTURE_STAGES"
 [[ "$2" == 3.44.8 && "$3" == 058e0af2c2b57e369d905a03ac9748b0ebf543c6 ]]
 [[ "$4" == https://fixture.invalid/flutter/* && "$5" == 672089e001571a9fbb209a495c583580c0c6c73ef98999264ba07fa93ace332d ]]
 printf '%s\n' "$WORKSPACE/flutter"
+SH
+cat > "$entry/scripts/prepare-ci-maven.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo maven >> "$FIXTURE_STAGES"
+[[ "${FAIL_PHASE:-}" != maven ]] || exit 42
+[[ "$CODEX_CI_HOSTED_DEPENDENCIES" == 1 ]]
+[[ "$1" == "$HOME/.cache/codex/maven" && "$2" == "$WORKSPACE/.workflow-cache/maven-repositories" ]]
+printf '%s\n' "$WORKSPACE/hosted-maven"
 SH
 cat > "$entry/scripts/prepare-ci-android.sh" <<'SH'
 #!/usr/bin/env bash
@@ -90,6 +100,7 @@ set -euo pipefail
 [[ "$CODEX_RELEASE_BRANCH" == flutter-refactor ]]
 [[ "$CODEX_CI_PUB" == 1 && "$CODEX_BUILD_ONLINE" == 1 ]]
 [[ "$CODEX_CI_MAVEN_MIRRORS" == 1 && "$CODEX_CI_APK_BUILD_TIMEOUT" == 1200 ]]
+[[ "$CODEX_CI_MAVEN_REPOSITORY" == "$WORKSPACE/hosted-maven" && "$CODEX_CI_HOSTED_DEPENDENCIES" == 1 ]]
 [[ "$GRADLE_OPTS" == '-Dfixture=keep -Dorg.gradle.daemon=false -Dorg.gradle.internal.http.connectionTimeout=30000 -Dorg.gradle.internal.http.socketTimeout=30000' ]]
 [[ "$PATH" == "$ANDROID_HOME/cmake/3.22.1/bin:$ANDROID_HOME/platform-tools:"* ]]
 [[ "$PUB_CACHE" == */custom-pub ]]
@@ -99,9 +110,9 @@ echo publish >> "$FIXTURE_STAGES"
 SH
 chmod +x "$entry/node/bin/node" "$entry/flutter/bin/flutter" "$entry/scripts/publish-gitee-release.sh"
 bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache publish ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache publish ' ]]
 
-for phase in node flutter android gradle repository-preflight precache; do
+for phase in node maven flutter android gradle repository-preflight precache; do
     : > "$FIXTURE_STAGES"
     status=0
     FAIL_PHASE="$phase" bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/failure.log" 2>&1 || status=$?
@@ -153,7 +164,7 @@ done
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 43 ]]
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache build ' ]]
 : > "$FIXTURE_STAGES"
 status=0
 CODEX_RELEASE_BUILD_MODE=invalid bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
@@ -186,7 +197,7 @@ assert_release_status() {
 shallow="$fixture/shallow"
 clone_release_fixture "$shallow" "$origin"
 assert_release_status "$shallow" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache build ' ]]
 [[ "$(git -C "$shallow" rev-parse 'FETCH_HEAD^{commit}')" == "$(git -C "$shallow" rev-parse HEAD)" ]]
 [[ -z "$(git -C "$shallow" tag --list)" ]]
 
@@ -227,7 +238,7 @@ git --git-dir="$annotated_origin" -c user.name=Fixture -c user.email=fixture@exa
 annotated_checkout="$fixture/annotated-tag"
 clone_release_fixture "$annotated_checkout" "$annotated_origin"
 assert_release_status "$annotated_checkout" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node flutter android gradle repository-preflight precache build ' ]]
+[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache build ' ]]
 [[ -z "$(git -C "$annotated_checkout" tag --list)" ]]
 
 : > "$FIXTURE_STAGES"

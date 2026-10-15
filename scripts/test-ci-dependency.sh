@@ -44,6 +44,40 @@ cmp "$fixture/output.zip" "$fixture/previous.zip"
 if fetch_dependency "$commit" "$sha" missing.zip; then exit 1; fi
 cmp "$fixture/output.zip" "$fixture/previous.zip"
 if fetch_dependency "$commit" "$sha" ../package.zip; then exit 1; fi
+
+# Split archives are fetched once and joined by strict, contiguous part names.
+printf first > "$fixture/first"
+printf second > "$fixture/second"
+first_blob="$(git --git-dir="$fixture/source.git" hash-object -w "$fixture/first")"
+second_blob="$(git --git-dir="$fixture/source.git" hash-object -w "$fixture/second")"
+cat "$fixture/first" "$fixture/second" > "$fixture/joined"
+joined_sha="$(sha256sum "$fixture/joined" | awk '{print $1}')"
+parts_commit() {
+    local parts_tree="$1" tree
+    tree="$(printf '040000 tree %s\tparts\n' "$parts_tree" | git --git-dir="$fixture/source.git" mktree)"
+    git --git-dir="$fixture/source.git" -c user.name='CI Fixture' -c user.email=ci@example.invalid commit-tree "$tree" -m parts
+}
+parts_tree="$(printf '100644 blob %s\tpart-000\n100644 blob %s\tpart-001\n' "$first_blob" "$second_blob" | git --git-dir="$fixture/source.git" mktree)"
+parts_revision="$(parts_commit "$parts_tree")"
+git --git-dir="$fixture/source.git" update-ref refs/tags/package-v1 "$parts_revision"
+fetch_dependency "$parts_revision" "$joined_sha" parts
+cmp "$fixture/output.zip" "$fixture/joined"
+cp "$fixture/output.zip" "$fixture/previous.zip"
+# A missing first part or reversed bytes cannot overwrite the verified output.
+for mode in missing reversed; do
+    if [[ "$mode" == missing ]]; then
+        parts_tree="$(printf '100644 blob %s\tpart-001\n' "$second_blob" | git --git-dir="$fixture/source.git" mktree)"
+    else
+        parts_tree="$(printf '100644 blob %s\tpart-000\n100644 blob %s\tpart-001\n' "$second_blob" "$first_blob" | git --git-dir="$fixture/source.git" mktree)"
+    fi
+    parts_revision="$(parts_commit "$parts_tree")"
+    git --git-dir="$fixture/source.git" update-ref refs/tags/package-v1 "$parts_revision"
+    # Deliberately change the requested hash: otherwise a valid cached archive
+    # correctly skips fetching, hiding the malformed-parts negative control.
+    if fetch_dependency "$parts_revision" "$sha" parts; then exit 1; fi
+    cmp "$fixture/output.zip" "$fixture/previous.zip"
+done
+git --git-dir="$fixture/source.git" update-ref refs/tags/package-v1 "$commit"
 shopt -s nullglob
 leftovers=("$fixture"/.ci-dependency.*)
 [[ ${#leftovers[@]} == 0 ]]

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.169+301，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.174+306，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1189,7 +1189,7 @@ SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK �
 提交 ID 与 SHA-256 均核对后才原子写入 ZIP 缓存，再在临时目录校验版本和工具可执行性后
 才替换目标版本；错误哈希或不完整包保留旧安装。其他 SDK 包继续使用国内仓库，避免该 ZIP 的 404
 触发全仓库换源和长时间清单请求，不依赖 GitHub 或 Google 下载可达性。
-`ci-deps` 只包含此包、来源和保留的许可证说明及 SHA256SUMS，不放完整 SDK/NDK/Flutter，不合并到 main，
+`ci-deps` 包含经过校验的小型依赖、来源和保留的许可证说明及 SHA256SUMS，不放完整 SDK/NDK/Flutter，不合并到 main，
 不移动已有标签、不使用 LFS；main-only 自动触发保持不变，依赖分支/标签推送不产生第二轮出包。
 显式自定义 SDK 仓库仍由 sdkmanager 完整处理；自定义 CMake 静态地址要求显式 SHA-256，
 保留 curl 连接 20 秒、单次 180 秒、低速 30 秒、两次续传上限。
@@ -1199,7 +1199,18 @@ SDK 回归内调用 `test-ci-dependency.sh`，使用本地 Git fixture 覆盖固
 版本检查接受官方 Android 包的 `3.22.1-g37088a8`（`-g` 加十六进制构建标识）及无后缀的
 `3.22.1`，完整匹配首行，拒绝不同补丁版本和预发布后缀；工具非零退出仍判定损坏。
 回归使用官方多行版本输出，并覆盖缓存复用、错误版本和工具运行失败；失败日志区分缺失、版本不符与运行失败。
-定向修复回归核对许可证确认及实际包安装；默认源的 CMake 由独立 ZIP 修复，其余包仍由 sdkmanager 安装。
+定向修复回归核对许可证确认及实际包安装；默认源的 CMake 由独立 ZIP 修复，未托管包仍由 sdkmanager 安装。
+`1.8.174+306`：按用户要求将必要小组件扩展到依赖分支，总归档 344,937,827 字节，每文件最多 40 MB；
+依赖总预算 400 MB，免费仓库总上限 500 MB、单文件上限 50 MB。托管 Node 22.17.0 Linux x64、
+Android Platform 34/35/36、Build Tools 36.0.0、Platform Tools，以及约 1.58 MB 的 AndroidX 测试依赖包。
+组件按独立标签浅取，固定完整提交和 SHA-256；分片只保存一次，合并后验证完整原包。每个标签仅含该组件，
+不因下载小包拉取整个依赖分支。保持 Gitee 预装/缓存优先，仅补齐缺失项，并尊重自定义 SDK 源。
+更新时检查历史 Git 对象与全部保留版本的总容量；达到预算即停止增加，不自动改写历史。
+Gitee 环境准备在 Node 后增加 420 秒上限的 Maven 阶段，使用校验后的私有文件仓库，统一纳入 3600 秒预算。
+Flutter integration_test 的 runner/rules `1.2+` 和 espresso-core `3.3+` 只从托管模块元数据解析，
+避免 Google 版本查询连接超时；传递依赖仅限定托管的具体版本，不影响其他插件选用新版本或 Central 全量解析。
+原包保留 POM/AAR/JAR、许可证、来源及逐文件摘要；动态模块版本元数据只声明归档内实际存在的版本。
+云端预检补充分片缺失/乱序/坏哈希、动态版本跨仓库和未托管版本路由回归；签名、Release 发布和超时策略保持。
 完整缓存复用不调用 sdkmanager 的安装或许可证步骤。
 SDK 回归断言失败输出脚本行号及隔离 fixture 日志末尾，保留原退出码和清理，便于定位快速失败。
 将 SDK 的 `cmake/3.22.1/bin` 加入 PATH，避免直到 native 编译才发现缺少 Ninja。
