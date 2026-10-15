@@ -94,6 +94,8 @@ Android SDK 准备明确包含 `platform-tools`、`platforms;android-36`、`buil
 SDK 回归的测试 ZIP 由构建已有的 JDK 17 生成，保留 sdkmanager 的 Unix 可执行权限；
 文本断言使用基础 grep，不依赖容器预装 Python 或 ripgrep。入口缺依赖明确报错，
 原有 SDK 回归项目与 300 秒超时均保留。
+定向修复回归核对“确认许可证、安装单包”两次调用，完整缓存不调用 sdkmanager。
+回归断言失败时输出脚本行号和隔离日志末尾（每份最多 60 行），保留原退出码及临时目录清理。
 
 Gitee Android 镜像可能没有 Node。`prepare-ci-node.sh` 复用已有 Node 18+，否则准备固定 22.17.0，
 下载后先核对官方 SHA-256，再启用 `~/.cache/codex/node` 中的独立缓存，不修改系统工具。

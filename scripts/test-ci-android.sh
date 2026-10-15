@@ -16,6 +16,19 @@ cleanup() {
     rm -rf -- "$fixture"
 }
 trap cleanup EXIT
+report_failure() {
+    local status="$1" line="$2" log
+    printf 'CI Android SDK regression failed at %s:%s (exit %s)\n' "${BASH_SOURCE[0]}" "$line" "$status" >&2
+    # Only print bounded logs from this isolated SDK fixture; never enable shell tracing.
+    for log in "$fixture/last.log" "$fixture/entry.log"; do
+        if [[ -s "$log" ]]; then
+            printf '%s (last 60 lines):\n' "${log##*/}" >&2
+            tail -n 60 -- "$log" >&2 || :
+        fi
+    done
+    exit "$status"
+}
+trap 'report_failure "$?" "$LINENO"' ERR
 case "${1:-}" in
     ''|--read-only-mounts) ;;
     *) echo "usage: $0 [--read-only-mounts]" >&2; exit 2 ;;
@@ -195,8 +208,9 @@ for wrong_version in 3.10.2 3.22.10 3.22.1-rc1 3.22.1-gINVALID; do
     calls_before="$(wc -l < "$sdk/calls")"
     printf '#!/bin/sh\necho "cmake version %s"\n' "$wrong_version" > "$sdk/cmake/3.22.1/bin/cmake"
     [[ "$(prepare "$sdk")" == "$sdk" ]]
-    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 1))" ]]
-    [[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+    # A repair confirms licenses before its single targeted package installation.
+    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 2))" ]]
+    [[ "$(tail -n 2 "$sdk/calls")" == $'licenses accepted\ncmake;3.22.1' ]]
     grep -Fq "CMake version mismatch: cmake version $wrong_version" "$fixture/last.log"
     "$sdk/cmake/3.22.1/bin/cmake" --version | grep -Fxq 'cmake version 3.22.1-g37088a8'
 done
@@ -205,8 +219,8 @@ for native_tool in cmake ninja; do
     calls_before="$(wc -l < "$sdk/calls")"
     printf '\nexit 1\n' >> "$sdk/cmake/3.22.1/bin/$native_tool"
     [[ "$(prepare "$sdk")" == "$sdk" ]]
-    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 1))" ]]
-    [[ "$(tail -n 1 "$sdk/calls")" == 'cmake;3.22.1' ]]
+    [[ "$(wc -l < "$sdk/calls")" == "$((calls_before + 2))" ]]
+    [[ "$(tail -n 2 "$sdk/calls")" == $'licenses accepted\ncmake;3.22.1' ]]
     grep -Fq -- '--version failed or timed out' "$fixture/last.log"
 done
 

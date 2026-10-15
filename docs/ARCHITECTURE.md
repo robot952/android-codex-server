@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.163+295，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.164+296，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1135,6 +1135,8 @@ SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK �
 版本检查接受官方 Android 包的 `3.22.1-g37088a8`（`-g` 加十六进制构建标识）及无后缀的
 `3.22.1`，完整匹配首行，拒绝不同补丁版本和预发布后缀；工具非零退出仍判定损坏。
 回归使用官方多行版本输出，并覆盖缓存复用、错误版本和工具运行失败；失败日志区分缺失、版本不符与运行失败。
+定向修复回归同时核对许可证确认和单包安装两次调用，完整缓存复用则不调用 sdkmanager。
+SDK 回归断言失败输出脚本行号及隔离 fixture 日志末尾，保留原退出码和清理，便于定位快速失败。
 将 SDK 的 `cmake/3.22.1/bin` 加入 PATH，避免直到 native 编译才发现缺少 Ninja。
 `test-ci-android.sh --read-only-mounts` 在独立 mount namespace 中使用真实只读挂载，验证冷/热缓存、
 环境变量和 PATH 探测、只读缓存报错、下游环境传递与原 SDK 内容不变；工作流自测在有挂载权限时自动执行。
