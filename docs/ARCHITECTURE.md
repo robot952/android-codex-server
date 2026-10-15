@@ -1094,10 +1094,16 @@ CI 的 `prepare-ci-gradle-home.sh` 在 `.workflow-cache/gradle-user-homes/` 创�
 `GRADLE_USER_HOME`，只链接原目录的 `caches` 和 `wrapper`；不继承用户级 `init.gradle(.kts)`、
 `init.d` 或 `gradle.properties`，也不删除原配置、挂载根或依赖缓存。平台注入的项目仓库可能与
 Flutter included build 的 `FAIL_ON_PROJECT_REPOS` 冲突，不能通过修改 SDK 或放宽仓库策略绕过。
-CI 仅在应用 Android 工程启用 `CODEX_CI_MAVEN_MIRRORS=1`：settings 的插件仓库和
+CI 启用 `CODEX_CI_MAVEN_MIRRORS=1`：应用 settings 的插件仓库和
 `ci-repositories.gradle` 中应用及插件子项目的 buildscript/依赖仓库优先使用阿里云镜像，官方源兜底。
-该策略由 Android 根项目应用，不是全局 init，不进入 Flutter SDK included build。
-仓库预检同时验证插件的 legacy buildscript 在解析依赖前已取得镜像，并保持 included build 的严格策略。
+Kotlin 的 `org.jetbrains` 依赖只交给 Maven Central 镜像/官方源；`io.flutter` 引擎与 embedding
+只交给 `$FLUTTER_STORAGE_BASE_URL/download.flutter.io`，防止 Google Maven 超时阻断本不属于它的依赖。
+私有 Gradle home 只额外安装仓库内审核的 `ci-flutter-repositories.init.gradle`，按当前 Flutter SDK
+的规范路径精确匹配 included build，通过 Settings 层补齐插件/依赖镜像与 Kotlin 路由；不修改 SDK、
+不往其项目层添加仓库、不放宽 `FAIL_ON_PROJECT_REPOS`，不继承 Gitee 原 init 或凭据配置。
+仓库预检使用含错误来源对照包的离线 Maven fixture，实际解析 Kotlin 编译插件、三个 ABI 的 Flutter
+引擎、embedding、Android 与普通 Central 依赖，同时验证 app legacy buildscript 和严格 included build。
+单次 Gradle 退出后清理其私有目录最多重试 5 次，避免 registry 收尾写入造成偶发“目录非空”误失败。
 隔离阶段最多 60 秒；发行包准备后以 240 秒上限运行真实离线 Gradle 仓库预检，验证受污染的
 合成用户目录会失败、隔离目录能加载严格仓库策略的 included-build 插件，并核对实际用户目录。
 预检只使用临时工程和已校验的固定 Gradle 发行包；不改平台配置，也不向日志输出配置正文。
@@ -1116,8 +1122,10 @@ Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行
 和 SHA-256，结束后恢复原锁文件。成功时刷新锁文件时间戳，避免恢复 checkout 旧时间戳后被 Release 的
 `--pub` 判为过期，重复解析、下载并在测试之后漂移依赖版本；失败时仍保留原内容、权限和时间戳。
 Release 继续保留 `--pub` 及模式对应的原生插件注册步骤，不用 `--no-pub` 绕过它。
-版本冲突、哈希不一致或鉴权失败立即停止；自定义源不自动回退公共源。
-本机默认离线依赖流程保持原行为。`test-ci-pub.cjs` 覆盖重试、回退、锁文件内容/权限及成功与失败的时间戳。
+版本冲突、哈希不一致或鉴权失败立即停止；超时/取消退出码不重试，自定义源不自动回退公共源。
+错误分类剔除 `[CI]` 监督器行，不能把启动提示中的 `timeout 300s` 误当 Pub 网络超时。
+本机默认离线依赖流程保持原行为。`test-ci-pub.cjs` 覆盖独立/监督运行、重试、回退、取消、
+锁文件内容/权限及成功与失败的时间戳。
 下载失败、半成品和错误 revision 不得破坏缓存挂载点。`scripts/test-ci-flutter.sh` 覆盖缓存与挂载，
 `scripts/test-ci-flutter-download.cjs` 覆盖 HTTP 中断续传、Range 不支持回退和错误哈希拒绝。
 

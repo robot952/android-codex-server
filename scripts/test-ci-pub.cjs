@@ -28,12 +28,13 @@ const scenario = process.env.PUB_TEST_SCENARIO;
 if (scenario === 'hash') { console.log('Content hash changed for synchronized'); process.exit(65); }
 if (scenario === 'solver') { console.log('Because dependency versions conflict, version solving failed.'); process.exit(1); }
 if (scenario === 'auth') { console.log('401 Unauthorized trying to find package private_package'); process.exit(69); }
+if (scenario === 'cancelled') { console.log('Connection timed out before cancellation'); process.exit(143); }
 if (scenario === 'success' || (scenario === 'fallback' && source === 'https://pub.dev')) { console.log('Got dependencies!'); process.exit(0); }
 console.log('424 Failed Dependency trying to find package synchronized at ' + source);
 process.exit(69);
 `, { mode: 0o755 });
 
-function run(name, scenario, source = 'https://pub.flutter-io.cn') {
+function run(name, scenario, source = 'https://pub.flutter-io.cn', bounded = false) {
   const project = path.join(fixture, name);
   fs.mkdirSync(project);
   fs.writeFileSync(path.join(project, 'pubspec.lock'), lock, { mode: 0o640 });
@@ -46,8 +47,14 @@ function run(name, scenario, source = 'https://pub.flutter-io.cn') {
   fs.utimesSync(path.join(project, 'pubspec.yaml'), manifestTime, manifestTime);
   fs.mkdirSync(path.join(project, 'cache'));
   fs.writeFileSync(path.join(project, 'cache/sentinel'), 'keep');
-  const result = spawnSync('bash', [path.join(root, 'scripts/prepare-ci-pub.sh'), runner, project], {
-    env: {...process.env, PUB_TEST_SCENARIO: scenario, PUB_HOSTED_URL: source},
+  const env = {...process.env, PUB_TEST_SCENARIO: scenario, PUB_HOSTED_URL: source};
+  // Test both standalone and real CI-wrapper output, independently of the
+  // caller's supervisor. The wrapper owns its own short bounded fixture group.
+  delete env.CODEX_CI_PROCESS_GROUP;
+  const command = [path.join(root, 'scripts/prepare-ci-pub.sh'), runner, project];
+  const args = bounded ? [path.join(root, 'scripts/run-ci-stage.sh'), 'pub-fixture', '8', 'bash', ...command] : command;
+  const result = spawnSync('bash', args, {
+    env,
     encoding: 'utf8', timeout: 10000,
   });
   if (result.error) throw result.error;
@@ -93,10 +100,12 @@ try {
   const failed = run('failed', 'failed');
   assert.equal(failed.status, 69);
   assert.equal(failed.calls.length, 4);
-  for (const scenario of ['hash', 'solver', 'auth']) {
-    const stopped = run(scenario, scenario);
-    assert.notEqual(stopped.status, 0);
-    assert.equal(stopped.calls.length, 1);
+  for (const scenario of ['hash', 'solver', 'auth', 'cancelled']) {
+    for (const bounded of [false, true]) {
+      const stopped = run(`${scenario}-${bounded}`, scenario, undefined, bounded);
+      assert.notEqual(stopped.status, 0);
+      assert.equal(stopped.calls.length, 1, stopped.stdout + stopped.stderr);
+    }
   }
   const privateHost = run('private', 'failed', 'https://private.example');
   assert.equal(privateHost.status, 69);

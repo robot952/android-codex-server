@@ -12,11 +12,17 @@ pluginManagement {
 
     repositories {
         if (System.getenv("CODEX_CI_MAVEN_MIRRORS") == "1") {
-            maven("https://maven.aliyun.com/repository/google")
+            maven("https://maven.aliyun.com/repository/google") {
+                content { excludeGroupByRegex("org\\.jetbrains(\\..*)?") }
+            }
             maven("https://maven.aliyun.com/repository/central")
             maven("https://maven.aliyun.com/repository/gradle-plugin")
         }
-        google()
+        google {
+            if (System.getenv("CODEX_CI_MAVEN_MIRRORS") == "1") {
+                content { excludeGroupByRegex("org\\.jetbrains(\\..*)?") }
+            }
+        }
         mavenCentral()
         gradlePluginPortal()
     }

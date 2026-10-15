@@ -11,6 +11,7 @@ entry="$fixture/repo"
 mkdir -p "$entry/scripts" "$entry/node/bin" "$entry/flutter/bin" "$entry/android/platform-tools" "$entry/dist" "$fixture/home"
 cp "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" \
     "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
+    "$ROOT_DIR/scripts/ci-flutter-repositories.init.gradle" \
     "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/publish-tag-release.sh" "$entry/scripts/"
 export WORKSPACE="$entry" HOME="$fixture/home" FIXTURE_STAGES="$fixture/stages"
 export PUB_CACHE="$fixture/custom-pub" GRADLE_USER_HOME="$fixture/custom-gradle"
@@ -62,7 +63,8 @@ echo gradle >> "$FIXTURE_STAGES"
 [[ "$GRADLE_USER_HOME" == "$WORKSPACE/.workflow-cache/gradle-user-homes/"* ]]
 [[ "$(readlink "$GRADLE_USER_HOME/caches")" == "$FIXTURE_GRADLE_CACHE/caches" ]]
 [[ "$(readlink "$GRADLE_USER_HOME/wrapper")" == "$FIXTURE_GRADLE_CACHE/wrapper" ]]
-[[ ! -e "$GRADLE_USER_HOME/init.d" && ! -e "$GRADLE_USER_HOME/gradle.properties" ]]
+[[ ! -e "$GRADLE_USER_HOME/gradle.properties" && ! -e "$GRADLE_USER_HOME/init.d/injected.gradle" ]]
+cmp "$WORKSPACE/scripts/ci-flutter-repositories.init.gradle" "$GRADLE_USER_HOME/init.d/codex-flutter-repositories.gradle"
 echo fixture.zip
 SH
 cat > "$entry/flutter/bin/flutter" <<'SH'

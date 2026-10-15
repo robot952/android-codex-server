@@ -39,6 +39,11 @@ prepare_ci_environment() {
     export FLUTTER_ROOT
     export CODEX_FLUTTER_BIN="$FLUTTER_ROOT/bin/flutter"
     export PATH="$FLUTTER_ROOT/bin:$PATH"
+    # Only our reviewed settings-level policy enters the private home. It is
+    # scoped to this exact Flutter SDK, leaving project-repository bans intact.
+    mkdir -p "$GRADLE_USER_HOME/init.d" || return $?
+    cp "$root/scripts/ci-flutter-repositories.init.gradle" \
+        "$GRADLE_USER_HOME/init.d/codex-flutter-repositories.gradle" || return $?
 
     ANDROID_HOME="$(ci_prepare_stage 'Android SDK' 1800 bash "$root/scripts/prepare-ci-android.sh" \
         "$HOME/.cache/codex/android-sdk")" || return $?

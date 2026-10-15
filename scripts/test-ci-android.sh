@@ -283,6 +283,7 @@ entry="$fixture/entry"
 mkdir -p "$entry/scripts" "$entry/flutter/bin" "$entry/node/bin" "$entry/dist" "$entry/home"
 cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-android.sh" \
     "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
+    "$ROOT_DIR/scripts/ci-flutter-repositories.init.gradle" \
     "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" "$entry/scripts/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/flutter"\n' > "$entry/scripts/prepare-ci-flutter.sh"
 printf '#!/bin/sh\nprintf "%%s\\n" "$WORKSPACE/node/bin"\n' > "$entry/scripts/prepare-ci-node.sh"
@@ -305,7 +306,7 @@ test "$CODEX_FLUTTER_BIN" = "$WORKSPACE/flutter/bin/flutter"
 test "$(command -v node)" = "$WORKSPACE/node/bin/node"
 test -L "$GRADLE_USER_HOME/caches"
 test -L "$GRADLE_USER_HOME/wrapper"
-test ! -e "$GRADLE_USER_HOME/init.d"
+cmp "$WORKSPACE/scripts/ci-flutter-repositories.init.gradle" "$GRADLE_USER_HOME/init.d/codex-flutter-repositories.gradle"
 echo 'entry environment verified'
 PUBLISH
 chmod +x "$entry/scripts/publish-gitee-release.sh" "$entry/flutter/bin/flutter" "$entry/node/bin/node"

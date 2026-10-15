@@ -25,9 +25,16 @@ CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准�
 不删除；隔离目录在工作区忽略的 `.workflow-cache/gradle-user-homes/` 下，不作为全局配置缓存。
 发行包准备后运行 `test-ci-gradle-repositories.sh`（上限 240 秒），使用真实 Gradle、离线临时
 工程验证受污染目录和隔离后的严格 included-build 插件加载，失败时立即停止后续测试及出包。
-不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过全局 init 向 included build 注入项目仓库。
-CI 通过 `CODEX_CI_MAVEN_MIRRORS=1` 仅为应用 Android 工程的插件解析、子项目 buildscript 和依赖
-启用阿里云镜像优先、官方源兜底；离线仓库预检覆盖插件 classpath 仓库顺序和 included build 隔离。
+不放宽 Flutter SDK 的 `FAIL_ON_PROJECT_REPOS`，不通过 init 向 included build 注入项目仓库。
+CI 通过 `CODEX_CI_MAVEN_MIRRORS=1` 为应用插件解析、子项目 buildscript 和依赖启用阿里云镜像。
+Kotlin 只使用 Central 镜像/官方源，Flutter `io.flutter` 只使用
+`$FLUTTER_STORAGE_BASE_URL/download.flutter.io`，避免从 Google Maven 查找这些依赖导致长时间超时。
+私有 home 的 `init.d` 仅安装仓库审核的 `ci-flutter-repositories.init.gradle`，匹配当前 SDK 精确路径，
+仅在 Settings 层为 Flutter included build 补齐插件/依赖镜像；其他 included build 和本机构建不受影响。
+离线仓库预检实际解析包含错误来源对照包的 Kotlin、Flutter 三 ABI/embedding、Android 和 Central
+依赖，继续验证原 init 隔离与严格仓库策略；私有测试目录清理最多重试 5 次，兼容 Gradle registry 收尾。
+已有 Gitee JDK、匹配 Android SDK 组件与 Gradle 依赖/Wrapper 缓存继续复用；不会为了镜像配置重新下载
+全部 SDK，也不恢复已导致 HTTP 413 的整目录缓存上传。
 Gitee 必须设置明确超时：环境、Android SDK 与 Gradle 隔离回归上限 300/300/600 秒，发布总任务上限 5400 秒；
 环境准备总预算 3600 秒，各 SDK/Gradle/引擎阶段均取自身上限与剩余预算的较小值。
 其中 Node 准备上限 900 秒，复用已有 Node 18+，否则固定下载并校验 Node 22.17.0，缓存于
@@ -51,6 +58,8 @@ SHA-256 与 revision 后在子目录复用。下载有三次限时尝试，保�
 Gitee 依赖阶段启用 `CODEX_CI_PUB=1`：`prepare-ci-pub.sh` 对国内默认 Pub 源的临时网络错误
 最多重试两次，再回退 `pub.dev` 两次，每次上限 300 秒。全程强制锁定依赖版本和哈希；
 只临时映射公共源 URL，退出后恢复原 `pubspec.lock`。自定义源不自动回退，版本/哈希/鉴权错误直接失败。
+网络错误分类先排除 `[CI]` 监督器日志，避免把每次启动的 `timeout 300s` 误当下载错误；
+超时、取消和终止退出码立即返回，不对哈希/版本冲突或鉴权错误重复四次请求。
 首次安装、HTTP 中断/续传、错误哈希、失败重试及旧缓存兼容由 `bash scripts/test-ci-flutter.sh` 验证，
 并纳入 `scripts/test-workflow.sh`。
 Android SDK 由 `scripts/prepare-ci-android.sh` 在 Gitee 入口中准备。它先探测现有 `sdkmanager`，

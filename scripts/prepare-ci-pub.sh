@@ -60,8 +60,15 @@ for source in "${sources[@]}"; do
         fi
         # Retry only transport failures. Version conflicts, bad hashes and invalid
         # lockfiles are code/integrity errors and must stop without switching hosts.
-        if [[ "$status" != 124 ]] && ! grep -Eiq \
-            '(\b(408|424|429|5[0-9]{2})\b.*(trying to find package|trying to download)|SocketException|HandshakeException|Connection (reset|closed|refused)|[Tt]imed? out|[Tt]imeout|[Hh]ost lookup|[Nn]etwork is unreachable)' "$temporary/output"; then
+        case "$status" in
+            124|129|130|137|143) exit "$status" ;;
+        esac
+        # The CI supervisor prints "timeout 300s" before every attempt. Do not
+        # mistake that wrapper diagnostic for a Pub network timeout and retry
+        # integrity/solver/authentication errors across public package servers.
+        sed '/^\[CI\] /d' "$temporary/output" > "$temporary/pub-output"
+        if ! grep -Eiq \
+            '(\b(408|424|429|5[0-9]{2})\b.*(trying to find package|trying to download)|SocketException|HandshakeException|Connection (reset|closed|refused)|[Tt]imed? out|[Tt]imeout|[Hh]ost lookup|[Nn]etwork is unreachable)' "$temporary/pub-output"; then
             exit "$status"
         fi
         echo "Pub source request failed (exit $status)" >&2

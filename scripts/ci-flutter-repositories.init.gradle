@@ -1,0 +1,36 @@
+// Installed only into this CI job's private GRADLE_USER_HOME. Never inherit or
+// change Gitee's init scripts, and never inject project repositories into the
+// Flutter included build: it deliberately uses FAIL_ON_PROJECT_REPOS.
+if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
+    def flutterRoot = System.getenv('FLUTTER_ROOT')
+    if (!flutterRoot) {
+        throw new GradleException('CI Flutter repository routing requires FLUTTER_ROOT')
+    }
+    def flutterBuild = new File(flutterRoot, 'packages/flutter_tools/gradle').canonicalFile
+    gradle.beforeSettings { settings ->
+        if (settings.settingsDir.canonicalFile != flutterBuild) {
+            return
+        }
+        settings.pluginManagement.repositories {
+            maven {
+                url = uri('https://maven.aliyun.com/repository/google')
+                content { excludeGroupByRegex 'org\\.jetbrains(\\..*)?' }
+            }
+            maven { url = uri('https://maven.aliyun.com/repository/central') }
+            maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
+            mavenCentral()
+            gradlePluginPortal()
+        }
+        settings.dependencyResolutionManagement.repositories {
+            maven { url = uri('https://maven.aliyun.com/repository/google') }
+            def centralMirror = maven { url = uri('https://maven.aliyun.com/repository/central') }
+            def central = mavenCentral()
+            // This also excludes Kotlin from google() added later by Flutter's
+            // settings. A Google timeout must not block a Maven Central module.
+            exclusiveContent {
+                forRepositories(centralMirror, central)
+                filter { includeGroupByRegex 'org\\.jetbrains(\\..*)?' }
+            }
+        }
+    }
+}

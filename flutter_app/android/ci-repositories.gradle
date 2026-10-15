@@ -1,17 +1,37 @@
-// Applied only to this Android build, never through an init script: Flutter's
-// included Gradle build must retain FAIL_ON_PROJECT_REPOS.
+// Application and plugin projects only. Flutter's included build uses a
+// separate settings-level CI policy and retains FAIL_ON_PROJECT_REPOS.
 if (System.getenv('CODEX_CI_MAVEN_MIRRORS') == '1') {
+    def flutterStorage = (System.getenv('FLUTTER_STORAGE_BASE_URL') ?: 'https://storage.flutter-io.cn').replaceAll('/+$', '')
     allprojects { target ->
         // Flutter plugins can declare their own legacy buildscript classpaths.
         // Seed mirrors before those plugins append google()/mavenCentral().
         target.buildscript.repositories {
             maven { url = uri('https://maven.aliyun.com/repository/google') }
-            maven { url = uri('https://maven.aliyun.com/repository/central') }
+            def centralMirror = maven { url = uri('https://maven.aliyun.com/repository/central') }
             maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
+            def central = mavenCentral()
+            exclusiveContent {
+                forRepositories(centralMirror, central)
+                filter { includeGroupByRegex 'org\\.jetbrains(\\..*)?' }
+            }
         }
         target.repositories {
             maven { url = uri('https://maven.aliyun.com/repository/google') }
-            maven { url = uri('https://maven.aliyun.com/repository/central') }
+            def centralMirror = maven { url = uri('https://maven.aliyun.com/repository/central') }
+            def central = mavenCentral()
+            exclusiveContent {
+                forRepositories(centralMirror, central)
+                filter { includeGroupByRegex 'org\\.jetbrains(\\..*)?' }
+            }
+            // Engine artifacts exist in Flutter's repository, not Google's
+            // Android Maven repository. Exclude io.flutter from every other
+            // repository, including ones appended by plugins after this block.
+            exclusiveContent {
+                forRepository {
+                    maven { url = uri("$flutterStorage/download.flutter.io") }
+                }
+                filter { includeGroup 'io.flutter' }
+            }
         }
     }
 }
