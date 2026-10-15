@@ -4,8 +4,8 @@
 # caller, and all progress on stderr (the SDK helpers return paths on stdout).
 prepare_ci_environment() {
     local root="${1:?repository root required}"
-    local ci_prepare_deadline=$((SECONDS + 3600))
-    local flutter_archive_url flutter_archive_sha256 node_bin
+    local ci_prepare_deadline=$(( $(ci_prepare_now) + 3600 ))
+    local node_bin prepared_paths
     local gradle_cache_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
     export FLUTTER_VERSION=3.44.8
     export FLUTTER_REVISION=058e0af2c2b57e369d905a03ac9748b0ebf543c6
@@ -36,27 +36,24 @@ prepare_ci_environment() {
         "$HOME/.cache/codex/maven" "$root/.workflow-cache/maven-repositories")" || return $?
     export CODEX_CI_MAVEN_REPOSITORY
 
-    flutter_archive_url="$FLUTTER_STORAGE_BASE_URL/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz"
-    flutter_archive_sha256=672089e001571a9fbb209a495c583580c0c6c73ef98999264ba07fa93ace332d
-    FLUTTER_ROOT="$(ci_prepare_stage 'Flutter SDK' 1200 bash "$root/scripts/prepare-ci-flutter.sh" \
-        "$HOME/.cache/codex/flutter-$FLUTTER_VERSION" "$FLUTTER_VERSION" "$FLUTTER_REVISION" \
-        "$flutter_archive_url" "$flutter_archive_sha256")" || return $?
-    export FLUTTER_ROOT
-    export CODEX_FLUTTER_BIN="$FLUTTER_ROOT/bin/flutter"
-    export PATH="$FLUTTER_ROOT/bin:$PATH"
     # Only our reviewed settings-level policy enters the private home. It is
     # scoped to this exact Flutter SDK, leaving project-repository bans intact.
     mkdir -p "$GRADLE_USER_HOME/init.d" || return $?
     cp "$root/scripts/ci-flutter-repositories.init.gradle" \
         "$GRADLE_USER_HOME/init.d/codex-flutter-repositories.gradle" || return $?
 
-    ANDROID_HOME="$(ci_prepare_stage 'Android SDK' 1800 bash "$root/scripts/prepare-ci-android.sh" \
-        "$HOME/.cache/codex/android-sdk")" || return $?
-    export ANDROID_HOME
+    prepared_paths="$(mktemp -d "$GRADLE_USER_HOME/prepared-paths.XXXXXX")" || return $?
+    # Foreground supervisor: never capture its stdout in a substitution, where
+    # a surviving peer could keep the pipe open after the other worker fails.
+    ci_prepare_stage 'Parallel SDK preparation' 3600 bash "$root/scripts/prepare-ci-sdk-pair.sh" \
+        "$root" "$prepared_paths" "$ci_prepare_deadline" >&2 || return $?
+    FLUTTER_ROOT="$(<"$prepared_paths/flutter")"
+    ANDROID_HOME="$(<"$prepared_paths/android")"
+    [[ -n "$FLUTTER_ROOT" && -n "$ANDROID_HOME" ]] || return 1
+    export FLUTTER_ROOT ANDROID_HOME
+    export CODEX_FLUTTER_BIN="$FLUTTER_ROOT/bin/flutter"
     export ANDROID_SDK_ROOT="$ANDROID_HOME"
-    export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$ANDROID_HOME/platform-tools:$PATH"
-    ci_prepare_stage 'Gradle distribution' 2400 env CODEX_CI_GRADLE_BOUNDED=1 bash "$root/scripts/prepare-ci-gradle.sh" \
-        "$HOME/.cache/codex/gradle" "$root/flutter_app/android/gradle/wrapper/gradle-wrapper.properties" >&2 || return $?
+    export PATH="$ANDROID_HOME/cmake/3.22.1/bin:$ANDROID_HOME/platform-tools:$FLUTTER_ROOT/bin:$PATH"
     ci_prepare_stage 'Gradle repository preflight' 240 bash "$root/scripts/test-ci-gradle-repositories.sh" >&2 || return $?
     ci_prepare_stage 'Flutter Android precache' 600 "$CODEX_FLUTTER_BIN" precache --android >&2 || return $?
 }
@@ -64,11 +61,17 @@ prepare_ci_environment() {
 ci_prepare_stage() {
     local label="$1" limit="$2"
     shift 2
-    local remaining=$((ci_prepare_deadline - SECONDS))
+    local remaining=$((ci_prepare_deadline - $(ci_prepare_now)))
     if (( remaining <= 0 )); then
         echo "[CI] Environment preparation exceeded its 3600s budget before $label" >&2
         return 124
     fi
     if (( remaining < limit )); then limit=$remaining; fi
     bash "$root/scripts/run-ci-stage.sh" "$label" "$limit" "$@"
+}
+
+# Linux monotonic time is shared across the parent and both worker shells;
+# shell-local SECONDS resets in a child and wall time can jump during NTP sync.
+ci_prepare_now() {
+    awk '{print int($1)}' /proc/uptime
 }

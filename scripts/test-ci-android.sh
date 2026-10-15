@@ -419,6 +419,7 @@ cmp "$fixture/one" "$fixture/two"
 entry="$fixture/entry"
 mkdir -p "$entry/scripts" "$entry/flutter/bin" "$entry/node/bin" "$entry/dist" "$entry/home"
 cp "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/prepare-ci-android.sh" \
+    "$ROOT_DIR/scripts/prepare-ci-sdk-pair.sh" \
     "$ROOT_DIR/scripts/fetch-ci-dependency.sh" \
     "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
     "$ROOT_DIR/scripts/ci-flutter-repositories.init.gradle" \

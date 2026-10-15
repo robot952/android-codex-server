@@ -193,6 +193,11 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Validate CI preparation and build diagnostics
+        run: |
+          bash ../scripts/run-ci-stage.sh ci-preparation-regression 300 bash ../scripts/test-ci-environment.sh
+          bash ../scripts/run-ci-stage.sh ci-diagnostics-regression 120 node ../scripts/test-ci-build-diagnostics.cjs
+
       - name: Analyze and test including Linux SSH installers
         run: |
           flutter analyze --no-pub

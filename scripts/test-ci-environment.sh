@@ -8,11 +8,13 @@ trap 'rm -rf -- "$fixture"' EXIT
 # Timeout-failure fixtures must own their groups rather than kill this test.
 unset CODEX_CI_PROCESS_GROUP CODEX_CI_GRADLE_BOUNDED CODEX_RELEASE_BUILD_MODE CODEX_RELEASE_BRANCH FAIL_PHASE
 unset CODEX_CI_HOSTED_DEPENDENCIES CODEX_CI_MAVEN_REPOSITORY
+unset PAIR_STALL PAIR_CANCEL
 # The isolated tag entry stops at its fake build, before release publication.
 export CODEX_RELEASE_TOKEN=fixture-token-not-a-secret
 entry="$fixture/repo"
 mkdir -p "$entry/scripts" "$entry/node/bin" "$entry/flutter/bin" "$entry/android/platform-tools" "$entry/dist" "$fixture/home"
 cp "$ROOT_DIR/scripts/prepare-ci-environment.sh" "$ROOT_DIR/scripts/run-ci-stage.sh" \
+    "$ROOT_DIR/scripts/prepare-ci-sdk-pair.sh" \
     "$ROOT_DIR/scripts/prepare-ci-gradle-home.sh" \
     "$ROOT_DIR/scripts/ci-flutter-repositories.init.gradle" \
     "$ROOT_DIR/scripts/build-gitee-release.sh" "$ROOT_DIR/scripts/publish-tag-release.sh" "$entry/scripts/"
@@ -24,6 +26,29 @@ printf 'throw new GradleException("inherited init must not run")\n' > "$GRADLE_U
 printf '.workflow-cache/\n' > "$entry/.gitignore"
 export GRADLE_OPTS=-Dfixture=keep
 export FLUTTER_STORAGE_BASE_URL=https://fixture.invalid/flutter PUB_HOSTED_URL=https://fixture.invalid/pub
+export FIXTURE_BARRIER="$fixture/barrier"
+mkdir -p "$FIXTURE_BARRIER"
+cat > "$entry/scripts/pair-barrier.sh" <<'SH'
+touch "$FIXTURE_BARRIER/$1"
+for attempt in {1..100}; do
+    [[ ! -e "$FIXTURE_BARRIER/flutter" || ! -e "$FIXTURE_BARRIER/android" ]] || break
+    sleep 0.02
+done
+[[ -e "$FIXTURE_BARRIER/flutter" && -e "$FIXTURE_BARRIER/android" ]]
+if [[ "${PAIR_STALL:-}" == "$1" ]]; then
+    bash -c 'trap "" TERM; exec sleep 120' &
+    printf '%s\n' "$!" > "$FIXTURE_BARRIER/child.pid"
+    wait "$!"
+elif [[ -n "${PAIR_STALL:-}" ]]; then
+    for attempt in {1..100}; do
+        [[ ! -s "$FIXTURE_BARRIER/child.pid" ]] || break
+        sleep 0.02
+    done
+    [[ -s "$FIXTURE_BARRIER/child.pid" ]]
+    if [[ "${PAIR_CANCEL:-0}" == 1 ]]; then sleep 120; fi
+    exit 42
+fi
+SH
 cat > "$entry/scripts/prepare-ci-node.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -40,6 +65,7 @@ cat > "$entry/scripts/prepare-ci-flutter.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 echo flutter >> "$FIXTURE_STAGES"
+source "$WORKSPACE/scripts/pair-barrier.sh" flutter
 [[ "${FAIL_PHASE:-}" != flutter ]] || exit 42
 [[ "$(command -v node)" == "$WORKSPACE/node/bin/node" && "$(node --version)" == v22.17.0 ]]
 [[ "$2" == 3.44.8 && "$3" == 058e0af2c2b57e369d905a03ac9748b0ebf543c6 ]]
@@ -59,8 +85,8 @@ cat > "$entry/scripts/prepare-ci-android.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 echo android >> "$FIXTURE_STAGES"
+source "$WORKSPACE/scripts/pair-barrier.sh" android
 [[ "${FAIL_PHASE:-}" != android ]] || exit 42
-[[ "$CODEX_FLUTTER_BIN" == "$WORKSPACE/flutter/bin/flutter" ]]
 printf '%s\n' "$WORKSPACE/android"
 SH
 cat > "$entry/scripts/prepare-ci-gradle.sh" <<'SH'
@@ -110,14 +136,68 @@ echo publish >> "$FIXTURE_STAGES"
 SH
 chmod +x "$entry/node/bin/node" "$entry/flutter/bin/flutter" "$entry/scripts/publish-gitee-release.sh"
 bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/entry.log" 2>&1
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache publish ' ]]
+assert_prepared_order() {
+    [[ "$(grep -v '^flutter$' "$FIXTURE_STAGES" | tr '\n' ' ')" == "node maven android gradle repository-preflight precache $1 " ]]
+    [[ "$(grep -cx flutter "$FIXTURE_STAGES")" == 1 ]]
+    [[ "$(sed -n '/repository-preflight/,$p' "$FIXTURE_STAGES" | tr '\n' ' ')" == "repository-preflight precache $1 " ]]
+}
+assert_prepared_order publish
 
 for phase in node maven flutter android gradle repository-preflight precache; do
     : > "$FIXTURE_STAGES"
     status=0
     FAIL_PHASE="$phase" bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/failure.log" 2>&1 || status=$?
-    [[ "$status" == 42 && "$(tail -n 1 "$FIXTURE_STAGES")" == "$phase" ]]
+    [[ "$status" == 42 ]]
+    ! grep -qx publish "$FIXTURE_STAGES"
+    case "$phase" in
+        node|maven) [[ "$(tail -n 1 "$FIXTURE_STAGES")" == "$phase" ]] ;;
+        flutter|android|gradle) ! grep -qx repository-preflight "$FIXTURE_STAGES" ;;
+        repository-preflight) ! grep -qx precache "$FIXTURE_STAGES" ;;
+    esac
 done
+
+# Either failed lane must return its status immediately and reap an ignoring
+# peer. Exercise a standalone entry and the nested release process group.
+for stalled_lane in flutter android; do
+    for supervision in direct nested cancel; do
+        rm -f "$FIXTURE_BARRIER/child.pid"
+        : > "$FIXTURE_STAGES"
+        status=0
+        case "$supervision" in
+            direct)
+                PAIR_STALL="$stalled_lane" bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/pair.log" 2>&1 || status=$?
+                [[ "$status" == 42 ]] ;;
+            nested)
+                PAIR_STALL="$stalled_lane" bash "$ROOT_DIR/scripts/run-ci-stage.sh" pair-fixture 10 \
+                    bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/pair.log" 2>&1 || status=$?
+                [[ "$status" == 42 ]] ;;
+            cancel)
+                PAIR_STALL="$stalled_lane" PAIR_CANCEL=1 bash "$ROOT_DIR/scripts/run-ci-stage.sh" pair-cancel 2 \
+                    bash "$entry/scripts/build-gitee-release.sh" flutter-refactor >"$fixture/pair.log" 2>&1 || status=$?
+                [[ "$status" == 124 || "$status" == 137 ]] ;;
+        esac
+        [[ -s "$FIXTURE_BARRIER/child.pid" ]]
+        child="$(<"$FIXTURE_BARRIER/child.pid")"
+        for attempt in {1..20}; do
+            state="$(ps -o stat= -p "$child" 2>/dev/null || true)"
+            [[ -n "$state" && "$state" != Z* ]] || break
+            sleep 0.1
+        done
+        [[ -z "$state" || "$state" == Z* ]]
+        ! grep -qx repository-preflight "$FIXTURE_STAGES"
+    done
+done
+
+# An exhausted shared budget must reject work before launching either SDK.
+: > "$FIXTURE_STAGES"
+status=0
+mkdir -p "$fixture/expired-paths"
+FLUTTER_VERSION=3.44.8 FLUTTER_REVISION=fixture \
+    bash "$ROOT_DIR/scripts/run-ci-stage.sh" expired-pair 10 \
+    bash "$entry/scripts/prepare-ci-sdk-pair.sh" "$entry" "$fixture/expired-paths" 1 \
+    >"$fixture/expired.log" 2>&1 || status=$?
+[[ "$status" == 124 || "$status" == 137 ]]
+[[ ! -s "$FIXTURE_STAGES" ]]
 
 # A failed home isolation must stop before downloading or publishing anything.
 : > "$FIXTURE_STAGES"
@@ -164,7 +244,7 @@ done
 status=0
 bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
 [[ "$status" == 43 ]]
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache build ' ]]
+assert_prepared_order build
 : > "$FIXTURE_STAGES"
 status=0
 CODEX_RELEASE_BUILD_MODE=invalid bash "$entry/scripts/publish-tag-release.sh" >"$fixture/tag.log" 2>&1 || status=$?
@@ -197,7 +277,7 @@ assert_release_status() {
 shallow="$fixture/shallow"
 clone_release_fixture "$shallow" "$origin"
 assert_release_status "$shallow" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache build ' ]]
+assert_prepared_order build
 [[ "$(git -C "$shallow" rev-parse 'FETCH_HEAD^{commit}')" == "$(git -C "$shallow" rev-parse HEAD)" ]]
 [[ -z "$(git -C "$shallow" tag --list)" ]]
 
@@ -238,7 +318,7 @@ git --git-dir="$annotated_origin" -c user.name=Fixture -c user.email=fixture@exa
 annotated_checkout="$fixture/annotated-tag"
 clone_release_fixture "$annotated_checkout" "$annotated_origin"
 assert_release_status "$annotated_checkout" 43
-[[ "$(tr '\n' ' ' < "$FIXTURE_STAGES")" == 'node maven flutter android gradle repository-preflight precache build ' ]]
+assert_prepared_order build
 [[ -z "$(git -C "$annotated_checkout" tag --list)" ]]
 
 : > "$FIXTURE_STAGES"

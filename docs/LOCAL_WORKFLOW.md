@@ -26,6 +26,22 @@ Gitee YAML 使用 `caches: []` 关闭跨构建缓存传输，避免整个 SDK/Gr
 但全新 runner 不再从平台恢复这些缓存。云端回归锁定空缓存配置和发布构件配置，恢复缓存前必须验证体积上限。
 Gradle 回归只依赖已跟踪的根 Wrapper JAR，不依赖本机生成的 Flutter Android Wrapper 文件。
 标签与旧分支入口共用 `scripts/prepare-ci-environment.sh`，不能跳过 Flutter/Android/Gradle 环境准备。
+`1.8.175+307`：隔离 home、Node 与托管 Maven 后，最多两路并行准备 Flutter SDK 和 Android→Gradle；
+两路完成才运行原有仓库预检和 Flutter Android precache。共享 Linux 单调时钟的 3600 秒预算，各阶段
+仍取自身上限与剩余预算的较小值；任一路失败立即返回，外层监督器清理同组子进程，不允许吞掉错误继续。
+CI 的 APK 阶段临时包装生成的 Gradle launcher，向原 launcher 增加 `--profile`，正常退出/失败后恢复；
+首次构建使用已验证 Flutter SDK 中的 Wrapper 模板。原生 APK 模式仍为 Release，保留 `--pub` 与全部测试。
+不用 init 动态开启 profile（Gradle 建立 profiling 服务后再设置已经太晚），不修改 SDK 或上传 Build Scan。
+摘要位于 `dist/build-diagnostics/release.json`，诊断双变体时另有 `debug.json`，随原 dist 构件一起保留。
+日志输出 Gradle 启动、settings、配置、依赖解析、变换、任务耗时与最慢任务；只收集本轮新报告中的白名单
+字段，不复制含命令/URL 的原 HTML。采集最多 8 份、每份 4 MiB；普通失败保留构建退出码，KILL 可能无报告。
+摘要同时记录六类缓存目录未压缩字节数（每类最多 2 秒，null 表示不可用），供下一轮评估有界缓存。
+保持 `caches: []`，没有恢复曾造成 HTTP 413 的整目录上传。不能把未压缩目录大小当作上传限制或实际传输大小。
+比较基线为用户提供的 v1.8.174：全程 924 秒，Flutter SDK 123 秒，Android 64 秒，Gradle 准备 7 秒，
+Release 编译约 478 秒。两路准备的理论重叠约 71 秒，实际收益依赖网络和解压竞争；编译收益须看下一轮实测。
+Gradle 的操作计时可能重叠，不可简单求和；依赖解析同时包括本地工作，不能全部归为下载。
+新增并行与诊断 fixture 同时接入 GitHub Android job（300/120 秒上限）；Gitee 仍在原预检阶段执行，
+真实 profile 格式由既有离线 Gradle 调用验证。本轮本地只做语法与静态检查，行为验收跟踪云端结果。
 `prepare-ci-gradle.sh` 固定 Gradle 9.1.0-all 与官方 SHA-256，国内镜像失败可回退官方，最多六次限时
 续传；校验后的 ZIP 预填原 URL 对应的 Wrapper 缓存，缓存挂载根目录与已解压发行版保持不变。
 CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准备上限 60 秒），只链接原

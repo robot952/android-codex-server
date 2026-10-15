@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.174+306，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.175+307，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1089,6 +1089,11 @@ Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
 手动使用旧标签模式且没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
 之后仍严格核对标签提交与 HEAD；已有错误标签、远端缺失或获取失败必须拒绝发布，不创建或移动标签。
 标签入口与旧分支入口统一通过 `prepare-ci-environment.sh` 准备 Flutter、Android SDK、Gradle 和引擎，
+`1.8.175+307` 起，隔离 Gradle home、Node 和托管 Maven 准备后，`prepare-ci-sdk-pair.sh` 最多两路并行：
+一路准备 Flutter SDK，另一路顺序准备 Android SDK 与 Gradle。两路都成功才运行原有仓库预检和引擎预热。
+共享 3600 秒预算用 Linux 单调时钟传递，不因子 Shell 重置；两路保留各自阶段上限、原 PGID 与取消清理。
+任一路失败立即向最外层监督器返回原退出码，由监督器清理存活同组进程；不能在调用方吞掉失败继续构建。
+云端回归通过双向屏障确认并发，并覆盖两路失败、嵌套监督、忽略 TERM 的子进程、总预算耗尽和导出路径。
 标签、版本和工作区校验通过后才下载，不能绕过旧入口已有的准备逻辑。Shell 变量在仓库脚本中展开，
 避免 YAML 的变量预处理清空 SDK 路径。Flutter 缓存根目录可能是平台挂载点，禁止删除；
 `prepare-ci-flutter.sh` 在根目录内加锁，从国内 `storage.flutter-io.cn` 下载固定版本的 SDK 压缩包，
@@ -1130,6 +1135,16 @@ CI 必须有超时：`run-ci-stage.sh` 为环境/Android SDK/Gradle 隔离回归
 不会留下上一轮子进程继续重试。CI 显式禁用 Gradle 常驻 daemon，避免构建结束后保留无关守护进程。
 Gradle HTTP 连接和读取各限 30 秒；Debug 与 Release APK 编译分别最多 1200 秒，
 由外层监督整次 Flutter 调用，内部 Gradle 重试不会重新计算这 20 分钟预算。
+CI 的 APK 阶段通过 `run-ci-profiled-apk.sh` 临时包装工作区生成的 Gradle launcher，向原 launcher
+传入 `--profile`，完成后恢复原文件和权限；冷 checkout 从已验证 Flutter SDK 的 Wrapper 模板取原 launcher。
+不修改 Flutter SDK、Wrapper properties、仓库策略或签名，也不新增一次编译、不上传 Build Scan。
+`collect-ci-build-diagnostics.cjs` 仅采集本轮新生成的 Gradle HTML 数字字段及最慢 20 个任务，写入
+`dist/build-diagnostics/{debug,release}.json`；日志输出阶段与最慢 10 个任务。原 HTML、命令行、环境、URL
+和异常正文不进入产物。每轮最多 8 份、每份 4 MiB，报告采集失败不掩盖 APK 状态，强制 KILL 可能没有报告。
+同一摘要记录 Gradle modules/build-cache/wrapper、Pub、Flutter 和 Android 的未压缩体积，各目录测量最多
+2 秒；缺失或不可测记 null，不当作零字节。仍保持 Gitee `caches: []`，这些体积不是平台压缩上传大小，
+也不能据此直接恢复整目录上传。各类 Gradle 操作可能重叠，不能相加；依赖解析耗时也不等同网络下载耗时。
+诊断的启动器恢复/退出码/边界 fixture 与真实 Gradle profile 解析随原离线仓库预检运行，不额外启动 Gradle。
 强制 KILL 后退出 trap 无法恢复临时 Pub 锁文件映射，失败重跑必须使用干净 checkout；发布入口仍拒绝脏工作区。
 Gitee 入口设置 `CODEX_CI_PUB=1`，依赖阶段由 `prepare-ci-pub.sh` 执行：国内默认 Pub 源最多
 尝试两次，遇到 HTTP 408/424/429/5xx、连接错误或超时后允许回退 `pub.dev`（同样最多两次），

@@ -73,6 +73,9 @@ android_input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     scripts/android-sdk.sh \
     scripts/prepare-ci-pub.sh \
     scripts/run-ci-stage.sh \
+    scripts/run-ci-profiled-apk.sh \
+    scripts/ci-gradle-profile-wrapper.sh \
+    scripts/collect-ci-build-diagnostics.cjs \
     scripts/build-android.sh \
     scripts/workflow-lib.sh)"
 java_identity="$(java -version 2>&1 | head -n 1)"
@@ -232,7 +235,10 @@ run_apk_build() {
     if [[ "${CODEX_CI_PUB:-0}" == 1 ]]; then
         # Bound Flutter's complete invocation, including its internal Gradle
         # download retry. The supervisor kills the entire owned process group.
-        bash "$ROOT_DIR/scripts/run-ci-stage.sh" "$label" "${CODEX_CI_APK_BUILD_TIMEOUT:-1200}" "$@"
+        local variant=release
+        [[ "$label" != 'Debug APK build' ]] || variant=debug
+        bash "$ROOT_DIR/scripts/run-ci-stage.sh" "$label" "${CODEX_CI_APK_BUILD_TIMEOUT:-1200}" \
+            bash "$ROOT_DIR/scripts/run-ci-profiled-apk.sh" "$variant" "$@"
     else
         "$@"
     fi

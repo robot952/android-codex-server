@@ -10,9 +10,10 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fail() { echo "CI Gradle repository isolation: $*" >&2; exit 1; }
 [[ "$#" == 0 ]] || fail 'no arguments are supported'
 [[ -n "${GRADLE_USER_HOME:-}" ]] || fail 'prepare the CI Gradle user home first'
-for tool in java jar git sha256sum grep unzip; do
+for tool in java jar git sha256sum grep unzip node; do
     command -v "$tool" >/dev/null || fail "required tool is missing: $tool"
 done
+node "$ROOT_DIR/scripts/test-ci-build-diagnostics.cjs"
 
 # A system property wins over GRADLE_USER_HOME. Reject that ambiguity without
 # displaying inherited JVM arguments, which may contain proxy credentials.
@@ -394,7 +395,7 @@ JAVA
 run_gradle() {
     local home="$1" log="$2"
     GRADLE_USER_HOME="$home" CODEX_FIXTURE_EXPECTED_HOME="$home" CODEX_CI_MAVEN_MIRRORS=1 \
-        bash "$private_gradle" --project-dir "$project" --offline --no-daemon --console=plain \
+        bash "$private_gradle" --project-dir "$project" --offline --no-daemon --console=plain --profile \
         --max-workers=2 '-Dorg.gradle.jvmargs=-Xmx768m -Dfile.encoding=UTF-8' help > "$log" 2>&1
 }
 status=0
@@ -424,4 +425,15 @@ fi
 [[ "$(<"$CODEX_FIXTURE_REPOSITORY_MARKER")" == mirrors-before-official ]] || fail 'plugin classpath and dependency mirrors were not applied before official repositories'
 [[ "$(<"$CODEX_FIXTURE_KOTLIN_MARKER")" == central-transitives-verified ]] || fail 'Flutter included build resolved Kotlin or AGP transitives from the wrong repository'
 [[ "$(sha256sum "$old_home/init.gradle" | cut -d ' ' -f 1)" == "$init_sha" ]] || fail 'the synthetic source init script changed'
+# Parse a real Gradle 9.1 report from the existing fixture invocation; no extra
+# Gradle process/build is needed to validate the collector's format assumptions.
+node - "$ROOT_DIR/scripts/collect-ci-build-diagnostics.cjs" "$project/build/reports/profile" <<'JS'
+const assert = require('node:assert/strict');
+const { collectProfiles } = require(process.argv[2]);
+const reports = collectProfiles(process.argv[3], 0);
+assert.ok(reports.length >= 1);
+assert.ok(reports.every(report => report.summarySeconds['Total Build Time'] >= 0));
+assert.ok(reports.some(report => report.slowestTasks.some(task => task.task === ':help')));
+console.log('Real Gradle profile report parsed successfully');
+JS
 echo 'Real offline Gradle repository routing passed (verified distribution, inherited-init rejection, strict scoped Settings, Kotlin and AGP/ASM/Guava/Gson classpaths, three Flutter engine ABIs, Android and unrestricted Central mirror)'
