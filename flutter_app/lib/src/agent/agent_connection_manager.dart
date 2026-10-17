@@ -1201,7 +1201,14 @@ bool _sameLaneIdentity(
     left.hasSameConnectionIdentity(right) &&
     (agent != AgentKind.codex || left.remoteCommand == right.remoteCommand) &&
     ((agent != AgentKind.openCode && agent != AgentKind.claudeCode) ||
-        left.workspace.trim() == right.workspace.trim());
+        left.workspace.trim() == right.workspace.trim()) &&
+    switch (agent) {
+      AgentKind.codex => left.codexVersion.trim() == right.codexVersion.trim(),
+      AgentKind.openCode =>
+        left.openCodeVersion.trim() == right.openCodeVersion.trim(),
+      AgentKind.claudeCode =>
+        left.claudeCodeVersion.trim() == right.claudeCodeVersion.trim(),
+    };
 
 String _message(Object error, String fallback) {
   final message = error

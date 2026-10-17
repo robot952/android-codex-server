@@ -5,8 +5,6 @@ import '../domain/install_progress_format.dart';
 import '../domain/models.dart';
 import 'theme.dart';
 
-const _pinnedOpenCodeVersion = '1.18.11';
-
 class RemoteSetupDialog extends StatefulWidget {
   const RemoteSetupDialog({
     required this.state,
@@ -86,7 +84,7 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
     final viewInsets = MediaQuery.viewInsetsOf(context);
     final display = _RemoteSetupDisplay.fromPrompt(setup);
     final isClaude = setup.agent == AgentKind.claudeCode;
-    final title = isClaude ? '安装 Claude Code 连接组件' : setup.title;
+    final title = isClaude ? '安装/切换 Claude Code' : setup.title;
 
     return Positioned.fill(
       key: const ValueKey('remote-setup-overlay'),
@@ -157,7 +155,7 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                               children: [
                                                 Text(
                                                   isClaude
-                                                      ? '请先在服务器安装并登录 Claude Code 2.1 或更新的 2.x 版本，准备 Node.js 18 或更新版本。这里仅安装手机连接组件，沿用服务器现有登录和配置。'
+                                                      ? '将升级或降级当前 SSH 用户已有的 Claude Code，保留现有登录和配置。安装完成后自动连接。'
                                                       : setup.agent ==
                                                             AgentKind.codex
                                                       ? '将在此服务器安装 Codex ${_codexTargetVersion(setup)}，完成后自动连接。'
@@ -175,7 +173,7 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
                                               ],
                                             ),
                                     ),
-                                    if (!isClaude && !inProgress)
+                                    if (!inProgress)
                                       TextField(
                                         key: const ValueKey(
                                           'remote-setup-proxy',
@@ -671,16 +669,18 @@ class _RemoteSetupDisplay {
       ),
       AgentKind.openCode => _RemoteSetupDisplay(
         versionLine:
-            'OpenCode $_pinnedOpenCodeVersion · 共享 Node $pinnedNodeVersion',
-        installPath: '$sharedRoot/opencode/releases/$_pinnedOpenCodeVersion',
+            'OpenCode ${setup.targetVersion ?? defaultOpenCodeVersion} · 共享 Node $pinnedNodeVersion',
+        installPath:
+            '$sharedRoot/opencode/releases/${setup.targetVersion ?? defaultOpenCodeVersion}',
         bridgePath: '$home/.local/bin/codex-remote-opencode-bridge',
         proxyDescription: '仅用于本次远程 Node.js 和 OpenCode 下载，并保存到此服务器',
       ),
       AgentKind.claudeCode => _RemoteSetupDisplay(
-        versionLine: 'Claude Code 2.1+（2.x）· 使用服务器已有 CLI',
+        versionLine:
+            'Claude Code ${setup.targetVersion ?? defaultClaudeCodeVersion} · 升级/降级服务器现有 CLI',
         installPath: '$sharedRoot/claude',
         bridgePath: '$home/.local/bin/codex-remote-claude-bridge',
-        proxyDescription: '连接组件无需下载，Claude Code 沿用服务器已有网络设置',
+        proxyDescription: '仅用于本次 Claude Code 下载，并保存到此服务器',
       ),
     };
   }

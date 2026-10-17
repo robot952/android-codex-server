@@ -37,8 +37,24 @@ class _ThreadListController extends AppController {
   AgentKind? selectedAgent;
   int resumedSetupCount = 0;
   bool fileManagerOpened = false;
+  final List<AgentKind> versionRefreshes = [];
+  (String, AgentKind, String)? versionChange;
 
   void showState(AppUiState value) => state = value;
+
+  @override
+  Future<void> refreshAgentVersions(String profileId, AgentKind agent) async {
+    versionRefreshes.add(agent);
+  }
+
+  @override
+  Future<void> changeAgentVersion(
+    String profileId,
+    AgentKind agent,
+    String version,
+  ) async {
+    versionChange = (profileId, agent, version);
+  }
 
   @override
   void selectAgent(AgentKind agent) {
@@ -637,6 +653,102 @@ void main() {
     expect(find.text('文件管理'), findsNothing);
     expect(find.text('Codex 版本'), findsOneWidget);
   });
+
+  for (final agent in [AgentKind.openCode, AgentKind.claudeCode]) {
+    testWidgets('${agent.label} version menu applies only its own catalog', (
+      tester,
+    ) async {
+      final manager = ServerConnectionManager();
+      final controller = _ThreadListController(_MemoryStore(), manager);
+      addTearDown(manager.close);
+      final profile = ServerProfile(
+        id: 'server',
+        name: '测试服务器',
+        host: 'example.test',
+        activeAgent: agent,
+        codexVersion: '0.162.0',
+        openCodeVersion: '1.18.10',
+        claudeCodeVersion: '2.1.292',
+      );
+      final selectedVersion = agent == AgentKind.openCode
+          ? '1.18.11'
+          : '2.1.293';
+      final currentVersion = agent == AgentKind.openCode
+          ? profile.openCodeVersion
+          : profile.claudeCodeVersion;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const ThreadListScreen(),
+          ),
+        ),
+      );
+      controller.showState(
+        AppUiState(
+          profiles: [profile],
+          selectedProfileId: profile.id,
+          activeAgent: agent,
+          connectionStates: {
+            profile.id: const domain.ConnectionState(
+              phase: ConnectionPhase.connected,
+            ),
+          },
+          codexVersions: const ['0.162.1'],
+          openCodeVersions: const ['1.18.11'],
+          claudeCodeVersions: const ['2.1.293'],
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('${agent.label} 版本'), findsOneWidget);
+      expect(find.text('Codex 版本'), findsNothing);
+      await tester.tap(find.text('${agent.label} 版本'));
+      await tester.pumpAndSettle();
+
+      expect(controller.versionRefreshes, [agent]);
+      expect(find.text('当前配置：${agent.label} $currentVersion'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, '应用版本'))
+            .onPressed,
+        isNull,
+      );
+      final selector = find.byKey(ValueKey('${agent.name}-version-selector'));
+      await tester.tap(selector);
+      await tester.pumpAndSettle();
+      expect(find.text('Codex 0.162.1'), findsNothing);
+      expect(
+        find.text(
+          agent == AgentKind.openCode
+              ? 'Claude Code 2.1.293'
+              : 'OpenCode 1.18.11',
+        ),
+        findsNothing,
+      );
+      await tester.tap(find.text('${agent.label} $selectedVersion').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('刷新版本列表'));
+      controller.showState(
+        controller.state.copyWith(
+          openCodeVersions: const ['1.18.12'],
+          claudeCodeVersions: const ['2.1.294'],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(controller.versionRefreshes, [agent, agent]);
+      expect(tester.takeException(), isNull);
+      expect(find.text('${agent.label} $selectedVersion'), findsOneWidget);
+      await tester.tap(find.text('应用版本'));
+      await tester.pumpAndSettle();
+
+      expect(controller.versionChange, (profile.id, agent, selectedVersion));
+      expect(find.byType(AlertDialog), findsNothing);
+    });
+  }
 
   testWidgets('pulling the thread panel reveals refresh states below search', (
     tester,

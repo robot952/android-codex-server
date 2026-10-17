@@ -120,7 +120,20 @@ class _FakeScriptHost
   void close() {}
 }
 
-String _probeOutput(String bridgeSource) =>
+class _ProfileUpdatingHost extends _FakeScriptHost
+    implements LocalRemoteServerClient, RemoteServerProfileUpdateClient {
+  ServerProfile? launchProfile;
+
+  @override
+  void updateProfile(ServerProfile profile) {
+    launchProfile = profile;
+  }
+}
+
+String _probeOutput(
+  String bridgeSource, {
+  String version = pinnedOpenCodeVersion,
+}) =>
     '''
 __CODEX_REMOTE_OS=Linux
 __CODEX_REMOTE_ARCH=x86_64
@@ -132,8 +145,10 @@ __CODEX_REMOTE_HAS_SHA256=1
 __CODEX_REMOTE_HAS_FLOCK=1
 __CODEX_REMOTE_HAS_SETSID_WAIT=1
 __CODEX_REMOTE_DOWNLOADER=curl
-__CODEX_REMOTE_OPENCODE_VERSION=$pinnedOpenCodeVersion
+__CODEX_REMOTE_OPENCODE_PATH=/home/dev/.local/share/codex-remote/opencode/releases/$version/node_modules/.bin/opencode
+__CODEX_REMOTE_OPENCODE_VERSION=$version
 __CODEX_REMOTE_OPENCODE_BRIDGE=/home/dev/.local/bin/codex-remote-opencode-bridge
+__CODEX_REMOTE_OPENCODE_LAUNCHER_PROTOCOL=2
 __CODEX_REMOTE_OPENCODE_BRIDGE_SHA256=${OpenCodeBootstrap.bridgeSha256(bridgeSource)}
 ''';
 
@@ -154,13 +169,42 @@ void main() {
     });
 
     test('quotes the workspace as one bridge argument', () {
-      expect(buildOpenCodeBridgeCommand('  '), managedOpenCodeBridgeCommand);
+      expect(
+        buildOpenCodeBridgeCommand('  '),
+        "$managedOpenCodeBridgeCommand --version '$pinnedOpenCodeVersion'",
+      );
       expect(
         buildOpenCodeBridgeCommand(" /srv/team's app "),
-        '$managedOpenCodeBridgeCommand --directory '
+        "$managedOpenCodeBridgeCommand --version '$pinnedOpenCodeVersion' "
+        '--directory '
         "'/srv/team'\"'\"'s app'",
       );
+      expect(
+        buildOpenCodeBridgeCommand('/srv/team', openCodeVersion: '1.17.0'),
+        "$managedOpenCodeBridgeCommand --version '1.17.0' --directory '/srv/team'",
+      );
     });
+
+    test(
+      'refreshes native host launch settings before opening the process',
+      () async {
+        final host = _ProfileUpdatingHost();
+        const profile = ServerProfile(
+          id: 'server',
+          openCodeVersion: '1.17.0',
+          workspace: '/srv/new-workspace',
+        );
+        final client = OpenCodeAgentClient(
+          bridgeLoader: () async => 'bridge',
+          sessionOpener: (sessionHost, command) async {
+            expect(host.launchProfile, profile);
+            throw StateError('stop after verifying process launch settings');
+          },
+        );
+        addTearDown(client.close);
+        await expectLater(client.connect(profile, host), throwsStateError);
+      },
+    );
   });
 
   group('OpenCode runtime lifecycle', () {
@@ -185,15 +229,43 @@ void main() {
 
         expect(loads, 1);
         expect(host.shellScripts, <String>[
-          OpenCodeBootstrap.combinedProbeScript,
+          OpenCodeBootstrap.combinedProbeScriptFor(),
         ]);
         expect(inspection.detectedVersion, pinnedOpenCodeVersion);
         expect(
           inspection.compatibleCommand,
-          "'/home/dev/.local/bin/codex-remote-opencode-bridge'",
+          "'/home/dev/.local/bin/codex-remote-opencode-bridge' "
+          "--version '$pinnedOpenCodeVersion'",
         );
       },
     );
+
+    test('probes and installs the selected profile release', () async {
+      const bridgeSource = "console.log('bridge');\n";
+      const version = '1.17.0';
+      final host = _FakeScriptHost(
+        shellOutput: _probeOutput(bridgeSource, version: version),
+      );
+      final client = OpenCodeAgentClient(
+        bridgeLoader: () async => bridgeSource,
+      );
+      addTearDown(client.close);
+      const profile = ServerProfile(id: 'server', openCodeVersion: version);
+
+      final inspection = await client.inspectRuntime(profile, host);
+      expect(inspection.detectedVersion, version);
+      expect(
+        host.shellScripts.single,
+        contains('/opencode/releases/$version/node_modules/.bin/opencode'),
+      );
+      expect(host.shellScripts.single, isNot(contains('find -L')));
+
+      await client.installRuntime(profile, host, onProgress: (_) {});
+      expect(
+        host.streamingCalls.last.script,
+        contains('opencode-ai":"$version"'),
+      );
+    });
 
     test(
       'installs shared Node first and exposes both progress phases',

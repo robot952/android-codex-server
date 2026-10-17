@@ -28,6 +28,8 @@ function fakeClaudeMain() {
   let request;
   let holdExit = false;
   audit({ type: "spawn", pid: process.pid, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL, subagentModelEnv: process.env.CLAUDE_CODE_SUBAGENT_MODEL, subagentForceEnv: process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE });
+  assert.equal(process.env.DISABLE_AUTOUPDATER, "1");
+  assert.equal(process.env.DISABLE_UPDATES, "1");
   assert.equal(valueOf("--input-format"), "stream-json");
   assert.equal(valueOf("--output-format"), "stream-json");
   assert.equal(valueOf("--permission-mode"), "default");
@@ -570,7 +572,7 @@ test("a model outside the native catalog still honors the configured effort", as
   const configDir = path.join(root, ".claude");
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({
-    effortLevel: "high", env: { CLAUDE_CODE_EFFORT_LEVEL: "high", ANTHROPIC_MODEL: "claude-opus-5-5" },
+    effortLevel: "high", env: { CLAUDE_CODE_EFFORT_LEVEL: "high", ANTHROPIC_MODEL: "claude-opus-5-5", DISABLE_AUTOUPDATER: "0", DISABLE_UPDATES: "0" },
   }));
   const id = await peer.thread();
   // Claude Code owns the effort vocabulary, so a proxied or user-defined alias
@@ -591,6 +593,8 @@ test("a model outside the native catalog still honors the configured effort", as
     assert.deepEqual(JSON.parse(spawn.args[spawn.args.indexOf("--settings") + 1]), {
       effortLevel: "high",
       env: {
+        DISABLE_AUTOUPDATER: "1",
+        DISABLE_UPDATES: "1",
         CLAUDE_CODE_SUBAGENT_MODEL: model,
         CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1",
         CLAUDE_CODE_EFFORT_LEVEL: "high",

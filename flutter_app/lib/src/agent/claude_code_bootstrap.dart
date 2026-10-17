@@ -2,10 +2,12 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../domain/models.dart';
 import 'remote_bootstrap.dart';
 
 const managedClaudeCodeBridgeCommand =
     '~/.local/bin/codex-remote-claude-bridge';
+const pinnedClaudeCodeVersion = defaultClaudeCodeVersion;
 const _probePrefix = '__CODEX_REMOTE_CLAUDE_';
 
 class ClaudeCodeRuntimeProbe {
@@ -25,11 +27,18 @@ class ClaudeCodeRuntimeProbe {
   final String? bridgeSha256;
   final String? launcherSha256;
 
-  bool get hasSupportedVersion =>
-      RegExp(r'^2\.(?:[1-9]\d*)\.\d+(?:\s|$)').hasMatch(version ?? '');
+  bool get hasSupportedVersion => RegExp(
+    r'^2\.(?:[1-9]\d*)\.(?:0|[1-9]\d*)(?:\s|$)',
+  ).hasMatch(version ?? '');
 
-  bool isCompatible(String expectedBridgeSha256) =>
-      hasSupportedVersion &&
+  bool matchesVersion(String expectedVersion) => RegExp(
+    '^${RegExp.escape(expectedVersion)}(?:\\s|\$)',
+  ).hasMatch(version ?? '');
+
+  bool isCompatible(String expectedBridgeSha256, {String? expectedVersion}) =>
+      (expectedVersion == null
+          ? hasSupportedVersion
+          : matchesVersion(expectedVersion)) &&
       (executablePath?.isNotEmpty ?? false) &&
       (nodePath?.isNotEmpty ?? false) &&
       (bridgePath?.isNotEmpty ?? false) &&
@@ -38,16 +47,23 @@ class ClaudeCodeRuntimeProbe {
           ClaudeCodeBootstrap.bridgeSha256(ClaudeCodeBootstrap.launcherSource);
 }
 
-/// Installs only the mobile connection component. The SSH user's Claude CLI,
-/// login, settings and CLI version remain under that user's control.
+/// Installs the selected Claude CLI release and the mobile connection
+/// component. The SSH user's `~/.claude` login, settings and history remain
+/// untouched. Existing npm installations keep their global install prefix;
+/// native installations use Claude's own installer.
 class ClaudeCodeBootstrap {
   const ClaudeCodeBootstrap._();
 
   static const _discoverRuntime = r'''
-CLAUDE_BIN=""
-for CANDIDATE in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null || true)"; do
-  if [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE" ]; then CLAUDE_BIN="$CANDIDATE"; break; fi
-done
+discover_claude() {
+  CLAUDE_BIN=""
+  # Follow the active PATH entry first. A stale copy in ~/.local/bin must not
+  # be upgraded when the shell would actually run a system installation.
+  for CANDIDATE in "$(command -v claude 2>/dev/null || true)" "$HOME/.local/bin/claude"; do
+    if [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE" ]; then CLAUDE_BIN="$CANDIDATE"; break; fi
+  done
+}
+discover_claude
 NODE_BIN=""
 for CANDIDATE in "$(command -v node 2>/dev/null || true)" "$HOME"/.local/share/codex-remote/runtime/*/bin/node; do
   if [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE" ] && "$CANDIDATE" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
@@ -63,6 +79,7 @@ if [ -n "$NODE_BIN" ]; then PATH="$(dirname "$NODE_BIN"):$PATH"; export PATH; fi
       r'''
 if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '未找到 Claude Code CLI，请先在服务器安装并登录 Claude Code' >&2; exit 65; fi
 if [ -z "$NODE_BIN" ]; then printf '%s\n' 'Claude Code 连接组件需要 Node.js 18 或更新版本' >&2; exit 65; fi
+export DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1
 export CLAUDE_BIN
 exec "$NODE_BIN" "$HOME/.local/share/codex-remote/claude/bridge.cjs" "$@"
 ''';
@@ -131,23 +148,38 @@ command -v curl >/dev/null 2>&1 && value DOWNLOADER curl || value DOWNLOADER non
   static AgentRuntimeInspection inspect(
     String output, {
     required String bridgeSource,
+    String claudeVersion = pinnedClaudeCodeVersion,
   }) {
+    final expectedVersion = validateVersion(claudeVersion);
     final host = RemoteBootstrap.parseProbe(output);
     final claude = parseProbe(output);
     final compatible =
-        host.os == 'Linux' && claude.isCompatible(bridgeSha256(bridgeSource));
+        host.os == 'Linux' &&
+        claude.isCompatible(
+          bridgeSha256(bridgeSource),
+          expectedVersion: expectedVersion,
+        );
     return _ClaudeRuntimeInspection(
       host: host,
       claude: claude,
+      expectedVersion: expectedVersion,
       command: compatible ? shellQuote(claude.bridgePath!) : null,
     );
   }
 
-  static String installScript({required String bridgeSource}) {
+  static String installScript({
+    required String bridgeSource,
+    String claudeVersion = pinnedClaudeCodeVersion,
+    String proxyUrl = '',
+  }) {
     if (bridgeSource.trim().isEmpty) {
       throw ArgumentError.value(bridgeSource, 'bridgeSource');
     }
+    final version = validateVersion(claudeVersion);
+    final proxy = RemoteBootstrap.validateProxyUrl(proxyUrl);
     final install = _installTemplate
+        .replaceAll('__CLAUDE_VERSION__', version)
+        .replaceAll('__PROXY_SHELL__', shellQuote(proxy))
         .replaceAll(
           '__BRIDGE_BASE64__',
           base64Encode(utf8.encode(bridgeSource)),
@@ -160,14 +192,27 @@ command -v curl >/dev/null 2>&1 && value DOWNLOADER curl || value DOWNLOADER non
     return 'set -eu\numask 077\n$_discoverRuntime$install';
   }
 
-  static const _installTemplate = r'''
-if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '未找到 Claude Code CLI，请先在服务器安装并登录 Claude Code 2.1 或更新的 2.x 版本' >&2; exit 65; fi
-if [ -z "$NODE_BIN" ]; then printf '%s\n' 'Claude Code 连接组件需要 Node.js 18 或更新版本，也可复用 Codex/OpenCode 已安装的 Node.js' >&2; exit 65; fi
-VERSION="$("$CLAUDE_BIN" --version)"
-printf '%s' "$VERSION" | "$NODE_BIN" -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>process.exit(/^2\.[1-9]\d*\.\d+(?:\s|$)/.test(s)?0:1))' || {
-  printf '%s\n' '需要 Claude Code 2.1 或更新的 2.x 版本，请先升级服务器上的 Claude Code CLI' >&2; exit 65;
-}
+  /// Returns a supported Claude Code 2.x release in canonical form.
+  ///
+  /// The app deliberately accepts only exact numeric versions. Channels such
+  /// as `latest`, prerelease tags, and Claude Code 2.0 are not safe targets
+  /// for the bridge protocol and must be rejected before a remote script is
+  /// generated.
+  static String validateVersion(String value) {
+    final version = value.trim();
+    if (!RegExp(r'^2\.(?:[1-9]\d*)\.(?:0|[1-9]\d*)$').hasMatch(version)) {
+      throw ArgumentError.value(
+        value,
+        'claudeVersion',
+        'Claude Code 版本必须是 2.1 或更新的 2.x 精确版本',
+      );
+    }
+    return version;
+  }
 
+  static const _installTemplate = r'''
+if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '未找到 Claude Code CLI，请先在服务器安装并登录 Claude Code' >&2; exit 65; fi
+if [ -z "$NODE_BIN" ]; then printf '%s\n' 'Claude Code 连接组件需要 Node.js 18 或更新版本，也可复用 Codex/OpenCode 已安装的 Node.js' >&2; exit 65; fi
 ROOT="$HOME/.local/share/codex-remote/claude"
 BIN_DIR="$HOME/.local/bin"
 if [ -L "$ROOT" ]; then printf '%s\n' 'Claude Code 连接组件目录不能是符号链接' >&2; exit 65; fi
@@ -179,7 +224,83 @@ WORK="$(mktemp -d "$ROOT/.install.XXXXXX")"
 LAUNCHER="$(mktemp "$BIN_DIR/.codex-remote-claude.XXXXXX")"
 cleanup() { rm -f -- "$WORK/bridge.cjs" "$LAUNCHER"; rmdir -- "$WORK" 2>/dev/null || true; }
 trap cleanup EXIT HUP INT TERM
-printf '::progress::25||校验 Claude Code 连接组件|服务器 CLI 已就绪\n'
+TARGET_VERSION='__CLAUDE_VERSION__'
+CLAUDE_PROXY=__PROXY_SHELL__
+export DISABLE_AUTOUPDATER=1
+if [ -n "$CLAUDE_PROXY" ]; then
+  export HTTP_PROXY="$CLAUDE_PROXY" HTTPS_PROXY="$CLAUDE_PROXY"
+  export http_proxy="$CLAUDE_PROXY" https_proxy="$CLAUDE_PROXY"
+else
+  unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+fi
+version_matches_target() {
+  printf '%s' "$1" | CLAUDE_TARGET_VERSION="$TARGET_VERSION" "$NODE_BIN" -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const v=s.trim(), expected=process.env.CLAUDE_TARGET_VERSION;process.exit(v===expected||v.startsWith(expected+" ")?0:1)})'
+}
+CURRENT_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null || true)"
+if version_matches_target "$CURRENT_VERSION"; then
+  printf '::progress::30||Claude Code CLI 已是目标版本|跳过版本安装 %s\n' "$TARGET_VERSION"
+else
+  printf '::progress::12||切换 Claude Code CLI|目标版本 %s\n' "$TARGET_VERSION"
+  INSTALL_SUCCEEDED=0
+  NPM_INSTALL=0
+  NPM="$(dirname "$CLAUDE_BIN")/npm"
+  if [ ! -x "$NPM" ]; then NPM="$(command -v npm 2>/dev/null || true)"; fi
+  CLAUDE_REALPATH="$(readlink -f "$CLAUDE_BIN" 2>/dev/null || true)"
+  if [ -n "$NPM" ]; then
+    NPM_ROOT="$("$NPM" root --global 2>/dev/null || true)"
+    if [ -n "$NPM_ROOT" ]; then
+      NPM_ROOT="$(readlink -f "$NPM_ROOT" 2>/dev/null || printf '%s' "$NPM_ROOT")"
+      case "$CLAUDE_REALPATH" in
+        "$NPM_ROOT/@anthropic-ai/claude-code/"*) NPM_INSTALL=1 ;;
+      esac
+    fi
+  fi
+  case "$CLAUDE_REALPATH" in
+    */node_modules/@anthropic-ai/claude-code/*)
+      if [ "$NPM_INSTALL" -eq 0 ]; then
+        printf '%s\n' '无法定位当前 Claude Code 的 npm 安装环境，请检查该 CLI 对应的 npm 路径' >&2
+        exit 65
+      fi
+      ;;
+  esac
+  if [ "$NPM_INSTALL" -eq 1 ]; then
+    # Do not invoke 'claude install' for npm: that can migrate to a second
+    # native executable instead of updating the CLI selected by this shell.
+    npm_config_audit=false npm_config_fund=false npm_config_update_notifier=false \
+      "$NPM" install --global --no-audit --no-fund \
+        "@anthropic-ai/claude-code@$TARGET_VERSION" >/dev/null 2>&1 && INSTALL_SUCCEEDED=1
+  elif "$CLAUDE_BIN" install "$TARGET_VERSION" >/dev/null 2>&1; then
+    INSTALL_SUCCEEDED=1
+  fi
+  if [ "$INSTALL_SUCCEEDED" -eq 0 ] && [ "$NPM_INSTALL" -eq 0 ] && command -v curl >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
+    NATIVE_INSTALL=0
+    case "$CLAUDE_REALPATH:$CLAUDE_BIN" in
+      *"$HOME/.local/share/claude/versions/"*|*"$HOME/.local/bin/claude") NATIVE_INSTALL=1 ;;
+    esac
+    # The official native installer is scoped to the current user and leaves
+    # ~/.claude untouched. It also upgrades older native launchers which do
+    # not expose `claude install <version>` yet.
+    if [ "$NATIVE_INSTALL" -eq 1 ] && curl -fsSL https://claude.ai/install.sh | bash -s "$TARGET_VERSION" >/dev/null 2>&1; then
+      INSTALL_SUCCEEDED=1
+    fi
+  fi
+  if [ "$INSTALL_SUCCEEDED" -eq 0 ]; then
+    printf '%s\n' 'Claude Code CLI 版本安装失败，请检查当前安装权限、服务器网络或下载代理' >&2
+    exit 65
+  fi
+  # Verify the exact entry originally discovered, never another PATH copy.
+  if [ ! -x "$CLAUDE_BIN" ]; then
+    printf '%s\n' 'Claude Code CLI 安装后不可执行' >&2
+    exit 65
+  fi
+  VERSION="$("$CLAUDE_BIN" --version 2>/dev/null || true)"
+  version_matches_target "$VERSION" || {
+    printf '%s\n' 'Claude Code CLI 安装后版本与目标版本不一致，已停止连接组件替换' >&2
+    exit 65
+  }
+  printf '::progress::30||Claude Code CLI 已切换|版本 %s\n' "$TARGET_VERSION"
+fi
+printf '::progress::45||校验 Claude Code 连接组件|准备桥接文件\n'
 printf '%s' '__BRIDGE_BASE64__' | "$NODE_BIN" -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>require("node:fs").writeFileSync(process.argv[1],Buffer.from(s,"base64"),{mode:384}))' "$WORK/bridge.cjs"
 ACTUAL_HASH="$(sha256sum "$WORK/bridge.cjs" | cut -d ' ' -f 1)"
 [ "$ACTUAL_HASH" = '__BRIDGE_HASH__' ] || { printf '%s\n' 'Claude Code 连接组件校验失败' >&2; exit 65; }
@@ -213,6 +334,7 @@ class _ClaudeRuntimeInspection extends AgentRuntimeInspection {
   _ClaudeRuntimeInspection({
     required AgentRuntimeInspection host,
     required ClaudeCodeRuntimeProbe claude,
+    required super.expectedVersion,
     required String? command,
   }) : _claude = claude,
        super(
@@ -242,9 +364,6 @@ class _ClaudeRuntimeInspection extends AgentRuntimeInspection {
     if (!hasShell) return '服务器缺少 /bin/sh';
     if (_claude.executablePath == null) {
       return '请先在服务器安装并登录 Claude Code 2.1 或更新的 2.x 版本';
-    }
-    if (!_claude.hasSupportedVersion) {
-      return '请将服务器上的 Claude Code 升级到 2.1 或更新的 2.x 版本';
     }
     if (_claude.nodePath == null) {
       return 'Claude Code 连接组件需要 Node.js 18 或更新版本';

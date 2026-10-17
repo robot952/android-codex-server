@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.175+307，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.176+308，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -80,8 +80,9 @@ Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capab
 - Android 应用内更新：启动自动检查与手动检查 Gitee 稳定 Release、SemVer 比较、更新日志、忽略版本、
   可恢复的 DownloadManager 下载进度、未知来源授权后的系统 APK 安装，以及包名/版本/稳定签名校验；
 - Agent 首次成功连接时的一次性工作目录提示、SFTP 目录浏览、确认保存和设置菜单手动重开；
-- Codex 与 OpenCode 固定版本运行时探测、当前 SSH 用户目录隔离安装、HTTP/HTTPS 下载代理、流式安装
-  进度、最小化/失败重试、安装后复检和自动连接，以及只触碰当前用户托管路径的卸载脚本；
+- Codex 与 OpenCode 版本运行时探测、当前 SSH 用户目录隔离安装、HTTP/HTTPS 下载代理、流式安装
+  进度、最小化/失败重试、安装后复检和自动连接，以及只触碰当前用户托管路径的卸载脚本；Claude Code
+  版本列表和当前 SSH 用户 CLI 的升级/降级也已接入，保留原有登录与配置；
 - Codex、OpenCode 与 Claude Code 全局配置读取/保存、真实 API 连通性测试、OpenCode 自定义模型同步，以及按服务器 +
   Agent 的本地默认值持久化。
 
@@ -89,7 +90,7 @@ Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capab
 模拟器启动回归已经通过，但尚未在授权真实服务器验证 OpenCode 固定版本下载/安装/卸载、真实
 Provider/API、长时 turn/steer/interrupt、断线和后台行为，也未在真机完成应用内更新的下载、未知来源授权
 与覆盖安装。Codex 子 Agent 独立 thread 导航/父子返回栈已经接入 Flutter，但仍需真实设备长时回归。
-Codex/OpenCode 自动安装、Claude Code 连接组件安装，以及共享终端、文件管理、后台保护、完成通知和
+Codex/OpenCode 自动安装、Claude Code 现有 CLI 版本切换与连接组件安装，以及共享终端、文件管理、后台保护、完成通知和
 Debug 日志已经有 Flutter/Android 实现，
 但仍需在目标设备上做权限、厂商后台限制和长时运行回归；不要因为代码、纯单元测试和启动 smoke 已通过，
 就把真实服务器或系统安装流程写成已完成。
@@ -117,9 +118,10 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/agent/opencode_agent_client.dart | OpenCode adapter；托管 bridge 命令、运行时、全局设置、Provider 模型映射和自定义模型同步 | 当前运行；复用 Codex JSONL 传输、reducer 和共享状态机 |
 | flutter_app/lib/src/agent/open_code_bootstrap.dart | 固定 OpenCode/共享 Node 探测、两阶段安装、bridge hash 校验和范围受限的卸载 | 当前运行；仅管理当前 SSH 用户目录下的 OpenCode 内容 |
 | flutter_app/lib/src/agent/open_code_bridge_asset.dart | 将打包的 OpenCode bridge 作为受校验安装输入加载 | 当前运行 |
+| flutter_app/lib/src/agent/npm_version_catalog.dart | OpenCode 与 Claude Code 的 npm 稳定版本目录、数值排序、数量边界及错误处理 | 当前运行；与 Codex 目录的加载状态独立 |
 | flutter_app/assets/opencode-bridge.cjs | OpenCode REST/SSE 到 Agent JSONL 的远端兼容 bridge | 当前运行；只监听远端 loopback 随机端口并启用随机 Basic Auth |
 | flutter_app/lib/src/agent/claude_code_agent_client.dart | Claude Code adapter，复用共享 JSONL，独立启动环境 | 当前运行；Linux SSH |
-| flutter_app/lib/src/agent/claude_code_bootstrap.dart | 探测已有 Claude CLI/Node，校验和安装连接组件 | 不下载 CLI、不改登录或配置 |
+| flutter_app/lib/src/agent/claude_code_bootstrap.dart | 探测已有 Claude CLI/Node，按 Profile 版本升级/降级 CLI 并校验、安装连接组件 | 以当前 SSH 用户权限更新现有安装及 App 连接组件，不用 sudo，不改登录或配置 |
 | flutter_app/lib/src/agent/claude_code_bridge_asset.dart、flutter_app/assets/claude-code-bridge.cjs | 打包资源及 Claude stream-json/control 到共享会话协议的转换 | 当前运行；App 创建的历史单独持久化 |
 | flutter_app/lib/src/agent/agent_connection_manager.dart | `profileId + AgentKind` lane、锁、generation 和状态 | 当前运行 |
 | flutter_app/lib/src/agent/codex_protocol.dart | JSONL 编解码、兼容 payload 解析和有界字段 | 当前运行 |
@@ -259,7 +261,8 @@ AppUiState 是 Flutter 展示状态，字段分为：
 | 草稿/附件/上下文 | composerDraft、attachments、attachmentUploading、composerClearNonce、tokenUsage | 已使用；待发附件只属于当前活动会话，不长期持久化 |
 | 工作区 | workspacePickerVisible、workspaceLoading、workspaceCurrentPath、workspaceParentPath、workspaceDirectories、workspaceError | 已接入首次提示和手动目录浏览 |
 | 文件管理 | fileManagerProfileId、fileManagerLoading、fileManagerCurrentPath、fileManagerEntries、clipboard、operation、error | 控制器和 `FileManagerScreen` 已接入；按 profile/generation 校验 |
-| 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 探测已有 CLI、安装/卸载连接组件并读取/保存原生 URL、Key、默认模型和 effort |
+| 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 按版本探测、升级/降级现有 CLI、安装/卸载连接组件并读取/保存原生 URL、Key、默认模型和 effort |
+| Agent 版本目录 | codexVersions*、openCodeVersions*、claudeCodeVersions* | 三个独立目录、加载状态与错误；本地保留已选版本，不因目录失败中断连接 |
 
 应用自身更新不属于 `AppUiState`：`appUpdateProvider` 持有独立 `AppUpdateState`，记录已安装版本、检查中、
 可用 Release、是否自动提示和 DownloadManager 状态。不要把它混入某个服务器 profile，也不要把远程
@@ -297,8 +300,10 @@ Android 端只负责旧 EncryptedSharedPreferences 的读写桥接；Flutter 端
 
 SSH 主机连接身份包括 host、port、username、认证方式、密码/私钥和指纹；这些字段变化时
 `ServerConnectionManager` 替换客户端，`AppController` 清理该 profile 的缓存、草稿、会话偏好和完成
-计时。Agent lane 在此基础上还把 `remoteCommand` 纳入身份，因此启动命令变化会替换对应的
-`profileId + AgentKind` lane。名称、代理、workspace 等展示/运行参数不会单独替换 SSH 客户端；其中
+计时。Agent lane 在此基础上还把 `remoteCommand`、workspace 和该 Agent 的版本纳入身份。
+`codexVersion`、`openCodeVersion`、`claudeCodeVersion` 分别持久化；旧 Profile 自动补默认值。
+只修改版本时，仅替换该 Agent lane、废弃该 lane 的旧探测和缓存复用资格，不断开 SSH 或其他 Agent。
+名称、代理、workspace 等展示/运行参数不会单独替换 SSH 客户端；其中
 workspace 会在启动命令和 turn 参数中使用；Profile 的 `proxyUrl` 用于安装/下载流程，Codex 全局配置页的
 代理则写入远程 `codex-remote.env` 并由 managed wrapper 在启动前加载。
 删除 Profile 必须同时删除其 SSH/Agent 连接和所有 profile 前缀数据，不能影响其他服务器。
@@ -453,9 +458,12 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 列表刷新与对话恢复分别拥有加载/错误状态；列表请求尚未返回时可以打开已有会话，列表结果不能提前
 解锁输入框或覆盖对话错误。连续点击同一会话去重，不同会话只采用最后一次导航；取消或切页后的结果不能退回列表。
 
-齿轮菜单包含“选择工作目录”、“配置 Codex/OpenCode”和“文件管理”三项。配置项只在当前 Agent 已连接且声明
+齿轮菜单提供工作目录、当前 Agent 配置和当前 Agent 版本入口，文件管理由顶栏入口打开。
+Codex、OpenCode、Claude Code 均可从版本弹窗刷新稳定版本列表并选择升级或降级；目录请求与错误独立，
+请求失败仍可使用已保存版本。Claude Code 明确提示直接修改服务器现有 CLI、保留登录配置。
+配置项只在当前 Agent 已连接且声明
 `globalSettings` capability 时可用；打开后先读取远程实际配置。保存会二次确认、更新该服务器该 Agent
-的 `preferredModel/preferredEffort/testModel`，然后断开整台服务器；测试只发起真实最小模型请求，不会
+的 `preferredModel/preferredEffort/testModel`，然后重连当前 Agent；测试只发起真实最小模型请求，不会
 保存或断线。
 
 ### 8.3 WorkScreen（Agent 对话）
@@ -555,7 +563,7 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
 
 ## 9. 当前 Agent 层和验收边界
 
-Agent 中立层、Codex/OpenCode/Claude Code adapter、Codex/OpenCode 托管运行时、Claude Code 连接组件、
+Agent 中立层、Codex/OpenCode/Claude Code adapter、Codex/OpenCode 托管运行时、Claude Code 现有 CLI 版本切换与连接组件、
 共享回合状态机、Work UI 和 Codex 子 Agent 独立导航已经落地。本节同时记录当前代码事实和仍需真实
 服务器/设备验证的边界；全局设置、终端、文件管理、后台保护和 Debug 日志不再属于代码迁移缺口，但仍需端到端回归。
 
@@ -647,11 +655,16 @@ bridge 即使保留兼容 RPC，也不能绕过 capability 在 UI 暴露未承�
 不会读取 Codex 的 `codex-remote.env`、传入 Codex feature 设置或改写服务器认证。支持 Linux SSH，
 Android 本机 Linux 沿用其回环 SSH；Windows 原生 Host 暂不支持。
 
-服务器须已经安装并登录 Claude Code `2.1+`（当前支持 2.x）并具有 Node.js 18+。探测优先查找
-`~/.local/bin/claude`，其次 PATH；Node 可复用 Codex/OpenCode 的托管运行时。App 仅安装经过 SHA-256
-和语法校验的连接组件至 `~/.local/share/codex-remote/claude/bridge.cjs`，launcher 为
-`~/.local/bin/codex-remote-claude-bridge`。安装有锁和原子替换，卸载连接组件保留用户 CLI、登录、配置
-和历史。该 lane 安装不显示下载代理，因为没有额外下载。
+服务器须已经安装 Claude Code 并具有 Node.js 18+，连接时 CLI 须精确匹配所选的稳定 2.1+ 版本
+（当前支持 2.x）。探测先采用 PATH 中的 `claude`，再查找 `~/.local/bin/claude`；Node 可复用
+Codex/OpenCode 的托管运行时。Profile 默认版本为 `2.1.293`，版本列表从 npm 稳定元数据读取。
+版本切换先识别当前安装：npm 安装沿用当前全局路径安装固定版本，其他安装调用现有 CLI 的原生安装器。
+旧 CLI 可以进入升级流程，安装后严格复查原路径版本；不创建独立托管 CLI 副本。
+已是目标版本时跳过 CLI 下载，仅安装或更新经过 SHA-256 和语法校验的连接组件至
+`~/.local/share/codex-remote/claude/bridge.cjs`，launcher 为 `~/.local/bin/codex-remote-claude-bridge`。
+安装有锁和原子替换，卸载连接组件保留用户 CLI、登录、配置和历史；launcher 为当前 bridge 进程设置
+`DISABLE_AUTOUPDATER=1` 与 `DISABLE_UPDATES=1`，避免后台自动更新偏离 Profile 版本。安装弹窗显示可选
+HTTP/HTTPS 下载代理，只作用于本次 CLI/连接组件安装。
 
 每个回合启动已安装的 CLI，使用 `--input-format stream-json --output-format stream-json`、
 initialize control 握手、`--permission-prompt-tool stdio` 和 `--resume`。工具请求转成现有审批/提问面板，
@@ -796,19 +809,22 @@ watchdog 终止安装进程组。
 连接成功后 App 会请求 GitHub 官方稳定 Release 列表，在服务器设置和会话列表的设置菜单中提供 Codex 版本下拉选择和刷新按钮。
 版本选择保存在服务器 Profile，只影响该服务器用户目录中的 Codex 托管运行时；URL、API Key、Provider、工作目录和会话不变。
 列表请求失败不阻塞连接，已保存版本仍可继续使用。
-安装弹窗的 `RemoteSetupPrompt.targetVersion` 捕获本次安装 Profile 的 Codex 版本，分别展示目标版本
+三种 Agent 的安装弹窗均由 `RemoteSetupPrompt.targetVersion` 捕获本次安装 Profile 版本，分别展示目标版本
 和已检测版本；未开始安装时切换版本会废弃旧探测与弹窗，再探测新目标，迟到的旧结果不能覆盖新目标。
-安装准备和执行中禁止从任何服务器设置入口切换 Codex 版本，最小化恢复保留本次目标；
+安装准备和执行中禁止从任何服务器设置入口切换该 Agent 版本，最小化恢复保留本次目标；
 安装失败后允许切换版本，重试使用当前服务器配置，异步保存、进度和完成回调均核对安装目标。
+同服务器的版本修改串行保存，保存后再次核对请求代次及最新目标，防止慢保存恢复后重新加载旧版本，
+或两个 Agent 同时修改版本时覆盖对方配置；网络探测不持有保存锁。
 开始或重试安装会清除上次字节、速度和耗时，安装中收起代理输入并移除其键盘焦点。
 
-OpenCode 使用独立的 `OpenCodeBootstrap` 探测与安装链路，固定 `opencode-ai 1.18.11` 和
-`jsonc-parser 3.3.1`，复用固定 Node `22.17.0`。安装先准备共享 Node，再通过国内 npm registry 安装
-OpenCode 和 bridge；HTTP/HTTPS 下载代理只注入安装进程。安装脚本按远端架构明确选择唯一 glibc 平台包：
+OpenCode 使用独立的 `OpenCodeBootstrap` 探测与安装链路，默认 `opencode-ai 1.18.11`，版本列表来自 npm
+稳定版本元数据，Profile 可选择其他稳定版本；每个版本都在当前 SSH 用户托管目录中隔离保存。安装复用固定
+Node `22.17.0`，先准备共享 Node，再通过国内 npm registry 安装 OpenCode 和 bridge；HTTP/HTTPS 下载代理只注入安装进程。安装脚本按远端架构明确选择唯一 glibc 平台包：
 ARM64 使用 `opencode-linux-arm64`，x64 根据 AVX2 使用普通版或 baseline，并禁用 `opencode-ai`
 postinstall 的自动 musl 兜底。这样 Debian PRoot 不会在首个下载失败后转而报告误导性的 musl 不兼容错误，
 且所有 npm 元数据和平台二进制仍优先来自 `registry.npmmirror.com`。只有 CLI 版本和 App 打包 bridge source
-的 SHA-256 同时匹配才复用已有运行时，防止新版 App 误连旧 bridge。托管路径为：
+的 SHA-256 同时匹配，且 launcher 支持版本参数时才复用已有运行时，防止新版 App 误连旧 bridge。
+启动命令始终显式传入所选版本，旧 launcher 会提示重新安装以更新协议。托管路径为：
 
 ~~~text
 $HOME/.local/share/codex-remote/opencode
@@ -823,8 +839,15 @@ Node 下载从 curl/wget 实际 GET 最终成功响应的 Content-Length 获取�
 不把磁盘占用当下载量，不把组件比例当下载百分比。
 最小化后会将总体进度保留在会话页对应 Agent 按钮中，点击后恢复原弹窗。
 
+Claude Code 版本配置同样保存在服务器 Profile，默认 `2.1.293`；版本列表来自 npm 的稳定 2.1+ 版本，
+设置页和会话列表设置均可刷新、升级或降级。检测到当前 CLI 属于 npm 全局包时，沿用该 npm 全局路径
+安装固定版本；其他安装调用现有 CLI 的原生安装器，必要时使用用户目录的原生安装回退。已是目标版本时跳过 CLI
+下载，仅补齐或更新 App 自有 bridge。安装以当前 SSH 用户权限操作现有 CLI 路径，不使用 sudo，保留 `~/.claude` 登录、设置和
+历史；bridge 启动时禁用 CLI 自动更新，确保运行版本与 Profile 一致。Claude 的下载代理显示在同一安装弹窗中，
+只作用于本次安装。安装完成后再次探测目标版本和 bridge hash，随后自动连接。
+
 Windows 原生 OpenCode 复用同一安装弹窗和进度协议：`WindowsLocalServerClient` 在
-`%LOCALAPPDATA%\\CodexRemote\\opencode` 写入锁定的 `opencode-ai 1.18.11`、对应
+`%LOCALAPPDATA%\\CodexRemote\\opencode` 下按 Profile 版本隔离写入锁定的 `opencode-ai`、对应
 `opencode-windows-x64/arm64` 平台包和打包 bridge。安装优先使用 `registry.npmmirror.com`，失败后切换
 官方 npm registry；安装过程中扫描托管目录的文件数/字节数，按已处理量计算实时平均速度和耗时，未知总量
 显示不确定进度。连接时由共享 `CodexAgentClient` 通过本机 Node 启动 bridge，bridge 再启动 OpenCode
@@ -1067,6 +1090,8 @@ Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后�
 `scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。随后调用
 `scripts/publish-gitee-artifact.cjs` 创建正式 Gitee Release、上传同一 APK，并从公开下载地址回验大小和
 SHA-256；全部完成才报告发布成功，不能把构建页的暂存构件当成 Release。仍保留 `dist/` 构件和发布结果元数据。
+构建并行准备、缓存上传边界、阶段超时、依赖哈希和 Gradle 诊断的实测方案与 v1.8.175 数据见
+[Gitee 线上编译优化记录](GITEE_BUILD_OPTIMIZATION.md)；后续优化暂缓，恢复缓存上传前必须重新核对体积上限。
 Gitee Go 必须配置对 main 构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；缺失立即退出，
 编译前检查身份与仓库访问。令牌只从环境读取，不进入命令参数、输出或下载请求，鉴权 API 不跟随重定向。
 main 发布预检核对 origin/main == HEAD，按 Pubspec 创建缺失的 v<version> 标签；已存在且指向别处则拒绝，
@@ -1356,7 +1381,7 @@ fixture，当次真实服务器和 Android 端到端仍需单独验证。
 
 Claude Code 的 `scripts/test-claude-code-bridge.cjs` 使用假 CLI 验证协议和异常边界，
 `scripts/test-claude-code-cli.cjs` 使用已安装官方 CLI 与隔离的本地 Anthropic SSE fixture 联调。
-`claude_code_agent_client_test.dart` 中真正执行 Linux SSH 安装脚本的五项集成测试只在 Linux 运行，
+`claude_code_agent_client_test.dart` 中真正执行 Linux SSH 安装脚本的集成测试只在 Linux 运行，
 其余 adapter/协议测试保持跨平台。GitHub Android Ubuntu job 和 iOS macOS job 均执行完整 Flutter
 测试，前者验证 Linux 安装、hash 校验、卸载保留用户数据和大脚本 stdin 传输，后者验证 macOS 兼容性。
 `integration_test/claude_code_workflow_test.dart` 在 Android 设备上复用上述 Claude UI 工作流，
@@ -1410,7 +1435,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | Agent lane | SSH 已连接后 Codex/OpenCode/Claude Code 各自 initialize 成功；model/list 与 thread/list 独立失败不让页面崩溃；切换 lane 不串状态 |
 | Codex 安装 | 无/旧版本时显示环境与路径；HTTP/HTTPS 代理、总体/下载进度、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表；系统同版本直接复用 |
 | Codex 卸载 | 删除整个 Codex Remote 托管 root、wrapper 和附件暂存；运行中的托管 app-server 被关闭；若曾安装 OpenCode 则需重新安装；系统 Codex、VS Code、~/.codex 和工作区保留 |
-| OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表正确；固定 1.18.11 与打包 bridge 同时匹配才复用 |
+| OpenCode 安装 | 缺失、版本不符或 bridge hash 不符时显示两阶段进度；代理、最小化后按钮进度、点击恢复、失败重试、复检和自动进入列表正确；所选版本与打包 bridge 同时匹配且 launcher 支持版本选择才复用 |
+| Agent 版本 | 三个版本目录独立刷新；升级/降级只重连对应 lane；安装中冻结目标，失败可换版本重试；Claude 直接修改现有 CLI，保留登录配置并严格复检 |
 | OpenCode 卸载 | 只删除 OpenCode 托管子目录和 wrapper；共享 Node、Codex、附件暂存、~/.codex、VS Code 和工作区保留 |
 | Agent 全局配置 | Codex/OpenCode 从服务器读取实际 URL/Provider/模型/effort/代理/Key；Claude Code 读取/保存原生 URL/Key/默认模型/effort，保留已有上下文配置；Codex 自定义 Provider 另有 WebSocket 策略；保存需二次确认并重连当前 Agent，测试发真实最小请求且不保存 |
 | 工作目录 | 纯 SSH 不弹；当前 Agent 首次成功只弹一次并立即记忆；浏览/上一级/错误/稍后/确认正确；连续请求、切服务器/Agent和断线不串结果 |
@@ -1431,7 +1457,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 
 | 领域 | 当前实现 | 仍需完成/验收 |
 | --- | --- | --- |
-| Agent 连接 | Codex 按需独立 app-server；OpenCode 使用打包 bridge + loopback `serve`；两者有固定版本运行时安装。Claude Code 使用打包 bridge + 服务器已有 CLI，仅安装连接组件；三者复用进度、重试和自动连接 | 真实服务器 OpenCode 安装及 Claude CLI 登录/实际模型回合；各 lane 长时运行、断线和后台回归 |
+| Agent 连接 | Codex 按需独立 app-server；OpenCode 使用打包 bridge + loopback `serve` 并支持 Profile 版本切换；Claude Code 使用打包 bridge + 服务器现有 CLI，支持现有 CLI 直接升级/降级且保留登录配置；三者复用进度、重试和自动连接 | 真实服务器 OpenCode 安装、Claude CLI 版本切换/登录/实际模型回合；各 lane 长时运行、断线和后台回归 |
 | 工作目录 | 首次 Agent 成功只提示一次；SFTP 浏览、错误显示、确认/记忆和手动重开；thread/start/turn/start 传递 workspace | 真机大目录、权限拒绝、连续切换与断线回归 |
 | 会话 | 搜索/刷新/新建/恢复、turn 历史分页、缓存优先、resume 通知缓冲/快照协调/顺序重放、运行转圈 | thread/list 下一页；真实长时 resume/delta 竞态、缓冲溢出和大历史降级压测 |
 | 会话设置 | wire 模型和 effort 可独立选择并按 profile + Agent + thread 持久化；自定义模型新增/编辑/删除、远端隐藏/恢复、API `/models` 筛选回填已接入 | 真实服务器 Provider 差异、权限和模型目录回归 |
@@ -1598,8 +1624,8 @@ flutter_app/pubspec.lock 和 7890 代理；不要先 clean。模型改动后确�
 
 排查顺序是“SSH connected -> 当前 Agent lane generation -> runtime/command -> initialize ->
 model/list/thread/list -> thread/resume -> turn/start|turn/steer -> notification”。Codex 检查 Profile 的
-`remoteCommand`、workspace、`$HOME/.codex/codex-remote.env` 和固定 app-server 版本；OpenCode 检查固定
-1.18.11、bridge hash、`codex-remote-opencode-bridge`、loopback `serve` 日志、全局 Provider/认证和代理。
+`remoteCommand`、workspace、`$HOME/.codex/codex-remote.env` 和所选 app-server 版本；OpenCode 检查 Profile
+所选版本、bridge hash、`codex-remote-opencode-bridge`、loopback `serve` 日志、全局 Provider/认证和代理。
 重进异常先比较 cache、active key、threadId 和 generation，再看是否有 resume 响应覆盖实时 delta；stderr
 只进入诊断，不能把辅助错误误报成 SSH 断线。
 
@@ -1631,8 +1657,8 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 
 ## 17. 已知限制
 
-- Claude Code 已接入 Linux SSH，但需要服务器预先安装并配置 CLI；本轮不自动安装 Claude、不导入原生
-  CLI 历史、不提供 Windows 原生 Host。Opus 5.5 经用户授权的服务器真实网关完成两轮请求和桥接重启续聊；
+- Claude Code 已接入 Linux SSH；版本切换直接作用于服务器现有 CLI，不导入原生 CLI 历史、不提供 Windows
+  原生 Host。Opus 5.5 经用户授权的服务器真实网关完成两轮请求和桥接重启续聊；
   这不代表其他模型、ARM64 PRoot、真机长时后台或断线行为已验收。
 - OpenCode adapter、bridge、真实会话/回合协议、固定版本安装/卸载、全局配置和模型同步代码均已接入，
   但尚未在授权真实服务器验证固定版本下载、实际 Provider/API、长时 turn/steer/interrupt、断线和后台
@@ -2706,6 +2732,23 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `1.904s / 1.484s`，未重复编译 APK。最终工作流自测 `5.870s`；早期实现含会话中断且未完整计时，
   不推算净编码时间。首次外网回验超时与计时包装权限返工保留失败记录；后续阶段自动保存到
   `.workflow-cache/task-timings/`，不以失败日志估算成功耗时。
+
+### 17.82 Agent 版本配置与 Gitee 构建文档（2026-10-17）
+
+- 应用版本：`1.8.176+308`。OpenCode、Claude Code 与 Codex 共用版本选择交互，分别保存版本、刷新稳定
+  目录并触发对应 lane 的探测和安装；安装中锁定目标，失败后可换版本重试，不重启 SSH 或其他 Agent。
+- OpenCode 按版本隔离托管运行时；Claude Code 按用户要求直接升级或降级服务器现有 CLI，保留登录、配置
+  和历史。Android 本机 Linux 刷新回环连接资料时保留三个 Agent 的版本选择。
+- 最终 `full --reuse` 门禁通过：analyze 无问题、Flutter 全量 `802` 项、Claude bridge `36` 场景与真实 CLI
+  的本地模拟接口集成、Debug/Release 编译、原生运行库校验及正常 Release 竖屏启动检查均通过。稳定签名未变。
+  这不代表用户服务器上的真实 npm/原生 CLI 升降级、Windows 实机或真实模型请求已经验收。
+- 最终主门禁用时 `4m05.858s`：服务器/OpenCode 门禁命中缓存；Claude bridge `11.208s`、Android 全门禁
+  `3m29.903s`、Release 模拟器 `17.910s`，其余为暂停/释放资源、索引和调度。Android 内测试
+  `1m28.460s`、Debug 编译 `39.362s`、Release 编译 `1m13.849s`，这些嵌套计时不能重复相加。
+- 早期返工包括静态提示、旧 Claude 测试版本假设，以及本机 Gradle 单个 transform 元数据损坏/下载代理缺失；
+  修正后复验通过，未执行 clean 或清空缓存，失败计时保留。最终本机 Linux 版本保留修复后重新执行完整门禁。
+- Gitee 线上方案、HTTP 413/仓库/SDK/下载与取消问题、v1.8.174 → v1.8.175 的实测对照和诊断边界已整理至
+  [Gitee 构建优化记录](GITEE_BUILD_OPTIMIZATION.md)，发布文档同步为 `main` 自动发布；按用户要求暂停后续优化。
 
 ## 18. 文档维护规则
 

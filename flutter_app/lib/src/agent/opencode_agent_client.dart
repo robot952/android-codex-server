@@ -64,11 +64,17 @@ class OpenCodeAgentClient extends CodexAgentClient
         : throw UnsupportedError('当前 SSH 客户端不支持安全执行探测脚本');
     final bridgeSource = await _bridgeLoader();
     final output = await scriptHost.runShellScript(
-      OpenCodeBootstrap.combinedProbeScript,
+      OpenCodeBootstrap.combinedProbeScriptFor(
+        openCodeVersion: _openCodeVersion(profile),
+      ),
       timeout: const Duration(seconds: 30),
       maxOutputBytes: 64 * 1024,
     );
-    return OpenCodeBootstrap.inspect(output, bridgeSource: bridgeSource);
+    return OpenCodeBootstrap.inspect(
+      output,
+      bridgeSource: bridgeSource,
+      openCodeVersion: _openCodeVersion(profile),
+    );
   }
 
   @override
@@ -117,6 +123,7 @@ class OpenCodeAgentClient extends CodexAgentClient
 
     await scriptHost.runStreamingShellScript(
       OpenCodeBootstrap.installScript(
+        openCodeVersion: _openCodeVersion(profile),
         proxyUrl: profile.proxyUrl,
         bridgeSource: bridgeSource,
       ),
@@ -128,6 +135,11 @@ class OpenCodeAgentClient extends CodexAgentClient
         if (progress != null) onProgress(progress);
       },
     );
+  }
+
+  String _openCodeVersion(ServerProfile profile) {
+    final version = profile.openCodeVersion.trim();
+    return version.isEmpty ? pinnedOpenCodeVersion : version;
   }
 
   @override
@@ -153,7 +165,13 @@ class OpenCodeAgentClient extends CodexAgentClient
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
     _invalidateCustomModelCache();
-    final command = buildOpenCodeBridgeCommand(profile.workspace);
+    final command = buildOpenCodeBridgeCommand(
+      profile.workspace,
+      openCodeVersion: _openCodeVersion(profile),
+    );
+    if (host is RemoteServerProfileUpdateClient) {
+      (host as RemoteServerProfileUpdateClient).updateProfile(profile);
+    }
     final connectionProfile = host is LocalRemoteServerClient
         ? profile
         : profile.copyWith(workspace: '', remoteCommand: command);
@@ -373,11 +391,17 @@ class OpenCodeAgentClient extends CodexAgentClient
   }
 }
 
-String buildOpenCodeBridgeCommand(String workspace) {
+String buildOpenCodeBridgeCommand(
+  String workspace, {
+  String openCodeVersion = pinnedOpenCodeVersion,
+}) {
   final directory = workspace.trim();
-  return directory.isEmpty
-      ? managedOpenCodeBridgeCommand
-      : '$managedOpenCodeBridgeCommand --directory ${shellQuote(directory)}';
+  final version = OpenCodeBootstrap.validateVersion(openCodeVersion);
+  return <String>[
+    managedOpenCodeBridgeCommand,
+    '--version ${shellQuote(version)}',
+    if (directory.isNotEmpty) '--directory ${shellQuote(directory)}',
+  ].join(' ');
 }
 
 AgentGlobalSettings parseOpenCodeGlobalSettings(Object? value) {

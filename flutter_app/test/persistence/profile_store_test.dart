@@ -56,6 +56,49 @@ void main() {
     expect(normalized.selectedProfileId, normalized.profiles.first.id);
   });
 
+  test(
+    'older profiles receive independent defaults for new Agent versions',
+    () {
+      final profile = ServerProfile.fromJson({
+        'id': 'legacy-server',
+        'name': '旧服务器',
+        'codexVersion': '0.162.0',
+      });
+
+      expect(profile.codexVersion, '0.162.0');
+      expect(profile.openCodeVersion, defaultOpenCodeVersion);
+      expect(profile.claudeCodeVersion, defaultClaudeCodeVersion);
+    },
+  );
+
+  test('secure profile storage retains all selected Agent versions', () async {
+    const storage = FlutterSecureStorage();
+    final store = SecureProfileStore(
+      storage: storage,
+      legacyImporter: _LegacyImporter(null),
+    );
+    const profile = ServerProfile(
+      id: 'server',
+      codexVersion: '0.162.0',
+      openCodeVersion: '1.18.10',
+      claudeCodeVersion: '2.1.292',
+    );
+    await store.save(
+      const StoredProfiles(profiles: [profile], selectedProfileId: 'server'),
+    );
+    final reloaded = await SecureProfileStore(
+      storage: storage,
+      legacyImporter: _LegacyImporter(null),
+    ).load();
+
+    expect(reloaded.profiles.single.codexVersion, profile.codexVersion);
+    expect(reloaded.profiles.single.openCodeVersion, profile.openCodeVersion);
+    expect(
+      reloaded.profiles.single.claudeCodeVersion,
+      profile.claudeCodeVersion,
+    );
+  });
+
   test('normalizes and deduplicates persisted OpenCode model identities', () {
     final normalized = normalizeStoredProfiles(
       const StoredProfiles(

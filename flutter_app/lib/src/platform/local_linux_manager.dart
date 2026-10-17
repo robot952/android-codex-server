@@ -400,6 +400,9 @@ ServerProfile localLinuxProfile(
   workspace: '/root/workspace',
   approvalMode: ApprovalMode.fullAccess,
   remoteCommand: managedCodexRemoteCommand,
+  codexVersion: existing?.codexVersion ?? defaultCodexVersion,
+  openCodeVersion: existing?.openCodeVersion ?? defaultOpenCodeVersion,
+  claudeCodeVersion: existing?.claudeCodeVersion ?? defaultClaudeCodeVersion,
   workspacePromptShown: true,
   activeAgent: existing?.activeAgent ?? AgentKind.codex,
   agentModelSettings:

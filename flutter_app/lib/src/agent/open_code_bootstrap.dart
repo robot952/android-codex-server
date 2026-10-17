@@ -23,22 +23,29 @@ class OpenCodeRuntimeProbe {
     this.executablePath,
     this.bridgePath,
     this.bridgeSha256,
+    this.launcherProtocol,
   });
 
   final String? version;
   final String? executablePath;
   final String? bridgePath;
   final String? bridgeSha256;
+  final String? launcherProtocol;
 
   bool isCompatible({
     required String expectedVersion,
     required String expectedBridgeSha256,
   }) {
     final detectedVersion = version?.trim() ?? '';
+    final detectedExecutable = executablePath?.replaceAll('\\', '/') ?? '';
     final detectedPath = bridgePath?.trim() ?? '';
     final detectedHash = bridgeSha256?.trim().toLowerCase() ?? '';
-    return detectedVersion.contains(expectedVersion) &&
+    return OpenCodeBootstrap.versionMatches(detectedVersion, expectedVersion) &&
+        detectedExecutable.endsWith(
+          '/opencode/releases/$expectedVersion/node_modules/.bin/opencode',
+        ) &&
         detectedPath.isNotEmpty &&
+        launcherProtocol == '2' &&
         detectedHash == expectedBridgeSha256.toLowerCase();
   }
 }
@@ -56,6 +63,9 @@ ROOT="$HOME/.local/share/codex-remote"
 WRAPPER="$HOME/.local/bin/codex-remote-opencode-bridge"
 if [ -x "$WRAPPER" ]; then
   value BRIDGE "$WRAPPER"
+  if grep -Fq '# CODEX_REMOTE_OPENCODE_LAUNCHER_PROTOCOL=2' "$WRAPPER"; then
+    value LAUNCHER_PROTOCOL 2
+  fi
 fi
 BRIDGE_HASH="$ROOT/opencode/bridge.sha256"
 if [ -r "$BRIDGE_HASH" ]; then
@@ -68,10 +78,52 @@ if [ -n "$OPENCODE_BIN" ] && [ -x "$OPENCODE_BIN" ]; then
 fi
 ''';
 
+  /// Builds a probe that selects the release requested by the current
+  /// profile. The legacy [probeScript] constant intentionally keeps its
+  /// latest-release behavior for callers that only need discovery; runtime
+  /// inspection must use this target-aware variant so an older selected
+  /// release is not shadowed by a newer directory left on the host.
+  static String probeScriptFor({
+    String openCodeVersion = pinnedOpenCodeVersion,
+  }) {
+    final version = _validateVersion(openCodeVersion);
+    return _targetProbeTemplate.replaceAll('__OPENCODE_VERSION__', version);
+  }
+
+  static const _targetProbeTemplate = r'''
+set -u
+value() { printf '__CODEX_REMOTE_OPENCODE_%s=%s\n' "$1" "$2"; }
+ROOT="$HOME/.local/share/codex-remote"
+WRAPPER="$HOME/.local/bin/codex-remote-opencode-bridge"
+if [ -x "$WRAPPER" ]; then
+  value BRIDGE "$WRAPPER"
+  if grep -Fq '# CODEX_REMOTE_OPENCODE_LAUNCHER_PROTOCOL=2' "$WRAPPER"; then
+    value LAUNCHER_PROTOCOL 2
+  fi
+fi
+BRIDGE_HASH="$ROOT/opencode/bridge.sha256"
+if [ -r "$BRIDGE_HASH" ]; then
+  value BRIDGE_SHA256 "$(cat "$BRIDGE_HASH" 2>/dev/null || true)"
+fi
+OPENCODE_BIN="$ROOT/opencode/releases/__OPENCODE_VERSION__/node_modules/.bin/opencode"
+if [ -x "$OPENCODE_BIN" ]; then
+  value PATH "$OPENCODE_BIN"
+  value VERSION "$("$OPENCODE_BIN" --version 2>/dev/null || true)"
+fi
+''';
+
   /// Host prerequisites and OpenCode metadata are intentionally collected in
   /// one SSH invocation so the result belongs to one connection generation.
   static const combinedProbeScript =
       '${RemoteBootstrap.probeScript}\n$probeScript';
+
+  static String combinedProbeScriptFor({
+    String openCodeVersion = pinnedOpenCodeVersion,
+  }) {
+    final version = _validateVersion(openCodeVersion);
+    return '${RemoteBootstrap.probeScript}\n'
+        '${probeScriptFor(openCodeVersion: version)}';
+  }
 
   static OpenCodeRuntimeProbe parseProbe(String output) {
     final values = <String, String>{};
@@ -93,12 +145,13 @@ fi
       executablePath: optional('PATH'),
       bridgePath: optional('BRIDGE'),
       bridgeSha256: optional('BRIDGE_SHA256'),
+      launcherProtocol: optional('LAUNCHER_PROTOCOL'),
     );
   }
 
   /// Projects the combined probe onto the Agent-neutral inspection contract.
-  /// An installed OpenCode is reusable only when both its pinned CLI version
-  /// and the bundled bridge hash match.
+  /// An installed OpenCode is reusable only when the selected CLI version and
+  /// the bundled bridge hash match.
   static AgentRuntimeInspection inspect(
     String output, {
     required String bridgeSource,
@@ -128,7 +181,12 @@ fi
       hasFlock: host.hasFlock,
       hasSetsidWait: host.hasSetsidWait,
       downloader: host.downloader,
-      fallbackCommand: compatible ? shellQuote(openCode.bridgePath!) : null,
+      fallbackCommand: compatible
+          ? <String>[
+              shellQuote(openCode.bridgePath!),
+              '--version ${shellQuote(expectedVersion)}',
+            ].join(' ')
+          : null,
     );
   }
 
@@ -142,8 +200,8 @@ fi
     proxyUrl: proxyUrl,
   );
 
-  /// Installs the pinned OpenCode package and atomically publishes the launcher
-  /// after the package, version, bridge, and hash are ready.
+  /// Installs the selected OpenCode package and atomically publishes the
+  /// launcher after the package, version, bridge, and hash are ready.
   static String installScript({
     String openCodeVersion = pinnedOpenCodeVersion,
     String proxyUrl = '',
@@ -169,6 +227,21 @@ fi
   static String bridgeSha256(String bridgeSource) =>
       sha256.convert(utf8.encode(bridgeSource)).toString();
 
+  /// Matches the selected OpenCode semver as a complete version token. CLI
+  /// output may include a product name or a leading `v`, but a neighbouring
+  /// version character must not be accepted (`1.18.110` is not `1.18.11`).
+  static bool versionMatches(String? output, String expectedVersion) {
+    final expected = _validateVersion(expectedVersion);
+    final value = output?.trim() ?? '';
+    if (value.isEmpty) return false;
+    final pattern = RegExp(
+      r'(?:^|[^0-9A-Za-z.+-])v?' +
+          RegExp.escape(expected) +
+          r'(?![0-9A-Za-z.+-])',
+    );
+    return pattern.hasMatch(value);
+  }
+
   static const uninstallScript = r'''
 set -eu
 rm -f -- "$HOME/.local/bin/codex-remote-opencode-bridge"
@@ -182,6 +255,8 @@ rm -rf -- "$HOME/.local/share/codex-remote/opencode"
     }
     return version;
   }
+
+  static String validateVersion(String value) => _validateVersion(value);
 
   static void _validateBridgeSource(String value) {
     if (value.trim().isEmpty) {
@@ -327,8 +402,10 @@ if [ ! -x "$OPENCODE_BIN" ]; then
   exit 65
 fi
 ACTUAL="$("$OPENCODE_BIN" --version 2>/dev/null || true)"
-case "$ACTUAL" in
-  *__OPENCODE_VERSION__*) ;;
+EXPECTED="__OPENCODE_VERSION__"
+ACTUAL_FLAT="$(printf '%s' "$ACTUAL" | tr '\r\n' '  ')"
+case " $ACTUAL_FLAT " in
+  *" $EXPECTED "*|*" v$EXPECTED "*) ;;
   *) printf 'OpenCode 版本校验失败: %s\n' "$ACTUAL" >&2; exit 65 ;;
 esac
 progress 95 100 '校验 OpenCode 运行时 __OPENCODE_VERSION__' "$ACTUAL"
@@ -342,10 +419,25 @@ printf '%s\n' '__BRIDGE_SHA256__' > "$OPENCODE_ROOT/bridge.sha256"
 WRAPPER="$BIN_DIR/.codex-remote-opencode-bridge.$$"
 cat > "$WRAPPER" <<'EOF'
 #!/bin/sh
+# CODEX_REMOTE_OPENCODE_LAUNCHER_PROTOCOL=2
 ROOT="$HOME/.local/share/codex-remote"
 NODE="$(find "$ROOT/runtime" -path '*/bin/node' -type f -perm -u+x 2>/dev/null | sort | tail -n 1)"
+OPEN_CODE_VERSION="__OPENCODE_VERSION__"
+if [ "${1:-}" = '--version' ]; then
+  shift
+  OPEN_CODE_VERSION="${1:-}"
+  if [ "$#" -gt 0 ]; then shift; fi
+fi
+case "$OPEN_CODE_VERSION" in
+  ''|*[!0-9A-Za-z.+-]*|.*) printf 'OpenCode 版本无效\n' >&2; exit 64 ;;
+esac
+OPENCODE_BIN="$ROOT/opencode/releases/$OPEN_CODE_VERSION/node_modules/.bin/opencode"
+if [ ! -x "$OPENCODE_BIN" ]; then
+  printf 'OpenCode 版本未安装: %s\n' "$OPEN_CODE_VERSION" >&2
+  exit 69
+fi
 export PATH="$(dirname "$NODE"):$PATH"
-export OPENCODE_BIN="$ROOT/opencode/releases/__OPENCODE_VERSION__/node_modules/.bin/opencode"
+export OPENCODE_BIN
 exec "$NODE" "$ROOT/opencode/bridge.cjs" "$@"
 EOF
 chmod 700 "$WRAPPER"

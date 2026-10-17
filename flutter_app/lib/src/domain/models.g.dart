@@ -95,6 +95,10 @@ _ServerProfile _$ServerProfileFromJson(Map<String, dynamic> json) =>
           json['remoteCommand'] as String? ??
           '~/.local/bin/codex-remote app-server --listen stdio://',
       codexVersion: json['codexVersion'] as String? ?? defaultCodexVersion,
+      openCodeVersion:
+          json['openCodeVersion'] as String? ?? defaultOpenCodeVersion,
+      claudeCodeVersion:
+          json['claudeCodeVersion'] as String? ?? defaultClaudeCodeVersion,
       workspacePromptShown: json['workspacePromptShown'] as bool? ?? false,
       preferredModel: json['preferredModel'] as String? ?? '',
       preferredEffort: json['preferredEffort'] as String? ?? '',
@@ -146,6 +150,8 @@ Map<String, dynamic> _$ServerProfileToJson(_ServerProfile instance) =>
       'approvalMode': _$ApprovalModeEnumMap[instance.approvalMode]!,
       'remoteCommand': instance.remoteCommand,
       'codexVersion': instance.codexVersion,
+      'openCodeVersion': instance.openCodeVersion,
+      'claudeCodeVersion': instance.claudeCodeVersion,
       'workspacePromptShown': instance.workspacePromptShown,
       'preferredModel': instance.preferredModel,
       'preferredEffort': instance.preferredEffort,

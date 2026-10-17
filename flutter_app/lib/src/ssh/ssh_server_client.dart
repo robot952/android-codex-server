@@ -25,6 +25,14 @@ abstract interface class RemoteServerClient {
 /// Agent adapters use this only to avoid opening a second SSH connection.
 abstract interface class LocalRemoteServerClient {}
 
+/// Optional capability for an already-connected local Host to receive the
+/// latest profile fields before an Agent process is launched. The connection
+/// identity remains unchanged; this only refreshes launch-time settings such
+/// as workspace and managed runtime version.
+abstract interface class RemoteServerProfileUpdateClient {
+  void updateProfile(ServerProfile profile);
+}
+
 /// A byte-oriented local process session. It intentionally mirrors only the
 /// stdio surface needed by app-server protocols.
 abstract interface class RemoteServerProcessSession {

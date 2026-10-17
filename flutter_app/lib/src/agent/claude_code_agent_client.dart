@@ -48,7 +48,11 @@ class ClaudeCodeAgentClient extends CodexAgentClient
       timeout: const Duration(seconds: 30),
       maxOutputBytes: 64 * 1024,
     );
-    return ClaudeCodeBootstrap.inspect(output, bridgeSource: source);
+    return ClaudeCodeBootstrap.inspect(
+      output,
+      bridgeSource: source,
+      claudeVersion: _claudeVersion(profile),
+    );
   }
 
   @override
@@ -68,9 +72,13 @@ class ClaudeCodeAgentClient extends CodexAgentClient
       const RemoteInstallProgress(percent: 5, message: '检查 Claude Code CLI'),
     );
     await scriptHost.runStreamingShellScript(
-      ClaudeCodeBootstrap.installScript(bridgeSource: source),
+      ClaudeCodeBootstrap.installScript(
+        bridgeSource: source,
+        claudeVersion: _claudeVersion(profile),
+        proxyUrl: profile.proxyUrl,
+      ),
       command: remoteInstallCommand,
-      timeout: const Duration(minutes: 5),
+      timeout: const Duration(minutes: 15),
       maxOutputBytes: 2 * 1024 * 1024,
       onStdoutLine: (line) {
         final progress = parseRemoteInstallProgressLine(line);
@@ -83,6 +91,11 @@ class ClaudeCodeAgentClient extends CodexAgentClient
         message: 'Claude Code bridge 安装完成',
       ),
     );
+  }
+
+  String _claudeVersion(ServerProfile profile) {
+    final version = profile.claudeCodeVersion.trim();
+    return version.isEmpty ? pinnedClaudeCodeVersion : version;
   }
 
   @override

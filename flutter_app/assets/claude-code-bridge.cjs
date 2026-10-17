@@ -1261,6 +1261,9 @@ class ClaudeBridge {
       if (model) args.push("--model", model);
       if (effort) args.push("--effort", effort);
       const environment = settings.launchEnvironment();
+      // Keep App-selected CLI versions stable without modifying native config.
+      environment.DISABLE_AUTOUPDATER = "1";
+      environment.DISABLE_UPDATES = "1";
       // Mark App-launched sessions with a visible entrypoint so they appear in
       // the native `claude -r` picker. Without this, every session is stamped
       // sdk-cli (from the -p headless flag) and filtered out when the user runs
@@ -1290,6 +1293,8 @@ class ClaudeBridge {
       if (effort) environment.CLAUDE_CODE_EFFORT_LEVEL = effort;
       const overrides = {
         env: {
+          DISABLE_AUTOUPDATER: "1",
+          DISABLE_UPDATES: "1",
           CLAUDE_CODE_SUBAGENT_MODEL: subagentModel,
           CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1",
           ...(effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {}),

@@ -1,8 +1,12 @@
 # 自建 Runner 的 Tag 发布（可选）
 
-当前标准发布流程是 Gitee Go 的 `release` 分支自动发布，见
+当前标准发布流程是 Gitee Go 的 `main` 分支自动发布，见
 [GITEE_GO_RELEASE.md](GITEE_GO_RELEASE.md)。本文件仅保留给已部署自建 Runner、且需要同时把 APK
 发布到内网 HTTP 地址的旧流程。两套流程不要在同一个版本上同时启用，以免重复创建 Release。
+
+标准 Gitee Go 线上编译优化、修复记录和 v1.8.174 → v1.8.175 实测结果见
+[GITEE_BUILD_OPTIMIZATION.md](GITEE_BUILD_OPTIMIZATION.md)；其中的 `caches: []`、并行 SDK 准备和
+诊断报告不自动改变本自建 Runner 流程的缓存与发布目录配置。
 
 在这套可选方案中，日常开发仍在本机执行 `./scripts/dev-workflow.sh check`；只有受保护的
 `v<versionName>` 标签才会在自建 Runner 上构建、验签和部署。APK 不提交进 Git 历史。

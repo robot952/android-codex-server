@@ -38,6 +38,9 @@ ServerProfile localWindowsProfile({ServerProfile? existing}) {
     proxyUrl: existing?.proxyUrl ?? '',
     approvalMode: existing?.approvalMode ?? ApprovalMode.requestApproval,
     remoteCommand: managedCodexRemoteCommand,
+    codexVersion: existing?.codexVersion ?? defaultCodexVersion,
+    openCodeVersion: existing?.openCodeVersion ?? defaultOpenCodeVersion,
+    claudeCodeVersion: existing?.claudeCodeVersion ?? defaultClaudeCodeVersion,
     workspacePromptShown: existing?.workspacePromptShown ?? true,
     activeAgent: existing?.activeAgent ?? AgentKind.codex,
     agentModelSettings:
@@ -51,6 +54,7 @@ class WindowsLocalServerClient
     implements
         RemoteServerClient,
         LocalRemoteServerClient,
+        RemoteServerProfileUpdateClient,
         RemoteServerCodexProcessClient,
         RemoteServerAgentProcessClient,
         RemoteServerCodexRuntimeClient,
@@ -86,6 +90,20 @@ class WindowsLocalServerClient
     if (_done.isCompleted) _done = Completer<void>();
     _profile = profile;
     _connected = true;
+  }
+
+  @override
+  void updateProfile(ServerProfile profile) {
+    if (!isLocalWindowsProfile(profile)) {
+      throw StateError('本机 Windows Host 收到了无效配置');
+    }
+    final current = _profile;
+    if (_connected &&
+        current != null &&
+        !current.hasSameConnectionIdentity(profile)) {
+      throw StateError('本机 Windows 配置已更新连接身份');
+    }
+    _profile = profile;
   }
 
   @override
@@ -146,15 +164,15 @@ class WindowsLocalServerClient
     if (agent != AgentKind.openCode) {
       return openCodexAppServer();
     }
-    final executable = await _findOpenCodeExecutable();
+    final profile = _requireConnectedProfile();
+    final executable = await _findOpenCodeExecutable(profile);
     if (executable == null) throw StateError('没有找到 Windows 原生 OpenCode');
-    final bridge = File(_openCodeBridgeFile);
+    final bridge = File(_openCodeBridgeFileFor(profile));
     if (!await bridge.exists()) {
       throw StateError('OpenCode 桥接文件不存在，请重新安装 OpenCode');
     }
     final node = await _findManagedNodeExecutable();
     if (node == null) throw StateError('没有找到 OpenCode 所需的 Node.js 运行时');
-    final profile = _requireConnectedProfile();
     final environment = await _openCodeEnvironment(profile);
     environment['OPENCODE_BIN'] = executable;
     final process = await Process.start(
@@ -183,9 +201,10 @@ class WindowsLocalServerClient
     required String bridgeSource,
   }) async {
     _requireConnectedProfile(profile);
-    final executable = await _findOpenCodeExecutable();
+    final openCodeVersion = _openCodeVersion(profile);
+    final executable = await _findOpenCodeExecutable(profile);
     final node = await _findManagedNodeExecutable();
-    final bridge = File(_openCodeBridgeFile);
+    final bridge = File(_openCodeBridgeFileFor(profile));
     String? version;
     if (executable != null) {
       final result = await Process.run(executable, const <String>[
@@ -197,7 +216,7 @@ class WindowsLocalServerClient
         executable != null &&
         node != null &&
         await bridge.exists() &&
-        version?.contains(pinnedOpenCodeVersion) == true &&
+        OpenCodeBootstrap.versionMatches(version, openCodeVersion) &&
         await bridge.readAsString() == bridgeSource;
     return AgentRuntimeInspection(
       os: 'Windows',
@@ -223,6 +242,7 @@ class WindowsLocalServerClient
     required void Function(RemoteInstallProgress progress) onProgress,
   }) async {
     _requireConnectedProfile(profile);
+    final openCodeVersion = _openCodeVersion(profile);
     final started = DateTime.now();
     onProgress(
       const RemoteInstallProgress(
@@ -236,10 +256,14 @@ class WindowsLocalServerClient
       profile,
       onProgress: onProgress,
     );
-    await Directory(_openCodeRoot).create(recursive: true);
-    final packageJson = File(path.join(_openCodeRoot, 'package.json'));
+    final openCodeRoot = _openCodeRootFor(profile);
+    await Directory(openCodeRoot).create(recursive: true);
+    final packageJson = File(path.join(openCodeRoot, 'package.json'));
     await packageJson.writeAsString(
-      '{"private":true,"dependencies":{"jsonc-parser":"3.3.1","opencode-ai":"$pinnedOpenCodeVersion","opencode-${_windowsPackageSuffix()}":"$pinnedOpenCodeVersion"}}\n',
+      '${jsonEncode(<String, Object?>{
+        'private': true,
+        'dependencies': <String, String>{'jsonc-parser': '3.3.1', 'opencode-ai': openCodeVersion, 'opencode-${_windowsPackageSuffix()}': openCodeVersion},
+      })}\n',
       flush: true,
     );
     final install = await _runOpenCodeNpmInstall(
@@ -277,11 +301,14 @@ class WindowsLocalServerClient
         indeterminate: true,
       ),
     );
-    final executable = await _findOpenCodeExecutable();
+    final executable = await _findOpenCodeExecutable(profile);
     if (executable == null) throw StateError('OpenCode 安装完成，但没有找到可执行文件');
     final actual = await Process.run(executable, const <String>['--version']);
     if (actual.exitCode != 0 ||
-        !actual.stdout.toString().contains(pinnedOpenCodeVersion)) {
+        !OpenCodeBootstrap.versionMatches(
+          actual.stdout.toString(),
+          openCodeVersion,
+        )) {
       throw StateError('OpenCode 版本校验失败：${_short(actual.stdout.toString())}');
     }
     onProgress(
@@ -292,8 +319,10 @@ class WindowsLocalServerClient
         indeterminate: true,
       ),
     );
-    await File(_openCodeBridgeFile).writeAsString(bridgeSource, flush: true);
-    final stats = await _readInstallStats(Directory(_openCodeRoot));
+    await File(
+      _openCodeBridgeFileFor(profile),
+    ).writeAsString(bridgeSource, flush: true);
+    final stats = await _readInstallStats(Directory(openCodeRoot));
     final elapsed = DateTime.now().difference(started).inSeconds;
     final rate = elapsed <= 0 ? null : stats.bytes ~/ elapsed;
     onProgress(
@@ -301,7 +330,7 @@ class WindowsLocalServerClient
         percent: 100,
         message: 'Windows 原生 OpenCode 已就绪',
         detail:
-            '桥接服务、Node.js 和 OpenCode $pinnedOpenCodeVersion 已准备完成 · '
+            '桥接服务、Node.js 和 OpenCode $openCodeVersion 已准备完成 · '
             '已处理 ${formatInstallBytes(stats.bytes)} · ${formatInstallRate(rate)} · '
             '已用时 ${elapsed}s',
         downloadedBytes: stats.bytes,
@@ -317,7 +346,7 @@ class WindowsLocalServerClient
     for (final session in _sessions.toList()) {
       session.terminate();
     }
-    final root = Directory(_openCodeRoot);
+    final root = Directory(_openCodeBaseRoot);
     if (await root.exists()) await root.delete(recursive: true);
   }
 
@@ -856,10 +885,9 @@ class WindowsLocalServerClient
       ? Platform.environment['LOCALAPPDATA']!.trim()
       : path.join(_userHome, 'AppData', 'Local');
   String get _managedRoot => path.join(_localAppData, 'CodexRemote', 'codex');
-  String get _openCodeRoot =>
+  String get _openCodeBaseRoot =>
       path.join(_localAppData, 'CodexRemote', 'opencode');
   String get _runtimeRoot => path.join(_localAppData, 'CodexRemote', 'runtime');
-  String get _openCodeBridgeFile => path.join(_openCodeRoot, 'bridge.cjs');
   String get _uploadRoot => path.join(_localAppData, 'CodexRemote', 'uploads');
   String get _codexHome => path.join(_userHome, '.codex');
   String get _configFile => path.join(_codexHome, 'config.toml');
@@ -898,18 +926,19 @@ class WindowsLocalServerClient
         await _where('codex');
   }
 
-  Future<String?> _findOpenCodeExecutable() async {
+  Future<String?> _findOpenCodeExecutable(ServerProfile profile) async {
     final suffix = _windowsPackageSuffix();
+    final openCodeRoot = _openCodeRootFor(profile);
     final candidates = <String>[
       path.join(
-        _openCodeRoot,
+        openCodeRoot,
         'node_modules',
         'opencode-$suffix',
         'bin',
         'opencode.exe',
       ),
       path.join(
-        _openCodeRoot,
+        openCodeRoot,
         'node_modules',
         'opencode-ai',
         'bin',
@@ -921,6 +950,19 @@ class WindowsLocalServerClient
     }
     return null;
   }
+
+  String _openCodeVersion(ServerProfile profile) {
+    final version = profile.openCodeVersion.trim();
+    return OpenCodeBootstrap.validateVersion(
+      version.isEmpty ? pinnedOpenCodeVersion : version,
+    );
+  }
+
+  String _openCodeRootFor(ServerProfile profile) =>
+      path.join(_openCodeBaseRoot, _openCodeVersion(profile));
+
+  String _openCodeBridgeFileFor(ServerProfile profile) =>
+      path.join(_openCodeRootFor(profile), 'bridge.cjs');
 
   Future<String?> _findManagedNodeExecutable() async {
     final pinned = await _findPinnedNodeRuntime();
@@ -1280,7 +1322,9 @@ class WindowsLocalServerClient
       if (sampling || finished) return;
       sampling = true;
       try {
-        final stats = await _readInstallStats(Directory(_openCodeRoot));
+        final stats = await _readInstallStats(
+          Directory(_openCodeRootFor(profile)),
+        );
         if (finished) return;
         final elapsed = DateTime.now().difference(started).inSeconds;
         final rate = elapsed <= 0 ? null : stats.bytes ~/ elapsed;
@@ -1309,7 +1353,7 @@ class WindowsLocalServerClient
       <String>[
         'install',
         '--prefix',
-        _openCodeRoot,
+        _openCodeRootFor(profile),
         '--no-audit',
         '--no-fund',
         '--omit=dev',
@@ -1336,7 +1380,7 @@ class WindowsLocalServerClient
     timer.cancel();
     finished = true;
     await stdoutFuture;
-    final stats = await _readInstallStats(Directory(_openCodeRoot));
+    final stats = await _readInstallStats(Directory(_openCodeRootFor(profile)));
     onProgress(
       RemoteInstallProgress(
         percent: minimumPercent + 15,

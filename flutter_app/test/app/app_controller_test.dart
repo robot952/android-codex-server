@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/agent_connection_manager.dart';
 import 'package:codex_remote/src/agent/codex_protocol.dart';
+import 'package:codex_remote/src/agent/codex_version_catalog.dart';
+import 'package:codex_remote/src/agent/npm_version_catalog.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_bootstrap.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
@@ -1133,6 +1135,19 @@ class _ClaudeSettingsAgent extends _SettingsAgent {
 
 class _RuntimeAgent extends _FailingTurnAgent
     implements RemoteAgentRuntimeClient {
+  _RuntimeAgent({this.runtimeKind = AgentKind.codex});
+
+  final AgentKind runtimeKind;
+
+  @override
+  AgentKind get kind => runtimeKind;
+
+  String selectedVersion(ServerProfile profile) => switch (runtimeKind) {
+    AgentKind.codex => profile.codexVersion,
+    AgentKind.openCode => profile.openCodeVersion,
+    AgentKind.claudeCode => profile.claudeCodeVersion,
+  };
+
   bool installed = false;
   bool failNextInstall = false;
   Completer<void>? inspectGate;
@@ -1156,7 +1171,7 @@ class _RuntimeAgent extends _FailingTurnAgent
     RemoteServerClient host,
   ) async {
     inspectCalls++;
-    inspectedVersions.add(profile.codexVersion);
+    inspectedVersions.add(selectedVersion(profile));
     final gate = inspectGate;
     inspectGate = null;
     await gate?.future;
@@ -1173,7 +1188,7 @@ class _RuntimeAgent extends _FailingTurnAgent
       hasFlock: true,
       hasSetsidWait: true,
       downloader: 'curl',
-      expectedVersion: profile.codexVersion,
+      expectedVersion: selectedVersion(profile),
     );
   }
 
@@ -1199,7 +1214,7 @@ class _RuntimeAgent extends _FailingTurnAgent
       throw StateError('模拟下载失败');
     }
     installed = true;
-    installedVersion = profile.codexVersion;
+    installedVersion = selectedVersion(profile);
     onProgress(
       const RemoteInstallProgress(
         percent: 100,
@@ -1216,6 +1231,27 @@ class _RuntimeAgent extends _FailingTurnAgent
   ) async {
     installed = false;
   }
+}
+
+class _ControlledCodexCatalog extends CodexVersionCatalog {
+  final response = Completer<List<String>>();
+
+  @override
+  Future<List<String>> fetch() => response.future;
+}
+
+class _ControlledOpenCodeCatalog extends OpenCodeVersionCatalog {
+  Completer<List<String>> response = Completer<List<String>>();
+
+  @override
+  Future<List<String>> fetch() => response.future;
+}
+
+class _ControlledClaudeCodeCatalog extends ClaudeCodeVersionCatalog {
+  final response = Completer<List<String>>();
+
+  @override
+  Future<List<String>> fetch() => response.future;
 }
 
 class _ApprovalAgent extends _SubAgentNavigationAgent
@@ -4236,6 +4272,403 @@ void main() {
     expect(controller.state.agentSettings, isNull);
     expect(controller.state.agentSettingsError, isNull);
   });
+
+  test(
+    'Agent version catalogs keep lists, loading and errors independent',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(profiles: [_firstProfile]),
+      );
+      final connections = ServerConnectionManager();
+      final codex = _ControlledCodexCatalog();
+      final openCode = _ControlledOpenCodeCatalog();
+      final claudeCode = _ControlledClaudeCodeCatalog();
+      final controller = AppController(
+        store,
+        connections,
+        null,
+        null,
+        null,
+        null,
+        null,
+        codex,
+        null,
+        openCode,
+        claudeCode,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+
+      final codexRefresh = controller.refreshCodexVersions(_firstProfile.id);
+      final openCodeRefresh = controller.refreshOpenCodeVersions(
+        _firstProfile.id,
+      );
+      final claudeRefresh = controller.refreshClaudeCodeVersions(
+        _firstProfile.id,
+      );
+      expect(controller.state.codexVersionsLoading, isTrue);
+      expect(controller.state.openCodeVersionsLoading, isTrue);
+      expect(controller.state.claudeCodeVersionsLoading, isTrue);
+
+      claudeCode.response.complete(['2.1.293', '2.1.292']);
+      await claudeRefresh;
+      expect(controller.state.claudeCodeVersions, ['2.1.293', '2.1.292']);
+      expect(controller.state.claudeCodeVersionsLoading, isFalse);
+      expect(controller.state.codexVersionsLoading, isTrue);
+      expect(controller.state.openCodeVersionsLoading, isTrue);
+
+      openCode.response.completeError(
+        StateError('OpenCode registry unavailable'),
+      );
+      await openCodeRefresh;
+      expect(
+        controller.state.openCodeVersionsError,
+        contains('registry unavailable'),
+      );
+      expect(controller.state.openCodeVersionsLoading, isFalse);
+      expect(controller.state.claudeCodeVersionsError, isNull);
+      expect(controller.state.codexVersionsError, isNull);
+
+      codex.response.complete(['0.162.1', '0.162.0']);
+      await codexRefresh;
+      expect(controller.state.codexVersions, ['0.162.1', '0.162.0']);
+      expect(controller.state.openCodeVersions, isEmpty);
+      expect(controller.state.claudeCodeVersions, ['2.1.293', '2.1.292']);
+
+      openCode.response = Completer<List<String>>();
+      final retry = controller.refreshOpenCodeVersions(_firstProfile.id);
+      expect(controller.state.openCodeVersionsError, isNull);
+      expect(controller.state.openCodeVersionsLoading, isTrue);
+      openCode.response.complete(['1.18.11', '1.18.10']);
+      await retry;
+      expect(controller.state.openCodeVersions, ['1.18.11', '1.18.10']);
+      expect(controller.state.codexVersions, ['0.162.1', '0.162.0']);
+      expect(controller.state.claudeCodeVersions, ['2.1.293', '2.1.292']);
+    },
+  );
+
+  test(
+    'unsaved server drafts can refresh every Agent version catalog',
+    () async {
+      final store = _MemoryProfileStore(const StoredProfiles());
+      final connections = ServerConnectionManager();
+      final codex = _ControlledCodexCatalog();
+      final openCode = _ControlledOpenCodeCatalog();
+      final claudeCode = _ControlledClaudeCodeCatalog();
+      final controller = AppController(
+        store,
+        connections,
+        null,
+        null,
+        null,
+        null,
+        null,
+        codex,
+        null,
+        openCode,
+        claudeCode,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      final draft = controller.newProfile();
+      expect(controller.state.profiles, isEmpty);
+
+      final refreshes = [
+        controller.refreshCodexVersions(draft.id),
+        controller.refreshOpenCodeVersions(draft.id),
+        controller.refreshClaudeCodeVersions(draft.id),
+      ];
+      expect(controller.state.codexVersionsLoading, isTrue);
+      expect(controller.state.openCodeVersionsLoading, isTrue);
+      expect(controller.state.claudeCodeVersionsLoading, isTrue);
+      codex.response.complete(['0.162.1', '0.162.0']);
+      openCode.response.complete(['1.18.11', '1.18.10']);
+      claudeCode.response.complete(['2.1.293', '2.1.292']);
+      await Future.wait(refreshes);
+
+      expect(controller.state.codexVersions, ['0.162.1', '0.162.0']);
+      expect(controller.state.openCodeVersions, ['1.18.11', '1.18.10']);
+      expect(controller.state.claudeCodeVersions, ['2.1.293', '2.1.292']);
+      expect(controller.state.codexVersionsLoading, isFalse);
+      expect(controller.state.openCodeVersionsLoading, isFalse);
+      expect(controller.state.claudeCodeVersionsLoading, isFalse);
+      expect(controller.state.profiles, isEmpty);
+      expect(store.writes, isEmpty);
+    },
+  );
+
+  for (final kind in [AgentKind.openCode, AgentKind.claudeCode]) {
+    test(
+      '${kind.label} version persists and reaches the installation target',
+      () async {
+        final profile = _firstProfile.copyWith(
+          activeAgent: kind,
+          workspacePromptShown: true,
+          codexVersion: '0.162.0',
+          openCodeVersion: '1.18.10',
+          claudeCodeVersion: '2.1.292',
+        );
+        final oldVersion = kind == AgentKind.openCode ? '1.18.10' : '2.1.292';
+        final newVersion = kind == AgentKind.openCode ? '1.18.11' : '2.1.293';
+        final store = _MemoryProfileStore(
+          StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+        );
+        final host = _FingerprintClient();
+        final connections = ServerConnectionManager(clientFactory: () => host);
+        final agent = _RuntimeAgent(runtimeKind: kind);
+        final agents = AgentConnectionManager(
+          connections,
+          clientFactory: (_) => agent,
+        );
+        final controller = AppController(store, connections, agents);
+        addTearDown(() async {
+          controller.dispose();
+          await agents.close();
+          await connections.close();
+        });
+        await _waitUntilInitialized(controller);
+        await controller.requestConnect(profile);
+        await _waitUntil(() => controller.state.remoteSetup != null);
+        expect(controller.state.remoteSetup?.agent, kind);
+        expect(controller.state.remoteSetup?.targetVersion, oldVersion);
+
+        if (kind == AgentKind.openCode) {
+          await controller.changeOpenCodeVersion(profile.id, newVersion);
+        } else {
+          await controller.changeClaudeCodeVersion(profile.id, newVersion);
+        }
+        expect(controller.state.remoteSetup?.targetVersion, newVersion);
+        expect(agent.inspectedVersions, [oldVersion, newVersion]);
+        final saved = store.value.profiles.single;
+        expect(saved.codexVersion, profile.codexVersion);
+        expect(
+          saved.openCodeVersion,
+          kind == AgentKind.openCode ? newVersion : profile.openCodeVersion,
+        );
+        expect(
+          saved.claudeCodeVersion,
+          kind == AgentKind.claudeCode ? newVersion : profile.claudeCodeVersion,
+        );
+
+        agent.installGate = Completer<void>();
+        final installation = controller.installRemoteSetup(
+          'http://127.0.0.1:7890',
+        );
+        await _waitUntil(() => controller.state.setupInProgress);
+        controller.minimizeRemoteSetup();
+        await expectLater(
+          controller.changeAgentVersion(profile.id, kind, oldVersion),
+          throwsStateError,
+        );
+        expect(
+          controller.state.agentSetupStates.values.single.prompt?.targetVersion,
+          newVersion,
+        );
+        agent.installGate!.complete();
+        await installation;
+        expect(agent.installedVersion, newVersion);
+        expect(agent.inspectedVersions, [oldVersion, newVersion, newVersion]);
+        expect(agent.connected, isTrue);
+        expect(controller.state.remoteSetup, isNull);
+        expect(store.value.profiles.single.proxyUrl, 'http://127.0.0.1:7890');
+      },
+    );
+  }
+
+  test(
+    'OpenCode version change preserves connected Codex and Claude lanes',
+    () async {
+      final profile = _firstProfile.copyWith(
+        workspacePromptShown: true,
+        codexVersion: '0.162.0',
+        openCodeVersion: '1.18.10',
+        claudeCodeVersion: '2.1.292',
+      );
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FingerprintClient();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final runtimes = {
+        for (final kind in AgentKind.values)
+          kind: _RuntimeAgent(runtimeKind: kind)
+            ..installed = true
+            ..installedVersion = switch (kind) {
+              AgentKind.codex => profile.codexVersion,
+              AgentKind.openCode => profile.openCodeVersion,
+              AgentKind.claudeCode => profile.claudeCodeVersion,
+            },
+      };
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => runtimes[kind]!,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await _waitUntil(() => runtimes[AgentKind.codex]!.connected);
+      controller.selectAgent(AgentKind.claudeCode);
+      await _waitUntil(() => runtimes[AgentKind.claudeCode]!.connected);
+      controller.selectAgent(AgentKind.openCode);
+      await _waitUntil(() => runtimes[AgentKind.openCode]!.connected);
+      final unaffected = [AgentKind.codex, AgentKind.claudeCode];
+      final before = {
+        for (final kind in unaffected)
+          kind: (runtimes[kind]!.connectCount, runtimes[kind]!.disconnectCount),
+      };
+
+      await controller.changeOpenCodeVersion(profile.id, '1.18.11');
+
+      expect(store.value.profiles.single.openCodeVersion, '1.18.11');
+      expect(controller.state.remoteSetup?.agent, AgentKind.openCode);
+      expect(controller.state.remoteSetup?.targetVersion, '1.18.11');
+      await controller.installRemoteSetup('');
+      expect(runtimes[AgentKind.openCode]!.installedVersion, '1.18.11');
+      expect(runtimes[AgentKind.openCode]!.connected, isTrue);
+      for (final kind in unaffected) {
+        expect(runtimes[kind]!.connected, isTrue);
+        expect((
+          runtimes[kind]!.connectCount,
+          runtimes[kind]!.disconnectCount,
+        ), before[kind]);
+        expect(
+          controller
+              .state
+              .agentConnectionStates[AgentConnectionKey(
+                profileId: profile.id,
+                agent: kind,
+              )]
+              ?.phase,
+          ConnectionPhase.connected,
+        );
+      }
+    },
+  );
+
+  test(
+    'slow version persistence cannot load a superseded lane target',
+    () async {
+      final profile = _firstProfile.copyWith(
+        activeAgent: AgentKind.openCode,
+        workspacePromptShown: true,
+        openCodeVersion: '1.18.10',
+      );
+      final store = _BlockingFirstSaveProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final connections = ServerConnectionManager(
+        clientFactory: _FingerprintClient.new,
+      );
+      final runtime = _RuntimeAgent(runtimeKind: AgentKind.openCode);
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (_) => runtime,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        if (!store.releaseFirstSave.isCompleted) {
+          store.releaseFirstSave.complete();
+        }
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await connections.connect(profile);
+
+      final older = controller.changeOpenCodeVersion(profile.id, '1.18.11');
+      await store.firstSaveStarted.future;
+      final newer = controller.changeOpenCodeVersion(profile.id, '1.18.12');
+      await _drainAsyncWork();
+      expect(runtime.inspectedVersions, isEmpty);
+      store.releaseFirstSave.complete();
+      await Future.wait([older, newer]);
+
+      expect(controller.state.profiles.single.openCodeVersion, '1.18.12');
+      expect(store.value.profiles.single.openCodeVersion, '1.18.12');
+      expect(runtime.inspectedVersions, ['1.18.12']);
+      expect(controller.state.remoteSetup?.agent, AgentKind.openCode);
+      expect(controller.state.remoteSetup?.targetVersion, '1.18.12');
+      expect(store.maximumActiveSaves, 1);
+    },
+  );
+
+  test(
+    'slow version persistence preserves concurrent changes in separate lanes',
+    () async {
+      final profile = _firstProfile.copyWith(
+        activeAgent: AgentKind.openCode,
+        workspacePromptShown: true,
+        codexVersion: '0.162.0',
+        openCodeVersion: '1.18.10',
+        claudeCodeVersion: '2.1.292',
+      );
+      final store = _BlockingFirstSaveProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final connections = ServerConnectionManager(
+        clientFactory: _FingerprintClient.new,
+      );
+      final runtimes = {
+        for (final kind in AgentKind.values)
+          kind: _RuntimeAgent(runtimeKind: kind),
+      };
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => runtimes[kind]!,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        if (!store.releaseFirstSave.isCompleted) {
+          store.releaseFirstSave.complete();
+        }
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await connections.connect(profile);
+
+      final openCode = controller.changeOpenCodeVersion(profile.id, '1.18.11');
+      final claude = controller.changeClaudeCodeVersion(profile.id, '2.1.293');
+      await store.firstSaveStarted.future;
+      await _drainAsyncWork();
+      store.releaseFirstSave.complete();
+      await Future.wait([openCode, claude]);
+
+      for (final saved in [
+        controller.state.profiles.single,
+        store.value.profiles.single,
+      ]) {
+        expect(saved.codexVersion, '0.162.0');
+        expect(saved.openCodeVersion, '1.18.11');
+        expect(saved.claudeCodeVersion, '2.1.293');
+      }
+      for (final kind in [AgentKind.openCode, AgentKind.claudeCode]) {
+        final expected = kind == AgentKind.openCode ? '1.18.11' : '2.1.293';
+        final key = AgentConnectionKey(profileId: profile.id, agent: kind);
+        expect(runtimes[kind]!.inspectedVersions, [expected]);
+        expect(
+          controller.state.agentSetupStates[key]?.prompt?.targetVersion,
+          expected,
+        );
+      }
+      expect(runtimes[AgentKind.codex]!.inspectedVersions, isEmpty);
+      expect(store.maximumActiveSaves, 1);
+      expect(controller.state.error, isNull);
+    },
+  );
 
   test(
     'probes, installs, verifies, and connects the managed runtime',

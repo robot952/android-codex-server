@@ -363,11 +363,12 @@ void _showThreadSettings(
   AppController controller,
 ) {
   final profileId = state.selectedProfileId;
-  final codexKey = profileId == null
+  final activeKey = profileId == null
       ? null
-      : AgentConnectionKey(profileId: profileId, agent: AgentKind.codex);
-  final codexSetupInProgress =
-      codexKey != null && state.agentSetupStates[codexKey]?.inProgress == true;
+      : AgentConnectionKey(profileId: profileId, agent: state.activeAgent);
+  final activeSetupInProgress =
+      activeKey != null &&
+      state.agentSetupStates[activeKey]?.inProgress == true;
   showDialog<void>(
     context: context,
     builder: (_) => _ThreadSettingsDialog(
@@ -389,15 +390,20 @@ void _showThreadSettings(
         Navigator.of(context).pop();
         controller.showAgentSettings();
       },
-      showCodexVersion: state.activeAgent == AgentKind.codex,
-      codexVersionEnabled:
+      showAgentVersion: true,
+      agentVersionEnabled:
           profileId != null &&
           hostConnected(state, profileId) &&
-          !codexSetupInProgress,
-      onSelectCodexVersion: () {
+          !activeSetupInProgress,
+      onSelectAgentVersion: () {
         Navigator.of(context).pop();
         if (profileId != null) {
-          _showCodexVersionDialog(context, controller, profileId);
+          _showAgentVersionDialog(
+            context,
+            controller,
+            profileId,
+            state.activeAgent,
+          );
         }
       },
     ),
@@ -407,15 +413,19 @@ void _showThreadSettings(
 bool hostConnected(AppUiState state, String profileId) =>
     state.connectionStates[profileId]?.phase == ConnectionPhase.connected;
 
-void _showCodexVersionDialog(
+void _showAgentVersionDialog(
   BuildContext context,
   AppController controller,
   String profileId,
+  AgentKind agent,
 ) {
   showDialog<void>(
     context: context,
-    builder: (_) =>
-        _CodexVersionDialog(profileId: profileId, controller: controller),
+    builder: (_) => _AgentVersionDialog(
+      profileId: profileId,
+      agent: agent,
+      controller: controller,
+    ),
   );
 }
 
@@ -447,9 +457,9 @@ class _ThreadSettingsDialog extends StatelessWidget {
     required this.canConfigureAgent,
     required this.onSelectWorkspace,
     required this.onConfigureAgent,
-    required this.showCodexVersion,
-    required this.codexVersionEnabled,
-    required this.onSelectCodexVersion,
+    required this.showAgentVersion,
+    required this.agentVersionEnabled,
+    required this.onSelectAgentVersion,
   });
 
   final AgentKind agent;
@@ -457,9 +467,9 @@ class _ThreadSettingsDialog extends StatelessWidget {
   final bool canConfigureAgent;
   final VoidCallback onSelectWorkspace;
   final VoidCallback onConfigureAgent;
-  final bool showCodexVersion;
-  final bool codexVersionEnabled;
-  final VoidCallback onSelectCodexVersion;
+  final bool showAgentVersion;
+  final bool agentVersionEnabled;
+  final VoidCallback onSelectAgentVersion;
 
   @override
   Widget build(BuildContext context) {
@@ -495,15 +505,15 @@ class _ThreadSettingsDialog extends StatelessWidget {
                 enabled: agentConnected && canConfigureAgent,
                 onTap: onConfigureAgent,
               ),
-              if (showCodexVersion)
+              if (showAgentVersion)
                 _SettingsActionRow(
                   icon: Icons.system_update_alt,
-                  title: 'Codex 版本',
-                  detail: codexVersionEnabled
-                      ? '升级或降级托管 Codex CLI'
+                  title: '${agent.label} 版本',
+                  detail: agentVersionEnabled
+                      ? _versionActionDetail(agent)
                       : '运行时操作进行中，请稍后再试',
-                  enabled: codexVersionEnabled,
-                  onTap: onSelectCodexVersion,
+                  enabled: agentVersionEnabled,
+                  onTap: onSelectAgentVersion,
                 ),
             ],
           ),
@@ -513,21 +523,23 @@ class _ThreadSettingsDialog extends StatelessWidget {
   }
 }
 
-class _CodexVersionDialog extends ConsumerStatefulWidget {
-  const _CodexVersionDialog({
+class _AgentVersionDialog extends ConsumerStatefulWidget {
+  const _AgentVersionDialog({
     required this.profileId,
+    required this.agent,
     required this.controller,
   });
 
   final String profileId;
+  final AgentKind agent;
   final AppController controller;
 
   @override
-  ConsumerState<_CodexVersionDialog> createState() =>
-      _CodexVersionDialogState();
+  ConsumerState<_AgentVersionDialog> createState() =>
+      _AgentVersionDialogState();
 }
 
-class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
+class _AgentVersionDialogState extends ConsumerState<_AgentVersionDialog> {
   String? _selectedVersion;
   bool _saving = false;
   String? _error;
@@ -536,7 +548,9 @@ class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) widget.controller.refreshCodexVersions(widget.profileId);
+      if (mounted) {
+        widget.controller.refreshAgentVersions(widget.profileId, widget.agent);
+      }
     });
   }
 
@@ -547,27 +561,33 @@ class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
       (candidate) => candidate.id == widget.profileId,
     );
     if (profile == null) return const SizedBox.shrink();
-    final current = profile.codexVersion;
+    final current = _profileAgentVersion(profile, widget.agent);
+    final versionsFromCatalog = _versionsForAgent(state, widget.agent);
     final versions = <String>{
       current,
-      ...state.codexVersions,
+      ?_selectedVersion,
+      ...versionsFromCatalog,
     }.where((version) => version.trim().isNotEmpty).toList(growable: false);
     final selected = _selectedVersion ?? current;
-    final loading = state.codexVersionsLoading || _saving;
+    final loading = _catalogLoading(state, widget.agent) || _saving;
+    final versionsError = _catalogError(state, widget.agent);
+    final label = widget.agent.label;
 
     return AlertDialog(
       title: Row(
         children: [
           const Icon(Icons.system_update_alt),
           const SizedBox(width: 10),
-          const Expanded(child: Text('Codex 版本')),
+          Expanded(child: Text('$label 版本')),
           IconButton(
             tooltip: '刷新版本列表',
             onPressed: loading
                 ? null
-                : () =>
-                      widget.controller.refreshCodexVersions(widget.profileId),
-            icon: state.codexVersionsLoading
+                : () => widget.controller.refreshAgentVersions(
+                    widget.profileId,
+                    widget.agent,
+                  ),
+            icon: loading && !_saving
                 ? const SizedBox.square(
                     dimension: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
@@ -583,28 +603,28 @@ class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '当前版本：Codex $current',
+              '当前配置：$label $current',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 6),
             Text(
-              '只影响当前服务器托管的 Codex CLI，不会修改模型地址、API 密钥或历史对话。',
+              _versionDialogDetail(widget.agent),
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 14),
-            if (state.codexVersionsError != null)
+            if (versionsError != null)
               Text(
-                state.codexVersionsError!,
+                versionsError,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
-            if (state.codexVersionsLoading)
+            if (loading && !_saving)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 18),
                 child: Center(child: CircularProgressIndicator()),
               )
             else
               DropdownButtonFormField<String>(
-                key: const ValueKey('codex-version-selector'),
+                key: ValueKey('${widget.agent.name}-version-selector'),
                 initialValue: selected,
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: '选择版本'),
@@ -612,7 +632,7 @@ class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
                     .map(
                       (version) => DropdownMenuItem<String>(
                         value: version,
-                        child: Text('Codex $version'),
+                        child: Text('$label $version'),
                       ),
                     )
                     .toList(growable: false),
@@ -645,8 +665,9 @@ class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
                     _error = null;
                   });
                   try {
-                    await widget.controller.changeCodexVersion(
+                    await widget.controller.changeAgentVersion(
                       widget.profileId,
+                      widget.agent,
                       selected,
                     );
                     if (mounted) navigator.pop();
@@ -670,6 +691,45 @@ class _CodexVersionDialogState extends ConsumerState<_CodexVersionDialog> {
     );
   }
 }
+
+String _profileAgentVersion(ServerProfile profile, AgentKind agent) =>
+    switch (agent) {
+      AgentKind.codex => profile.codexVersion,
+      AgentKind.openCode => profile.openCodeVersion,
+      AgentKind.claudeCode => profile.claudeCodeVersion,
+    };
+
+List<String> _versionsForAgent(AppUiState state, AgentKind agent) =>
+    switch (agent) {
+      AgentKind.codex => state.codexVersions,
+      AgentKind.openCode => state.openCodeVersions,
+      AgentKind.claudeCode => state.claudeCodeVersions,
+    };
+
+bool _catalogLoading(AppUiState state, AgentKind agent) => switch (agent) {
+  AgentKind.codex => state.codexVersionsLoading,
+  AgentKind.openCode => state.openCodeVersionsLoading,
+  AgentKind.claudeCode => state.claudeCodeVersionsLoading,
+};
+
+String? _catalogError(AppUiState state, AgentKind agent) => switch (agent) {
+  AgentKind.codex => state.codexVersionsError,
+  AgentKind.openCode => state.openCodeVersionsError,
+  AgentKind.claudeCode => state.claudeCodeVersionsError,
+};
+
+String _versionActionDetail(AgentKind agent) => switch (agent) {
+  AgentKind.codex => '升级或降级托管 Codex CLI',
+  AgentKind.openCode => '升级或降级托管 OpenCode CLI',
+  AgentKind.claudeCode => '升级或降级服务器现有 Claude Code CLI',
+};
+
+String _versionDialogDetail(AgentKind agent) => switch (agent) {
+  AgentKind.codex => '只影响当前服务器托管的 Codex CLI，不会修改模型地址、API 密钥或历史对话。',
+  AgentKind.openCode => '只影响当前服务器托管的 OpenCode CLI，不会修改模型地址、API 密钥或历史对话。',
+  AgentKind.claudeCode =>
+    '直接升级或降级当前 SSH 用户的 Claude Code CLI；服务器现有登录凭据和配置目录会保留。',
+};
 
 class _SettingsActionRow extends StatelessWidget {
   const _SettingsActionRow({

@@ -119,12 +119,35 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                       codexVersions: state.codexVersions,
                       codexVersionsLoading: state.codexVersionsLoading,
                       codexVersionsError: state.codexVersionsError,
+                      openCodeVersions: state.openCodeVersions,
+                      openCodeVersionsLoading: state.openCodeVersionsLoading,
+                      openCodeVersionsError: state.openCodeVersionsError,
+                      claudeCodeVersions: state.claudeCodeVersions,
+                      claudeCodeVersionsLoading:
+                          state.claudeCodeVersionsLoading,
+                      claudeCodeVersionsError: state.claudeCodeVersionsError,
                       onRefreshCodexVersions: () {
                         final profileId = _draft?.id;
                         if (profileId != null && profileId.isNotEmpty) {
                           ref
                               .read(appControllerProvider.notifier)
                               .refreshCodexVersions(profileId);
+                        }
+                      },
+                      onRefreshOpenCodeVersions: () {
+                        final profileId = _draft?.id;
+                        if (profileId != null && profileId.isNotEmpty) {
+                          ref
+                              .read(appControllerProvider.notifier)
+                              .refreshOpenCodeVersions(profileId);
+                        }
+                      },
+                      onRefreshClaudeCodeVersions: () {
+                        final profileId = _draft?.id;
+                        if (profileId != null && profileId.isNotEmpty) {
+                          ref
+                              .read(appControllerProvider.notifier)
+                              .refreshClaudeCodeVersions(profileId);
                         }
                       },
                       onChanged: (value) => setState(() => _draft = value),
@@ -1572,6 +1595,14 @@ class _ServerEditor extends StatelessWidget {
     required this.codexVersionsLoading,
     required this.codexVersionsError,
     required this.onRefreshCodexVersions,
+    required this.openCodeVersions,
+    required this.openCodeVersionsLoading,
+    required this.openCodeVersionsError,
+    required this.claudeCodeVersions,
+    required this.claudeCodeVersionsLoading,
+    required this.claudeCodeVersionsError,
+    required this.onRefreshOpenCodeVersions,
+    required this.onRefreshClaudeCodeVersions,
     required this.onChanged,
     required this.onToggleAdvanced,
     required this.onTogglePassword,
@@ -1589,6 +1620,14 @@ class _ServerEditor extends StatelessWidget {
   final bool codexVersionsLoading;
   final String? codexVersionsError;
   final VoidCallback onRefreshCodexVersions;
+  final List<String> openCodeVersions;
+  final bool openCodeVersionsLoading;
+  final String? openCodeVersionsError;
+  final List<String> claudeCodeVersions;
+  final bool claudeCodeVersionsLoading;
+  final String? claudeCodeVersionsError;
+  final VoidCallback onRefreshOpenCodeVersions;
+  final VoidCallback onRefreshClaudeCodeVersions;
   final ValueChanged<ServerProfile> onChanged;
   final VoidCallback onToggleAdvanced;
   final VoidCallback onTogglePassword;
@@ -1820,6 +1859,7 @@ class _ServerEditor extends StatelessWidget {
                                   DropdownButtonFormField<String>(
                                     key: const ValueKey('server-codex-version'),
                                     initialValue: profile.codexVersion,
+                                    isExpanded: true,
                                     decoration: InputDecoration(
                                       labelText: 'Codex 版本',
                                       helperText:
@@ -1861,6 +1901,120 @@ class _ServerEditor extends StatelessWidget {
                                       if (value != null) {
                                         onChanged(
                                           profile.copyWith(codexVersion: value),
+                                        );
+                                      }
+                                    },
+                                  ),
+                                  const SizedBox(height: 12),
+                                  DropdownButtonFormField<String>(
+                                    key: const ValueKey(
+                                      'server-opencode-version',
+                                    ),
+                                    initialValue: profile.openCodeVersion,
+                                    isExpanded: true,
+                                    decoration: InputDecoration(
+                                      labelText: 'OpenCode 版本',
+                                      helperText:
+                                          openCodeVersionsError ??
+                                          '连接时会自动获取 npm 稳定版本；切换后仅重装该服务器的 OpenCode。',
+                                      helperMaxLines: 3,
+                                      suffixIcon: IconButton(
+                                        tooltip: '刷新 OpenCode 版本列表',
+                                        onPressed: openCodeVersionsLoading
+                                            ? null
+                                            : onRefreshOpenCodeVersions,
+                                        icon: openCodeVersionsLoading
+                                            ? const SizedBox.square(
+                                                dimension: 18,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.refresh),
+                                      ),
+                                    ),
+                                    items:
+                                        {
+                                              profile.openCodeVersion,
+                                              ...openCodeVersions,
+                                            }
+                                            .where(
+                                              (version) => version.isNotEmpty,
+                                            )
+                                            .map(
+                                              (version) =>
+                                                  DropdownMenuItem<String>(
+                                                    value: version,
+                                                    child: Text(
+                                                      'OpenCode $version',
+                                                    ),
+                                                  ),
+                                            )
+                                            .toList(growable: false),
+                                    onChanged: (value) {
+                                      if (value != null) {
+                                        onChanged(
+                                          profile.copyWith(
+                                            openCodeVersion: value,
+                                          ),
+                                        );
+                                      }
+                                    },
+                                  ),
+                                  const SizedBox(height: 12),
+                                  DropdownButtonFormField<String>(
+                                    key: const ValueKey(
+                                      'server-claude-code-version',
+                                    ),
+                                    initialValue: profile.claudeCodeVersion,
+                                    isExpanded: true,
+                                    decoration: InputDecoration(
+                                      labelText: 'Claude Code 版本',
+                                      helperText:
+                                          claudeCodeVersionsError ??
+                                          '升级或降级此服务器已有的 Claude Code，保留现有登录和配置。',
+                                      helperMaxLines: 3,
+                                      suffixIcon: IconButton(
+                                        tooltip: '刷新 Claude Code 版本列表',
+                                        onPressed: claudeCodeVersionsLoading
+                                            ? null
+                                            : onRefreshClaudeCodeVersions,
+                                        icon: claudeCodeVersionsLoading
+                                            ? const SizedBox.square(
+                                                dimension: 18,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.refresh),
+                                      ),
+                                    ),
+                                    items:
+                                        {
+                                              profile.claudeCodeVersion,
+                                              ...claudeCodeVersions,
+                                            }
+                                            .where(
+                                              (version) => version.isNotEmpty,
+                                            )
+                                            .map(
+                                              (version) =>
+                                                  DropdownMenuItem<String>(
+                                                    value: version,
+                                                    child: Text(
+                                                      'Claude Code $version',
+                                                    ),
+                                                  ),
+                                            )
+                                            .toList(growable: false),
+                                    onChanged: (value) {
+                                      if (value != null) {
+                                        onChanged(
+                                          profile.copyWith(
+                                            claudeCodeVersion: value,
+                                          ),
                                         );
                                       }
                                     },

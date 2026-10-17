@@ -38,10 +38,12 @@ CI 的 APK 阶段临时包装生成的 Gradle launcher，向原 launcher 增加 
 摘要同时记录六类缓存目录未压缩字节数（每类最多 2 秒，null 表示不可用），供下一轮评估有界缓存。
 保持 `caches: []`，没有恢复曾造成 HTTP 413 的整目录上传。不能把未压缩目录大小当作上传限制或实际传输大小。
 比较基线为用户提供的 v1.8.174：全程 924 秒，Flutter SDK 123 秒，Android 64 秒，Gradle 准备 7 秒，
-Release 编译约 478 秒。两路准备的理论重叠约 71 秒，实际收益依赖网络和解压竞争；编译收益须看下一轮实测。
+Release 编译约 478 秒。v1.8.175 线上全程为 817 秒，SDK 并行准备 122 秒、Release 编译约 450 秒；
+两轮全程缩短 107 秒（约 11.6%），不是受控性能实验，不能全归因于并行。完整修复、缓存策略和诊断解释见
+[Gitee 线上编译优化记录](GITEE_BUILD_OPTIMIZATION.md)。当前方案先保持，暂不继续优化。
 Gradle 的操作计时可能重叠，不可简单求和；依赖解析同时包括本地工作，不能全部归为下载。
 新增并行与诊断 fixture 同时接入 GitHub Android job（300/120 秒上限）；Gitee 仍在原预检阶段执行，
-真实 profile 格式由既有离线 Gradle 调用验证。本轮本地只做语法与静态检查，行为验收跟踪云端结果。
+真实 profile 格式由既有离线 Gradle 调用验证；v1.8.175 线上回归、770 项 Flutter 测试、Release 构建和公开下载校验已通过。
 `prepare-ci-gradle.sh` 固定 Gradle 9.1.0-all 与官方 SHA-256，国内镜像失败可回退官方，最多六次限时
 续传；校验后的 ZIP 预填原 URL 对应的 Wrapper 缓存，缓存挂载根目录与已解压发行版保持不变。
 CI 通过 `prepare-ci-gradle-home.sh` 创建独立的 Gradle 用户目录（准备上限 60 秒），只链接原
@@ -95,7 +97,7 @@ GitHub 的跨平台出包由 `.github/workflows/flutter-refactor-ios.yml` 响应
 两个平台都只保留各自一个自动入口，发布创建的 `v<version>` 标签不触发第二轮构建。
 GitHub 先核对版本标签没有被其他提交占用，各平台 job 限时 60 分钟，发布限时 15 分钟；
 附件先上传到 draft 并下载比对，再转成正式 Release，不使用 prerelease，也不覆盖已有同名附件。
-Android 的 Ubuntu job 和 iOS 的 macOS job 都执行完整 analyze/test；Claude Linux SSH 安装脚本的五项
+Android 的 Ubuntu job 和 iOS 的 macOS job 都执行完整 analyze/test；Claude Linux SSH 安装脚本的
 集成测试只在 Linux 执行，由 Android job 把关，其他 adapter、协议及 API 测试仍在两端执行。
 iOS 使用 macOS 15 并显式选择 Xcode 16.4，三个平台全部成功后才发布统一 Release。
 Flutter 缓存路径为挂载点时保留根目录，从 `storage.flutter-io.cn` 下载固定版本 SDK 压缩包，验证固定

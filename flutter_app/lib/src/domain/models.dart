@@ -7,6 +7,12 @@ part 'models.freezed.dart';
 part 'models.g.dart';
 
 const defaultCodexVersion = '0.153.3';
+const defaultOpenCodeVersion = '1.18.11';
+// Version selection accepts stable Claude Code 2.1.x and newer 2.x releases;
+// 2.1.293 is the tested default.
+// Keeping this in the profile makes the first upgrade explicit while old
+// profiles continue to deserialize with a stable default.
+const defaultClaudeCodeVersion = '2.1.293';
 
 @JsonEnum(alwaysCreate: true)
 enum AuthMode {
@@ -121,6 +127,8 @@ abstract class ServerProfile with _$ServerProfile {
     @Default('~/.local/bin/codex-remote app-server --listen stdio://')
     String remoteCommand,
     @Default(defaultCodexVersion) String codexVersion,
+    @Default(defaultOpenCodeVersion) String openCodeVersion,
+    @Default(defaultClaudeCodeVersion) String claudeCodeVersion,
     @Default(false) bool workspacePromptShown,
     @Default('') String preferredModel,
     @Default('') String preferredEffort,
@@ -853,6 +861,12 @@ abstract class AppUiState with _$AppUiState {
     @Default(<String>[]) List<String> codexVersions,
     @Default(false) bool codexVersionsLoading,
     String? codexVersionsError,
+    @Default(<String>[]) List<String> openCodeVersions,
+    @Default(false) bool openCodeVersionsLoading,
+    String? openCodeVersionsError,
+    @Default(<String>[]) List<String> claudeCodeVersions,
+    @Default(false) bool claudeCodeVersionsLoading,
+    String? claudeCodeVersionsError,
   }) = _AppUiState;
 }
 

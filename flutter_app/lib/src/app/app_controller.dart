@@ -12,6 +12,9 @@ import '../agent/agent_connection_manager.dart';
 import '../agent/codex_agent_client.dart';
 import '../agent/codex_global_settings.dart';
 import '../agent/codex_version_catalog.dart';
+import '../agent/npm_version_catalog.dart';
+import '../agent/open_code_bootstrap.dart';
+import '../agent/claude_code_bootstrap.dart';
 import '../agent/codex_event_reducer.dart';
 import '../agent/codex_protocol.dart';
 import '../agent/remote_agent_client.dart';
@@ -106,6 +109,8 @@ class AppController extends StateNotifier<AppUiState> {
     LocalLinuxRuntime? localLinuxRuntime,
     CodexVersionCatalog? codexVersionCatalog,
     ThreadSnapshotStore? threadSnapshotStore,
+    OpenCodeVersionCatalog? openCodeVersionCatalog,
+    ClaudeCodeVersionCatalog? claudeCodeVersionCatalog,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
        _reconnectDelays = List<Duration>.unmodifiable(
@@ -117,6 +122,10 @@ class AppController extends StateNotifier<AppUiState> {
            localLinuxRuntime ?? const UnsupportedLocalLinuxRuntime(),
        _codexVersionCatalog =
            codexVersionCatalog ?? const CodexVersionCatalog(),
+       _openCodeVersionCatalog =
+           openCodeVersionCatalog ?? const OpenCodeVersionCatalog(),
+       _claudeCodeVersionCatalog =
+           claudeCodeVersionCatalog ?? const ClaudeCodeVersionCatalog(),
        _ownsAgentConnections = agentConnections == null,
        _threadSnapshotStore =
            threadSnapshotStore ?? const NoopThreadSnapshotStore(),
@@ -144,6 +153,8 @@ class AppController extends StateNotifier<AppUiState> {
   final BackgroundConnectionIntent _backgroundRestoreIntent;
   final LocalLinuxRuntime _localLinuxRuntime;
   final CodexVersionCatalog _codexVersionCatalog;
+  final OpenCodeVersionCatalog _openCodeVersionCatalog;
+  final ClaudeCodeVersionCatalog _claudeCodeVersionCatalog;
   final bool _ownsAgentConnections;
   final ThreadSnapshotStore _threadSnapshotStore;
   final LinkedHashMap<String, (int, int?, int, int?)> _liveThreadSnapshots =
@@ -157,6 +168,8 @@ class AppController extends StateNotifier<AppUiState> {
   late final StreamSubscription<AgentEventEnvelope> _agentEventSubscription;
   late final Future<void> _initialization;
   final Lock _persistenceLock = Lock();
+  final Map<String, Lock> _versionChangeLocks = {};
+  final Map<AgentConnectionKey, int> _versionChangeRevisions = {};
   final StreamController<TurnCompletion> _turnCompletionController =
       StreamController<TurnCompletion>.broadcast(sync: true);
   final TurnCompletionDeduplicator _turnCompletionDeduplicator =
@@ -440,25 +453,44 @@ class AppController extends StateNotifier<AppUiState> {
     final codexVersionChanged =
         existing != null &&
         existing.codexVersion.trim() != normalized.codexVersion.trim();
-    final codexKey = AgentConnectionKey(
-      profileId: normalized.id,
-      agent: AgentKind.codex,
-    );
-    if (codexVersionChanged &&
-        (_setupStarting.contains(codexKey) ||
-            _setupRequests.containsKey(codexKey) ||
-            state.agentSetupStates[codexKey]?.inProgress == true)) {
-      throw StateError('Codex 正在安装，请等待安装结束后再切换版本');
+    final openCodeVersionChanged =
+        existing != null &&
+        existing.openCodeVersion.trim() != normalized.openCodeVersion.trim();
+    final claudeCodeVersionChanged =
+        existing != null &&
+        existing.claudeCodeVersion.trim() !=
+            normalized.claudeCodeVersion.trim();
+    final versionChanges = <AgentKind, bool>{
+      AgentKind.codex: codexVersionChanged,
+      AgentKind.openCode: openCodeVersionChanged,
+      AgentKind.claudeCode: claudeCodeVersionChanged,
+    };
+    for (final entry in versionChanges.entries) {
+      final key = AgentConnectionKey(
+        profileId: normalized.id,
+        agent: entry.key,
+      );
+      if (entry.value &&
+          (_setupStarting.contains(key) ||
+              _setupRequests.containsKey(key) ||
+              state.agentSetupStates[key]?.inProgress == true)) {
+        throw StateError('${entry.key.label} 正在安装，请等待安装结束后再切换版本');
+      }
     }
-    final agentLaunchIdentityChanged =
+    final sharedLaunchIdentityChanged =
         existing != null &&
         (existing.remoteCommand.trim() != normalized.remoteCommand.trim() ||
-            existing.workspace.trim() != normalized.workspace.trim() ||
-            existing.codexVersion.trim() != normalized.codexVersion.trim());
-    if (existing != null &&
-        (connectionIdentityChanged || agentLaunchIdentityChanged)) {
-      _removeStoredProfileSnapshots(existing);
-      for (final agent in AgentKind.values) {
+            existing.workspace.trim() != normalized.workspace.trim());
+    final affectedAgents =
+        connectionIdentityChanged || sharedLaunchIdentityChanged
+        ? AgentKind.values.toSet()
+        : versionChanges.entries
+              .where((entry) => entry.value)
+              .map((entry) => entry.key)
+              .toSet();
+    if (existing != null && affectedAgents.isNotEmpty) {
+      _removeStoredProfileSnapshots(existing, agents: affectedAgents);
+      for (final agent in affectedAgents) {
         final key = AgentConnectionKey(profileId: normalized.id, agent: agent);
         _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
         _agentLoadRequests.remove(key);
@@ -470,11 +502,19 @@ class AppController extends StateNotifier<AppUiState> {
     if (connectionIdentityChanged) {
       _forgetRetainedConnection(normalized.id);
       _clearSetupStates(normalized.id);
-    } else if (agentLaunchIdentityChanged) {
+    } else if (affectedAgents.isNotEmpty) {
       _retainedAgentConnections.removeWhere(
-        (key) => key.profileId == normalized.id,
+        (key) =>
+            key.profileId == normalized.id &&
+            affectedAgents.contains(key.agent),
       );
-      if (codexVersionChanged) _removeSetupState(codexKey);
+      for (final entry in versionChanges.entries) {
+        if (entry.value) {
+          _removeSetupState(
+            AgentConnectionKey(profileId: normalized.id, agent: entry.key),
+          );
+        }
+      }
     }
     if (existing != null &&
         !connectionIdentityChanged &&
@@ -497,9 +537,9 @@ class AppController extends StateNotifier<AppUiState> {
     } else {
       profiles[index] = normalized;
     }
-    if (connectionIdentityChanged || agentLaunchIdentityChanged) {
+    for (final agent in affectedAgents) {
       try {
-        await _agents.disconnect(normalized.id);
+        await _agents.disconnect(normalized.id, agent: agent);
       } catch (error, stack) {
         _diagnostics.warn(
           'Agent',
@@ -773,7 +813,7 @@ class AppController extends StateNotifier<AppUiState> {
     await _persist((stored) => stored.copyWith(selectedProfileId: profileId));
     if (connection.phase == ConnectionPhase.connected) {
       unawaited(ensureActiveAgent());
-      unawaited(refreshCodexVersions(profile.id));
+      unawaited(refreshAgentVersions(profile.id, profile.activeAgent));
     }
   }
 
@@ -1048,28 +1088,62 @@ class AppController extends StateNotifier<AppUiState> {
   /// This is deliberately non-fatal: a catalog outage must not interrupt SSH
   /// or an already running Agent lane.
   Future<void> refreshCodexVersions(String profileId) async {
-    if (!mounted || !state.profiles.any((profile) => profile.id == profileId)) {
-      return;
-    }
-    state = state.copyWith(
-      codexVersionsLoading: true,
-      codexVersionsError: null,
-    );
+    await refreshAgentVersions(profileId, AgentKind.codex);
+  }
+
+  Future<void> refreshOpenCodeVersions(String profileId) async {
+    await refreshAgentVersions(profileId, AgentKind.openCode);
+  }
+
+  Future<void> refreshClaudeCodeVersions(String profileId) async {
+    await refreshAgentVersions(profileId, AgentKind.claudeCode);
+  }
+
+  Future<void> refreshAgentVersions(String profileId, AgentKind agent) async {
+    // Catalogs are shared by Agent kind and also serve unsaved server drafts.
+    if (!mounted) return;
+    _setVersionCatalogState(agent, loading: true, error: null);
     try {
-      final versions = await _codexVersionCatalog.fetch();
+      final versions = switch (agent) {
+        AgentKind.codex => await _codexVersionCatalog.fetch(),
+        AgentKind.openCode => await _openCodeVersionCatalog.fetch(),
+        AgentKind.claudeCode => await _claudeCodeVersionCatalog.fetch(),
+      };
       if (!mounted) return;
-      state = state.copyWith(
-        codexVersions: versions,
-        codexVersionsLoading: false,
-        codexVersionsError: null,
-      );
+      _setVersionCatalogState(agent, versions: versions, loading: false);
     } catch (error) {
       if (!mounted) return;
-      state = state.copyWith(
-        codexVersionsLoading: false,
-        codexVersionsError: _message(error, '无法读取官方 Codex 版本列表'),
+      _setVersionCatalogState(
+        agent,
+        loading: false,
+        error: _message(error, '无法读取 ${agent.label} 版本列表'),
       );
     }
+  }
+
+  void _setVersionCatalogState(
+    AgentKind agent, {
+    List<String>? versions,
+    required bool loading,
+    String? error,
+  }) {
+    state = switch (agent) {
+      AgentKind.codex => state.copyWith(
+        codexVersions: versions ?? state.codexVersions,
+        codexVersionsLoading: loading,
+        codexVersionsError: error,
+      ),
+      AgentKind.openCode => state.copyWith(
+        openCodeVersions: versions ?? state.openCodeVersions,
+        openCodeVersionsLoading: loading,
+        openCodeVersionsError: error,
+      ),
+      AgentKind.claudeCode => state.copyWith(
+        claudeCodeVersions: versions ?? state.claudeCodeVersions,
+        claudeCodeVersionsLoading: loading,
+        claudeCodeVersionsError: error,
+      ),
+    };
   }
 
   /// Changes only the managed Codex CLI version for one server.
@@ -1077,23 +1151,61 @@ class AppController extends StateNotifier<AppUiState> {
   /// The next lane load will inspect the selected version and show the normal
   /// runtime setup flow when an install or downgrade is required.
   Future<void> changeCodexVersion(String profileId, String version) async {
+    await changeAgentVersion(profileId, AgentKind.codex, version);
+  }
+
+  Future<void> changeOpenCodeVersion(String profileId, String version) async {
+    await changeAgentVersion(profileId, AgentKind.openCode, version);
+  }
+
+  Future<void> changeClaudeCodeVersion(String profileId, String version) async {
+    await changeAgentVersion(profileId, AgentKind.claudeCode, version);
+  }
+
+  Future<void> changeAgentVersion(
+    String profileId,
+    AgentKind agent,
+    String version,
+  ) async {
     await _ensureInitialized();
-    final profile = state.profiles.firstWhereOrNull(
+    final normalized = switch (agent) {
+      AgentKind.codex => RemoteBootstrap.validateCodexVersion(version),
+      AgentKind.openCode => OpenCodeBootstrap.validateVersion(version),
+      AgentKind.claudeCode => ClaudeCodeBootstrap.validateVersion(version),
+    };
+    final key = AgentConnectionKey(profileId: profileId, agent: agent);
+    final revision = (_versionChangeRevisions[key] ?? 0) + 1;
+    _versionChangeRevisions[key] = revision;
+    final lock = _versionChangeLocks.putIfAbsent(profileId, Lock.new);
+    final saved = await lock.synchronized(() async {
+      final profile = state.profiles.firstWhereOrNull(
+        (candidate) => candidate.id == profileId,
+      );
+      if (profile == null) throw StateError('服务器配置不存在');
+      if (_agentVersion(profile, agent) == normalized) return profile;
+      final updated = switch (agent) {
+        AgentKind.codex => profile.copyWith(codexVersion: normalized),
+        AgentKind.openCode => profile.copyWith(openCodeVersion: normalized),
+        AgentKind.claudeCode => profile.copyWith(claudeCodeVersion: normalized),
+      };
+      return saveProfile(updated);
+    });
+    if (!mounted || state.selectedProfileId != profileId) return;
+    final current = state.profiles.firstWhereOrNull(
       (candidate) => candidate.id == profileId,
     );
-    if (profile == null) throw StateError('服务器配置不存在');
-    final normalized = RemoteBootstrap.validateCodexVersion(version);
-    if (profile.codexVersion == normalized) return;
-    final saved = await saveProfile(profile.copyWith(codexVersion: normalized));
-    if (!mounted || state.selectedProfileId != profileId) return;
+    if (_versionChangeRevisions[key] != revision ||
+        current == null ||
+        _agentVersion(current, agent) != normalized ||
+        !current.hasSameConnectionIdentity(saved) ||
+        current.workspace != saved.workspace ||
+        current.remoteCommand != saved.remoteCommand) {
+      return;
+    }
     if (_connections.states[profileId]?.phase != ConnectionPhase.connected) {
       return;
     }
-    final key = AgentConnectionKey(
-      profileId: profileId,
-      agent: AgentKind.codex,
-    );
-    await _loadAgentData(key, saved, includeModels: true);
+    await _loadAgentData(key, current, includeModels: true);
   }
 
   /// Called by the Android foreground service while the Activity is paused.
@@ -1358,9 +1470,7 @@ class AppController extends StateNotifier<AppUiState> {
         key,
         (current) => current.copyWith(
           prompt: prompt.copyWith(
-            targetVersion: key.agent == AgentKind.codex
-                ? profile.codexVersion
-                : prompt.targetVersion,
+            targetVersion: _agentVersion(profile, key.agent),
           ),
           inProgress: true,
           progress: '准备安装',
@@ -3536,7 +3646,8 @@ class AppController extends StateNotifier<AppUiState> {
         : requestedEffort;
     // 子 Agent 模型只取设置页全局默认值；会话级覆盖已移除，空值表示
     // 跟随主模型，由 bridge 转成 CLI 自己的 "inherit"。
-    final subagentModel = state.activeAgent == AgentKind.claudeCode &&
+    final subagentModel =
+        state.activeAgent == AgentKind.claudeCode &&
             modelSettings.preferredSubagentModel.trim().isNotEmpty
         ? modelSettings.preferredSubagentModel.trim()
         : null;
@@ -5390,21 +5501,24 @@ class AppController extends StateNotifier<AppUiState> {
             profile.hostFingerprint,
             profile.remoteCommand,
             profile.workspace,
-            profile.codexVersion,
+            _agentVersion(profile, agent),
           ]),
         ),
       )
       .toString();
 
-  void _removeStoredProfileSnapshots(ServerProfile profile) {
-    for (final agent in AgentKind.values) {
+  void _removeStoredProfileSnapshots(
+    ServerProfile profile, {
+    Iterable<AgentKind> agents = AgentKind.values,
+  }) {
+    for (final agent in agents) {
       unawaited(
         _threadSnapshotStore.removeScope(_snapshotScope(profile, agent)),
       );
+      _liveThreadSnapshots.removeWhere(
+        (key, _) => key.startsWith(threadPreferenceKey(profile.id, agent, '')),
+      );
     }
-    _liveThreadSnapshots.removeWhere(
-      (key, _) => key.startsWith('${profile.id}\u0000'),
-    );
   }
 
   void _saveStoredThread(AgentConnectionKey key, String threadId) {
@@ -5963,9 +6077,9 @@ class AppController extends StateNotifier<AppUiState> {
     }
     final existingSetup = state.agentSetupStates[key];
     if (existingSetup?.prompt != null) {
-      if (key.agent == AgentKind.codex &&
-          !existingSetup!.inProgress &&
-          existingSetup.prompt!.targetVersion != profile.codexVersion) {
+      if (!existingSetup!.inProgress &&
+          existingSetup.prompt!.targetVersion !=
+              _agentVersion(profile, key.agent)) {
         _removeSetupState(key);
       } else {
         if (_isActiveKey(key)) _showRemoteSetup(key);
@@ -5979,12 +6093,8 @@ class AppController extends StateNotifier<AppUiState> {
     if (inspection.compatibleCommand != null) return profile;
 
     final localWindows = isLocalWindowsProfile(profile);
-    final targetVersion = key.agent == AgentKind.codex
-        ? profile.codexVersion
-        : null;
-    final installationDetail = targetVersion == null
-        ? '需要安装兼容版本。'
-        : '将安装所选版本 Codex $targetVersion。';
+    final targetVersion = _agentVersion(profile, key.agent);
+    final installationDetail = '将安装所选版本 ${key.agent.label} $targetVersion。';
     final detail = inspection.detectedVersion == null
         ? localWindows
               ? '${key.agent.label} 尚未安装，将在当前 Windows 用户目录安装。'
@@ -6168,9 +6278,9 @@ class AppController extends StateNotifier<AppUiState> {
         current.hasSameConnectionIdentity(profile) &&
         setupProfile.proxyUrl == profile.proxyUrl &&
         current.proxyUrl == profile.proxyUrl &&
-        (key.agent != AgentKind.codex ||
-            (setupProfile.codexVersion == profile.codexVersion &&
-                current.codexVersion == profile.codexVersion));
+        _agentVersion(setupProfile, key.agent) ==
+            _agentVersion(profile, key.agent) &&
+        _agentVersion(current, key.agent) == _agentVersion(profile, key.agent);
   }
 
   bool _isActiveKey(AgentConnectionKey key) =>
@@ -7599,8 +7709,19 @@ class AppController extends StateNotifier<AppUiState> {
           ? 'root'
           : profile.username.trim(),
       codexVersion: _normalizedCodexVersion(profile.codexVersion),
+      openCodeVersion: _normalizedOpenCodeVersion(profile.openCodeVersion),
+      claudeCodeVersion: _normalizedClaudeCodeVersion(
+        profile.claudeCodeVersion,
+      ),
     );
   }
+
+  String _agentVersion(ServerProfile profile, AgentKind agent) =>
+      switch (agent) {
+        AgentKind.codex => profile.codexVersion,
+        AgentKind.openCode => profile.openCodeVersion,
+        AgentKind.claudeCode => profile.claudeCodeVersion,
+      };
 
   String _normalizedCodexVersion(String value) {
     final version = value.trim();
@@ -7609,6 +7730,26 @@ class AppController extends StateNotifier<AppUiState> {
       return RemoteBootstrap.validateCodexVersion(version);
     } on ArgumentError {
       return defaultCodexVersion;
+    }
+  }
+
+  String _normalizedOpenCodeVersion(String value) {
+    final version = value.trim();
+    if (version.isEmpty) return defaultOpenCodeVersion;
+    try {
+      return OpenCodeBootstrap.validateVersion(version);
+    } on ArgumentError {
+      return defaultOpenCodeVersion;
+    }
+  }
+
+  String _normalizedClaudeCodeVersion(String value) {
+    final version = value.trim();
+    if (version.isEmpty) return defaultClaudeCodeVersion;
+    try {
+      return ClaudeCodeBootstrap.validateVersion(version);
+    } on ArgumentError {
+      return defaultClaudeCodeVersion;
     }
   }
 

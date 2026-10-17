@@ -25,6 +25,9 @@ void main() {
     expect(profile.workspace, '/root/workspace');
     expect(profile.approvalMode, ApprovalMode.fullAccess);
     expect(profile.remoteCommand, managedCodexRemoteCommand);
+    expect(profile.codexVersion, defaultCodexVersion);
+    expect(profile.openCodeVersion, defaultOpenCodeVersion);
+    expect(profile.claudeCodeVersion, defaultClaudeCodeVersion);
     expect(profile.workspacePromptShown, isTrue);
   });
 
@@ -118,6 +121,35 @@ void main() {
       expect(restarted.activeAgent, agent);
       expect(restarted.host, '127.0.0.1');
       expect(restarted.remoteCommand, managedCodexRemoteCommand);
+    }
+  });
+
+  test('local Linux restarts preserve every selected Agent version', () {
+    final existing = localLinuxProfile(_instance).copyWith(
+      codexVersion: '0.150.0',
+      openCodeVersion: '1.18.10',
+      claudeCodeVersion: '2.1.292',
+      hostFingerprint: 'SHA256:local',
+    );
+    for (final instance in [
+      _instance,
+      const LocalLinuxInstance(
+        port: 41235,
+        password: 'replacement-password',
+        architecture: 'arm64-v8a',
+        rootfsVersion: 'debian-test',
+      ),
+    ]) {
+      final restarted = localLinuxProfile(instance, existing: existing);
+      expect(restarted.codexVersion, existing.codexVersion);
+      expect(restarted.openCodeVersion, existing.openCodeVersion);
+      expect(restarted.claudeCodeVersion, existing.claudeCodeVersion);
+      expect(restarted.port, instance.port);
+      expect(restarted.password, instance.password);
+      expect(
+        restarted.hostFingerprint,
+        instance.port == existing.port ? existing.hostFingerprint : isEmpty,
+      );
     }
   });
 

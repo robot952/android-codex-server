@@ -36,6 +36,24 @@ class _ControllableAppUpdateController extends AppUpdateController {
   void emit(AppUpdateState value) => state = value;
 }
 
+class _VersionEditorController extends AppController {
+  // ignore: use_super_parameters
+  _VersionEditorController(ProfileStore store, ServerConnectionManager manager)
+    : super(store, manager);
+
+  final List<(String, AgentKind)> versionRefreshes = [];
+
+  @override
+  Future<void> refreshAgentVersions(String profileId, AgentKind agent) async {
+    versionRefreshes.add((profileId, agent));
+    state = switch (agent) {
+      AgentKind.codex => state.copyWith(codexVersions: ['0.162.1']),
+      AgentKind.openCode => state.copyWith(openCodeVersions: ['1.18.11']),
+      AgentKind.claudeCode => state.copyWith(claudeCodeVersions: ['2.1.293']),
+    };
+  }
+}
+
 class _BlockingClient implements RemoteServerClient {
   final Completer<void> connectGate = Completer<void>();
   final Completer<void> closed = Completer<void>();
@@ -443,6 +461,76 @@ void main() {
     await tester.pumpAndSettle();
     expect(store.value.profiles.single.hostFingerprint, 'SHA256:test');
   });
+
+  for (final (width, textScale) in [(320.0, 1.0), (1220 / 2.75, 2.0)]) {
+    testWidgets(
+      'server editor Agent versions refresh and save at width=$width scale=$textScale',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = Size(width, 986);
+        tester.platformDispatcher.textScaleFactorTestValue = textScale;
+        addTearDown(tester.view.reset);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        final profile = _profile.copyWith(
+          codexVersion: '0.162.0',
+          openCodeVersion: '1.18.10',
+          claudeCodeVersion: '2.1.292',
+        );
+        final store = _MemoryStore(StoredProfiles(profiles: [profile]));
+        final manager = ServerConnectionManager();
+        final controller = _VersionEditorController(store, manager);
+        addTearDown(manager.close);
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              appControllerProvider.overrideWith((ref) => controller),
+            ],
+            child: const CodexRemoteApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('服务器设置'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('高级'));
+        await tester.tap(find.text('高级'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        for (final (agent, key, version) in [
+          (AgentKind.codex, 'server-codex-version', '0.162.1'),
+          (AgentKind.openCode, 'server-opencode-version', '1.18.11'),
+          (AgentKind.claudeCode, 'server-claude-code-version', '2.1.293'),
+        ]) {
+          final refresh = find.byTooltip('刷新 ${agent.label} 版本列表');
+          await tester.ensureVisible(refresh);
+          await tester.pumpAndSettle();
+          await tester.tap(refresh);
+          await tester.pumpAndSettle();
+          expect(controller.versionRefreshes.last, (profile.id, agent));
+
+          final selector = find.byKey(ValueKey(key));
+          await tester.ensureVisible(selector);
+          await tester.pumpAndSettle();
+          await tester.tap(selector);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('${agent.label} $version').last);
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+        }
+        final save = find.widgetWithText(FilledButton, '保存');
+        await tester.ensureVisible(save);
+        await tester.pumpAndSettle();
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+
+        expect(store.value.profiles.single.codexVersion, '0.162.1');
+        expect(store.value.profiles.single.openCodeVersion, '1.18.11');
+        expect(store.value.profiles.single.claudeCodeVersion, '2.1.293');
+        expect(find.byTooltip('返回服务器列表'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('server editor survives 1.5K portrait and enlarged text', (
     tester,

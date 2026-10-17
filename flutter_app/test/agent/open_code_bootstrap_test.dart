@@ -38,6 +38,49 @@ Future<void> _writeFile(String path, String contents) async {
   await file.writeAsString(contents);
 }
 
+Future<_ShellResult> _runWrapper(
+  String wrapper, {
+  required String home,
+  List<String> arguments = const <String>[],
+}) async {
+  final directory = await Directory.systemTemp.createTemp(
+    'flutter-opencode-wrapper-script-',
+  );
+  final file = File('${directory.path}/wrapper.sh');
+  await file.writeAsString(wrapper);
+  try {
+    final environment = Map<String, String>.of(Platform.environment)
+      ..['HOME'] = home;
+    final process = await Process.start('sh', <String>[
+      file.path,
+      ...arguments,
+    ], environment: environment);
+    final results = await Future.wait<Object>(<Future<Object>>[
+      process.stdout.transform(utf8.decoder).join(),
+      process.stderr.transform(utf8.decoder).join(),
+      process.exitCode,
+    ]);
+    return _ShellResult(
+      stdout: results[0] as String,
+      stderr: results[1] as String,
+      exitCode: results[2] as int,
+    );
+  } finally {
+    await directory.delete(recursive: true);
+  }
+}
+
+String _extractWrapper(String installScript) {
+  const startMarker = 'cat > "\$WRAPPER" <<\'EOF\'\n';
+  const endMarker = '\nEOF\nchmod 700 "\$WRAPPER"';
+  final start = installScript.indexOf(startMarker);
+  final end = installScript.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0) {
+    throw StateError('OpenCode wrapper marker missing from install script');
+  }
+  return installScript.substring(start + startMarker.length, end);
+}
+
 String _combinedProbeOutput({
   String os = 'Linux',
   String version = pinnedOpenCodeVersion,
@@ -58,6 +101,7 @@ __CODEX_REMOTE_DOWNLOADER=curl
 __CODEX_REMOTE_OPENCODE_PATH=/home/dev/.local/share/codex-remote/opencode/releases/$version/node_modules/.bin/opencode
 __CODEX_REMOTE_OPENCODE_VERSION=$version
 __CODEX_REMOTE_OPENCODE_BRIDGE=/home/dev/.local/bin/codex-remote-opencode-bridge
+__CODEX_REMOTE_OPENCODE_LAUNCHER_PROTOCOL=2
 __CODEX_REMOTE_OPENCODE_BRIDGE_SHA256=${bridgeHash ?? 'missing'}
 ''';
 
@@ -110,6 +154,72 @@ void main() {
       expect(syntax.exitCode, 0, reason: syntax.stderr);
     });
 
+    test(
+      'targets the selected release instead of discovering the latest',
+      () async {
+        const version = '1.17.0';
+        final script = OpenCodeBootstrap.combinedProbeScriptFor(
+          openCodeVersion: version,
+        );
+
+        expect(
+          script,
+          contains(
+            r'OPENCODE_BIN="$ROOT/opencode/releases/1.17.0/node_modules/.bin/opencode"',
+          ),
+        );
+        expect(script, isNot(contains('find -L')));
+
+        final syntax = await _runShell(script, arguments: const <String>['-n']);
+        expect(syntax.exitCode, 0, reason: syntax.stderr);
+      },
+    );
+
+    test('runtime inspection compares against the selected release', () {
+      const bridge = 'bridge';
+      const version = '1.17.0';
+      final bridgeHash = OpenCodeBootstrap.bridgeSha256(bridge);
+      final output = _combinedProbeOutput(
+        version: version,
+        bridgeHash: bridgeHash,
+      );
+
+      final matching = OpenCodeBootstrap.inspect(
+        output,
+        bridgeSource: bridge,
+        openCodeVersion: version,
+      );
+      final different = OpenCodeBootstrap.inspect(output, bridgeSource: bridge);
+
+      expect(matching.detectedVersion, version);
+      expect(
+        matching.compatibleCommand,
+        "'/home/dev/.local/bin/codex-remote-opencode-bridge' "
+        "--version '$version'",
+      );
+      expect(different.detectedVersion, version);
+      expect(different.compatibleCommand, isNull);
+    });
+
+    test('requires an exact version token', () {
+      expect(
+        OpenCodeBootstrap.versionMatches('OpenCode 1.18.11', '1.18.11'),
+        isTrue,
+      );
+      expect(
+        OpenCodeBootstrap.versionMatches('OpenCode 1.18.110', '1.18.11'),
+        isFalse,
+      );
+      expect(
+        OpenCodeBootstrap.versionMatches('OpenCode 11.18.11', '1.18.11'),
+        isFalse,
+      );
+      expect(
+        OpenCodeBootstrap.versionMatches('OpenCode v1.18.11', '1.18.11'),
+        isTrue,
+      );
+    });
+
     test('requires the pinned version, launcher, and exact bridge hash', () {
       const bridge = "console.log('bridge');\n";
       final hash = OpenCodeBootstrap.bridgeSha256(bridge);
@@ -127,7 +237,8 @@ void main() {
       expect(inspection.detectedVersion, pinnedOpenCodeVersion);
       expect(
         inspection.compatibleCommand,
-        "'/home/dev/.local/bin/codex-remote-opencode-bridge'",
+        "'/home/dev/.local/bin/codex-remote-opencode-bridge' "
+        "--version '$pinnedOpenCodeVersion'",
       );
       expect(inspection.installationProblem, isNull);
 
@@ -138,6 +249,12 @@ void main() {
       expect(staleBridge.detectedVersion, pinnedOpenCodeVersion);
       expect(staleBridge.compatibleCommand, isNull);
       expect(staleBridge.installationProblem, isNull);
+
+      final oldLauncher = OpenCodeBootstrap.inspect(
+        output.replaceAll('__CODEX_REMOTE_OPENCODE_LAUNCHER_PROTOCOL=2\n', ''),
+        bridgeSource: bridge,
+      );
+      expect(oldLauncher.compatibleCommand, isNull);
     });
 
     test(
@@ -206,6 +323,107 @@ __CODEX_REMOTE_OPENCODE_INVALID
       final syntax = await _runShell(script, arguments: const <String>['-n']);
       expect(syntax.exitCode, 0, reason: syntax.stderr);
     });
+
+    test('installs the selected release into its versioned path', () async {
+      const bridge = 'bridge';
+      const version = '1.17.0';
+      final script = OpenCodeBootstrap.installScript(
+        bridgeSource: bridge,
+        openCodeVersion: version,
+      );
+
+      expect(script, contains(r'RELEASE="$OPENCODE_ROOT/releases/1.17.0"'));
+      expect(script, contains('opencode-ai":"$version"'));
+      expect(script, contains('"$version"'));
+      expect(script, contains('OPEN_CODE_VERSION="1.17.0"'));
+      expect(
+        script,
+        contains(
+          r'OPENCODE_BIN="$ROOT/opencode/releases/$OPEN_CODE_VERSION/node_modules/.bin/opencode"',
+        ),
+      );
+      final syntax = await _runShell(script, arguments: const <String>['-n']);
+      expect(syntax.exitCode, 0, reason: syntax.stderr);
+    });
+
+    test(
+      'wrapper selects the requested release even when another is newer',
+      () async {
+        const selected = pinnedOpenCodeVersion;
+        const newer = '1.20.0';
+        final home = await Directory.systemTemp.createTemp(
+          'flutter-opencode-wrapper-',
+        );
+        try {
+          final script = OpenCodeBootstrap.installScript(
+            bridgeSource: 'bridge',
+            openCodeVersion: newer,
+          );
+          await _writeFile(
+            '${home.path}/.local/share/codex-remote/runtime/node/bin/node',
+            '#!/bin/sh\n'
+                'printf "OPENCODE_BIN=%s\\n" "\$OPENCODE_BIN"\n'
+                'printf "ARG=%s\\n" "\$@"\n',
+          );
+          for (final version in <String>[selected, newer]) {
+            await _writeFile(
+              '${home.path}/.local/share/codex-remote/opencode/releases/'
+                  '$version/node_modules/.bin/opencode',
+              "#!/bin/sh\nprintf '%s\\n' '$version'\n",
+            );
+          }
+          final nodePath =
+              '${home.path}/.local/share/codex-remote/runtime/node/bin/node';
+          await Process.run('chmod', <String>['u+x', nodePath]);
+          for (final version in <String>[selected, newer]) {
+            final executablePath =
+                '${home.path}/.local/share/codex-remote/opencode/releases/'
+                '$version/node_modules/.bin/opencode';
+            await Process.run('chmod', <String>['u+x', executablePath]);
+          }
+          final wrapper = _extractWrapper(script);
+          var result = await _runWrapper(
+            wrapper,
+            home: home.path,
+            arguments: const <String>['--version', selected],
+          );
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            result.stdout,
+            contains(
+              'OPENCODE_BIN=${home.path}/.local/share/codex-remote/'
+              'opencode/releases/$selected/node_modules/.bin/opencode',
+            ),
+          );
+
+          result = await _runWrapper(
+            wrapper,
+            home: home.path,
+            arguments: <String>['--version', newer, '--directory', '/srv/team'],
+          );
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            result.stdout,
+            contains(
+              'OPENCODE_BIN=${home.path}/.local/share/codex-remote/'
+              'opencode/releases/$newer/node_modules/.bin/opencode',
+            ),
+          );
+          expect(result.stdout, contains('ARG=--directory'));
+          expect(result.stdout, contains('ARG=/srv/team'));
+          expect(result.stdout, isNot(contains('ARG=--version')));
+
+          final probe = await _runShell(
+            OpenCodeBootstrap.probeScriptFor(openCodeVersion: selected),
+            home: home.path,
+          );
+          expect(probe.exitCode, 0, reason: probe.stderr);
+          expect(OpenCodeBootstrap.parseProbe(probe.stdout).version, selected);
+        } finally {
+          await home.delete(recursive: true);
+        }
+      },
+    );
 
     test('rejects empty bridge, invalid version, and unsupported proxy', () {
       expect(

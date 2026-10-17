@@ -39,6 +39,44 @@ void main() {
     );
   });
 
+  test('validates exact supported Claude Code 2.x versions', () {
+    expect(ClaudeCodeBootstrap.validateVersion('2.1.293'), '2.1.293');
+    expect(ClaudeCodeBootstrap.validateVersion('2.12.0'), '2.12.0');
+    for (final version in [
+      '',
+      'latest',
+      '2.0.9',
+      '3.0.0',
+      '2.1.3-rc.1',
+      '2.01.3',
+    ]) {
+      expect(
+        () => ClaudeCodeBootstrap.validateVersion(version),
+        throwsArgumentError,
+        reason: 'must reject $version',
+      );
+    }
+  });
+
+  test('pins launcher updates and skips a matching CLI install', () {
+    final script = ClaudeCodeBootstrap.installScript(
+      bridgeSource: 'bridge source',
+      claudeVersion: '2.1.293',
+    );
+    expect(script, contains('version_matches_target'));
+    expect(script, contains('跳过版本安装'));
+    expect(
+      ClaudeCodeBootstrap.launcherSource,
+      contains('DISABLE_AUTOUPDATER=1'),
+    );
+    expect(
+      ClaudeCodeBootstrap.launcherSource.indexOf('command -v claude'),
+      lessThan(
+        ClaudeCodeBootstrap.launcherSource.indexOf(r'$HOME/.local/bin/claude'),
+      ),
+    );
+  });
+
   test('parses a compatible remote Claude probe', () {
     const source = 'bridge source';
     final hash = ClaudeCodeBootstrap.bridgeSha256(source);
@@ -65,6 +103,7 @@ __CODEX_REMOTE_CLAUDE_LAUNCHER_SHA256=${ClaudeCodeBootstrap.bridgeSha256(ClaudeC
     final inspection = ClaudeCodeBootstrap.inspect(
       output,
       bridgeSource: source,
+      claudeVersion: '2.1.150',
     );
     expect(inspection.detectedVersion, '2.1.150');
     expect(
@@ -90,18 +129,51 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
     String? problem(String value) => ClaudeCodeBootstrap.inspect(
       value,
       bridgeSource: 'source',
+      claudeVersion: '2.1.150',
     ).installationProblem;
     expect(problem(host), contains('安装并登录 Claude Code'));
     expect(problem('$host$cli'), contains('Node.js 18'));
     expect(
       problem('$host${cli.replaceAll('2.1.150', '2.0.9')}'),
-      contains('升级'),
+      contains('Node.js 18'),
     );
     expect(
       problem('$host${cli}__CODEX_REMOTE_CLAUDE_NODE=/usr/bin/node\n'),
       isNull,
     );
   });
+
+  test(
+    'a supported CLI at another pinned version requests setup, not failure',
+    () {
+      const source = 'bridge source';
+      final hash = ClaudeCodeBootstrap.bridgeSha256(source);
+      final output =
+          '''
+__CODEX_REMOTE_OS=Linux
+__CODEX_REMOTE_HOME=/home/dev
+__CODEX_REMOTE_HAS_SHELL=1
+__CODEX_REMOTE_HAS_SHA256=1
+__CODEX_REMOTE_HAS_FLOCK=1
+__CODEX_REMOTE_HAS_SETSID_WAIT=1
+__CODEX_REMOTE_CLAUDE_PATH=/home/dev/.local/bin/claude
+__CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
+__CODEX_REMOTE_CLAUDE_NODE=/usr/bin/node
+__CODEX_REMOTE_CLAUDE_BRIDGE=/home/dev/.local/bin/codex-remote-claude-bridge
+__CODEX_REMOTE_CLAUDE_BRIDGE_SHA256=$hash
+__CODEX_REMOTE_CLAUDE_LAUNCHER_SHA256=${ClaudeCodeBootstrap.bridgeSha256(ClaudeCodeBootstrap.launcherSource)}
+''';
+
+      final inspection = ClaudeCodeBootstrap.inspect(
+        output,
+        bridgeSource: source,
+        claudeVersion: '2.1.293',
+      );
+      expect(inspection.detectedVersion, '2.1.150 (Claude Code)');
+      expect(inspection.compatibleCommand, isNull);
+      expect(inspection.installationProblem, isNull);
+    },
+  );
 
   test(
     'handshake and thread RPCs stay isolated from Codex configuration',
@@ -150,12 +222,18 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
     );
     addTearDown(client.close);
     final progress = <RemoteInstallProgress>[];
-    await client.installRuntime(
-      const ServerProfile(id: 'test'),
-      host,
-      onProgress: progress.add,
+    const profile = ServerProfile(
+      id: 'test',
+      claudeCodeVersion: '2.1.280',
+      proxyUrl: 'http://127.0.0.1:7890',
     );
+    await client.installRuntime(profile, host, onProgress: progress.add);
     expect(host.scripts, hasLength(1));
+    expect(host.scripts.single, contains("TARGET_VERSION='2.1.280'"));
+    expect(
+      host.scripts.single,
+      contains("CLAUDE_PROXY='http://127.0.0.1:7890'"),
+    );
     expect(progress.map((value) => value.percent), [5, 25, 100]);
     expect(
       progress.any((value) => value.message.contains('diagnostic')),
@@ -209,6 +287,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       final tools = Directory('${fixture.directory.path}/tools');
       await tools.create();
       for (final command in [
+        'cat',
         'dirname',
         'mkdir',
         'flock',
@@ -331,7 +410,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
   );
 
   test(
-    'rejects old CLI and invalid source before replacing installed bridge',
+    'upgrades an old CLI and rejects invalid source before replacing bridge',
     () async {
       final fixture = await _RuntimeFixture.create();
       addTearDown(fixture.close);
@@ -358,8 +437,155 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
           bridgeSource: 'console.log("replacement");',
         ),
       );
-      expect(oldVersion.exitCode, 65);
+      expect(oldVersion.exitCode, 0, reason: '${oldVersion.stderr}');
+      expect(await installed.readAsString(), 'console.log("replacement");');
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
+  );
+
+  test(
+    'skips native and npm version installation when the CLI already matches',
+    () async {
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      await fixture.writeCli('2.1.293', supportsInstall: false);
+      await fixture.writeNpm(installedVersion: '2.1.279');
+      final result = await fixture.script(
+        ClaudeCodeBootstrap.installScript(
+          bridgeSource: 'console.log("matching");',
+          claudeVersion: '2.1.293',
+        ),
+      );
+      expect(result.exitCode, 0, reason: 'matching target should skip install');
+      expect(result.stdout, contains('跳过版本安装'));
+      expect(
+        await File('${fixture.directory.path}/native-install-called').exists(),
+        isFalse,
+      );
+      expect(
+        await File('${fixture.directory.path}/npm-args').exists(),
+        isFalse,
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
+  );
+
+  test(
+    'prefers the active PATH CLI over a stale home installation',
+    () async {
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      final active = File('${fixture.directory.path}/active/bin/claude');
+      await active.parent.create(recursive: true);
+      await active.writeAsString(
+        '#!/bin/sh\nprintf "%s\\n" "2.1.293 (Claude Code)"\n',
+      );
+      await Process.run('chmod', ['700', active.path]);
+      final path =
+          '${active.parent.path}:${fixture.directory.path}/.local/bin:/usr/bin:/bin';
+      final result = await fixture.script(
+        ClaudeCodeBootstrap.installScript(
+          bridgeSource: 'console.log(process.env.CLAUDE_BIN);',
+          claudeVersion: '2.1.293',
+        ),
+        path: path,
+      );
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      final launch = await fixture.script(
+        'exec ~/.local/bin/codex-remote-claude-bridge',
+        path: path,
+      );
+      expect((launch.stdout as String).trim(), active.path);
+      expect(
+        await File(
+          '${fixture.directory.path}/.local/share/fixture-claude-version',
+        ).readAsString(),
+        '2.1.150',
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
+  );
+
+  test(
+    'switches to an exact older version without changing login configuration',
+    () async {
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      await fixture.writeCli('2.1.293');
+      final result = await fixture.script(
+        ClaudeCodeBootstrap.installScript(
+          bridgeSource: 'console.log("older");',
+          claudeVersion: '2.1.150',
+        ),
+      );
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      final probe = await fixture.script(
+        ClaudeCodeBootstrap.combinedProbeScript,
+      );
+      final inspection = ClaudeCodeBootstrap.inspect(
+        probe.stdout as String,
+        bridgeSource: 'console.log("older");',
+        claudeVersion: '2.1.150',
+      );
+      expect(inspection.compatibleCommand, isNotNull);
+      expect(inspection.detectedVersion, '2.1.150 (Claude Code)');
+      expect(
+        await File(
+          '${fixture.directory.path}/.claude/settings.json',
+        ).readAsString(),
+        '{"user":"retained"}',
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+    skip: _linuxInstallerSkip,
+  );
+
+  test(
+    'updates the current npm package without native migration and rejects a mismatched result',
+    () async {
+      final fixture = await _RuntimeFixture.create();
+      addTearDown(fixture.close);
+      await fixture.writeCli('2.1.150', npmManaged: true);
+      await fixture.writeNpm();
+      const source = 'console.log("retained bridge");';
+      final result = await fixture.script(
+        ClaudeCodeBootstrap.installScript(
+          bridgeSource: source,
+          claudeVersion: '2.1.280',
+        ),
+      );
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(
+        await File('${fixture.directory.path}/npm-args').readAsString(),
+        contains('@anthropic-ai/claude-code@2.1.280'),
+      );
+      expect(
+        await File('${fixture.directory.path}/native-install-called').exists(),
+        isFalse,
+      );
+      final installed = File(
+        '${fixture.directory.path}/.local/share/codex-remote/claude/bridge.cjs',
+      );
       expect(await installed.readAsString(), source);
+      await fixture.writeNpm(installedVersion: '2.1.279');
+      final mismatch = await fixture.script(
+        ClaudeCodeBootstrap.installScript(
+          bridgeSource: 'console.log("must not replace");',
+          claudeVersion: '2.1.293',
+        ),
+      );
+      expect(mismatch.exitCode, 65);
+      expect(mismatch.stderr, contains('版本与目标版本不一致'));
+      expect(await installed.readAsString(), source);
+      expect(
+        await File(
+          '${fixture.directory.path}/.claude/settings.json',
+        ).readAsString(),
+        '{"user":"retained"}',
+      );
     },
     timeout: const Timeout(Duration(seconds: 30)),
     skip: _linuxInstallerSkip,
@@ -505,6 +731,9 @@ class _RuntimeFixture {
     await Directory(
       '${fixture.directory.path}/.local/bin',
     ).create(recursive: true);
+    await Directory(
+      '${fixture.directory.path}/.local/share',
+    ).create(recursive: true);
     await Link(
       '${fixture.directory.path}/.local/bin/node',
     ).create(nodeExecutable);
@@ -520,12 +749,58 @@ class _RuntimeFixture {
     return fixture;
   }
 
-  Future<void> writeCli(String version) async {
-    final cli = File('${directory.path}/.local/bin/claude');
-    await cli.writeAsString(
-      '#!/bin/sh\nprintf "%s\\n" "$version (Claude Code)"\n',
+  Future<void> writeCli(
+    String version, {
+    bool supportsInstall = true,
+    bool npmManaged = false,
+  }) async {
+    final cli = File(
+      npmManaged
+          ? '${directory.path}/.local/lib/node_modules/@anthropic-ai/claude-code/cli.js'
+          : '${directory.path}/.local/bin/claude',
     );
+    await cli.parent.create(recursive: true);
+    await File(
+      '${directory.path}/.local/share/fixture-claude-version',
+    ).writeAsString(version);
+    await cli.writeAsString('''#!/bin/sh
+STATE="\$HOME/.local/share/fixture-claude-version"
+if [ "\$1" = install ]; then
+  printf '%s' called > "\$HOME/native-install-called"
+  ${supportsInstall ? '' : 'exit 1'}
+  mkdir -p "\$(dirname "\$STATE")"
+  printf '%s' "\$2" > "\$STATE"
+  exit 0
+fi
+VERSION="\$(cat "\$STATE" 2>/dev/null || printf '%s' '$version')"
+printf '%s\\n' "\$VERSION (Claude Code)"
+''');
     await Process.run('chmod', ['700', cli.path]);
+    if (npmManaged) {
+      final command = Link('${directory.path}/.local/bin/claude');
+      if (await File(command.path).exists()) await File(command.path).delete();
+      await command.create(cli.path);
+    }
+  }
+
+  Future<void> writeNpm({String? installedVersion}) async {
+    final npm = File('${directory.path}/.local/bin/npm');
+    final packageVersion = installedVersion ?? r'${PACKAGE##*@}';
+    await npm.writeAsString('''#!/bin/sh
+if [ "\$1" = root ] && [ "\$2" = --global ]; then
+  printf '%s\\n' "\$HOME/.local/lib/node_modules"
+  exit 0
+fi
+if [ "\$1" = prefix ] && [ "\$2" = --global ]; then
+  printf '%s\\n' "\$HOME/.local"
+  exit 0
+fi
+printf '%s\\n' "\$*" > "\$HOME/npm-args"
+for ARG in "\$@"; do PACKAGE="\$ARG"; done
+VERSION="$packageVersion"
+printf '%s' "\$VERSION" > "\$HOME/.local/share/fixture-claude-version"
+''');
+    await Process.run('chmod', ['700', npm.path]);
   }
 
   Future<ProcessResult> script(String source, {String? path}) async =>
