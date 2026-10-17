@@ -373,6 +373,11 @@ class ChildAgent {
     this.taskId = "";
     this.outputFile = "";
     this.parentTurnId = String(run.turn?.id || "");
+    // A child created by this transport may receive a waiting row when its
+    // parent turn is released. Reusing the same detached transport must not
+    // append that row again on every later turn.
+    this.hydrated = false;
+    this.waitingActivityAdded = false;
     // Claude's Agent tool is detached by default. `false` is the documented
     // opt-in for a synchronous child whose result the next parent action needs.
     this.background = input.run_in_background !== false;
@@ -429,6 +434,11 @@ class ChildAgent {
     instance.outputFile = String(task.outputFile || "");
     instance.parentTurnId = String(task.parentTurnId || "");
     instance.background = true;
+    // This child belongs to an older parent turn. It is restored only so late
+    // task frames can settle it; closeChildren must not create a new waiting
+    // row on the turn that happens to hydrate it.
+    instance.hydrated = true;
+    instance.waitingActivityAdded = true;
     instance.status = task.status === "running" ? "running" : childTerminalStatus(task.status);
     instance.turn = turn;
     instance.thread = thread;
@@ -781,9 +791,11 @@ class ClaudeBridge {
   hydrateBackgroundChildren(run) {
     for (const thread of this.store.list()) {
       if (thread.parentThreadId !== run.thread.id || thread.backgroundTask?.status !== "running") continue;
+      const key = thread.backgroundTask.toolUseId || thread.id;
+      if (this.children(run).has(key) || [...this.children(run).values()].some(value => value.id === thread.id)) continue;
       const child = ChildAgent.fromStored({ run, store: this.store, thread });
       if (!child) continue;
-      this.children(run).set(thread.backgroundTask.toolUseId || thread.id, child);
+      this.children(run).set(key, child);
       this.childThreads.set(child.id, child);
       for (const alias of [child.type, child.name, child.agentId, child.taskId]) this.bindChildName(run, child, alias);
     }
@@ -951,7 +963,11 @@ class ClaudeBridge {
     this.changed(run);
   }
   control(run, value) {
-    if (!run.child.stdin.destroyed && run.child.stdin.writable) run.child.stdin.write(JSON.stringify(value) + "\n");
+    if (!run.child.stdin.destroyed && !run.child.stdin.writableEnded && run.child.stdin.writable) {
+      run.child.stdin.write(JSON.stringify(value) + "\n");
+      return true;
+    }
+    return false;
   }
   permissionResponse(run, requestId, value) {
     this.control(run, { type: "control_response", response: { subtype: "success", request_id: requestId, response: value } });
@@ -1047,7 +1063,10 @@ class ClaudeBridge {
         // persisted child record is rehydrated on the next turn and settled by
         // Claude's task_updated/task-notification event.
         try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
-        this.activity(run, child, "waiting", "inProgress", "等待后台智能体完成");
+        if (!child.hydrated && !child.waitingActivityAdded) {
+          child.waitingActivityAdded = true;
+          this.activity(run, child, "waiting", "inProgress", "等待后台智能体完成");
+        }
         continue;
       }
       child.settle(status);
@@ -1055,6 +1074,32 @@ class ClaudeBridge {
       try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
       const kind = status === "completed" ? "completed" : "interrupted";
       this.activity(run, child, kind, status === "completed" ? "completed" : "interrupted");
+    }
+  }
+  interruptBackgroundChildren(run, message) {
+    let parentLifecycleChanged = false;
+    for (const child of this.children(run).values()) {
+      if (!child.background || child.status !== "running") continue;
+      child.settle("interrupted");
+      // stop() can run after finish() has already persisted the terminal
+      // parent turn.  The detached child's older started/waiting rows still
+      // carry inProgress, however, and would be resurrected as spinning cards
+      // after a reconnect.  Close those rows on the same parent turn before
+      // adding the explicit interrupted lifecycle row below.
+      if (String(child.parentTurnId || "") === String(run.turn.id)) {
+        for (const item of run.turn.items) {
+          if (item?.type !== "subAgentActivity" || item.agentThreadId !== child.id) continue;
+          if (!["started", "waiting"].includes(item.kind) || item.status !== "inProgress") continue;
+          item.status = "interrupted";
+          parentLifecycleChanged = true;
+          this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
+        }
+      }
+      try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
+      this.activity(run, child, "interrupted", "interrupted", message);
+    }
+    if (parentLifecycleChanged) {
+      try { this.persist(run); } catch (_) {}
     }
   }
   hasBackgroundChildren(run) {
@@ -1078,6 +1123,115 @@ class ClaudeBridge {
     }
     this.notify("turn/completed", { threadId: run.thread.id, turn: { id: run.turn.id, status: run.turn.status, error: run.turn.error || null } });
     this.notify("thread/status/changed", { threadId: run.thread.id, status: "idle" });
+  }
+  detachedRun(threadId) {
+    for (const run of this.detachedRuns) {
+      if (run.thread.id !== threadId || run.compactOnly) continue;
+      const stdin = run.child?.stdin;
+      if (run.exiting || !stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) {
+        // A detached process whose input has closed is still an owner until
+        // its close event removes it from detachedRuns. Starting another
+        // --resume in that interval would recreate the very double-owner race
+        // this reuse path is meant to prevent; let the caller retry instead.
+        throw new Error("后台 Claude Code 进程正在退出，请稍后重试");
+      }
+      return run;
+    }
+    return null;
+  }
+  resumeDetached(run, thread, prepared, params, requestId) {
+    const unlock = this.store.lock(thread.id);
+    try {
+      thread = this.store.get(thread.id);
+      if (thread.turnIds.length >= 10000) throw new Error("会话回合数量已达上限，请新建会话");
+      const turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [{ id: uuid(), type: "userMessage", content: prepared.display }] };
+      if (jsonBytes(turn) > MAX_TURN - OUTPUT_RESERVE) throw new Error("文本附件过大");
+      const configuration = settings.readSettings();
+      const model = modelArgument(params.model ?? thread.model ?? configuration.model);
+      const effort = params.effort ?? configuration.reasoningEffort;
+      if (effort && !EFFORTS.includes(effort)) throw new Error("Claude Code 不支持此思考强度");
+      const nativeModel = run.nativeModel ?? run.actualModel ?? run.thread.model ?? null;
+      const requestedModelIsImplicit = params.model == null && thread.model == null && configuration.model == null;
+      if (!requestedModelIsImplicit && model !== nativeModel) {
+        throw new Error("后台 Claude Code 任务仍在运行，暂不能切换模型，请等待任务完成后重试");
+      }
+      const nativeEffort = run.nativeEffort ?? run.thread.effort ?? null;
+      if ((effort || null) !== nativeEffort) {
+        throw new Error("后台 Claude Code 任务仍在运行，暂不能切换思考强度，请等待任务完成后重试");
+      }
+      const previousUsage = thread.tokenUsage;
+      const previousModel = thread.usageModel;
+      if (model !== thread.model) thread.tokenUsage = null;
+      thread.model = model;
+      thread.effort = effort || null;
+      if (!thread.turnIds.includes(turn.id)) thread.turnIds.push(turn.id);
+      thread.activeTurnId = turn.id;
+      thread.updatedAt = Date.now();
+      thread.status = "active";
+      const previewText = prepared.display.filter(item => item.type === "text").map(item => item.text).join("\n");
+      thread.preview = bounded(previewText, 1000) || "图片附件";
+      if (!String(thread.name || "").trim()) thread.name = initialThreadName(previewText);
+      this.store.saveTurn(thread, turn);
+      this.store.save(thread);
+
+      clearTimeout(run.saveTimer); run.saveTimer = null;
+      run.thread = thread;
+      run.turn = turn;
+      run.unlock = unlock;
+      run.unlockReleased = false;
+      run.content = prepared.content;
+      run.detachedReleased = false;
+      run.backgroundDetached = false;
+      run.exiting = false;
+      run.killTimer = null;
+      run.exitTimer = null;
+      run.compactOnly = false;
+      run.compactionId = uuid();
+      run.compactionDone = false;
+      run.boundaryDone = false;
+      run.boundaryTimer = null;
+      run.boundaryResolve = null;
+      run.boundaryReject = null;
+      run.settlePass = null;
+      run.fullAccess = params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess";
+      run.initialized = true;
+      run.streamed = new Set();
+      run.streamedByIndex = new Map();
+      run.streamReplayByIndex = new Map();
+      run.streamDeltaHistoryByIndex = new Map();
+      run.messageSequence = 0;
+      run.streamMessageKey = null;
+      run.streamMessageIdProvided = false;
+      run.messageId = null;
+      run.messageUsage = null;
+      run.messageModel = run.actualModel;
+      run.completedMessages = new Set();
+      run.lastAssistantBlocks = [];
+      run.toolAliases = new Map();
+      run.truncated = new Set();
+      run.usageByMessage = new Map();
+      run.baseUsage = { ...ZERO_USAGE, ...previousUsage?.total };
+      run.usageModel = previousModel;
+      run.lastUsage = null;
+      run.lastUsageId = null;
+      run.contextWindow = model === previousModel ? tokenCount(thread.modelWindow) : 0;
+      run.compactionWindow = configuredCompactionWindow(configuration);
+      this.detachedRuns.delete(run);
+      this.active.set(thread.id, run);
+      this.response(requestId, { turn: { id: turn.id, status: "inProgress" } });
+      this.notify("turn/started", { threadId: thread.id, turn: { id: turn.id, status: "inProgress" } });
+      this.notify("item/completed", { threadId: thread.id, turnId: turn.id, item: turn.items[0] });
+      if (!this.control(run, { type: "user", session_id: thread.claudeSessionId || thread.id, message: { role: "user", content: run.content }, parent_tool_use_id: null })) {
+        this.fail(run, "Claude Code 输入通道已关闭");
+      } else {
+        run.content = null;
+      }
+      return run;
+    } catch (error) {
+      if (this.active.get(thread.id) === run) this.active.delete(thread.id);
+      unlock();
+      throw error;
+    }
   }
   terminate(run) {
     if (run.killTimer) return;
@@ -1163,7 +1317,17 @@ class ClaudeBridge {
     // in-progress guard. User-role XML notifications are accepted as a
     // compatibility path for older Claude CLI builds.
     if (this.taskNotification(run, value)) return;
-    if (run.turn.status !== "inProgress") return;
+    if (run.turn.status !== "inProgress") {
+      // A detached parent turn is already terminal, but the native CLI can
+      // still flush child assistant/tool frames before its next prompt. Keep
+      // those frames on the child transcript; ordinary late parent frames are
+      // intentionally ignored so they cannot mutate a completed turn.
+      if (run.detachedReleased && value.parent_tool_use_id) {
+        const child = this.children(run).get(value.parent_tool_use_id);
+        if (child && (value.type === "assistant" || value.type === "user") && Array.isArray(value.message?.content)) this.childAnswer(child, value);
+      }
+      return;
+    }
     if (value.type === "control_response" && value.response?.request_id === run.initializeId) {
       if (run.initialized) return;
       if (value.response.subtype !== "success") return this.fail(run, "Claude Code 初始化失败");
@@ -1176,6 +1340,7 @@ class ClaudeBridge {
     if (value.type === "system" && value.subtype === "init") {
       run.thread.claudeSessionId = value.session_id;
       run.actualModel = value.model || run.thread.model;
+      if (!run.nativeModel && value.model) run.nativeModel = value.model;
       this.changed(run);
     }
     // Compaction reports how much of the window survived, so the App's usage
@@ -1590,6 +1755,10 @@ class ClaudeBridge {
   start(thread, prepared, params, requestId, options = {}) {
     if (!options.compact && params.sandboxPolicy?.type === "readOnly") throw new Error("Claude Code 暂不支持应用内只读沙箱，请使用 Claude Code 权限审批模式");
     if (this.active.has(thread.id)) throw new Error("Claude Code 会话仍在处理中");
+    if (!options.compact) {
+      const detached = this.detachedRun(thread.id);
+      if (detached) return this.resumeDetached(detached, thread, prepared, params, requestId);
+    }
     if (this.active.size >= 8) throw new Error("同时运行的 Claude Code 会话过多");
     const unlock = this.store.lock(thread.id);
     let run;
@@ -1669,7 +1838,7 @@ class ClaudeBridge {
       }
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(thread.modelWindow) : 0, compactionWindow: configuredCompactionWindow(configuration) };
+    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(thread.modelWindow) : 0, compactionWindow: configuredCompactionWindow(configuration), nativeModel: model || null, nativeEffort: effort || null };
       this.hydrateBackgroundChildren(run);
       this.active.set(thread.id, run);
       // A compaction pass answers its own request once the boundary is in, so it
@@ -1775,6 +1944,10 @@ class ClaudeBridge {
       // from racing and double-processing this run (L1335 checks active.get).
       this.active.delete(run.thread.id);
       this.finish(run, "interrupted", "连接已关闭");
+      // Once the bridge kills the detached CLI there is no transport left to
+      // deliver a task notification. Persist the child as interrupted instead
+      // of leaving a forever-running hydrated record after reconnect.
+      this.interruptBackgroundChildren(run, "Claude Code 连接已关闭");
       this.terminate(run);
     }
   }

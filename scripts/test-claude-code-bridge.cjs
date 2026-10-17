@@ -40,7 +40,7 @@ function fakeClaudeMain() {
   const workspaceFile = name => process.env.CLAUDE_TEST_AUDIT.replace(/\/audit\.jsonl$/, "") + "/" + name;
   input.on("line", line => {
     const message = JSON.parse(line);
-    audit({ type: "input", message });
+    audit({ type: "input", pid: process.pid, message });
     if (message.type === "control_request") {
       if (message.request.subtype === "initialize") {
         assert.equal(initialized, false);
@@ -291,6 +291,7 @@ function fakeClaudeMain() {
       send({ type: "assistant", message: { id: "background-spawn-message", content: [
         { type: "tool_use", id: "background-spawn", name: "Task", input: { subagent_type: "Explore", description: "后台检索", prompt: "异步检索整个仓库", run_in_background: true } },
       ] } });
+      send({ type: "system", subtype: "task_started", task_id: "bg-agent-123", run_id: "bg-run-123", tool_use_id: "background-spawn", status: "running", is_backgrounded: true });
       send({ type: "user", message: { content: [{
         type: "tool_result",
         tool_use_id: "background-spawn",
@@ -310,12 +311,18 @@ function fakeClaudeMain() {
         content: "Async agent launched successfully\nagentId: bg-agent-interrupt",
         toolUseResult: { isAsync: true, status: "async_launched", agentId: "bg-agent-interrupt" },
       }] } });
+    } else if (scenario === "background-reuse") {
+      // This response is intentionally a plain second turn. The bridge must
+      // send it through the still-open detached CLI rather than spawning a
+      // competing --resume process, while the original background child stays
+      // addressable for its later task notification.
+      result("BACKGROUND_REUSE_DONE");
     } else if (scenario === "background-notification") {
       // Claude 2.1 emits task frames as top-level system messages while a
       // resumed parent turn is active. This must settle the child and update
       // the original parent turn before the new result is handled.
       send({ type: "system", subtype: "task_updated", task_id: "bg-agent-123", run_id: "bg-run-123", patch: { status: "completed" } });
-      send({ type: "task_notification", task_id: "bg-agent-123", status: "completed", summary: "后台检索完成" });
+      send({ type: "system", subtype: "task_notification", task_id: "bg-agent-123", run_id: "bg-run-123", tool_use_id: "background-spawn", output_file: "/tmp/bg-agent-123.txt", status: "completed", summary: "后台检索完成", usage: { subagent_tokens: 12, tool_uses: 1, duration_ms: 20 } });
       result("BACKGROUND_NOTIFICATION_DONE");
     } else if (scenario === "delegation-tail") {
       // One CLI build prints the `<usage>` block above the address instead of
@@ -1204,9 +1211,10 @@ test("a running delegated conversation reads as running on its own page", async 
   assert.deepEqual(assistantTexts(settled.initialTurnsPage.data[0]), ["仍在检索中", "检索完成。"]);
 });
 
-test("a background agent survives parent completion and notifies its original turn", async ({ peer }) => {
+test("a background agent survives parent completion and notifies its original turn", async ({ peer, root }) => {
   const id = await peer.thread();
-  const parentTurn = await peer.turn(id, "delegation-background");
+  const turnOptions = { model: "fixture-model", effort: "medium" };
+  const parentTurn = await peer.turn(id, "delegation-background", turnOptions);
   await peer.complete(parentTurn);
   const firstPage = await peer.history(id);
   const first = firstPage.find(turn => turn.id === parentTurn.id);
@@ -1220,7 +1228,25 @@ test("a background agent survives parent completion and notifies its original tu
   const childBefore = await peer.ok("thread/read", { threadId: started.agentThreadId });
   assert.equal(childBefore.thread.status, "active");
 
-  const resumedTurn = await peer.turn(id, "background-notification");
+  // The detached native CLI remains the sole transport for the next turn.
+  // There must be no second --resume process competing for the same session.
+  const spawnCountBeforeReuse = auditFor(root).filter(value => value.type === "spawn").length;
+  const rejected = await peer.request("turn/start", { threadId: id, input: [{ type: "text", text: "CASE:background-reuse" }], model: "other-model", effort: "medium" });
+  assert.match(rejected.error?.message || "", /暂不能切换模型/);
+  const reusedTurn = await peer.turn(id, "background-reuse", turnOptions);
+  await peer.complete(reusedTurn);
+  const audit = auditFor(root);
+  const spawnCountAfterReuse = audit.filter(value => value.type === "spawn").length;
+  assert.equal(spawnCountAfterReuse, spawnCountBeforeReuse);
+  const spawnPid = audit.find(value => value.type === "spawn").pid;
+  const userPids = audit.filter(value => value.type === "input" && value.message.type === "user").map(value => value.pid);
+  assert.ok(userPids.length >= 2);
+  assert.equal(userPids[1], spawnPid);
+  const reused = (await peer.history(id)).find(turn => turn.id === reusedTurn.id);
+  assert.deepEqual(assistantTexts(reused), ["BACKGROUND_REUSE_DONE"]);
+  assert.equal(reused.items.some(item => item.type === "subAgentActivity" && item.kind === "waiting"), false);
+
+  const resumedTurn = await peer.turn(id, "background-notification", turnOptions);
   await peer.complete(resumedTurn);
   const turns = await peer.history(id);
   const original = turns.find(turn => turn.id === parentTurn.id);
@@ -1253,6 +1279,44 @@ test("a background agent remains active when its parent turn is interrupted", as
   const parent = (await peer.history(id)).find(turn => turn.id === parentTurn.id);
   const waiting = parent.items.find(item => item.type === "subAgentActivity" && item.kind === "waiting");
   assert.equal(waiting.status, "inProgress");
+});
+
+test("a hydrated background child does not add a waiting row to the next turn", async ({ peer, root, fake, peers }) => {
+  const id = await peer.thread();
+  const parentTurn = await peer.turn(id, "delegation-background");
+  await peer.complete(parentTurn);
+  const original = (await peer.history(id)).find(turn => turn.id === parentTurn.id);
+  assert.equal(original.items.filter(item => item.type === "subAgentActivity" && item.kind === "waiting").length, 1);
+
+  // Reconnect after the detached transport is gone. The child record is still
+  // running on disk, so the next bridge instance hydrates it before starting
+  // the new turn. Hydration must restore notification routing without painting
+  // another waiting row on the new parent turn.
+  await peer.close();
+  // A real Claude worker can outlive a bridge transport restart. Recreate that
+  // externally-owned running marker after stop() records the old transport as
+  // interrupted, then verify the next process hydrates and settles it.
+  const store = new ThreadStore(peer.state);
+  const stoppedParent = store.readTurn(store.get(id), parentTurn.id);
+  assert.equal(stoppedParent.items.some(item => item.type === "subAgentActivity" && ["started", "waiting"].includes(item.kind) && item.status === "inProgress"), false);
+  const childRecord = store.list().find(thread => thread.parentThreadId === id && thread.backgroundTask?.agentId === "bg-agent-123");
+  assert.ok(childRecord);
+  childRecord.backgroundTask = { ...childRecord.backgroundTask, status: "running" };
+  store.save(childRecord);
+  const restarted = new Peer(root, fake, peer.state);
+  peers.push(restarted);
+  await restarted.initialize();
+  const next = await restarted.turn(id, "background-notification");
+  await restarted.complete(next);
+  const latest = (await restarted.history(id)).find(turn => turn.id === next.id);
+  assert.deepEqual(assistantTexts(latest), ["BACKGROUND_NOTIFICATION_DONE"]);
+  assert.equal(latest.items.some(item => item.type === "subAgentActivity" && item.kind === "waiting"), false);
+  const settled = (await restarted.history(id)).find(turn => turn.id === parentTurn.id);
+  const completed = settled.items.find(item => item.type === "subAgentActivity" && item.kind === "completed");
+  assert.ok(completed?.agentThreadId);
+  assert.equal(completed.status, "completed");
+  const child = await restarted.ok("thread/read", { threadId: completed.agentThreadId });
+  assert.equal(child.initialTurnsPage.data[0].status, "completed");
 });
 
 test("a compaction pass rejected before it starts leaves no unreadable turn behind", async ({ peer, root }) => {
