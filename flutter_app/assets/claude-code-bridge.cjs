@@ -199,6 +199,115 @@ function resultAgentId(text) {
   return match ? match[1] : "";
 }
 
+// Claude delivers completion notices for detached agents as user-role text.
+// The native CLI wraps the payload in <task-notification> (usually nested in a
+// <system-reminder>) and uses kebab-case field names. Keep the parser tolerant
+// of the older underscore/camelCase forms as gateways and CLI versions have
+// emitted all three spellings.
+function taskNotification(value) {
+  const systemSubtype = value?.type === "system" ? String(value.subtype || "") : "";
+  const directSubtype = ["task_notification", "task-notification"].includes(value?.type) ? value.type : "";
+  const frameSubtype = systemSubtype || directSubtype;
+  if (["task_started", "task_updated", "task_notification", "task-notification"].includes(frameSubtype)) {
+    const patch = value.patch && typeof value.patch === "object" ? value.patch : {};
+    const source = { ...value, ...patch };
+    const id = String(source.task_id || source.taskId || source.agentId || source.agent_id || "").trim();
+    if (!id || id.length > 200) return null;
+    return {
+      id,
+      taskId: String(source.task_id || source.taskId || "").trim(),
+      toolUseId: String(source.tool_use_id || source.toolUseId || "").trim(),
+      status: String(source.status || (frameSubtype === "task_started" ? "running" : "completed")).trim().toLowerCase(),
+      summary: String(source.summary || source.message || source.note || "").trim(),
+      outputFile: String(source.output_file || source.outputFile || "").trim(),
+      kind: frameSubtype === "task_started" ? "started" : frameSubtype === "task_updated" ? "updated" : "terminal",
+    };
+  }
+  const blocks = Array.isArray(value?.message?.content) ? value.message.content : [];
+  const text = blocks.map(block => {
+    if (typeof block === "string") return block;
+    return block?.type === "text" ? String(block.text || "") : "";
+  }).filter(Boolean).join("\n");
+  const direct = value?.type === "task-notification" ? value : null;
+  const match = /<task-notification\b[^>]*>([\s\S]*?)(?:<\/task-notification>|$)/i.exec(text);
+  if (!direct && !match) return null;
+  const body = match?.[1] || "";
+  const xmlField = names => {
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const found = new RegExp(`<${escaped}\\s*>([\\s\\S]*?)<\\/${escaped}\\s*>`, "i").exec(body)?.[1];
+      if (found != null) return found.trim();
+    }
+    return "";
+  };
+  const plainField = names => {
+    for (const name of names) {
+      const found = new RegExp(`(?:^|\\n)\\s*${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*[:=]\\s*([^\\n]+)`, "i").exec(body)?.[1];
+      if (found) return found.trim();
+    }
+    return "";
+  };
+  const field = names => xmlField(names) || plainField(names);
+  const decoded = value => String(value || "")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  const source = direct || {};
+  const pick = (names, fallback = "") => {
+    for (const name of names) {
+      const candidate = source[name];
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    }
+    return field(names) || fallback;
+  };
+  const id = decoded(pick(["taskId", "task_id", "task-id", "agentId", "agent_id", "agent-id", "id"], ""));
+  if (!id || id.length > 200) return null;
+  const status = decoded(pick(["status", "state"], "completed")).toLowerCase();
+  const summary = decoded(pick(["summary", "message", "note", "result", "output"], ""));
+  const outputFile = decoded(pick(["outputFile", "output_file", "output-file"], ""));
+  return { id, taskId: id, status, summary, outputFile, toolUseId: "", kind: "terminal" };
+}
+
+function objectValue(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string" || value.length > MAX_TEXT) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch (_) { return null; }
+}
+
+function backgroundLaunch(value, block) {
+  const candidates = [
+    block?.toolUseResult,
+    block?.tool_use_result,
+    value?.toolUseResult,
+    value?.tool_use_result,
+    block?.content,
+  ];
+  for (const candidate of candidates) {
+    const parsed = objectValue(candidate);
+    if (parsed && (parsed.status === "async_launched" || parsed.status === "remote_launched" || parsed.isAsync === true)) {
+      return {
+        status: parsed.status,
+        agentId: String(parsed.agentId || "").trim(),
+        taskId: String(parsed.taskId || "").trim(),
+        outputFile: String(parsed.outputFile || parsed.output_file || "").trim(),
+        summary: "",
+      };
+    }
+  }
+  const text = toolResultText(block);
+  if (!/async agent launched successfully/i.test(text)) return null;
+  return { status: "async_launched", agentId: resultAgentId(text), taskId: "", outputFile: "", summary: "" };
+}
+
+function childTerminalStatus(status) {
+  const value = String(status || "completed").trim().toLowerCase();
+  if (["failed", "errored", "error", "rejected", "timeout", "timed_out"].includes(value)) return "failed";
+  if (["interrupted", "stopped", "cancelled", "canceled", "aborted"].includes(value)) return "interrupted";
+  return "completed";
+}
+
 // A spawn result is the answer followed by two lines of plumbing: the address
 // later SendMessage calls use, and a `<usage>` block with that call's token
 // count. Both belong to the delegation, not to what the agent said, and the
@@ -261,6 +370,12 @@ class ChildAgent {
     // The spawn result exposes an `agentId` (a…-…) that later SendMessage
     // calls may address instead of the display name.
     this.agentId = "";
+    this.taskId = "";
+    this.outputFile = "";
+    this.parentTurnId = String(run.turn?.id || "");
+    // Claude's Agent tool is detached by default. `false` is the documented
+    // opt-in for a synchronous child whose result the next parent action needs.
+    this.background = input.run_in_background !== false;
     this.status = "running";
     this.turn = { id: uuid(), status: "inProgress", startedAt: Date.now(), items: [] };
     // The delegated page has to open on the instructions the parent wrote, the
@@ -274,7 +389,14 @@ class ChildAgent {
     if (prompt.trim()) {
       this.turn.items.push({ id: "child-prompt", type: "userMessage", content: [{ type: "text", text: prompt }] });
     }
-    this.thread = store.createChild(run.thread, { name: this.name, model: run.thread.model, agentPath: this.agentPath });
+    this.thread = store.createChild(run.thread, {
+      name: this.name,
+      model: run.thread.model,
+      agentPath: this.agentPath,
+      backgroundTask: this.background
+        ? { status: "running", agentId: "", taskId: "", outputFile: "", parentTurnId: this.parentTurnId, toolUseId: "", agentType: label.type }
+        : null,
+    });
     // The App opens the delegated page by this id, so it has to be the id the
     // thread is actually persisted under.
     this.id = this.thread.id;
@@ -289,6 +411,53 @@ class ChildAgent {
     this.preview = this.summary;
     store.saveTurn(this.thread, this.turn);
     store.save(this.thread);
+  }
+  static fromStored({ run, store, thread }) {
+    const task = thread.backgroundTask || {};
+    const turnId = thread.activeTurnId || thread.turnIds.at(-1);
+    if (!turnId) return null;
+    let turn;
+    try { turn = store.readTurn(thread, turnId); } catch (_) { return null; }
+    const instance = Object.create(ChildAgent.prototype);
+    instance.parent = run;
+    instance.name = String(thread.name || thread.agentPath || "Agent");
+    instance.type = String(task.agentType || "Agent");
+    instance.summary = String(thread.preview || instance.name);
+    instance.agentPath = String(thread.agentPath || instance.name);
+    instance.agentId = String(task.agentId || "");
+    instance.taskId = String(task.taskId || "");
+    instance.outputFile = String(task.outputFile || "");
+    instance.parentTurnId = String(task.parentTurnId || "");
+    instance.background = true;
+    instance.status = task.status === "running" ? "running" : childTerminalStatus(task.status);
+    instance.turn = turn;
+    instance.thread = thread;
+    instance.id = thread.id;
+    instance.prompt = Array.isArray(turn.items)
+      ? String(turn.items.find(item => item?.type === "userMessage")?.content?.find(part => part?.type === "text")?.text || "")
+      : "";
+    instance.streamed = new Set();
+    instance.completedMessages = new Set();
+    instance.lastAssistantBlocks = [];
+    instance.runText = new Map();
+    return instance;
+  }
+  launch(info) {
+    if (!this.background) return;
+    const value = info || {};
+    this.agentId = String(value.agentId || this.agentId || "").trim();
+    this.taskId = String(value.taskId || (value.kind === "started" ? value.id : "") || this.taskId || "").trim();
+    this.outputFile = String(value.outputFile || this.outputFile || "").trim();
+    this.thread.backgroundTask = {
+      ...(this.thread.backgroundTask || {}),
+      status: "running",
+      agentId: this.agentId,
+      taskId: this.taskId,
+      outputFile: this.outputFile,
+      parentTurnId: this.parentTurnId || this.thread.backgroundTask?.parentTurnId || "",
+      toolUseId: this.thread.backgroundTask?.toolUseId || "",
+      agentType: this.thread.backgroundTask?.agentType || this.type,
+    };
   }
   item(type, id, fields) {
     let item = this.turn.items.find(value => value.id === id);
@@ -326,6 +495,16 @@ class ChildAgent {
     this.thread.updatedAt = Date.now();
     this.thread.status = "idle";
     delete this.thread.activeTurnId;
+    if (this.background) {
+      this.thread.backgroundTask = {
+        ...(this.thread.backgroundTask || {}),
+        status,
+        agentId: this.agentId || this.thread.backgroundTask?.agentId || "",
+        taskId: this.taskId || this.thread.backgroundTask?.taskId || "",
+        outputFile: this.outputFile || this.thread.backgroundTask?.outputFile || "",
+        parentTurnId: this.parentTurnId || this.thread.backgroundTask?.parentTurnId || "",
+      };
+    }
     for (const item of this.turn.items) if (item.status === "inProgress") item.status = this.turn.status === "completed" ? "completed" : "failed";
   }
 }
@@ -454,12 +633,13 @@ class ThreadStore {
   // A delegated sub-agent gets its own openable conversation. The App only
   // treats it as a collaborator when the record declares its parent and the
   // subagent thread source.
-  createChild(parent, { name, model, agentPath }) {
+  createChild(parent, { name, model, agentPath, backgroundTask = null }) {
     const thread = this.create(parent.cwd, model);
     thread.parentThreadId = parent.id;
     thread.threadSource = "subagent";
     thread.agentPath = agentPath;
     thread.name = name;
+    if (backgroundTask) thread.backgroundTask = clone(backgroundTask);
     this.save(thread);
     return thread;
   }
@@ -585,6 +765,10 @@ class ClaudeBridge {
     this.store = store;
     this.send = send;
     this.active = new Map();
+    // Parent CLI processes with detached agents stay available for late task
+    // frames, but their parent turn is released immediately for the next
+    // user prompt. They are terminated when the bridge itself stops.
+    this.detachedRuns = new Set();
     this.approvals = new Map();
     // A delegated conversation is written by its parent's run, so it has no
     // writer lock of its own. Opening one mid-run must still read as running.
@@ -594,7 +778,85 @@ class ClaudeBridge {
   response(id, result) { if (id !== undefined) this.send({ id, result }); }
   error(id, error, code = -32000) { if (id !== undefined) this.send({ id, error: { code, message: bounded(error.message || error, 4000) } }); }
   notify(method, params) { this.send({ method, params }); }
-  view(thread) { return threadView(thread, (!!thread.activeTurnId) && (this.childThreads.has(thread.id) || this.store.hasWriter(thread.id))); }
+  hydrateBackgroundChildren(run) {
+    for (const thread of this.store.list()) {
+      if (thread.parentThreadId !== run.thread.id || thread.backgroundTask?.status !== "running") continue;
+      const child = ChildAgent.fromStored({ run, store: this.store, thread });
+      if (!child) continue;
+      this.children(run).set(thread.backgroundTask.toolUseId || thread.id, child);
+      this.childThreads.set(child.id, child);
+      for (const alias of [child.type, child.name, child.agentId, child.taskId]) this.bindChildName(run, child, alias);
+    }
+  }
+  backgroundChild(run, notification) {
+    const wanted = String(notification?.id || "").trim();
+    const toolUseId = String(notification?.toolUseId || "").trim();
+    if (!wanted && !toolUseId) return null;
+    for (const child of this.children(run).values()) {
+      if (!child.background) continue;
+      if ([child.agentId, child.taskId, child.name, child.id].includes(wanted) || child.thread.backgroundTask?.toolUseId === toolUseId) return child;
+    }
+    for (const thread of this.store.list()) {
+      if (thread.parentThreadId !== run.thread.id || thread.backgroundTask?.status !== "running") continue;
+      const task = thread.backgroundTask || {};
+      if (![task.agentId, task.taskId, thread.id].includes(wanted) && task.toolUseId !== toolUseId) continue;
+      const child = ChildAgent.fromStored({ run, store: this.store, thread });
+      if (!child) return null;
+      this.children(run).set(task.toolUseId || thread.id, child);
+      this.childThreads.set(child.id, child);
+      return child;
+    }
+    return null;
+  }
+  taskNotification(run, value) {
+    const notification = taskNotification(value);
+    if (!notification || run.exiting) return false;
+    const child = this.backgroundChild(run, notification);
+    if (!child || child.status !== "running") return false;
+    if (notification.kind === "started" || notification.kind === "updated" && ["running", "queued", "pending", "in_progress"].includes(notification.status)) {
+      child.launch(notification);
+      try { this.store.save(child.thread); } catch (_) {}
+      return true;
+    }
+    if (notification.kind === "updated") {
+      // task_updated announces the worker state before the CLI emits the
+      // task_notification payload that carries its human-readable summary.
+      // Keep completed workers addressable until that terminal frame arrives;
+      // killed/failed workers have no follow-up payload and can settle now.
+      if (["killed", "failed", "error", "errored", "interrupted", "stopped", "cancelled", "canceled", "aborted"].includes(notification.status)) {
+        child.report(notification.summary);
+        child.settle(childTerminalStatus(notification.status));
+        if (this.childThreads.get(child.id) === child) this.childThreads.delete(child.id);
+        try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
+        this.activity(run, child, "interrupted", "interrupted");
+      } else {
+        child.pendingStatus = notification.status;
+        child.thread.backgroundTask = { ...(child.thread.backgroundTask || {}), pendingStatus: notification.status };
+        try { this.store.save(child.thread); } catch (_) {}
+      }
+      return true;
+    }
+    child.report(notification.summary);
+    child.settle(childTerminalStatus(notification.status));
+    if (this.childThreads.get(child.id) === child) this.childThreads.delete(child.id);
+    try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
+    const status = child.status === "completed" ? "completed" : child.status === "interrupted" ? "interrupted" : "failed";
+    this.activity(run, child, status === "completed" ? "completed" : "interrupted", status);
+    if (!run.detachedReleased) this.changed(run);
+    return true;
+  }
+  isBackgroundActivity(run, item) {
+    if (item?.type !== "subAgentActivity" || !item.agentThreadId) return false;
+    for (const child of this.children(run).values()) {
+      if (child.id === item.agentThreadId && child.background && child.status === "running") return true;
+    }
+    try { return this.store.get(item.agentThreadId).backgroundTask?.status === "running"; }
+    catch (_) { return false; }
+  }
+  view(thread) {
+    const background = thread.backgroundTask?.status === "running";
+    return threadView(thread, (!!thread.activeTurnId) && (background || this.childThreads.has(thread.id) || this.store.hasWriter(thread.id)));
+  }
   page(thread, params = {}) {
     const desc = params.sortDirection !== "asc";
     let end = desc ? thread.turnIds.length : 0;
@@ -608,7 +870,8 @@ class ClaudeBridge {
     const data = ids.map(id => {
       const running = this.active.get(thread.id);
       const turn = clone(running?.turn.id === id ? running.turn : this.store.readTurn(thread, id));
-      if (turn.status === "inProgress" && !this.childThreads.has(thread.id) && !this.store.hasWriter(thread.id)) turn.status = "interrupted";
+      const background = thread.backgroundTask?.status === "running";
+      if (turn.status === "inProgress" && !background && !this.childThreads.has(thread.id) && !this.store.hasWriter(thread.id)) turn.status = "interrupted";
       if (params.itemsView === "notLoaded") { turn.items = []; turn.itemsView = "notLoaded"; }
       else if (params.itemsView === "summary") {
         turn.items = turn.items.map(item => ({ ...item, text: bounded(item.text, 4000), result: bounded(item.result, 4000) }));
@@ -742,6 +1005,10 @@ class ClaudeBridge {
     for (const [id, approval] of this.approvals) if (approval.run === run) this.resolveApproval(id, {});
     for (const item of run.turn.items) {
       if (item.status === "inProgress") {
+        // A detached Agent remains visible as an in-progress activity after
+        // the parent turn ends. Its later task_updated/task_notification frame
+        // closes the activity when the worker actually settles.
+        if (this.isBackgroundActivity(run, item)) continue;
         item.status = status === "completed" ? "completed" : "failed";
         this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
       }
@@ -775,12 +1042,42 @@ class ClaudeBridge {
   closeChildren(run, status) {
     for (const child of this.children(run).values()) {
       if (child.status !== "running") continue;
+      if (child.background) {
+        // A parent result or interrupt does not cancel a detached Agent. The
+        // persisted child record is rehydrated on the next turn and settled by
+        // Claude's task_updated/task-notification event.
+        try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
+        this.activity(run, child, "waiting", "inProgress", "等待后台智能体完成");
+        continue;
+      }
       child.settle(status);
       if (this.childThreads.get(child.id) === child) this.childThreads.delete(child.id);
       try { this.store.saveTurn(child.thread, child.turn); this.store.save(child.thread); } catch (_) {}
       const kind = status === "completed" ? "completed" : "interrupted";
       this.activity(run, child, kind, status === "completed" ? "completed" : "interrupted");
     }
+  }
+  hasBackgroundChildren(run) {
+    return [...this.children(run).values()].some(child => child.background && child.status === "running");
+  }
+  releaseDetached(run) {
+    if (run.detachedReleased) return;
+    run.detachedReleased = true;
+    run.backgroundDetached = true;
+    this.detachedRuns.add(run);
+    if (this.active.get(run.thread.id) === run) this.active.delete(run.thread.id);
+    run.thread.activeTurnId = null;
+    run.thread.status = "idle";
+    try { this.persist(run); } catch (_) {}
+    // The writer belongs only to the finished parent turn. Releasing it here
+    // allows a later turn to resume the same native session while detached
+    // children continue on the CLI process.
+    if (run.unlock && !run.unlockReleased) {
+      run.unlock();
+      run.unlockReleased = true;
+    }
+    this.notify("turn/completed", { threadId: run.thread.id, turn: { id: run.turn.id, status: run.turn.status, error: run.turn.error || null } });
+    this.notify("thread/status/changed", { threadId: run.thread.id, status: "idle" });
   }
   terminate(run) {
     if (run.killTimer) return;
@@ -861,6 +1158,11 @@ class ClaudeBridge {
       }
       return;
     }
+    // Detached task frames can arrive after the parent result/interrupt. They
+    // are the wake signal for a later turn, so handle them before the normal
+    // in-progress guard. User-role XML notifications are accepted as a
+    // compatibility path for older Claude CLI builds.
+    if (this.taskNotification(run, value)) return;
     if (run.turn.status !== "inProgress") return;
     if (value.type === "control_response" && value.response?.request_id === run.initializeId) {
       if (run.initialized) return;
@@ -1046,6 +1348,13 @@ class ClaudeBridge {
           // parent page, only the child's terminal status, so it is filed on
           // the child before the turn is written.
           const report = block.is_error ? "" : toolResultText(block);
+          const launch = !block.is_error && child.background ? backgroundLaunch(value, block) : null;
+          if (launch) {
+            child.launch(launch);
+            for (const alias of [child.agentId, child.taskId]) this.bindChildName(run, child, alias);
+            try { this.store.save(child.thread); } catch (_) {}
+            continue;
+          }
           // Read the address off the raw text: the strip below removes the line
           // that carries it.
           const alias = resultAgentId(report);
@@ -1092,8 +1401,15 @@ class ClaudeBridge {
       }
       if (value.result && !run.turn.items.some(item => item.type === "agentMessage")) this.appendText(run, "assistant-" + run.turn.id, value.result);
       this.finish(run, value.is_error ? "failed" : "completed", value.is_error ? (value.errors || [value.result || "Claude Code 执行失败"]).join("\n") : null);
-      run.child.stdin.end();
-      run.exitTimer = setTimeout(() => this.terminate(run), 2000);
+      if (this.hasBackgroundChildren(run)) {
+        // Do not close the native CLI while detached Agents are still alive;
+        // task frames can arrive on this stream after the parent result. The
+        // parent turn is released immediately so the next prompt can start.
+        this.releaseDetached(run);
+      } else {
+        run.child.stdin.end();
+        run.exitTimer = setTimeout(() => this.terminate(run), 2000);
+      }
     }
   }
   children(run) {
@@ -1118,6 +1434,7 @@ class ClaudeBridge {
     if (children.has(block.id)) return;
     if (children.size >= 16) return;
     const child = new ChildAgent({ run, store: this.store }, block.input || {});
+    if (child.background) child.thread.backgroundTask.toolUseId = block.id;
     children.set(block.id, child);
     if (!this.childThreads.has(child.id)) this.childThreads.set(child.id, child);
     // The parent addresses a teammate by the type it spawned — the only address
@@ -1150,12 +1467,46 @@ class ClaudeBridge {
   }
   // One row per lifecycle change, so the parent page reads as
   // "开始工作 → 已完成" for each delegated conversation.
-  activity(run, child, kind, status) {
+  activity(run, child, kind, status, message = "") {
+    const parentTurnId = String(child.parentTurnId || child.thread.backgroundTask?.parentTurnId || "");
+    if (parentTurnId && parentTurnId !== run.turn.id) {
+      // A detached child can finish while a later parent turn is active. Keep
+      // the lifecycle event on the turn that launched it; otherwise the
+      // completion appears to belong to an unrelated prompt and the original
+      // in-progress activity card never gets settled in the App cache.
+      try {
+        const parentTurn = this.store.readTurn(run.thread, parentTurnId);
+        const lifecycle = parentTurn.items.filter(item => item?.type === "subAgentActivity" && item.agentThreadId === child.id && (item.kind === "started" || item.kind === "waiting"));
+        for (const entry of lifecycle) {
+          if (entry.status === status) continue;
+          entry.status = status;
+          this.notify("item/completed", { threadId: run.thread.id, turnId: parentTurnId, item: clone(entry) });
+        }
+        if (lifecycle.length) this.store.saveTurn(run.thread, parentTurn);
+        const id = `agent:${child.id}:${kind}`;
+        let item = parentTurn.items.find(value => value?.id === id);
+        if (!item) {
+          item = { id, type: "subAgentActivity", kind, agentPath: child.agentPath, agentThreadId: child.id, message: child.summary, status };
+          parentTurn.items.push(item);
+        } else {
+          item.status = status;
+        }
+        this.store.saveTurn(run.thread, parentTurn);
+        const currentThread = this.store.get(run.thread.id);
+        currentThread.updatedAt = Date.now();
+        this.store.save(currentThread);
+        this.notify("item/completed", { threadId: run.thread.id, turnId: parentTurnId, item: clone(item) });
+        return;
+      } catch (_) {
+        // If an old/partially-written parent turn cannot be read, retain the
+        // current-turn fallback below so the child completion is still visible.
+      }
+    }
     const item = this.item(run, `agent:${child.id}:${kind}`, "subAgentActivity", {
       kind,
       agentPath: child.agentPath,
       agentThreadId: child.id,
-      message: child.summary,
+      message: message || child.summary,
       status,
     });
     item.status = status;
@@ -1319,6 +1670,7 @@ class ClaudeBridge {
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
     run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(thread.modelWindow) : 0, compactionWindow: configuredCompactionWindow(configuration) };
+      this.hydrateBackgroundChildren(run);
       this.active.set(thread.id, run);
       // A compaction pass answers its own request once the boundary is in, so it
       // must not resolve the request with a turn the caller never sees.
@@ -1331,6 +1683,10 @@ class ClaudeBridge {
       child.on("error", () => this.fail(run, "无法启动 Claude Code，请检查服务器上的安装与登录"));
       child.on("close", code => {
         clearTimeout(run.initTimer); clearTimeout(run.saveTimer); clearTimeout(run.killTimer); clearTimeout(run.exitTimer); clearTimeout(run.boundaryTimer);
+        if (run.detachedReleased) {
+          this.detachedRuns.delete(run);
+          return;
+        }
         // A compaction pass that exits without reporting a boundary must still
         // release its awaiting request instead of leaving it to time out, and
         // one that did report its boundary has already done its work: the exit
@@ -1340,7 +1696,7 @@ class ClaudeBridge {
         if (this.active.get(thread.id) === run) this.active.delete(thread.id);
         run.thread.activeTurnId = null; run.thread.status = "idle";
         try { this.persist(run); } catch (_) { run.turn.status = "failed"; run.turn.error = { message: "无法保存 Claude Code 会话历史" }; }
-        unlock();
+        if (run.unlock && !run.unlockReleased) { run.unlock(); run.unlockReleased = true; }
         this.notify("turn/completed", { threadId: run.thread.id, turn: { id: run.turn.id, status: run.turn.status, error: run.turn.error || null } });
         this.notify("thread/status/changed", { threadId: run.thread.id, status: "idle" });
       });
@@ -1384,8 +1740,14 @@ class ClaudeBridge {
         const run = this.active.get(thread.id);
         if (!run || run.turn.id !== params.turnId) throw new Error("待停止的回合已失效或由另一个连接运行");
         this.finish(run, "interrupted");
-        this.control(run, { type: "control_request", request_id: uuid(), request: { subtype: "interrupt" } });
-        this.terminate(run);
+        if (this.hasBackgroundChildren(run)) {
+          // Interrupting the parent must not kill detached child Agents. Their
+          // task notification remains the source of truth for completion.
+          this.releaseDetached(run);
+        } else {
+          this.control(run, { type: "control_request", request_id: uuid(), request: { subtype: "interrupt" } });
+          this.terminate(run);
+        }
         return this.response(id, {});
       }
       if (method === "thread/name/set") {
@@ -1401,7 +1763,7 @@ class ClaudeBridge {
     if (this.stopping) return;
     this.stopping = true;
     this.childThreads.clear();
-    for (const run of this.active.values()) {
+    for (const run of new Set([...this.active.values(), ...this.detachedRuns])) {
       // Clear thread busy state before finish() persists. Without this, the
       // bridge process can die before child.on("close") fires, leaving the
       // thread saved as status="busy" / activeTurnId=<stale>. A fresh bridge

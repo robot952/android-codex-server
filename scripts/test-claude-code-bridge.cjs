@@ -219,7 +219,7 @@ function fakeClaudeMain() {
       // `parent_tool_use_id`, then the spawn result carries its address. A
       // later SendMessage may name either the teammate or that address.
       send({ type: "assistant", message: { id: "spawn-message", content: [
-        { type: "tool_use", id: "spawn-one", name: "Task", input: { subagent_type: "Explore", description: "查找解析器", prompt: "定位解析器" } },
+        { type: "tool_use", id: "spawn-one", name: "Task", input: { subagent_type: "Explore", description: "查找解析器", prompt: "定位解析器", run_in_background: false } },
       ] } });
       // The real CLI replays the delegated prompt on the parent's transport
       // once the child is running. It is the same text the spawn carried, so it
@@ -259,9 +259,9 @@ function fakeClaudeMain() {
       // the leaf of its agent path, so a label taken from the type would make
       // every row read the same.
       send({ type: "assistant", message: { id: "many-spawn-message", content: [
-        { type: "tool_use", id: "many-one", name: "Task", input: { subagent_type: "Explore", description: "检查 nginx 配置", prompt: "检查 nginx" } },
-        { type: "tool_use", id: "many-two", name: "Task", input: { subagent_type: "Explore", description: "检查 nginx 配置", prompt: "再检查一次 nginx" } },
-        { type: "tool_use", id: "many-three", name: "Task", input: { subagent_type: "Explore", description: "排查 /var/log 下的报错", prompt: "排查日志" } },
+        { type: "tool_use", id: "many-one", name: "Task", input: { subagent_type: "Explore", description: "检查 nginx 配置", prompt: "检查 nginx", run_in_background: false } },
+        { type: "tool_use", id: "many-two", name: "Task", input: { subagent_type: "Explore", description: "检查 nginx 配置", prompt: "再检查一次 nginx", run_in_background: false } },
+        { type: "tool_use", id: "many-three", name: "Task", input: { subagent_type: "Explore", description: "排查 /var/log 下的报错", prompt: "排查日志", run_in_background: false } },
       ] } });
       send({ type: "user", message: { content: [
         { type: "tool_result", tool_use_id: "many-one", content: "配置正常。\nagentId: aa11bb22cc33" },
@@ -274,7 +274,7 @@ function fakeClaudeMain() {
       // The child is written by the parent's run, so it has no writer of its
       // own and must still read as running to anyone who opens it.
       send({ type: "assistant", message: { id: "live-spawn-message", content: [
-        { type: "tool_use", id: "live-spawn", name: "Task", input: { subagent_type: "Explore", description: "长时间检索", prompt: "检索整个仓库" } },
+        { type: "tool_use", id: "live-spawn", name: "Task", input: { subagent_type: "Explore", description: "长时间检索", prompt: "检索整个仓库", run_in_background: false } },
       ] } });
       send({ type: "assistant", parent_tool_use_id: "live-spawn", message: { id: "live-child-message", content: [{ type: "text", text: "仍在检索中" }] } });
       // The closing report is held back until the test releases the fixture, so
@@ -285,13 +285,45 @@ function fakeClaudeMain() {
         send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "live-spawn", content: "检索完成。\nagentId: f6e5d4c3b2a1" }] } });
         result("DELEGATION_LIVE_DONE");
       }, 10);
+    } else if (scenario === "delegation-background") {
+      // Detached agents return an async launch result and continue after the
+      // parent turn finishes. The task frame arrives on a later resumed turn.
+      send({ type: "assistant", message: { id: "background-spawn-message", content: [
+        { type: "tool_use", id: "background-spawn", name: "Task", input: { subagent_type: "Explore", description: "后台检索", prompt: "异步检索整个仓库", run_in_background: true } },
+      ] } });
+      send({ type: "user", message: { content: [{
+        type: "tool_result",
+        tool_use_id: "background-spawn",
+        content: "Async agent launched successfully\nagentId: bg-agent-123",
+        toolUseResult: { isAsync: true, status: "async_launched", agentId: "bg-agent-123", outputFile: "/tmp/bg-agent-123.txt" },
+      }] } });
+      result("PARENT_BACKGROUND_DONE");
+    } else if (scenario === "delegation-background-interrupt") {
+      // Keep the parent in progress until the test issues turn/interrupt. The
+      // async child must stay live when the parent transport is stopped.
+      send({ type: "assistant", message: { id: "background-interrupt-message", content: [
+        { type: "tool_use", id: "background-interrupt", name: "Task", input: { subagent_type: "Explore", description: "中断后继续", prompt: "继续在后台处理", run_in_background: true } },
+      ] } });
+      send({ type: "user", message: { content: [{
+        type: "tool_result",
+        tool_use_id: "background-interrupt",
+        content: "Async agent launched successfully\nagentId: bg-agent-interrupt",
+        toolUseResult: { isAsync: true, status: "async_launched", agentId: "bg-agent-interrupt" },
+      }] } });
+    } else if (scenario === "background-notification") {
+      // Claude 2.1 emits task frames as top-level system messages while a
+      // resumed parent turn is active. This must settle the child and update
+      // the original parent turn before the new result is handled.
+      send({ type: "system", subtype: "task_updated", task_id: "bg-agent-123", run_id: "bg-run-123", patch: { status: "completed" } });
+      send({ type: "task_notification", task_id: "bg-agent-123", status: "completed", summary: "后台检索完成" });
+      result("BACKGROUND_NOTIFICATION_DONE");
     } else if (scenario === "delegation-tail") {
       // One CLI build prints the `<usage>` block above the address instead of
       // below it, and one prints only the block. The pass peels the tail off
       // repeatedly, so neither order may survive onto the child's page.
       send({ type: "assistant", message: { id: "tail-spawn-message", content: [
-        { type: "tool_use", id: "tail-one", name: "Task", input: { subagent_type: "Explore", description: "校验报告尾部", prompt: "校验报告" } },
-        { type: "tool_use", id: "tail-two", name: "Task", input: { subagent_type: "Explore", description: "只带用量块", prompt: "再校验一次" } },
+        { type: "tool_use", id: "tail-one", name: "Task", input: { subagent_type: "Explore", description: "校验报告尾部", prompt: "校验报告", run_in_background: false } },
+        { type: "tool_use", id: "tail-two", name: "Task", input: { subagent_type: "Explore", description: "只带用量块", prompt: "再校验一次", run_in_background: false } },
       ] } });
       send({ type: "user", message: { content: [
         { type: "tool_result", tool_use_id: "tail-one", content: "第一份结论。\n<usage>total_tokens: 120\ntool_uses: 2\nduration_ms: 30</usage>\nagentId: 1234abcd (use SendMessage with to: '1234abcd' to continue this agent)" },
@@ -1170,6 +1202,57 @@ test("a running delegated conversation reads as running on its own page", async 
   // A finished delegation ends on the answer it reported back, not on its last
   // tool card.
   assert.deepEqual(assistantTexts(settled.initialTurnsPage.data[0]), ["仍在检索中", "检索完成。"]);
+});
+
+test("a background agent survives parent completion and notifies its original turn", async ({ peer }) => {
+  const id = await peer.thread();
+  const parentTurn = await peer.turn(id, "delegation-background");
+  await peer.complete(parentTurn);
+  const firstPage = await peer.history(id);
+  const first = firstPage.find(turn => turn.id === parentTurn.id);
+  assert.ok(first);
+  const started = first.items.find(item => item.type === "subAgentActivity" && item.kind === "started");
+  const waiting = first.items.find(item => item.type === "subAgentActivity" && item.kind === "waiting");
+  assert.ok(started?.agentThreadId);
+  assert.equal(started.status, "inProgress");
+  assert.equal(waiting.message, "等待后台智能体完成");
+  assert.equal(waiting.status, "inProgress");
+  const childBefore = await peer.ok("thread/read", { threadId: started.agentThreadId });
+  assert.equal(childBefore.thread.status, "active");
+
+  const resumedTurn = await peer.turn(id, "background-notification");
+  await peer.complete(resumedTurn);
+  const turns = await peer.history(id);
+  const original = turns.find(turn => turn.id === parentTurn.id);
+  assert.ok(original);
+  const settledStarted = original.items.find(item => item.id === started.id);
+  const settledWaiting = original.items.find(item => item.id === waiting.id);
+  const completed = original.items.find(item => item.type === "subAgentActivity" && item.kind === "completed");
+  assert.equal(settledStarted.status, "completed");
+  assert.equal(settledWaiting.status, "completed");
+  assert.equal(completed.agentThreadId, started.agentThreadId);
+  assert.equal(completed.status, "completed");
+  const completionEvent = peer.messages.find(message => message.method === "item/completed" && message.params.item?.id === completed.id);
+  assert.equal(completionEvent.params.turnId, parentTurn.id);
+  const childAfter = await peer.ok("thread/read", { threadId: started.agentThreadId });
+  assert.equal(childAfter.thread.status, "idle");
+  assert.equal(childAfter.initialTurnsPage.data[0].status, "completed");
+  assert.ok(assistantTexts(childAfter.initialTurnsPage.data[0]).includes("后台检索完成"));
+});
+
+test("a background agent remains active when its parent turn is interrupted", async ({ peer }) => {
+  const id = await peer.thread();
+  const parentTurn = await peer.turn(id, "delegation-background-interrupt");
+  const started = await peer.wait(message => message.method === "item/completed" && message.params.turnId === parentTurn.id && message.params.item?.kind === "started", parentTurn.after);
+  const childId = started.params.item.agentThreadId;
+  await peer.ok("turn/interrupt", { threadId: id, turnId: parentTurn.id });
+  await peer.complete(parentTurn, "interrupted");
+  const child = await peer.ok("thread/read", { threadId: childId });
+  assert.equal(child.thread.status, "active");
+  assert.equal(child.initialTurnsPage.data[0].status, "inProgress");
+  const parent = (await peer.history(id)).find(turn => turn.id === parentTurn.id);
+  const waiting = parent.items.find(item => item.type === "subAgentActivity" && item.kind === "waiting");
+  assert.equal(waiting.status, "inProgress");
 });
 
 test("a compaction pass rejected before it starts leaves no unreadable turn behind", async ({ peer, root }) => {
