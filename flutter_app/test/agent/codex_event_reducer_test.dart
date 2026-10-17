@@ -357,6 +357,57 @@ void main() {
     expect(lateNotice.activeTurnId, isNull);
   });
 
+  test('keeps a late background-agent completion after the parent stops', () {
+    final state = _state().copyWith(
+      running: false,
+      activeTurnId: null,
+      activeThread: const AgentThread(
+        id: 'thread-1',
+        title: '任务',
+        status: 'idle',
+      ),
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'agent-started',
+          kind: TimelineKind.subAgent,
+          status: 'running',
+          turnId: 'turn-1',
+          subAgentThreadId: 'child-a',
+          subAgentPath: '/workspace/review',
+          subAgentActivity: 'started',
+        ),
+      ],
+      turnTiming: const TurnTiming(
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        startedAtMillis: 100,
+        completedAtMillis: 200,
+        stopped: true,
+      ),
+    );
+
+    final next = reduceCodexNotification(
+      state,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': <String, Object?>{
+          'id': 'agent-finished',
+          'type': 'subAgentActivity',
+          'kind': 'completed',
+          'agentThreadId': 'child-a',
+          'agentPath': '/workspace/review',
+          'message': '已完成后台检查',
+        },
+      }),
+    );
+
+    expect(next.running, isFalse);
+    expect(next.activeTurnId, isNull);
+    expect(next.timeline.last.subAgentThreadId, 'child-a');
+    expect(next.timeline.last.status, 'completed');
+  });
+
   test('keeps running after a final answer until turn completion arrives', () {
     final state = _state().copyWith(
       running: true,

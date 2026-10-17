@@ -271,10 +271,17 @@ AppUiState reduceCodexNotification(
 
     case 'item/started' || 'item/completed':
       if (!appliesToActive) return state;
-      if (isLateSettledEvent()) return state;
       final item = _map(params['item']);
       if (item == null) return state;
       final itemType = _string(item, const ['type']);
+      // A parent turn may be settled locally while a background collaborator
+      // continues on the same transport. Its lifecycle item is the completion
+      // signal the composer uses to update the background-agent panel. Keep
+      // that signal after the parent's stop/completion, while still dropping
+      // ordinary late command/message items from the settled turn.
+      if (isLateSettledEvent() && !_isBackgroundSubAgentLifecycleItem(item)) {
+        return state;
+      }
       if (itemType == 'collabAgentToolCall') {
         final turnId = _turnId(params);
         var timeline = _applySubAgentStates(state.timeline, item, turnId);
@@ -778,6 +785,18 @@ String _strongerTerminalSubAgentStatus(String current, String next) {
     _ => 0,
   };
   return rank(next) >= rank(current) ? next : current;
+}
+
+bool _isBackgroundSubAgentLifecycleItem(Map<String, Object?> item) {
+  final type = _string(item, const ['type']);
+  if (type == 'collabAgentToolCall') return true;
+  if (type != 'subAgentActivity') return false;
+  return _string(item, const [
+    'agentThreadId',
+    'agent_thread_id',
+    'subAgentThreadId',
+    'sub_agent_thread_id',
+  ]).isNotEmpty;
 }
 
 List<TimelineEntry> _applySubAgentStates(
