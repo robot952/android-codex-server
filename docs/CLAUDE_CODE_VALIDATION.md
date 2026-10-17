@@ -25,12 +25,28 @@ App 启动 Claude 会话时禁用自动更新，以尊重所选版本。
 `MAX_CONTEXT_TOKENS` 时退回读它。上下文占用使用 CLI 返回的真实用量，未知窗口不显示伪百分比，自定义模型容量只作独立参考，不用于重算占用圆环。历史列表仅包含 App 创建的 Claude 对话，不导入既有 CLI 对话。
 Windows 原生 Host 暂不支持；Android 本机 Linux 走回环 SSH，但 ARM64 PRoot 运行需真机验证。
 
+## 后台子代理与等待状态
+
+Claude Code 的 `Task` 默认按后台任务启动。父回合收到异步启动结果后可以结束或被用户停止，App 会在原父
+回合留下“等待后台智能体完成”的活动行，并在后台智能体面板中继续显示等待数量；这段等待不是 AI
+停止，也不会取消后台任务。桥接层保留同一 Claude CLI 会话，下一条用户消息直接复用该会话，避免同一
+原生会话被两个 `--resume` 进程并行占用。
+
+完成通知按 Claude CLI 的 `system/task_started`、`system/task_updated` 和
+`system/task_notification` 帧归并；旧版网关发来的直接帧以及下一轮请求中注入的
+`<task-notification>` 文本也兼容。终端通知会把后台结果写回启动它的原父回合，关闭开始/等待活动行，
+并更新子代理会话；如果用户已经发送下一条消息，完成事件仍按原父回合归档，不会误归到新回合。
+
+后台行为的受控回归应覆盖父回合正常完成、用户停止、下一回合复用同一 CLI 进程、迟到完成通知、重复
+等待行和子代理页面终态。受控 fixture 只能验证协议与状态归并；真实服务器仍需单独确认长时后台任务、
+网络断开重连和 Claude 版本差异。
+
 ## 验证分层
 
 | 层级 | 入口 | 验证内容 |
 | --- | --- | --- |
 | 安装与 adapter | `test/agent/claude_code_agent_client_test.dart` | 探测、版本/Node 前提、校验、安装失败保留旧版、卸载保留数据、真实 sh/Node、JSONL 接入和环境隔离 |
-| 协议与异常 | `scripts/test-claude-code-bridge.cjs` | CLI control 握手、流式去重、工具/提问、停止、输入限额、历史分页与重启、无效记录 |
+| 协议与异常 | `scripts/test-claude-code-bridge.cjs` | CLI control 握手、流式去重、工具/提问、停止、后台子代理等待/通知与同进程续聊、输入限额、历史分页与重启、无效记录 |
 | 配置 | `scripts/test-claude-code-settings.cjs` | 原生设置读取/保存、空 Key 保留、代理及上下文上限只读、草稿 API 测试和错误脱敏 |
 | 官方 CLI | `scripts/test-claude-code-cli.cjs` | 已安装 Claude 2.1.150，与隔离 localhost Anthropic SSE fixture 联调；真实 Write 允许/拒绝、图片、停止、EOF、历史及 CLI resume |
 | 共享 UI/状态 | `test/ui/thread_list_and_lifecycle_test.dart`、`test/ui/claude_code_workflow_test.dart` 及 Flutter 全量门禁 | 三 Agent 切换、窄屏/大字体、安装进度；Claude 工作流使用生产 adapter/controller/WorkScreen 和受控 JSONL 对端，覆盖 capability 菜单、发送/流式回复、批准/拒绝、停止、重开及跨 Agent 历史隔离 |
