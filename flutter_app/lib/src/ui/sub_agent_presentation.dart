@@ -8,6 +8,7 @@ enum SubAgentDisplayStatus {
   started('已开始工作', true),
   updated('已更新', true),
   working('正在工作', true),
+  waiting('等待后台任务完成', true),
   completed('已完成', false),
   interrupted('已中断', false),
   failed('失败', false),
@@ -58,6 +59,7 @@ class SubAgentPresentation {
     return switch (activity) {
       'started' || 'spawnAgent' => '开始工作',
       'completed' => '已完成',
+      'waiting' => '等待后台任务完成',
       'sendInput' || 'sendMessage' || 'interacted' => '发送消息',
       'followupTask' => '追加任务',
       'resumeAgent' => '已恢复',
@@ -311,6 +313,7 @@ String _displayAgentName(String value) {
 SubAgentDisplayStatus _toDisplayStatus(TimelineEntry entry) {
   final status = switch (entry.status) {
     'completed' => SubAgentDisplayStatus.completed,
+    'waiting' => SubAgentDisplayStatus.waiting,
     'interrupted' => SubAgentDisplayStatus.interrupted,
     'errored' || 'failed' => SubAgentDisplayStatus.failed,
     'shutdown' => SubAgentDisplayStatus.stopped,
@@ -339,6 +342,7 @@ SubAgentDisplayStatus _activityStatus(String activity) {
   return switch (activity) {
     'started' => SubAgentDisplayStatus.started,
     'interacted' => SubAgentDisplayStatus.updated,
+    'waiting' => SubAgentDisplayStatus.waiting,
     _ => SubAgentDisplayStatus.working,
   };
 }

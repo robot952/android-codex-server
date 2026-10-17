@@ -282,6 +282,36 @@ void main() {
   );
 
   test(
+    'marks a background collaborator as waiting for its completion notice',
+    () {
+      final activity = <TimelineEntry>[
+        _agent(
+          'waiting',
+          'thread-waiting',
+          'turn',
+          'running',
+          activity: 'waiting',
+        ),
+      ].toSubAgentActivityPresentations().single;
+      final background = <TimelineEntry>[
+        _agent(
+          'waiting',
+          'thread-waiting',
+          'turn',
+          'waiting',
+          activity: 'waiting',
+        ),
+      ].toBackgroundSubAgentPresentations().single;
+
+      expect(activity.status, SubAgentDisplayStatus.waiting);
+      expect(activity.activityLabel, '等待后台任务完成');
+      expect(activity.showsProgressIndicator, isTrue);
+      expect(background.status, SubAgentDisplayStatus.waiting);
+      expect(background.status.label, '等待后台任务完成');
+    },
+  );
+
+  test(
     'marks unconfirmed activity as preparing without treating it as running',
     () {
       final group = <TimelineEntry>[

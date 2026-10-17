@@ -3135,7 +3135,8 @@ Color _subAgentStatusColor(SubAgentDisplayStatus status) => switch (status) {
   SubAgentDisplayStatus.preparing ||
   SubAgentDisplayStatus.started ||
   SubAgentDisplayStatus.updated ||
-  SubAgentDisplayStatus.working => codexAmber,
+  SubAgentDisplayStatus.working ||
+  SubAgentDisplayStatus.waiting => codexAmber,
   SubAgentDisplayStatus.completed => codexGreen,
   SubAgentDisplayStatus.interrupted ||
   SubAgentDisplayStatus.failed ||
@@ -3171,7 +3172,14 @@ class _BackgroundAgentsPanelState extends State<_BackgroundAgentsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final label = '${widget.agents.length} 个后台智能体';
+    final waitingCount = widget.agents
+        .where((agent) => agent.status == SubAgentDisplayStatus.waiting)
+        .length;
+    final label = waitingCount == 0
+        ? '${widget.agents.length} 个后台智能体'
+        : waitingCount == widget.agents.length
+        ? '${widget.agents.length} 个后台智能体 · 等待后台任务完成'
+        : '${widget.agents.length} 个后台智能体 · $waitingCount 个等待通知';
     return Material(
       color: _workRaised,
       shape: RoundedRectangleBorder(

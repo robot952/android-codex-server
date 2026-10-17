@@ -197,6 +197,33 @@ void main({bool device = false}) {
   });
 
   testWidgets(
+    'shows when a background child is waiting for a completion notice',
+    (tester) async {
+      if (!device) {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(390, 844);
+        addTearDown(tester.view.reset);
+      }
+      final h = await pumpSubAgentApp(tester);
+      h.session.addThread('waiting-child');
+      h.session.activity(
+        'parent',
+        'waiting-child',
+        path: '/root/Explore design doc',
+        kind: 'waiting',
+      );
+      await pumpSubAgentEvents(tester);
+
+      expect(find.text('1 个后台智能体 · 等待后台任务完成'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('background-agents-toggle')));
+      await pumpSubAgentEvents(tester);
+      expect(find.text('等待后台任务完成'), findsWidgets);
+      expect(find.byType(CircularProgressIndicator), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'nested child pages are read-only and preserve the parent draft',
     (tester) async {
       if (!device) {
