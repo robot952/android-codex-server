@@ -226,7 +226,7 @@ unshare --mount --propagation private bash scripts/test-ci-android.sh --read-onl
 | `quick` | 频繁编码反馈 | 服务器脚本门禁、OpenCode bridge quick 门禁、Claude bridge 门禁、Flutter `analyze` |
 | `check` | 一个功能完成 | 服务器脚本门禁、OpenCode bridge full 门禁、Claude bridge 门禁、Flutter analyze/test、Debug APK、Debug 模拟器冒烟 |
 | `full` | 提交前或高风险改动 | 上述门禁、Debug/Release APK、Release 模拟器冒烟 |
-| `publish` | 交付本机下载包 | `full` 的缓存结果、稳定签名校验、本机 HTTP 部署、内外网下载哈希校验 |
+| `publish` | 交付本机下载包 | `full` 的缓存结果、稳定签名校验、本机 HTTP 部署、内网下载哈希校验；外网地址只发布，不默认回验 |
 | `status` | 查看环境 | Git、AVD、OpenCode 运行时、门禁 stamp 和 APK SHA-256 |
 
 `quick` 不构建可安装 APK；需要 APK 时至少执行 `check`。`full/publish` 会复用同一输入下已经通过的
@@ -579,17 +579,19 @@ Release: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
 脚本读取 `flutter_app/pubspec.yaml` 的版本，使用
 `keystore/codex-remote-stable.keystore` 验签，复制到 `/var/www/html/codex.apk`（同时保留
-`agent.apk` 兼容别名），然后用独立的 Node HTTP(S) 下载器直接连接（不经过环境代理）校验：
+`agent.apk` 兼容别名），然后用独立的 Node HTTP(S) 下载器直接连接（不经过环境代理）校验内网地址：
 
 ```text
 内网：http://192.168.8.107/codex.apk
 外网：http://frp.asdb.top:18080/codex.apk
 ```
 
-两个地址返回的 SHA-256 必须与 Release APK 相同。发布报告必须同时给出这两个完整地址；网络代理
-不通时先说明验证失败，不要给不完整或未经请求验证的 URL。
+内网地址返回的 SHA-256 必须与 Release APK 相同。外网地址是同一份本机文件的 FRP 映射，仍须随发布报告
+提供，但按当前约束不作为本地出包门禁，默认不发起外网下载；报告应明确外网未回验。需要单独检查外网时，
+显式设置 `CODEX_LOCAL_VERIFY_URLS`（或兼容的 `CODEX_LOCAL_VERIFY_URL`）覆盖默认地址列表。
 
-下载回验先完整下载，默认 30 秒超时；仅临时网络错误或连接中断才改用最多 4 个并行 Range 分段。
+若显式启用外网回验，下载器先完整下载，默认 30 秒超时；仅临时网络错误或连接中断才改用最多 4 个并行
+Range 分段。
 分段探测及每段必须返回准确的 `206`、范围、总大小和一致的强 ETag（若服务端提供）；最终拼接后仍核对
 整包大小、SHA-256、包名、版本和稳定证书。错误哈希、错误范围、鉴权失败或不支持 Range 会直接失败。
 Range 阶段默认共用 300 秒总时限，每段最多重试一次；不会按每段重置总时限。超时配置

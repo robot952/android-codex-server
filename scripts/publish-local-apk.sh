@@ -10,7 +10,12 @@ source "$ROOT_DIR/scripts/android-sdk.sh"
 source "$ROOT_DIR/scripts/apk-lib.sh"
 
 readonly DEFAULT_PUBLISH_DIR="/var/www/html"
-readonly DEFAULT_VERIFY_URLS="http://192.168.8.107/codex.apk,http://frp.asdb.top:18080/codex.apk"
+# Local publication gates on the directly reachable LAN endpoint. The FRP
+# endpoint remains available when callers explicitly set CODEX_LOCAL_VERIFY_URLS
+# (or the legacy singular alias), but an unavailable tunnel must not block a
+# locally produced APK.
+readonly DEFAULT_VERIFY_URLS="http://192.168.8.107/codex.apk"
+readonly OPTIONAL_EXTERNAL_VERIFY_URL="http://frp.asdb.top:18080/codex.apk"
 readonly APK_PATH="$ROOT_DIR/flutter_app/build/app/outputs/flutter-apk/app-release.apk"
 readonly EXPECTED_APPLICATION_ID="top.asdb.agent"
 readonly PUBLISH_LOCK_FILE=".agent-apk-publish.lock"
