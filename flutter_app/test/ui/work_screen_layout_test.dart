@@ -348,6 +348,55 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'keeps an activity-only transcript at the bottom of the viewport',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(420, 840);
+      addTearDown(tester.view.reset);
+
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager)
+        ..showState(
+          const AppUiState(
+            screen: AppScreen.work,
+            activeThread: AgentThread(id: 'activity-only-thread'),
+            activeAgentCapabilities: AgentCapabilities.codex,
+            timeline: <TimelineEntry>[
+              TimelineEntry(
+                id: 'activity-only-agent',
+                kind: TimelineKind.subAgent,
+                status: 'completed',
+                turnId: 'activity-turn',
+                subAgentPath: 'team/release_url_audit',
+                subAgentThreadId: 'activity-child',
+                subAgentActivity: 'completed',
+              ),
+            ],
+          ),
+        );
+      addTearDown(() async => manager.close());
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final viewport = tester.getRect(find.byType(CustomScrollView));
+      final activity = tester.getRect(
+        find.byKey(const ValueKey('sub-agent-activity:activity-only-agent:0')),
+      );
+      expect(activity.bottom, greaterThan(viewport.bottom - 24));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('opens a long cached conversation without chasing its extent', (
     tester,
   ) async {

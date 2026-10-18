@@ -1068,7 +1068,27 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
           ? itemsRenderObject.geometry?.scrollExtent
           : null;
       if (itemsExtent != null) {
-        final targetGap = position.viewportDimension > itemsExtent
+        // A transcript that only contains collaboration activity is an
+        // activity feed, not a short conversation.  Keeping the normal
+        // short-session top alignment here reserves the entire remaining
+        // viewport below a single sub-agent row, while the same activity is
+        // already summarized in the composer panel.  Keep that row at the
+        // transcript bottom so the page does not look like it stopped
+        // rendering halfway through.
+        final activityOnly =
+            _displayTimeline.isNotEmpty &&
+            _displayTimeline.any(
+              (entry) => entry.kind == TimelineKind.subAgent,
+            ) &&
+            _displayTimeline.every(
+              (entry) =>
+                  entry.kind == TimelineKind.subAgent ||
+                  entry.kind == TimelineKind.notice,
+            ) &&
+            current.aggregateDiff.trim().isEmpty;
+        final targetGap = activityOnly
+            ? 0.0
+            : position.viewportDimension > itemsExtent
             ? position.viewportDimension - itemsExtent
             : 0.0;
         if ((targetGap - _transcriptBottomGap).abs() > 0.5) {
