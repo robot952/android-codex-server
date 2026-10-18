@@ -544,7 +544,8 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
 - Composer 的附件菜单支持调用系统相机拍照，以及多选图片或文件；最多保留 8 项、一次选择总计不超过 40 MiB；单个普通附件
   不超过 20 MiB，内联文本不超过 512 KiB。上传时显示无百分比的进度条，成功项显示可移除 chip，
   发送时可只有附件而没有正文。离开会话会清空待发项；`turn/start` 失败会恢复草稿和待发附件，并移除
-  尚未得到服务器确认的 optimistic user row。
+  尚未得到服务器确认的 optimistic user row。服务器把文本附件内联回显时按文件名与乐观行合并；图片仍按
+  远程路径合并，避免一条图片+日志消息被显示成两条，也不会把同名不同图片误合并。
 
 ### 8.4 FileManagerScreen（远程文件）
 
@@ -656,7 +657,8 @@ bridge 即使保留兼容 RPC，也不能绕过 capability 在 UI 暴露未承�
 Android 本机 Linux 沿用其回环 SSH；Windows 原生 Host 暂不支持。
 
 服务器须已经安装 Claude Code 并具有 Node.js 18+，连接时 CLI 须精确匹配所选的稳定 2.1+ 版本
-（当前支持 2.x）。探测先采用 PATH 中的 `claude`，再查找 `~/.local/bin/claude`；Node 可复用
+（当前支持 2.x）。探测先采用 PATH 中的 `claude`，再查找 `~/.local/bin/claude`、用户 npm/nvm
+目录和 Claude 原生安装目录；Node 可复用
 Codex/OpenCode 的托管运行时。Profile 默认版本为 `2.1.293`，版本列表从 npm 稳定元数据读取。
 版本切换先识别当前安装：npm 安装沿用当前全局路径安装固定版本，其他安装调用现有 CLI 的原生安装器。
 旧 CLI 可以进入升级流程，安装后严格复查原路径版本；不创建独立托管 CLI 副本。

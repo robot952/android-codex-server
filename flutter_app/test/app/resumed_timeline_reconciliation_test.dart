@@ -465,6 +465,61 @@ void main() {
       expect(result.timeline, const <TimelineEntry>[generatedName]);
     });
 
+    test(
+      'matches an inline text attachment with its uploaded optimistic row',
+      () {
+        const imagePath =
+            '/root/.codex-mobile/uploads/96b2bf2f-scaled_1000154875.jpg';
+        const logPath =
+            '/root/.codex-mobile/uploads/agent-diagnostic-session-123.txt';
+        const optimistic = TimelineEntry(
+          id: 'local-user-1',
+          kind: TimelineKind.userMessage,
+          text: '这是怎么回事？',
+          attachments: <MessageAttachment>[
+            MessageAttachment(
+              name: 'scaled_1000154875.jpg',
+              remotePath: imagePath,
+              mimeType: 'image/jpeg',
+            ),
+            MessageAttachment(
+              name: 'agent-diagnostic-session-123.txt',
+              remotePath: logPath,
+              mimeType: 'text/plain',
+            ),
+          ],
+          turnId: 'turn-1',
+        );
+        const refreshed = TimelineEntry(
+          id: 'server-user-1',
+          kind: TimelineKind.userMessage,
+          text: '这是怎么回事？',
+          attachments: <MessageAttachment>[
+            MessageAttachment(
+              name: '96b2bf2f-scaled_1000154875.jpg',
+              remotePath: imagePath,
+              mimeType: 'image/*',
+            ),
+            MessageAttachment(
+              name: 'agent-diagnostic-session-123.txt',
+              mimeType: 'text/plain',
+            ),
+          ],
+          turnId: 'turn-1',
+        );
+
+        final result = reconcileResumedTimeline(
+          cachedTimeline: const <TimelineEntry>[optimistic],
+          cachedNextCursor: null,
+          refreshedTimeline: const <TimelineEntry>[refreshed],
+          refreshedNextCursor: null,
+          refreshedTurnIds: const <String>['turn-1'],
+        );
+
+        expect(result.timeline, const <TimelineEntry>[refreshed]);
+      },
+    );
+
     test('summary replaces only matching timeline identities', () {
       final cached = <TimelineEntry>[
         const TimelineEntry(

@@ -702,6 +702,62 @@ void main() {
   });
 
   test(
+    'reconciles uploaded text attachments after the server inlines them',
+    () {
+      const imagePath =
+          '/root/.codex-mobile/uploads/96b2bf2f-scaled_1000154875.jpg';
+      const logPath =
+          '/root/.codex-mobile/uploads/agent-diagnostic-session-123.txt';
+      final state = _state().copyWith(
+        timeline: const <TimelineEntry>[
+          TimelineEntry(
+            id: 'local-user-123',
+            kind: TimelineKind.userMessage,
+            text: '这是怎么回事？',
+            attachments: <MessageAttachment>[
+              MessageAttachment(
+                name: 'scaled_1000154875.jpg',
+                remotePath: imagePath,
+                mimeType: 'image/jpeg',
+              ),
+              MessageAttachment(
+                name: 'agent-diagnostic-session-123.txt',
+                remotePath: logPath,
+                mimeType: 'text/plain',
+              ),
+            ],
+          ),
+        ],
+      );
+
+      final next = reduceCodexNotification(
+        state,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': <String, Object?>{
+            'id': 'server-user-1',
+            'type': 'userMessage',
+            'content': <Object?>[
+              <String, Object?>{'type': 'text', 'text': '这是怎么回事？'},
+              <String, Object?>{'type': 'localImage', 'path': imagePath},
+              <String, Object?>{
+                'type': 'text',
+                'text': '文本附件 agent-diagnostic-session-123.txt:\n日志内容',
+              },
+            ],
+          },
+        }),
+      );
+
+      expect(next.timeline, hasLength(1));
+      expect(next.timeline.single.id, 'server-user-1');
+      expect(next.timeline.single.text, '这是怎么回事？');
+      expect(next.timeline.single.attachments, hasLength(2));
+    },
+  );
+
+  test(
     'reconciles an image-only optimistic row with a renamed server item',
     () {
       const remotePath =

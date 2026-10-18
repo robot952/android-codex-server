@@ -806,6 +806,7 @@ class AppController extends StateNotifier<AppUiState> {
       apiModelOptionsProfileId: null,
       apiModelOptionsLoading: false,
       apiModelOptionsError: null,
+      error: state.selectedProfileId == profileId ? state.error : null,
       screen: connection.phase == ConnectionPhase.connected
           ? AppScreen.threads
           : AppScreen.servers,
@@ -1363,6 +1364,7 @@ class AppController extends StateNotifier<AppUiState> {
           ? false
           : state.apiModelOptionsLoading,
       apiModelOptionsError: changingAgent ? null : state.apiModelOptionsError,
+      error: changingAgent ? null : state.error,
     );
     await _persist((stored) => stored.copyWith(profiles: profiles));
     await ensureActiveAgent();
@@ -8558,9 +8560,16 @@ int? _findResumedUserIndex(
 String _timelineAttachmentKey(TimelineEntry entry) {
   final keys = entry.attachments.map((attachment) {
     final remotePath = attachment.remotePath.trim();
-    final identity = remotePath.isNotEmpty
+    // Text attachments are sent as inline text and the server therefore
+    // cannot echo the temporary upload path. Their stable identity is the
+    // filename; images and binary files remain path based so two different
+    // uploads with the same name are never collapsed.
+    final identity = attachment.mimeType == 'text/plain'
+        ? 'name:${attachment.name.trim()}'
+        : remotePath.isNotEmpty
         ? 'path:$remotePath'
         : 'name:${attachment.name.trim()}';
+    if (identity.startsWith('path:')) return identity;
     final mimeType = attachment.mimeType.startsWith('image/')
         ? 'image/*'
         : attachment.mimeType;

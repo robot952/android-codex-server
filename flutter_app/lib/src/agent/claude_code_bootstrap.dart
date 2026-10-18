@@ -59,13 +59,25 @@ discover_claude() {
   CLAUDE_BIN=""
   # Follow the active PATH entry first. A stale copy in ~/.local/bin must not
   # be upgraded when the shell would actually run a system installation.
-  for CANDIDATE in "$(command -v claude 2>/dev/null || true)" "$HOME/.local/bin/claude"; do
+  # SSH runs a non-login shell, so include common per-user npm, nvm, and
+  # native-installer locations after the active PATH entry.
+  for CANDIDATE in \
+    "$(command -v claude 2>/dev/null || true)" \
+    "$HOME/.local/bin/claude" \
+    "$HOME/.npm-global/bin/claude" \
+    "$HOME/.npm/bin/claude" \
+    "$HOME"/.nvm/versions/node/*/bin/claude \
+    "$HOME"/.local/share/claude/versions/*/claude; do
     if [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE" ]; then CLAUDE_BIN="$CANDIDATE"; break; fi
   done
 }
 discover_claude
 NODE_BIN=""
-for CANDIDATE in "$(command -v node 2>/dev/null || true)" "$HOME"/.local/share/codex-remote/runtime/*/bin/node; do
+for CANDIDATE in \
+  "$(command -v node 2>/dev/null || true)" \
+  "$HOME"/.local/bin/node \
+  "$HOME"/.nvm/versions/node/*/bin/node \
+  "$HOME"/.local/share/codex-remote/runtime/*/bin/node; do
   if [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE" ] && "$CANDIDATE" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
     NODE_BIN="$CANDIDATE"
     break
@@ -77,7 +89,7 @@ if [ -n "$NODE_BIN" ]; then PATH="$(dirname "$NODE_BIN"):$PATH"; export PATH; fi
   static const launcherSource =
       '#!/bin/sh\nset -eu\n$_discoverRuntime'
       r'''
-if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '未找到 Claude Code CLI，请先在服务器安装并登录 Claude Code' >&2; exit 65; fi
+if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '当前 SSH 用户未找到 Claude Code CLI，请先安装 Claude Code 2.1+；登录状态将在连接时验证' >&2; exit 65; fi
 if [ -z "$NODE_BIN" ]; then printf '%s\n' 'Claude Code 连接组件需要 Node.js 18 或更新版本' >&2; exit 65; fi
 export DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1
 export CLAUDE_BIN
@@ -211,7 +223,7 @@ command -v curl >/dev/null 2>&1 && value DOWNLOADER curl || value DOWNLOADER non
   }
 
   static const _installTemplate = r'''
-if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '未找到 Claude Code CLI，请先在服务器安装并登录 Claude Code' >&2; exit 65; fi
+if [ -z "$CLAUDE_BIN" ]; then printf '%s\n' '当前 SSH 用户未找到 Claude Code CLI，请先安装 Claude Code 2.1+；登录状态将在连接时验证' >&2; exit 65; fi
 if [ -z "$NODE_BIN" ]; then printf '%s\n' 'Claude Code 连接组件需要 Node.js 18 或更新版本，也可复用 Codex/OpenCode 已安装的 Node.js' >&2; exit 65; fi
 ROOT="$HOME/.local/share/codex-remote/claude"
 BIN_DIR="$HOME/.local/bin"
@@ -363,7 +375,7 @@ class _ClaudeRuntimeInspection extends AgentRuntimeInspection {
     if (os != 'Linux') return 'Claude Code 目前支持通过 SSH 连接 Linux 服务器';
     if (!hasShell) return '服务器缺少 /bin/sh';
     if (_claude.executablePath == null) {
-      return '请先在服务器安装并登录 Claude Code 2.1 或更新的 2.x 版本';
+      return '当前 SSH 用户未找到 Claude Code CLI，请先安装 Claude Code 2.1+；登录状态将在连接时验证';
     }
     if (_claude.nodePath == null) {
       return 'Claude Code 连接组件需要 Node.js 18 或更新版本';

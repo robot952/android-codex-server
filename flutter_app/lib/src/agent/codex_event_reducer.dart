@@ -669,13 +669,28 @@ bool _sameAttachmentSet(
   if (first.length != second.length) return false;
   for (final attachment in second) {
     final found = first.any((candidate) {
-      final sameIdentity = candidate.remotePath.isNotEmpty
-          ? candidate.remotePath == attachment.remotePath
-          : attachment.remotePath.isEmpty && candidate.name == attachment.name;
-      return sameIdentity &&
-          (candidate.mimeType == attachment.mimeType ||
-              candidate.mimeType == 'image/*' ||
-              attachment.mimeType == 'image/*');
+      final candidatePath = candidate.remotePath.trim();
+      final attachmentPath = attachment.remotePath.trim();
+      final candidateIsImage = candidate.mimeType.startsWith('image/');
+      final attachmentIsImage = attachment.mimeType.startsWith('image/');
+      final samePath =
+          candidatePath.isNotEmpty &&
+          attachmentPath.isNotEmpty &&
+          candidatePath == attachmentPath;
+      final sameIdentity = candidatePath.isNotEmpty && attachmentPath.isNotEmpty
+          ? samePath
+          : candidateIsImage || attachmentIsImage
+          ? false
+          : candidate.name.trim() == attachment.name.trim();
+      final sameMime =
+          candidate.mimeType == attachment.mimeType ||
+          candidateIsImage && attachmentIsImage ||
+          candidate.mimeType == 'image/*' ||
+          attachment.mimeType == 'image/*';
+      // A remote path is the upload identity. The server can normalize or
+      // omit MIME metadata while replaying the same path, so don't let that
+      // transport detail create a second user row.
+      return sameIdentity && (samePath || sameMime);
     });
     if (!found) return false;
   }

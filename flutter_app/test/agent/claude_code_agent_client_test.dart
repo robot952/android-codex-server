@@ -77,6 +77,25 @@ void main() {
     );
   });
 
+  test(
+    'non-login SSH discovery includes common per-user Claude and Node paths',
+    () {
+      expect(
+        ClaudeCodeBootstrap.launcherSource,
+        contains('.npm-global/bin/claude'),
+      );
+      expect(ClaudeCodeBootstrap.launcherSource, contains('.npm/bin/claude'));
+      expect(
+        ClaudeCodeBootstrap.launcherSource,
+        contains('.nvm/versions/node/*/bin/claude'),
+      );
+      expect(
+        ClaudeCodeBootstrap.launcherSource,
+        contains('.nvm/versions/node/*/bin/node'),
+      );
+    },
+  );
+
   test('parses a compatible remote Claude probe', () {
     const source = 'bridge source';
     final hash = ClaudeCodeBootstrap.bridgeSha256(source);
@@ -131,7 +150,7 @@ __CODEX_REMOTE_CLAUDE_VERSION=2.1.150 (Claude Code)
       bridgeSource: 'source',
       claudeVersion: '2.1.150',
     ).installationProblem;
-    expect(problem(host), contains('安装并登录 Claude Code'));
+    expect(problem(host), contains('未找到 Claude Code CLI'));
     expect(problem('$host$cli'), contains('Node.js 18'));
     expect(
       problem('$host${cli.replaceAll('2.1.150', '2.0.9')}'),
