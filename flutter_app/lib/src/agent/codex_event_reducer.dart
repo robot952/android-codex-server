@@ -540,12 +540,13 @@ TimelineEntry? _findTimelineEntry(
   required TimelineKind kind,
   required String turnId,
 }) {
-  for (final entry in entries) {
-    if (_hasTimelineIdentity(entry, id: id, kind: kind, turnId: turnId)) {
-      return entry;
-    }
-  }
-  return null;
+  final index = _timelineEntryIndex(
+    entries,
+    id: id,
+    kind: kind,
+    turnId: turnId,
+  );
+  return index == null ? null : entries[index];
 }
 
 bool _hasTimelineIdentity(
@@ -555,21 +556,46 @@ bool _hasTimelineIdentity(
   required String turnId,
 }) => entry.id == id && entry.kind == kind && entry.turnId == turnId;
 
+int? _timelineEntryIndex(
+  List<TimelineEntry> entries, {
+  required String id,
+  required TimelineKind kind,
+  required String turnId,
+}) {
+  int? stableCommandIndex;
+  for (var index = 0; index < entries.length; index += 1) {
+    final entry = entries[index];
+    if (_hasTimelineIdentity(entry, id: id, kind: kind, turnId: turnId)) {
+      return index;
+    }
+    if (kind == TimelineKind.command &&
+        id.isNotEmpty &&
+        entry.kind == TimelineKind.command &&
+        entry.id == id) {
+      // OpenCode uses a synthetic live turn id and can later return the same
+      // command under the user-message turn id. A unique command id is the
+      // stable identity in that bridge; only use the fallback while it is
+      // unambiguous so genuinely reused ids across turns remain separate.
+      if (stableCommandIndex != null) return null;
+      stableCommandIndex = index;
+    }
+  }
+  return stableCommandIndex;
+}
+
 List<TimelineEntry> _upsertTimeline(
   List<TimelineEntry> current,
   TimelineEntry incoming, {
   bool allowEmptyOptimisticUserMatch = false,
 }) {
-  final index = current.indexWhere(
-    (entry) => _hasTimelineIdentity(
-      entry,
-      id: incoming.id,
-      kind: incoming.kind,
-      turnId: incoming.turnId,
-    ),
+  final index = _timelineEntryIndex(
+    current,
+    id: incoming.id,
+    kind: incoming.kind,
+    turnId: incoming.turnId,
   );
   final result = List<TimelineEntry>.of(current);
-  if (index < 0) {
+  if (index == null) {
     // sendMessage() adds a local user row before the app-server has assigned an
     // item id. The live `item/started`/`item/completed` echo is authoritative;
     // fold it into that row instead of rendering the same prompt twice.
@@ -709,11 +735,9 @@ List<TimelineEntry> _updateTimelineEntry(
   required TimelineEntry Function(TimelineEntry? existing) update,
 }) {
   final result = List<TimelineEntry>.of(current);
-  final index = result.indexWhere(
-    (entry) => _hasTimelineIdentity(entry, id: id, kind: kind, turnId: turnId),
-  );
-  final next = update(index < 0 ? null : result[index]);
-  if (index < 0) {
+  final index = _timelineEntryIndex(result, id: id, kind: kind, turnId: turnId);
+  final next = update(index == null ? null : result[index]);
+  if (index == null) {
     result.add(next);
   } else {
     result[index] = next;
@@ -729,6 +753,10 @@ TimelineEntry mergeCodexTimelineEntry(
       previous.turnId.isEmpty ||
       incoming.turnId.isEmpty ||
       previous.turnId == incoming.turnId;
+  final sameCommand =
+      previous.kind == TimelineKind.command &&
+      incoming.kind == TimelineKind.command &&
+      previous.id == incoming.id;
   final mergedStatus =
       previous.kind == TimelineKind.subAgent &&
           _isTerminalSubAgentStatus(previous.status) &&
@@ -740,6 +768,10 @@ TimelineEntry mergeCodexTimelineEntry(
             _isTerminalSubAgentStatus(incoming.status) &&
             sameTurn
       ? _strongerTerminalSubAgentStatus(previous.status, incoming.status)
+      : sameCommand &&
+            _isTerminalCommandStatus(previous.status) &&
+            _isActiveCommandStatus(incoming.status)
+      ? previous.status
       : incoming.status.isEmpty
       ? previous.status
       : incoming.status;
@@ -775,6 +807,24 @@ TimelineEntry mergeCodexTimelineEntry(
         : incoming.questions,
   );
 }
+
+bool _isActiveCommandStatus(String status) => const <String>{
+  'pending',
+  'started',
+  'running',
+  'inProgress',
+}.contains(status);
+
+bool _isTerminalCommandStatus(String status) => const <String>{
+  'completed',
+  'failed',
+  'errored',
+  'error',
+  'cancelled',
+  'canceled',
+  'interrupted',
+  'aborted',
+}.contains(status);
 
 bool _isActiveSubAgentStatus(String status) => const <String>{
   'pendingInit',

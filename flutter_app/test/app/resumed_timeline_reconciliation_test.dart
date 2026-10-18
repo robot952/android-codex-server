@@ -310,6 +310,157 @@ void main() {
       );
     });
 
+    test(
+      'restores server order when a late cached command follows the final answer',
+      () {
+        const user = TimelineEntry(
+          id: 'user-1',
+          kind: TimelineKind.userMessage,
+          text: '检查项目',
+          turnId: 'turn-1',
+        );
+        const answer = TimelineEntry(
+          id: 'answer-1',
+          kind: TimelineKind.agentMessage,
+          text: '检查完成',
+          turnId: 'turn-1',
+        );
+        const command = TimelineEntry(
+          id: 'command-1',
+          kind: TimelineKind.command,
+          command: 'git status',
+          status: 'completed',
+          turnId: 'turn-1',
+        );
+
+        final result = reconcileResumedTimeline(
+          cachedTimeline: const <TimelineEntry>[user, answer, command],
+          cachedNextCursor: null,
+          refreshedTimeline: const <TimelineEntry>[user, command, answer],
+          refreshedNextCursor: null,
+          refreshedTurnIds: const <String>['turn-1'],
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 11,
+        );
+
+        expect(result.timeline, const <TimelineEntry>[user, command, answer]);
+        expect(
+          result.timeline.where((entry) => entry.id == 'command-1'),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('does not let moved commands hide a later refreshed answer', () {
+      const first = TimelineEntry(
+        id: 'answer-1',
+        kind: TimelineKind.agentMessage,
+        text: '开始',
+        turnId: 'turn-1',
+      );
+      const firstCommand = TimelineEntry(
+        id: 'command-1',
+        kind: TimelineKind.command,
+        command: 'git status',
+        status: 'completed',
+        turnId: 'turn-1',
+      );
+      const secondCommand = TimelineEntry(
+        id: 'command-2',
+        kind: TimelineKind.command,
+        command: 'git diff',
+        status: 'completed',
+        turnId: 'turn-1',
+      );
+      const finalAnswer = TimelineEntry(
+        id: 'answer-2',
+        kind: TimelineKind.agentMessage,
+        text: '完成',
+        turnId: 'turn-1',
+      );
+
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const <TimelineEntry>[
+          first,
+          firstCommand,
+          secondCommand,
+          finalAnswer,
+        ],
+        cachedNextCursor: null,
+        refreshedTimeline: const <TimelineEntry>[
+          first,
+          finalAnswer,
+          firstCommand,
+          secondCommand,
+        ],
+        refreshedNextCursor: null,
+        refreshedTurnIds: const <String>['turn-1'],
+        cachedThreadUpdatedAt: 10,
+        refreshedThreadUpdatedAt: 11,
+      );
+
+      expect(result.timeline, const <TimelineEntry>[
+        first,
+        finalAnswer,
+        firstCommand,
+        secondCommand,
+      ]);
+    });
+
+    test(
+      'matches an OpenCode command across synthetic and server turn ids',
+      () {
+        const cachedAnchor = TimelineEntry(
+          id: 'answer-1',
+          kind: TimelineKind.agentMessage,
+          text: '检查完成',
+          turnId: 'turn-1',
+        );
+        const cachedCommand = TimelineEntry(
+          id: 'command-1',
+          kind: TimelineKind.command,
+          command: 'git status',
+          status: 'completed',
+          turnId: 'opencode-turn-1',
+        );
+        const refreshedAnchor = TimelineEntry(
+          id: 'answer-1',
+          kind: TimelineKind.agentMessage,
+          text: '检查完成',
+          turnId: 'turn-1',
+        );
+        const refreshedCommand = TimelineEntry(
+          id: 'command-1',
+          kind: TimelineKind.command,
+          command: 'git status',
+          status: 'completed',
+          turnId: 'server-turn-1',
+        );
+
+        final result = reconcileResumedTimeline(
+          cachedTimeline: const <TimelineEntry>[cachedAnchor, cachedCommand],
+          cachedNextCursor: null,
+          refreshedTimeline: const <TimelineEntry>[
+            refreshedAnchor,
+            refreshedCommand,
+          ],
+          refreshedNextCursor: null,
+          refreshedTurnIds: const <String>['turn-1', 'server-turn-1'],
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 11,
+        );
+
+        expect(result.timeline, const <TimelineEntry>[
+          refreshedAnchor,
+          refreshedCommand,
+        ]);
+        expect(
+          result.timeline.where((entry) => entry.id == 'command-1'),
+          hasLength(1),
+        );
+      },
+    );
+
     test('does not collapse two real identical commands in one turn', () {
       const liveCommand = TimelineEntry(
         id: 'live-command',

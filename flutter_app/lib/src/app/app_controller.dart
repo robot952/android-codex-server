@@ -8589,16 +8589,56 @@ List<TimelineEntry> _mergeRefreshedTimeline(
   List<TimelineEntry> refreshed,
 ) {
   final matches = <int, int>{};
+  final cachedByRefreshed = <int, int>{};
   final consumed = <int>{};
+  final cachedCommandIdCounts = _commandIdCounts(cached);
+  final refreshedCommandIdCounts = _commandIdCounts(refreshed);
   var minimumRefreshedIndex = 0;
   for (var cachedIndex = 0; cachedIndex < cached.length; cachedIndex += 1) {
     final cachedEntry = cached[cachedIndex];
     var refreshedIndex = -1;
+    var matchedCommandGlobally = false;
+    final commandIdIsUnique =
+        cachedEntry.kind == TimelineKind.command &&
+        cachedEntry.id.isNotEmpty &&
+        cachedCommandIdCounts[cachedEntry.id] == 1 &&
+        refreshedCommandIdCounts[cachedEntry.id] == 1;
+    // A live turn can receive a command after its final answer, while a fresh
+    // snapshot places that command at its original wire position. Commands
+    // have stable item ids, so match them across the whole page before the
+    // ordered fallback; otherwise the cached row is retained and the server
+    // row is appended a second time.
+    if (commandIdIsUnique) {
+      for (var index = 0; index < refreshed.length; index += 1) {
+        if (!consumed.contains(index) &&
+            _timelineIdentity(refreshed[index]) ==
+                _timelineIdentity(cachedEntry)) {
+          refreshedIndex = index;
+          matchedCommandGlobally = true;
+          break;
+        }
+      }
+      if (refreshedIndex < 0) {
+        for (var index = 0; index < refreshed.length; index += 1) {
+          if (!consumed.contains(index) &&
+              _sameStableCommandIdentity(
+                cachedEntry,
+                refreshed[index],
+                commandIdIsUnique: true,
+              )) {
+            refreshedIndex = index;
+            matchedCommandGlobally = true;
+            break;
+          }
+        }
+      }
+    }
     for (
       var index = minimumRefreshedIndex;
       index < refreshed.length;
       index += 1
     ) {
+      if (refreshedIndex >= 0) break;
       if (!consumed.contains(index) &&
           _timelineIdentity(refreshed[index]) ==
               _timelineIdentity(cachedEntry)) {
@@ -8613,7 +8653,11 @@ List<TimelineEntry> _mergeRefreshedTimeline(
         index += 1
       ) {
         if (!consumed.contains(index) &&
-            _sameResumedTimelineItem(cachedEntry, refreshed[index])) {
+            _sameResumedTimelineItem(
+              cachedEntry,
+              refreshed[index],
+              commandIdIsUnique: commandIdIsUnique,
+            )) {
           refreshedIndex = index;
           break;
         }
@@ -8621,19 +8665,41 @@ List<TimelineEntry> _mergeRefreshedTimeline(
     }
     if (refreshedIndex < 0) continue;
     matches[cachedIndex] = refreshedIndex;
+    cachedByRefreshed[refreshedIndex] = cachedIndex;
     consumed.add(refreshedIndex);
-    minimumRefreshedIndex = refreshedIndex + 1;
+    if (!matchedCommandGlobally && refreshedIndex >= minimumRefreshedIndex) {
+      minimumRefreshedIndex = refreshedIndex + 1;
+    }
   }
 
   final result = <TimelineEntry>[];
-  for (var cachedIndex = 0; cachedIndex < cached.length; cachedIndex += 1) {
-    final cachedEntry = cached[cachedIndex];
-    final refreshedIndex = matches[cachedIndex];
-    if (refreshedIndex == null) {
-      result.add(cachedEntry);
-      continue;
+  final emittedCached = <int>{};
+  for (
+    var refreshedIndex = 0;
+    refreshedIndex < refreshed.length;
+    refreshedIndex += 1
+  ) {
+    final cachedIndex = cachedByRefreshed[refreshedIndex];
+    if (cachedIndex == null) continue;
+    // Keep cache-only detail rows in their original segment, then emit the
+    // matched row in the authoritative refreshed order. This handles a late
+    // command that appears after the final answer in the live cache without
+    // moving genuinely cache-only command details to a different turn.
+    for (var index = 0; index < cachedIndex; index += 1) {
+      if (!matches.containsKey(index) && emittedCached.add(index)) {
+        result.add(cached[index]);
+      }
     }
-    result.add(mergeCodexTimelineEntry(cachedEntry, refreshed[refreshedIndex]));
+    if (emittedCached.add(cachedIndex)) {
+      result.add(
+        mergeCodexTimelineEntry(cached[cachedIndex], refreshed[refreshedIndex]),
+      );
+    }
+  }
+  for (var cachedIndex = 0; cachedIndex < cached.length; cachedIndex += 1) {
+    if (emittedCached.add(cachedIndex)) {
+      result.add(cached[cachedIndex]);
+    }
   }
   for (var index = 0; index < refreshed.length; index += 1) {
     if (!consumed.contains(index)) result.add(refreshed[index]);
@@ -8641,11 +8707,24 @@ List<TimelineEntry> _mergeRefreshedTimeline(
   return result;
 }
 
-bool _sameResumedTimelineItem(TimelineEntry cached, TimelineEntry refreshed) {
-  if (cached.kind != refreshed.kind ||
-      (cached.turnId.isNotEmpty &&
-          refreshed.turnId.isNotEmpty &&
-          cached.turnId != refreshed.turnId)) {
+bool _sameResumedTimelineItem(
+  TimelineEntry cached,
+  TimelineEntry refreshed, {
+  bool commandIdIsUnique = false,
+}) {
+  if (cached.kind != refreshed.kind) {
+    return false;
+  }
+  if (_sameStableCommandIdentity(
+    cached,
+    refreshed,
+    commandIdIsUnique: commandIdIsUnique,
+  )) {
+    return true;
+  }
+  if ((cached.turnId.isNotEmpty &&
+      refreshed.turnId.isNotEmpty &&
+      cached.turnId != refreshed.turnId)) {
     return false;
   }
   if (cached.kind == TimelineKind.userMessage &&
@@ -8681,6 +8760,40 @@ bool _sameResumedTimelineItem(TimelineEntry cached, TimelineEntry refreshed) {
               cached.cwd.trim() == refreshed.cwd.trim()),
     _ => false,
   };
+}
+
+bool _sameStableCommandIdentity(
+  TimelineEntry cached,
+  TimelineEntry refreshed, {
+  required bool commandIdIsUnique,
+}) {
+  if (cached.kind != TimelineKind.command ||
+      refreshed.kind != TimelineKind.command ||
+      !commandIdIsUnique ||
+      cached.id.isEmpty ||
+      cached.id != refreshed.id ||
+      cached.turnId == refreshed.turnId) {
+    return false;
+  }
+  final cachedCommand = cached.command.trim();
+  final refreshedCommand = refreshed.command.trim();
+  if (cachedCommand.isNotEmpty &&
+      refreshedCommand.isNotEmpty &&
+      cachedCommand != refreshedCommand) {
+    return false;
+  }
+  final cachedCwd = cached.cwd.trim();
+  final refreshedCwd = refreshed.cwd.trim();
+  return cachedCwd.isEmpty || refreshedCwd.isEmpty || cachedCwd == refreshedCwd;
+}
+
+Map<String, int> _commandIdCounts(List<TimelineEntry> entries) {
+  final counts = <String, int>{};
+  for (final entry in entries) {
+    if (entry.kind != TimelineKind.command || entry.id.isEmpty) continue;
+    counts[entry.id] = (counts[entry.id] ?? 0) + 1;
+  }
+  return counts;
 }
 
 bool _sameStringList(List<String> left, List<String> right) {

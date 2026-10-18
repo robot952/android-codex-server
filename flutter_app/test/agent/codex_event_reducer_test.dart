@@ -1109,6 +1109,48 @@ void main() {
     expect(state.timeline.single.status, 'completed');
   });
 
+  test('reuses a completed command when resume changes only its turn id', () {
+    var state = _state().copyWith(
+      timeline: const <TimelineEntry>[
+        TimelineEntry(
+          id: 'command-1',
+          kind: TimelineKind.command,
+          command: 'git status',
+          status: 'completed',
+          output: 'clean',
+          turnId: 'server-turn-1',
+        ),
+      ],
+    );
+
+    state = reduceCodexNotification(
+      state,
+      _notification('item/started', {
+        'threadId': 'thread-1',
+        'turnId': 'opencode-turn-1',
+        'item': <String, Object?>{
+          'id': 'command-1',
+          'type': 'commandExecution',
+          'command': 'git status',
+          'status': 'inProgress',
+        },
+      }),
+    );
+    state = reduceCodexNotification(
+      state,
+      _notification('item/commandExecution/outputDelta', {
+        'threadId': 'thread-1',
+        'turnId': 'opencode-turn-1',
+        'itemId': 'command-1',
+        'delta': '\n仍然干净',
+      }),
+    );
+
+    expect(state.timeline, hasLength(1));
+    expect(state.timeline.single.status, 'completed');
+    expect(state.timeline.single.output, 'clean\n仍然干净');
+  });
+
   test('keeps the same item id separate across turns and kinds', () {
     var state = _state().copyWith(
       timeline: const <TimelineEntry>[
