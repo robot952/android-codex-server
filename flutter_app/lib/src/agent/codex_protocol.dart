@@ -1144,9 +1144,10 @@ abstract final class CodexPayloadParser {
       subAgentThreadId: subAgentThreadId,
       ownedTurnIds: subAgentThreadId == null
           ? const <String>{}
-          : _asList(rawThread['turnIds'], maxItems: 10000)
-                .whereType<String>()
-                .toSet(),
+          : _asList(
+              rawThread['turnIds'],
+              maxItems: 10000,
+            ).whereType<String>().toSet(),
     );
     final reachedInheritedHistory = visibleTurns.length != turns.length;
     final hydratedThread = Map<String, Object?>.from(rawThread)
@@ -1353,6 +1354,7 @@ abstract final class CodexPayloadParser {
         'id',
         'turnId',
       ], marker: '');
+      final turnStatus = _wireType(turn['status']);
       for (final itemValue in _asList(
         turn['items'],
         maxItems: _maxTimelineItemsPerTurn,
@@ -1365,7 +1367,12 @@ abstract final class CodexPayloadParser {
           _applySubAgentStates(result, item, turnId);
         }
         result.addAll(
-          parseItems(item, turnId: turnId)
+          parseItems(
+                item,
+                turnId: turnId,
+                historical: true,
+                turnStatus: turnStatus,
+              )
               .map(
                 (entry) =>
                     parentId.isNotEmpty &&
@@ -1397,9 +1404,16 @@ abstract final class CodexPayloadParser {
   static List<TimelineEntry> parseItems(
     Map<String, Object?> item, {
     required String turnId,
+    bool historical = false,
+    String turnStatus = '',
   }) {
     if (_firstString(item, const ['type']) != 'collabAgentToolCall') {
-      final entry = parseItem(item, turnId: turnId);
+      final entry = parseItem(
+        item,
+        turnId: turnId,
+        historical: historical,
+        turnStatus: turnStatus,
+      );
       return entry == null ? const [] : [entry];
     }
     final states =
@@ -1463,6 +1477,8 @@ abstract final class CodexPayloadParser {
   static TimelineEntry? parseItem(
     Map<String, Object?> item, {
     required String turnId,
+    bool historical = false,
+    String turnStatus = '',
   }) {
     final type = _firstString(item, const <String>['type']);
     if (type.isEmpty) return null;
@@ -1551,11 +1567,12 @@ abstract final class CodexPayloadParser {
         ], maxChars: codexMaxTimelineTextChars),
         turnId: boundedTurnId,
       ),
-      'contextCompaction' => TimelineEntry(
+      'contextCompaction' => _contextCompactionEntry(
+        item: item,
         id: id,
-        kind: TimelineKind.notice,
-        text: '上下文已压缩',
         turnId: boundedTurnId,
+        historical: historical,
+        turnStatus: turnStatus,
       ),
       'webSearch' || 'web_search' || 'webSearchCall' || 'web_search_call' =>
         _parseToolItem(item: item, id: id, turnId: boundedTurnId),
@@ -1627,6 +1644,74 @@ abstract final class CodexPayloadParser {
           .where((question) => question.question.trim().isNotEmpty),
     );
   }
+
+  /// Reads the compaction lifecycle from the item first, then from its turn.
+  /// Older app-server payloads omit both fields, so they retain the historical
+  /// completed fallback used by the previous parser.
+  static String contextCompactionStatus(
+    Map<String, Object?> item, {
+    String turnStatus = '',
+    String lifecycleMethod = '',
+  }) {
+    final itemStatus = _normalizeContextCompactionStatus(
+      _wireType(item['status']),
+    );
+    if (itemStatus.isNotEmpty) return itemStatus;
+
+    final parsedTurnStatus = _normalizeContextCompactionStatus(turnStatus);
+    if (parsedTurnStatus.isNotEmpty) return parsedTurnStatus;
+
+    return switch (lifecycleMethod) {
+      'item/started' => 'inProgress',
+      'item/completed' => 'completed',
+      _ => 'completed',
+    };
+  }
+
+  /// Historical notices are labelled so an old successful compaction cannot
+  /// be mistaken for a compaction happening during the current turn.
+  static String contextCompactionText(
+    String status, {
+    bool historical = false,
+  }) {
+    final normalized = _normalizeContextCompactionStatus(status);
+    final text = switch (normalized) {
+      'inProgress' => '正在压缩上下文',
+      'failed' || 'errored' => '上下文压缩失败',
+      'interrupted' || 'cancelled' || 'canceled' || 'aborted' => '上下文压缩已中断',
+      'completed' => '上下文已压缩',
+      _ => '上下文压缩未完成',
+    };
+    if (!historical || normalized == 'inProgress') return text;
+    return '历史：$text';
+  }
+
+  static TimelineEntry _contextCompactionEntry({
+    required Map<String, Object?> item,
+    required String id,
+    required String turnId,
+    required bool historical,
+    required String turnStatus,
+  }) {
+    final status = contextCompactionStatus(item, turnStatus: turnStatus);
+    return TimelineEntry(
+      id: id,
+      kind: TimelineKind.notice,
+      text: contextCompactionText(status, historical: historical),
+      status: status,
+      turnId: turnId,
+    );
+  }
+}
+
+String _normalizeContextCompactionStatus(String status) {
+  final normalized = status.trim();
+  return switch (normalized) {
+    'in_progress' || 'running' || 'started' || 'pending' => 'inProgress',
+    'complete' => 'completed',
+    'error' => 'errored',
+    _ => normalized,
+  };
 }
 
 TimelineEntry _parseToolItem({

@@ -312,9 +312,13 @@ AppUiState reduceCodexNotification(
         entry = entry.copyWith(status: 'completed');
       }
       if (itemType == 'contextCompaction') {
+        final status = CodexPayloadParser.contextCompactionStatus(
+          item,
+          lifecycleMethod: method,
+        );
         entry = entry.copyWith(
-          text: method == 'item/started' ? '正在压缩上下文' : '上下文已压缩',
-          status: method == 'item/started' ? 'inProgress' : 'completed',
+          text: CodexPayloadParser.contextCompactionText(status),
+          status: status,
         );
       }
       var timeline = _upsertTimeline(

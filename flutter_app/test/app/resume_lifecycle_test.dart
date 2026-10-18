@@ -751,6 +751,11 @@ void main() {
           thread: _threadA,
           timeline: const [
             TimelineEntry(
+              id: 'saved-compaction',
+              kind: TimelineKind.notice,
+              text: '上下文已压缩',
+            ),
+            TimelineEntry(
               id: 'saved',
               kind: TimelineKind.agentMessage,
               text: 'cached',
@@ -761,6 +766,7 @@ void main() {
       );
       await _waitUntil(() => harness.controller.state.timeline.isNotEmpty);
       expect(harness.controller.state.loading, isTrue);
+      expect(harness.controller.state.timeline.first.text, '历史：上下文已压缩');
       expect(harness.controller.state.approvalQueue, isEmpty);
       resume.complete(
         AgentSession(

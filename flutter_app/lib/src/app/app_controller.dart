@@ -4832,7 +4832,9 @@ class AppController extends StateNotifier<AppUiState> {
     final timeline = _isolateSubAgentTimeline(
       key,
       snapshot.thread,
-      snapshot.timeline,
+      loading
+          ? _markLegacyCompactionNotices(snapshot.timeline)
+          : snapshot.timeline,
     );
     _rememberSubAgentReferences(key, <AgentThread>[snapshot.thread], timeline);
     final active = _isActiveKey(key);
@@ -5582,7 +5584,11 @@ class AppController extends StateNotifier<AppUiState> {
         snapshot.thread.modelProvider != thread.modelProvider) {
       return;
     }
-    final timeline = _isolateSubAgentTimeline(key, thread, snapshot.timeline);
+    final timeline = _isolateSubAgentTimeline(
+      key,
+      thread,
+      _markLegacyCompactionNotices(snapshot.timeline),
+    );
     cache.put(
       snapshot.thread,
       timeline,
@@ -8689,6 +8695,21 @@ bool _sameStringList(List<String> left, List<String> right) {
     (entry.turnId, entry.kind, entry.id);
 
 int? _knownRevision(int? value) => value != null && value > 0 ? value : null;
+
+List<TimelineEntry> _markLegacyCompactionNotices(
+  List<TimelineEntry> timeline,
+) => List<TimelineEntry>.unmodifiable(
+  timeline.map((entry) {
+    // Snapshots written before compaction status was persisted contain the
+    // successful text with no way to tell that it came from an older turn.
+    // Mark it while the cache is being painted; the next server snapshot can
+    // then replace it with the authoritative item status.
+    if (entry.kind == TimelineKind.notice && entry.text.trim() == '上下文已压缩') {
+      return entry.copyWith(text: '历史：上下文已压缩');
+    }
+    return entry;
+  }),
+);
 
 Map<AgentConnectionKey, List<AgentThread>> _replaceLaneThread(
   Map<AgentConnectionKey, List<AgentThread>> source,

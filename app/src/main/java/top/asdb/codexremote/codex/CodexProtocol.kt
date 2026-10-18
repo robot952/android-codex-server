@@ -168,7 +168,7 @@ object CodexPayloadParser {
             val collabItems = ArrayList<JsonObject>()
             turn.array("items").orEmpty().forEach itemLoop@{ itemElement ->
                 val item = itemElement as? JsonObject ?: return@itemLoop
-                parseItem(item, turnId)?.let { entries += it }
+                parseItem(item, turnId, turnStatus, historical = true)?.let { entries += it }
                 if (item.string("type") == "collabAgentToolCall") {
                     collabItems += item
                 }
@@ -194,7 +194,12 @@ object CodexPayloadParser {
         }
     }
 
-    fun parseItem(item: JsonObject, turnId: String): TimelineEntry? {
+    fun parseItem(
+        item: JsonObject,
+        turnId: String,
+        turnStatus: String = "",
+        historical: Boolean = false,
+    ): TimelineEntry? {
         val id = item.string("id").ifBlank { "item-${item.hashCode()}" }
         return when (val type = item.string("type")) {
             "userMessage" -> parseUserMessage(item, id, turnId)
@@ -272,12 +277,37 @@ object CodexPayloadParser {
                 turnId = turnId,
             )
 
-            "contextCompaction" -> TimelineEntry(
-                id = id,
-                kind = TimelineKind.Notice,
-                text = "上下文已压缩",
-                turnId = turnId,
-            )
+            "contextCompaction" -> {
+                // Resumed turns include the item's status (and, on older app-server
+                // payloads, only the enclosing turn status). Do not turn every
+                // historical compaction into a successful completion: an interrupted
+                // or failed compaction must remain visible as such after reopening.
+                val status = normalizeContextCompactionStatus(
+                    item["status"].wireType().ifBlank { turnStatus },
+                )
+                val text = when (status) {
+                    "inProgress" -> "正在压缩上下文"
+                    "failed", "errored", "systemError" -> "上下文压缩失败"
+                    "interrupted", "cancelled", "canceled", "aborted", "shutdown" ->
+                        "上下文压缩已中断"
+                    "completed", "" -> "上下文已压缩"
+                    else -> "上下文压缩未完成"
+                }
+                val displayText = if (
+                    historical && status != "inProgress"
+                ) {
+                    "历史：$text"
+                } else {
+                    text
+                }
+                TimelineEntry(
+                    id = id,
+                    kind = TimelineKind.Notice,
+                    text = displayText,
+                    status = status,
+                    turnId = turnId,
+                )
+            }
 
             "subAgentActivity" -> parseSubAgentActivity(item, id, turnId)
 
@@ -511,6 +541,13 @@ private fun subAgentStatusForTurn(turnStatus: String): String = when (turnStatus
 
 private fun String.isSubAgentActive(): Boolean = this in ACTIVE_SUB_AGENT_STATES
 
+private fun normalizeContextCompactionStatus(status: String): String = when (status.trim()) {
+    "in_progress", "running", "started", "pending" -> "inProgress"
+    "complete" -> "completed"
+    "error" -> "errored"
+    else -> status.trim()
+}
+
 private fun mergeSubAgentStatus(old: String, next: String): String {
     if (next.isBlank()) return old
     if (old.isBlank()) return next
@@ -727,11 +764,17 @@ object CodexEventReducer {
             val item = params.obj("item")
             val parsed = item?.let { CodexPayloadParser.parseItem(it, params.string("turnId")) }
             val entry = if (item?.string("type") == "contextCompaction") {
-                if (method == "item/started") {
-                    parsed?.copy(text = "正在压缩上下文", status = "inProgress")
-                } else {
-                    parsed?.copy(text = "上下文已压缩", status = "completed")
+                val status = normalizeContextCompactionStatus(item["status"].wireType().ifBlank {
+                    if (method == "item/started") "inProgress" else "completed"
+                })
+                val text = when (status) {
+                    "inProgress", "started", "pending" -> "正在压缩上下文"
+                    "failed", "errored", "systemError" -> "上下文压缩失败"
+                    "interrupted", "cancelled", "canceled", "aborted", "shutdown" ->
+                        "上下文压缩已中断"
+                    else -> "上下文已压缩"
                 }
+                parsed?.copy(text = text, status = status)
             } else {
                 parsed
             }

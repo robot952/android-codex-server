@@ -259,6 +259,16 @@ class CodexPayloadParserTest {
         assertEquals("上下文已压缩", completed.timeline.single().text)
         assertEquals("completed", completed.timeline.single().status)
 
+        val failed = CodexEventReducer.reduce(
+            started,
+            "item/completed",
+            json.parseToJsonElement(
+                """{"threadId":"thr-1","turnId":"turn-1","item":{"id":"compact-1","type":"contextCompaction","status":"failed"}}""",
+            ).jsonObject,
+        )
+        assertEquals("上下文压缩失败", failed.timeline.single().text)
+        assertEquals("failed", failed.timeline.single().status)
+
         val usage = json.parseToJsonElement(
             """{
               "threadId":"thr-1","turnId":"turn-1",
@@ -329,6 +339,59 @@ class CodexPayloadParserTest {
         assertEquals("BUILD SUCCESSFUL", timeline[2].output)
         assertEquals(1, timeline[3].changes.single().additions)
         assertEquals(1, timeline[3].changes.single().deletions)
+    }
+
+    @Test
+    fun preservesHistoricalContextCompactionStatus() {
+        val thread = json.parseToJsonElement(
+            """
+            {
+              "id":"thr-1",
+              "turns":[
+                {
+                  "id":"turn-completed",
+                  "status":"completed",
+                  "items":[
+                    {"id":"compact-completed","type":"contextCompaction","status":"completed"}
+                  ]
+                },
+                {
+                  "id":"turn-failed",
+                  "status":"failed",
+                  "items":[
+                    {"id":"compact-failed","type":"contextCompaction","status":"failed"}
+                  ]
+                },
+                {
+                  "id":"turn-running",
+                  "status":"inProgress",
+                  "items":[
+                    {"id":"compact-running","type":"contextCompaction","status":"inProgress"}
+                  ]
+                },
+                {
+                  "id":"turn-interrupted",
+                  "status":"interrupted",
+                  "items":[
+                    {"id":"compact-interrupted","type":"contextCompaction"}
+                  ]
+                }
+              ]
+            }
+            """.trimIndent(),
+        ).jsonObject
+
+        val entries = CodexPayloadParser.parseTimeline(thread)
+
+        assertEquals(4, entries.size)
+        assertEquals("历史：上下文已压缩", entries[0].text)
+        assertEquals("completed", entries[0].status)
+        assertEquals("历史：上下文压缩失败", entries[1].text)
+        assertEquals("failed", entries[1].status)
+        assertEquals("正在压缩上下文", entries[2].text)
+        assertEquals("inProgress", entries[2].status)
+        assertEquals("历史：上下文压缩已中断", entries[3].text)
+        assertEquals("interrupted", entries[3].status)
     }
 
     @Test

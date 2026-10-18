@@ -114,6 +114,39 @@ void main() {
     expect(state.activeThread?.status, 'idle');
   });
 
+  test('preserves a failed compaction instead of reporting completion', () {
+    var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
+    state = reduceCodexNotification(
+      state,
+      _notification('item/started', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': {
+          'id': 'compact-1',
+          'type': 'contextCompaction',
+          'status': 'inProgress',
+        },
+      }),
+    );
+    expect(state.timeline.single.text, '正在压缩上下文');
+    expect(state.timeline.single.status, 'inProgress');
+
+    state = reduceCodexNotification(
+      state,
+      _notification('item/completed', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'item': {
+          'id': 'compact-1',
+          'type': 'contextCompaction',
+          'status': 'failed',
+        },
+      }),
+    );
+    expect(state.timeline.single.text, '上下文压缩失败');
+    expect(state.timeline.single.status, 'failed');
+  });
+
   test(
     'retains async questions across sparse updates and accepts new choices',
     () {

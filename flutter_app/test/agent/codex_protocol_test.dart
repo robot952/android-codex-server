@@ -832,6 +832,72 @@ void main() {
       expect(timeline.length, lessThan(5000));
     });
 
+    test(
+      'restored compaction notices preserve status and identify history',
+      () {
+        final timeline = CodexPayloadParser.parseTimeline(<String, Object?>{
+          'turns': <Object?>[
+            <String, Object?>{
+              'id': 'turn-completed',
+              'status': 'completed',
+              'items': <Object?>[
+                <String, Object?>{
+                  'id': 'compact-completed',
+                  'type': 'contextCompaction',
+                  'status': 'completed',
+                },
+              ],
+            },
+            <String, Object?>{
+              'id': 'turn-failed',
+              'status': 'failed',
+              'items': <Object?>[
+                <String, Object?>{
+                  'id': 'compact-failed',
+                  'type': 'contextCompaction',
+                  'status': 'failed',
+                },
+              ],
+            },
+            <String, Object?>{
+              'id': 'turn-interrupted',
+              'status': 'interrupted',
+              'items': <Object?>[
+                <String, Object?>{
+                  'id': 'compact-interrupted',
+                  'type': 'contextCompaction',
+                },
+              ],
+            },
+            <String, Object?>{
+              'id': 'turn-running',
+              'status': 'inProgress',
+              'items': <Object?>[
+                <String, Object?>{
+                  'id': 'compact-running',
+                  'type': 'contextCompaction',
+                  'status': 'inProgress',
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(timeline.map((entry) => entry.status), [
+          'completed',
+          'failed',
+          'interrupted',
+          'inProgress',
+        ]);
+        expect(timeline.map((entry) => entry.text), [
+          '历史：上下文已压缩',
+          '历史：上下文压缩失败',
+          '历史：上下文压缩已中断',
+          '正在压缩上下文',
+        ]);
+      },
+    );
+
     test('normalizes web search items without exposing result metadata', () {
       final formal = CodexPayloadParser.parseItem(<String, Object?>{
         'id': 'search-1',
