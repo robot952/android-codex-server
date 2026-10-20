@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../domain/install_progress_format.dart';
 import '../platform/app_update_manager.dart';
@@ -78,6 +79,11 @@ class AppUpdateDialog extends ConsumerWidget {
         ),
       ),
       actions: [
+        TextButton.icon(
+          onPressed: () => unawaited(_openManualDownload(context)),
+          icon: const Icon(Icons.open_in_browser),
+          label: const Text('手动下载'),
+        ),
         if (download.status == AppUpdateDownloadStatus.idle ||
             download.status == AppUpdateDownloadStatus.failed)
           TextButton(onPressed: onIgnore, child: const Text('忽略此版本')),
@@ -96,6 +102,22 @@ class AppUpdateDialog extends ConsumerWidget {
         _PrimaryUpdateAction(update: update, download: download),
       ],
     );
+  }
+
+  Future<void> _openManualDownload(BuildContext context) async {
+    try {
+      final opened = await launchUrl(
+        Uri.parse(appUpdateDownloadUrl(update)),
+        mode: LaunchMode.externalApplication,
+      );
+      if (opened) return;
+    } catch (_) {
+      // The platform may either return false or throw when no browser opens.
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('无法打开浏览器，请稍后重试')));
   }
 }
 

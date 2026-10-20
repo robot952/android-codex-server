@@ -1,13 +1,33 @@
+import 'dart:async';
+
 import 'package:codex_remote/src/platform/app_update_manager.dart';
 import 'package:codex_remote/src/ui/app_update_dialog.dart';
 import 'package:codex_remote/src/ui/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  const launcherChannel = MethodChannel('plugins.flutter.io/url_launcher');
+  final launches = <MethodCall>[];
+
+  setUp(() {
+    launches.clear();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(launcherChannel, (call) async {
+          launches.add(call);
+          return true;
+        });
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(launcherChannel, null);
+  });
+
   testWidgets('shows release notes and follows download and install states', (
     tester,
   ) async {
@@ -69,16 +89,225 @@ void main() {
     expect(ignored, 0);
     expect(platform.installRequests, 1);
   });
+
+  for (final fileName in ['Agent-1.8.1.apk', 'CodexRemote-1.8.1.apk']) {
+    testWidgets('manual download opens $fileName in an external browser', (
+      tester,
+    ) async {
+      final platform = _ImmediateUpdatePlatform();
+      final controller = _controller(platform);
+      await _pumpDialog(
+        tester,
+        controller,
+        update: AppUpdateInfo(
+          versionName: '1.8.1',
+          apkFileName: fileName,
+          changes: const [],
+        ),
+      );
+
+      await tester.tap(find.text('手动下载'));
+      await tester.pump();
+
+      expect(launches.single.method, 'launch');
+      expect(launches.single.arguments, {
+        'url':
+            'https://gitee.com/YanGanYuan/android-codex-server/releases/download/v1.8.1/$fileName',
+        'useSafariVC': false,
+        'useWebView': false,
+        'enableJavaScript': true,
+        'enableDomStorage': true,
+        'universalLinksOnly': false,
+        'headers': <String, String>{},
+      });
+      expect(platform.downloadRequests, 0);
+      expect(controller.state.download.status, AppUpdateDownloadStatus.idle);
+      expect(find.byType(AppUpdateDialog), findsOneWidget);
+    });
+  }
+
+  testWidgets('manual download preserves an existing app download', (
+    tester,
+  ) async {
+    final pendingSnapshot = Completer<AppUpdateDownloadSnapshot?>();
+    final platform = _ImmediateUpdatePlatform()
+      ..pendingSnapshot = pendingSnapshot;
+    final controller = _controller(platform);
+    await _pumpDialog(tester, controller);
+    await controller.startDownload(_update);
+    await tester.pump();
+    expect(find.text('下载中'), findsOneWidget);
+
+    await tester.tap(find.text('手动下载'));
+    await tester.pump();
+
+    expect(launches, hasLength(1));
+    expect(platform.downloadRequests, 1);
+    expect(platform.removedDownloads, isEmpty);
+    expect(
+      controller.state.download.status,
+      AppUpdateDownloadStatus.downloading,
+    );
+    pendingSnapshot.complete(_downloadedSnapshot);
+    await tester.pumpAndSettle();
+    expect(find.text('安装更新'), findsOneWidget);
+  });
+
+  testWidgets('manual download remains available after app download fails', (
+    tester,
+  ) async {
+    final platform = _ImmediateUpdatePlatform()
+      ..downloadError = PlatformException(code: 'download_failed');
+    final controller = _controller(platform);
+    await _pumpDialog(tester, controller);
+    await tester.tap(find.text('下载更新'));
+    await tester.pumpAndSettle();
+    expect(find.text('重新下载'), findsOneWidget);
+
+    await tester.tap(find.text('手动下载'));
+    await tester.pump();
+
+    expect(launches, hasLength(1));
+    expect(platform.downloadRequests, 1);
+    expect(controller.state.download.status, AppUpdateDownloadStatus.failed);
+    platform.downloadError = null;
+    await tester.tap(find.text('重新下载'));
+    await tester.pumpAndSettle();
+    expect(find.text('安装更新'), findsOneWidget);
+  });
+
+  for (final throwsError in [false, true]) {
+    testWidgets('browser failure is retryable (throws=$throwsError)', (
+      tester,
+    ) async {
+      var failLaunch = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(launcherChannel, (call) async {
+            launches.add(call);
+            if (failLaunch && throwsError) {
+              throw PlatformException(code: 'no_browser');
+            }
+            return !failLaunch;
+          });
+      final platform = _ImmediateUpdatePlatform();
+      await _pumpDialog(tester, _controller(platform));
+
+      await tester.tap(find.text('手动下载'));
+      await tester.pump();
+      expect(find.text('无法打开浏览器，请稍后重试'), findsOneWidget);
+      expect(find.text('下载更新'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      failLaunch = false;
+      await tester.tap(find.text('手动下载'));
+      await tester.pump();
+      expect(launches, hasLength(2));
+      expect(platform.downloadRequests, 0);
+    });
+  }
+
+  testWidgets('late browser failure is safe after the dialog closes', (
+    tester,
+  ) async {
+    final opened = Completer<bool>();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(launcherChannel, (_) => opened.future);
+    await _pumpDialog(tester, _controller(_ImmediateUpdatePlatform()));
+    await tester.tap(find.text('手动下载'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    opened.complete(false);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('download actions fit a narrow screen with large text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await _pumpDialog(
+      tester,
+      _controller(_ImmediateUpdatePlatform()),
+      textScale: 2,
+    );
+
+    expect(find.text('手动下载').hitTestable(), findsOneWidget);
+    expect(find.text('下载更新').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+const _update = AppUpdateInfo(
+  versionName: '1.8.1',
+  apkFileName: 'Agent-1.8.1.apk',
+  changes: [],
+);
+const _downloadedSnapshot = AppUpdateDownloadSnapshot(
+  status: AppUpdateDownloadStatus.downloaded,
+  downloadedBytes: 4096,
+  totalBytes: 4096,
+);
+
+AppUpdateController _controller(AppUpdatePlatform platform) {
+  return AppUpdateController(
+    client: MockClient((_) async => http.Response('[]', 200)),
+    platform: platform,
+    preferencesLoader: () async => MemoryAppUpdatePreferences(),
+    versionLoader: () async => '1.8.0',
+    autoCheck: false,
+    pollInterval: Duration.zero,
+  );
+}
+
+Future<void> _pumpDialog(
+  WidgetTester tester,
+  AppUpdateController controller, {
+  AppUpdateInfo update = _update,
+  double textScale = 1,
+}) async {
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [appUpdateProvider.overrideWith((ref) => controller)],
+      child: MaterialApp(
+        theme: buildCodexTheme(),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(textScale)),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: AppUpdateDialog(
+            update: update,
+            onLater: () {},
+            onIgnore: () {},
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _ImmediateUpdatePlatform implements AppUpdatePlatform {
+  int downloadRequests = 0;
   int installRequests = 0;
+  PlatformException? downloadError;
+  Completer<AppUpdateDownloadSnapshot?>? pendingSnapshot;
+  final removedDownloads = <String>[];
 
   @override
   Future<String> enqueueDownload({
     required String url,
     required String fileName,
-  }) async => 'download-1';
+  }) async {
+    downloadRequests += 1;
+    if (downloadError != null) throw downloadError!;
+    return 'download-1';
+  }
 
   @override
   Future<AppUpdateInstallOutcome> installDownload(String downloadId) async {
@@ -87,14 +316,14 @@ class _ImmediateUpdatePlatform implements AppUpdatePlatform {
   }
 
   @override
-  Future<void> removeDownload(String downloadId) async {}
+  Future<void> removeDownload(String downloadId) async {
+    removedDownloads.add(downloadId);
+  }
 
   @override
   Future<AppUpdateDownloadSnapshot?> queryDownload(String downloadId) async {
-    return const AppUpdateDownloadSnapshot(
-      status: AppUpdateDownloadStatus.downloaded,
-      downloadedBytes: 4096,
-      totalBytes: 4096,
-    );
+    final pending = pendingSnapshot;
+    if (pending != null) return pending.future;
+    return _downloadedSnapshot;
   }
 }

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.180+312，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.181+313，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -78,7 +78,7 @@ Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capab
 - Android 后台连接保护（前台 Service、partial wake lock）、回合完成通知/去重/点击直达，以及可选的
   Debug 日志采集、崩溃记录、脱敏、轮转、预览和系统分享；
 - Android 应用内更新：启动自动检查与手动检查 Gitee 稳定 Release、SemVer 比较、更新日志、忽略版本、
-  可恢复的 DownloadManager 下载进度、未知来源授权后的系统 APK 安装，以及包名/版本/稳定签名校验；
+  可恢复的 DownloadManager 下载进度、浏览器手动下载、未知来源授权后的系统 APK 安装，以及包名/版本/稳定签名校验；
 - Agent 首次成功连接时的一次性工作目录提示、SFTP 目录浏览、确认保存和设置菜单手动重开；
 - Codex 与 OpenCode 版本运行时探测、当前 SSH 用户目录隔离安装、HTTP/HTTPS 下载代理、流式安装
   进度、最小化/失败重试、安装后复检和自动连接，以及只触碰当前用户托管路径的卸载脚本；Claude Code
@@ -146,7 +146,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/platform/diagnostic_logger.dart | 持久化 Debug 日志、崩溃记录、脱敏、分段轮转、导出和分享 | 当前运行；普通日志需显式开启 |
 | flutter_app/lib/src/platform/app_update_manager.dart | Gitee Release 检查、SemVer/资源筛选、忽略版本持久化、下载/安装状态机和 Android MethodChannel 抽象 | 当前运行；只在 Android 自动检查 |
 | flutter_app/lib/src/ui/diagnostic_log_sheet.dart | Debug 日志预览、复制、清空、分享和关闭 Debug | 当前运行 |
-| flutter_app/lib/src/ui/app_update_dialog.dart | 更新日志、下载进度、后台继续、忽略版本、失败重试和安装操作 | 当前运行 |
+| flutter_app/lib/src/ui/app_update_dialog.dart | 更新日志、下载进度、浏览器手动下载、后台继续、忽略版本、失败重试和安装操作 | 当前运行 |
 | flutter_app/lib/src/ssh/terminal_manager.dart | 每 profile 独立 SSH PTY、输出历史、resize、重试和 generation 隔离 | 当前运行 |
 | flutter_app/lib/src/ui/terminal_screen.dart | 旧版黑绿 xterm、复制/粘贴、两排快捷键、重连、隐藏和显式关闭 | 当前运行 |
 | flutter_app/lib/src/ui/file_manager_screen.dart | SFTP 文件浏览、上传/下载、重命名、删除、复制/移动和 SAF 保存 | 当前运行；尚需真机回归 |
@@ -1013,6 +1013,11 @@ Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR
 `CodexRemote-<version>.apk` 的 Release。响应、标签、资源名和更新日志都有大小/条数上限；Build metadata
 不参与版本先后。自动提示受 SharedPreferences 中的忽略版本约束，手动点击版本区域仍可再次查看已发现更新。
 
+更新弹窗始终提供“手动下载”，点击后通过系统外部浏览器直接打开当前弹窗版本的 Gitee APK 资源地址，
+与应用内下载共用 `appUpdateDownloadUrl`，兼容 `Agent` 和历史 `CodexRemote` 资源名。
+应用内下载中或失败后仍可使用；该操作不创建或取消 DownloadManager 任务，也不关闭弹窗或忽略版本。
+浏览器打开失败时显示可重试的中文提示，弹窗已关闭后的迟到结果不再操作页面。
+
 下载交给 Android `DownloadManager`，目标文件名附加时间戳避免同名覆盖；Flutter 以约 1 秒节流轮询下载
 字节数并展示下载中、完成、等待未知来源权限、等待系统安装和失败状态。“后台继续”只关闭弹窗，不取消
 系统下载。下载版本、资源名和 `downloadId` 以受校验的 JSON 持久化；启动时会重绑仍存在的任务，已完成的
@@ -1378,7 +1383,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
-| test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待和后台继续的 Widget 状态切换 |
+| test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待、后台继续，以及浏览器手动下载的资源地址、失败重试、任务保留和窄屏大字体 |
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
 | test/ui/claude_code_workflow_test.dart | 生产 Claude adapter/controller/WorkScreen 配合受控 JSONL 对端，覆盖 capability 菜单、发送/流式回复、批准/拒绝、停止、重开和跨 Agent 历史隔离 |
 | test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
@@ -1460,7 +1465,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 终端 | 会话列表进入 PTY；键盘输入、resize、输出历史、隐藏/重试/显式关闭；Codex JSONL 不被污染 |
 | 后台与通知 | 切后台保持服务和 SSH；回合完成只发一次通知；点击通知恢复正确服务器/会话；拒绝通知权限不崩溃 |
 | Debug | 连点十次开启；日志持续写入并轮转；预览、复制、清空、系统分享；敏感值不出现在导出文本 |
-| 应用内更新 | 自动/手动检查、无更新和失败提示、绿点与更新日志、忽略版本、下载进度、弹窗后台继续、失败重试、未知来源授权、系统安装页；升级后确认 Profile 仍在且签名未变 |
+| 应用内更新 | 自动/手动检查、无更新和失败提示、绿点与更新日志、忽略版本、下载进度、弹窗后台继续、失败重试、手动下载经浏览器打开当前版本 APK、未知来源授权、系统安装页；升级后确认 Profile 仍在且签名未变 |
 | 并发与返回 | resume 同时收到 delta、列表与 Work 来回、系统 Back、SSH 断开、切后台再回来不会覆盖错误 thread |
 | 竖屏/字体 | 推荐 1220x2712 竖屏、放大字体无截断；同时核对实际截图尺寸 |
 | 进程重建 | 加密 Profile 可恢复，断线不会伪装成已连接 |
@@ -1515,7 +1520,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     和任务列表以旧 Compose 页面为明确视觉基线，保留其 64 dp 顶栏、品牌/推广块、单个服务器整卡、
     无外框 Debug 行、资源行、Agent 分段控件、无描边搜索框和紧凑任务行；可配置模型等新增内容除外。
 16. APK 签名永不变化，每次修改版 APK 的可见语义版本至少递增一个 patch 且 build number 必增，交付同时给内网和外网地址；应用内更新只能安装同包名、
-    同稳定证书且版本递增的正式 APK，不能用换签名绕过覆盖升级问题。
+    同稳定证书且版本递增的正式 APK，不能用换签名绕过覆盖升级问题。更新弹窗必须保留“手动下载”入口，
+    由系统浏览器打开对应版本 APK，供无法在应用内下载的用户使用。
 17. 本机构建下载优先使用 127.0.0.1:7890；已有依赖保持离线增量构建。
 18. 每次修改按风险执行最近的定向测试并只选择一个主门禁；不能只以“编译通过”代替模拟器和真实流程
     验证，也不要重复执行已经由同指纹成功 stamp 证明的 analyze、全量测试或 APK 构建。第一次写文件前
