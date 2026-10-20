@@ -1,38 +1,41 @@
-name: Main Cross-platform Release
+name: Tagged Cross-platform Release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: main-cross-platform-release
+  group: tagged-cross-platform-release
   cancel-in-progress: false
 
 jobs:
   release-preflight:
-    name: Validate main release version
+    name: Validate release tag
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Check branch, version and immutable tag
+      - name: Check version and immutable tag
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = refs/heads/main
           version="$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)\+[0-9]+[[:space:]]*$/\1/p' flutter_app/pubspec.yaml)"
           test -n "$version"
           tag="v$version"
+          if [[ "$GITHUB_REF" != "refs/tags/$tag" ]]; then
+            echo "Run this workflow from the existing $tag tag matching pubspec; branch publication is disabled" >&2
+            exit 1
+          fi
           refs="$(timeout 60 git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")"
           tag_commit="$(printf '%s\n' "$refs" | awk '$2 ~ /\^\{\}$/ {print $1}')"
           if [[ -z "$tag_commit" ]]; then tag_commit="$(printf '%s\n' "$refs" | awk 'NR == 1 {print $1}')"; fi
-          if [[ -n "$tag_commit" && "$tag_commit" != "$GITHUB_SHA" ]]; then
-            echo 'Version already belongs to another commit; bump pubspec before pushing main' >&2
+          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo 'Release tag is missing or points at another commit; no tag will be created or moved' >&2
             exit 1
           fi
 
@@ -139,7 +142,7 @@ jobs:
           test -s "$ipa_path"
           ipa_sha256="$(shasum -a 256 "$ipa_path" | awk '{print $1}')"
           {
-            printf 'sourceBranch=main\n'
+            printf 'sourceRef=%s\n' "$GITHUB_REF"
             printf 'gitCommit=%s\n' "${GITHUB_SHA}"
             printf 'version=%s\n' "$version"
             printf 'codesign=adhoc-no-apple-certificate\n'
@@ -220,7 +223,7 @@ jobs:
           install -m 0644 "$source_apk" "$output_dir/$apk_name"
           apk_sha256="$(sha256sum "$output_dir/$apk_name" | awk '{print $1}')"
           {
-            printf 'sourceBranch=main\n'
+            printf 'sourceRef=%s\n' "$GITHUB_REF"
             printf 'gitCommit=%s\n' "${GITHUB_SHA}"
             printf 'version=%s\n' "$version"
             printf 'apk=%s\n' "$apk_name"
@@ -292,7 +295,7 @@ jobs:
           }
           $zipSha256 = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
           @(
-            "sourceBranch=main"
+            "sourceRef=$env:GITHUB_REF"
             "gitCommit=$env:GITHUB_SHA"
             "version=$version"
             "architecture=x64"
@@ -445,7 +448,7 @@ jobs:
           test "${#assets[@]}" -eq 8
 
           {
-            printf 'Cross-platform builds from `main`.\n\n'
+            printf 'Cross-platform builds from tag `%s`.\n\n' "$tag"
             printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- Android: signed Release APK for standard Android devices\n'
             printf -- '- iOS AppSync/TrollStore: ad-hoc signed unsigned IPA\n'
@@ -456,15 +459,12 @@ jobs:
           refs="$(timeout 60 git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")"
           tag_commit="$(printf '%s\n' "$refs" | awk '$2 ~ /\^\{\}$/ {print $1}')"
           if [[ -z "$tag_commit" ]]; then tag_commit="$(printf '%s\n' "$refs" | awk 'NR == 1 {print $1}')"; fi
-          test -z "$tag_commit" || test "$tag_commit" = "$GITHUB_SHA"
-          existing_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish 2>/dev/null || true)"
-          if [[ -n "$existing_target" && -z "$tag_commit" ]]; then
-            test "$existing_target" = "$GITHUB_SHA"
-          fi
+          test "$GITHUB_REF" = "refs/tags/$tag"
+          test "$tag_commit" = "$GITHUB_SHA"
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
+              --verify-tag \
               --title "$title" \
               --notes-file "$notes_file" \
               --draft

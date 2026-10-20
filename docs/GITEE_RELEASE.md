@@ -1,6 +1,6 @@
 # 自建 Runner 的 Tag 发布（可选）
 
-当前标准发布流程是 Gitee Go 的 `main` 分支自动发布，见
+当前标准发布流程是 Gitee Go 的版本标签自动发布，main 推送只同步代码，见
 [GITEE_GO_RELEASE.md](GITEE_GO_RELEASE.md)。本文件仅保留给已部署自建 Runner、且需要同时把 APK
 发布到内网 HTTP 地址的旧流程。两套流程不要在同一个版本上同时启用，以免重复创建 Release。
 

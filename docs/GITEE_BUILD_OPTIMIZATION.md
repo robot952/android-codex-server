@@ -3,14 +3,15 @@
 本文记录当前 Gitee Go Android 发布流水线的线上构建方案、近期修复和 v1.8.174 →
 v1.8.175 的实测结果。当前行为以 `.workflow/流水线-flutter-refactor-编译.yml` 和
 `scripts/run-gitee-release.sh` 为准；操作入口和发布约束见
-[GITEE_GO_RELEASE.md](GITEE_GO_RELEASE.md)，当前使用 `main` 自动发布入口。
+[GITEE_GO_RELEASE.md](GITEE_GO_RELEASE.md)。自 2026-10-20 起改为版本标签触发，main 推送只同步代码；
+下文 v1.8.174/v1.8.175 数据保留当时实测，不代表为切换触发规则重新出包。
 
 ## 当前线上方案
 
-当前 Gitee Go 只保留一个 `main` 分支自动发布入口。工作流执行：
+当前 Gitee Go 只保留一个 `v<versionName>` 标签自动发布入口。工作流执行：
 
 ```text
-main push
+version tag push (v<versionName>)
   -> bootstrap-regression       (最多 300 秒)
   -> android-sdk-regression     (最多 300 秒)
   -> gradle-regression          (最多 600 秒)

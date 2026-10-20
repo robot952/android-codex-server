@@ -5,22 +5,24 @@
 测试服务器，缩短反馈时间，同时不牺牲可重复性。
 
 正式 Gitee 发布不信任本机成功缓存。Flutter 迁移已合并到 `main`；开发可在功能分支进行，
-推送 `main` 到 GitHub 和 Gitee 会分别自动构建并发布，推送前必须递增 Pubspec 的版本和 build number。
+推送 `main` 到 GitHub 和 Gitee 只同步代码；两端仅在推送 `v<versionName>` 标签时自动构建并发布。
+只有用户明确要求云端发布时才创建并推送标签，发布前必须递增 Pubspec 的版本和 build number。
 
-Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只自动响应 `main` 分支推送，标签推送不再触发。
+Gitee 环境准备由 `scripts/publish-tag-release.sh` 执行，流水线只自动响应 `v` 前缀版本标签推送。
 `.workflow/` 只保留 `流水线-flutter-refactor-编译.yml`。历史 `流水线-202608021802.yml` 必须从对应
 分支删除，并在 Gitee Go 核对旧“构建”入口已关闭；不要对同一提交同时手动重跑和推送。
-main 发布预检核对 origin/main 与 HEAD，并按 `pubspec.yaml` 创建缺失的 `v<version>` 标签；已有标签必须指向同一提交。
-正式发布还要求对 main 构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；不得在日志或聊天中提供令牌。
+发布预检核对 `pubspec.yaml`、`v<version>` 标签与 HEAD 一致，不自动创建或移动标签。
+正式发布还要求对版本标签构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；不得在日志或聊天中提供令牌。
 缺失时在环境下载前失败，编译前通过 Node 发布预检检查身份与仓库访问。构建并验签后，
 `publish-gitee-artifact.cjs` 为已有标签创建非预览 Release、上传同一 `Agent-<version>.apk`，并公开下载核对
 大小与 SHA-256。只有回验成功才输出 Published and verified；`dist/release-publication.json` 留存非敏感发布结果。
-仅 main 预检允许创建缺失标签，任何入口都不移动已有标签。上传不再次编译，同名附件必须回验且不能覆盖。
+注册的标签流水线不创建缺失标签，也不移动已有标签。上传不再次编译，同名附件必须回验且不能覆盖。
 `dist/` 暂存下载与正式 Release 同时保留。
 发布回归/预检各限 120 秒，发布整体限 900 秒（API 单次 30 秒，上传/回验各 300 秒），继续受总发布预算约束。
 `test-gitee-release.cjs` 仅使用 loopback 和假令牌，在云端检查幂等、失败、公开附件哈希、令牌隔离和超时。
-YAML 只执行 `bash scripts/run-gitee-release.sh main`，通过严格 Shell 串行调用回归与发布，失败或超时
-不能继续下一阶段。手动调用旧标签入口时，仍限时 60 秒获取 origin 的精确标签并校验提交；该模式不创建或移动标签。
+YAML 只执行 `bash scripts/run-gitee-release.sh`，通过严格 Shell 串行调用回归与发布，失败或超时
+不能继续下一阶段。入口拒绝旧 `main` 参数及 `CODEX_RELEASE_BRANCH`，避免旧平台注册项自动创建标签。
+手动运行须使用已有匹配版本标签；本地缺失时限时 60 秒获取 origin 的精确标签并校验提交。
 Gitee YAML 使用 `caches: []` 关闭跨构建缓存传输，避免整个 SDK/Gradle 等目录上传 HTTP 413 后
 阻断 APK 产出暂存；`dist/` 构件上传保持开启。作业内磁盘缓存、预装 SDK 复用及本机缓存不受影响，
 但全新 runner 不再从平台恢复这些缓存。云端回归锁定空缓存配置和发布构件配置，恢复缓存前必须验证体积上限。
@@ -93,9 +95,10 @@ Gradle HTTP 连接/读取各限 30 秒；Debug 和 Release 的整次 Flutter 编
 强制 KILL 无法执行退出清理；失败重跑必须使用干净 checkout，不能直接发布残留临时锁文件映射的工作区。
 下载连接上限 20 秒、单次传输最多 300 秒，准备锁与 Wrapper 锁分别最多等待 300/120 秒。
 对应离线 fixture 为 `scripts/test-ci-environment.sh` 与 `scripts/test-ci-gradle.sh`，正式发布前在 Gitee 执行。
-GitHub 的跨平台出包由 `.github/workflows/flutter-refactor-ios.yml` 响应 `main` 推送，也允许手动运行 main。
-两个平台都只保留各自一个自动入口，发布创建的 `v<version>` 标签不触发第二轮构建。
-GitHub 先核对版本标签没有被其他提交占用，各平台 job 限时 60 分钟，发布限时 15 分钟；
+GitHub 的跨平台出包由 `.github/workflows/flutter-refactor-ios.yml` 响应 `v*` 标签推送，保留手动入口；
+手动运行必须选已有且与 Pubspec 匹配的版本标签，选择 main 会在预检失败，不进入编译。
+两个平台都只保留各自一个自动入口，流水线不再自动创建标签，不能对同一标签同时推送和手动重跑。
+GitHub 先核对触发标签、Pubspec 与远端标签提交一致，各平台 job 限时 60 分钟，发布限时 15 分钟；
 附件先上传到 draft 并下载比对，再转成正式 Release，不使用 prerelease，也不覆盖已有同名附件。
 Android 的 Ubuntu job 和 iOS 的 macOS job 都执行完整 analyze/test；Claude Linux SSH 安装脚本的
 集成测试只在 Linux 执行，由 Android job 把关，其他 adapter、协议及 API 测试仍在两端执行。
@@ -131,7 +134,7 @@ SDK 总阶段 1800 秒和共享环境剩余预算继续生效，下载校验仍�
 通过无凭据公共 HTTPS 获取，不读取发布令牌，不 checkout、不执行 hooks，不改变应用 Git 工作区。
 浅取最多两次、每次 180 秒、低速保护 30 秒；超时/取消立即终止、不重置阶段预算。
 有效 ZIP 缓存不联网，失败保留原归档和安装；哈希/版本/工具校验通过才替换对应 CMake 目录。
-该分支为独立历史，不合并 main、不移动标签、不使用 LFS、不包含工作流；两端仍只响应 main 推送一次。
+该分支为独立历史，不合并 main、不移动标签、不使用 LFS、不包含工作流；其 `ci-deps-*` 标签不触发版本出包。
 其他 SDK 包仍走原国内仓库，不因 CMake 失败触发全仓库回退，也不依赖 GitHub 或 Google 下载。
 自定义 `CODEX_ANDROID_CMAKE_URL` 必须同时提供 `CODEX_ANDROID_CMAKE_SHA256`；显式指定
 `CODEX_ANDROID_REPOSITORY_URL` 时 CMake 仍完全交由该源的 sdkmanager 安装，不自动访问依赖分支。
@@ -442,7 +445,7 @@ UI 验收推荐使用约 1.5K 画布：
 真实软键盘避让和跳过不发请求；同样使用内存协议 fixture，结束后覆盖安装正常 APK。
 它使用真实 JSONL adapter、AppController 和 WorkScreen，但协议对端与 Profile 存储均为内存 fixture，
 不登录真实 SSH、不调用模型、不消耗云端额度。测试包会替换模拟器 APK；结束后必须安装正常发布包，
-保留既有 App 数据，不把测试包交付给用户。功能分支推送不触发发布；main 推送自动触发两端出包。
+保留既有 App 数据，不把测试包交付给用户。main 和功能分支推送均不触发发布，只有版本标签推送自动出包。
 Flutter 3.44 的 Android Release 构建须保留 `--pub`，以按 Release 模式重新生成原生插件注册表，
 剔除仅测试使用的 `integration_test`；直接沿用 Debug 注册表并使用 `--no-pub` 会编译失败。
 已解析依赖仍由 Pub 的 up-to-date 检查复用，不清理缓存。

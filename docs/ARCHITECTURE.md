@@ -1098,34 +1098,35 @@ flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ~~~
 
-Flutter 迁移已合并到 main；向 GitHub 和 Gitee 推送 main 分别触发一次发布，功能分支及标签推送不自动出包。
-Gitee Go 的 Flutter 发布流水线只响应 main 推送，使用固定 Flutter `3.44.8`、JDK 17、Android
+Flutter 迁移已合并到 main；向 GitHub 和 Gitee 推送 main 或功能分支只同步代码，不自动出包。
+两端只在推送 `v<versionName>` 版本标签时自动发布；手动运行也须使用已有且与 Pubspec 匹配的版本标签。
+Gitee Go 的 Flutter 发布流水线只监听 `v` 前缀标签推送，使用固定 Flutter `3.44.8`、JDK 17、Android
 Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
 `scripts/publish-tag-release.sh` 验证标签与版本、稳定证书，并归档 `Agent-<version>.apk`。随后调用
 `scripts/publish-gitee-artifact.cjs` 创建正式 Gitee Release、上传同一 APK，并从公开下载地址回验大小和
 SHA-256；全部完成才报告发布成功，不能把构建页的暂存构件当成 Release。仍保留 `dist/` 构件和发布结果元数据。
 构建并行准备、缓存上传边界、阶段超时、依赖哈希和 Gradle 诊断的实测方案与 v1.8.175 数据见
 [Gitee 线上编译优化记录](GITEE_BUILD_OPTIMIZATION.md)；后续优化暂缓，恢复缓存上传前必须重新核对体积上限。
-Gitee Go 必须配置对 main 构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；缺失立即退出，
+Gitee Go 必须配置对版本标签构建可用的密文变量 `CODEX_RELEASE_TOKEN`，具备目标仓库写权限；缺失立即退出，
 编译前检查身份与仓库访问。令牌只从环境读取，不进入命令参数、输出或下载请求，鉴权 API 不跟随重定向。
-main 发布预检核对 origin/main == HEAD，按 Pubspec 创建缺失的 v<version> 标签；已存在且指向别处则拒绝，
-要求先递增版本。上传前再次核对 origin 标签指向构建提交，不移动标签、不重复编译；同名附件只回验，不覆盖。
+标签发布预检核对 `v<versionName>` 与 Pubspec、HEAD 一致；缺失或指向别处则拒绝。
+上传前再次核对 origin 标签指向构建提交，不创建或移动标签、不重复编译；同名附件只回验，不覆盖。
 发布回归/预检分别上限 120 秒，发布上限 900 秒；API 单次 30 秒、上传及整包回验各 300 秒，仍受总任务预算限制。
 `test-gitee-release.cjs` 在云端以 loopback fixture 覆盖创建、补传、幂等、错误哈希、令牌隔离及超时。
 仓库只保留 `.workflow/流水线-flutter-refactor-编译.yml` 一个 Gitee Go 配置，历史
-`流水线-202608021802.yml` 已移除，旧入口在平台关闭；沿用现有 YAML 文件，自动入口显示为“Main 发布”。
-不并用手动重跑与分支推送，创建发布标签不再触发第二轮构建。
-GitHub 沿用 `.github/workflows/flutter-refactor-ios.yml`，main 构建三个平台成功后将附件上传 draft，
+`流水线-202608021802.yml` 已移除，旧入口在平台关闭；沿用现有 YAML 文件，自动入口显示为“版本标签发布”。
+不要对同一版本同时推送标签和手动重跑；流水线本身不再自动创建标签。
+GitHub 沿用 `.github/workflows/flutter-refactor-ios.yml`，标签构建三个平台成功后将附件上传 draft，
 下载比对后发布正式 v<version> Release。预检/编译/发布分别限时 5/60/15 分钟，已有标签和附件不可覆盖。
 
-Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh main`，由同一个严格 Shell 顺序执行环境准备和
+Gitee 的 YAML 只调用 `bash scripts/run-gitee-release.sh`，不传 `main`，由同一个严格 Shell 顺序执行环境准备和
 Android SDK 和 Gradle 下载的隔离回归，再调用 `bash scripts/publish-tag-release.sh`；任何阶段失败或超时立即退出，
 不能依赖平台多条 commands 自动停止。Gitee 默认传入 `CODEX_RELEASE_BUILD_MODE=release`，只编译交付的
 Release APK，不再先编未发布的 Debug APK；仍强制执行 analyze、全量 Flutter tests、稳定验签和原阶段超时。
 需要诊断双变体时可显式覆盖为 `all`；其他发布入口的默认行为不变。构建日志打印实际门禁计划。
 Gradle 缓存路径回归使用 Git 已跟踪的根目录 Wrapper JAR，
 不依赖 Flutter 准备后才生成的、被忽略的 Android Wrapper JAR。
-手动使用旧标签模式且没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
+标签检出没有本地标签时，发布入口以 60 秒上限从 origin 获取精确的 `refs/tags/v<versionName>`，
 之后仍严格核对标签提交与 HEAD；已有错误标签、远端缺失或获取失败必须拒绝发布，不创建或移动标签。
 标签入口与旧分支入口统一通过 `prepare-ci-environment.sh` 准备 Flutter、Android SDK、Gradle 和引擎，
 `1.8.175+307` 起，隔离 Gradle home、Node 和托管 Maven 准备后，`prepare-ci-sdk-pair.sh` 最多两路并行：
@@ -1244,7 +1245,7 @@ SDK 缓存，锁、许可证、下载和包安装全部写到缓存，原 SDK �
 才替换目标版本；错误哈希或不完整包保留旧安装。其他 SDK 包继续使用国内仓库，避免该 ZIP 的 404
 触发全仓库换源和长时间清单请求，不依赖 GitHub 或 Google 下载可达性。
 `ci-deps` 包含经过校验的小型依赖、来源和保留的许可证说明及 SHA256SUMS，不放完整 SDK/NDK/Flutter，不合并到 main，
-不移动已有标签、不使用 LFS；main-only 自动触发保持不变，依赖分支/标签推送不产生第二轮出包。
+不移动已有标签、不使用 LFS；依赖分支和 `ci-deps-*` 标签不匹配版本发布触发器，不产生出包。
 显式自定义 SDK 仓库仍由 sdkmanager 完整处理；自定义 CMake 静态地址要求显式 SHA-256，
 保留 curl 连接 20 秒、单次 180 秒、低速 30 秒、两次续传上限。
 SDK 回归内调用 `test-ci-dependency.sh`，使用本地 Git fixture 覆盖固定提交、哈希、缓存离线复用、
@@ -1562,6 +1563,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 34. MCP 工具调用默认折叠，用户点击后才显示详情；运行中、完成和失败均使用同一交互，状态更新不能自动展开。
 35. Gitee 同一版本只保留一个自动构建入口；清理历史分支的旧流水线 YAML 后再推送标签，不同时手动重跑。
     保留发布总超时、阶段超时和有限重试，不能为让构建变绿而跳过失败测试。
+36. 日常修改完成后推送两端 main，不自动触发远端出包。只有用户明确要求云端发布时才创建并推送版本标签；
+    本地出包可按交付要求执行，不因修改触发云端构建。两端手动云端发布也必须使用已有的匹配版本标签。
 
 ## 15. 修改影响图和顺序
 
@@ -2766,7 +2769,8 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 早期返工包括静态提示、旧 Claude 测试版本假设，以及本机 Gradle 单个 transform 元数据损坏/下载代理缺失；
   修正后复验通过，未执行 clean 或清空缓存，失败计时保留。最终本机 Linux 版本保留修复后重新执行完整门禁。
 - Gitee 线上方案、HTTP 413/仓库/SDK/下载与取消问题、v1.8.174 → v1.8.175 的实测对照和诊断边界已整理至
-  [Gitee 构建优化记录](GITEE_BUILD_OPTIMIZATION.md)，发布文档同步为 `main` 自动发布；按用户要求暂停后续优化。
+  [Gitee 构建优化记录](GITEE_BUILD_OPTIMIZATION.md)，当时采用 `main` 自动发布；当前标签触发规则见第 12 节。
+  按用户要求暂停后续性能优化。
 
 ## 18. 文档维护规则
 

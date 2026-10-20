@@ -1,9 +1,9 @@
 version: "1.0"
 name: Flutter Refactor 发布
-displayName: Main 发布
+displayName: 版本标签发布
 stages:
 - name: flutter_refactor_build
-  displayName: Main Android 发布
+  displayName: 版本标签 Android 发布
   strategy: naturally
   trigger: auto
   steps:
@@ -15,7 +15,7 @@ stages:
     buildToolsVersion: "36.0.0"
     ndkVersion: 28.2.13676358
     commands:
-    - bash scripts/run-gitee-release.sh main
+    - bash scripts/run-gitee-release.sh
     artifacts:
     - name: FLUTTER_REFACTOR_BUILD_ARTIFACT
       path:
@@ -33,10 +33,10 @@ stages:
 triggers:
   trigger: auto
   push:
-    branches:
-      precise:
-      - main
-      prefix: []
+    tags:
+      prefix:
+      - v
+      precise: []
       include: []
 notify: []
 strategy:

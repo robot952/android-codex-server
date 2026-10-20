@@ -4,11 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Only the registered main workflow opts into creating its version tag.
-# Explicit tag invocations retain the existing immutable-tag verification.
-if (( $# > 0 )); then
-    [[ $# == 1 && "$1" == main ]] || { echo 'Usage: run-gitee-release.sh [main]' >&2; exit 2; }
-    export CODEX_RELEASE_BRANCH=main
+# Registered workflows publish existing immutable version tags only. Reject the
+# old main argument before any stages, including a stale platform registration.
+if (( $# > 0 )) || [[ -n "${CODEX_RELEASE_BRANCH:-}" ]]; then
+    echo 'Usage: run-gitee-release.sh (existing version tag required; branch publication is disabled)' >&2
+    exit 2
 fi
 
 # Gitee's command list does not stop on an intermediate nonzero exit. Keep all

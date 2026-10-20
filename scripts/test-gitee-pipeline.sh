@@ -14,7 +14,7 @@ for prior_stamp in 0 1; do
        "$WORKFLOW_ANDROID_PLAN_CACHE_HIT" == 0 ]]
 done
 # Keep exactly one registered source configuration. A second YAML can register
-# another webhook and consume two builds for the same main push. Platform-side
+# another webhook and consume two builds for the same version tag. Platform-side
 # legacy registrations must also stay disabled.
 shopt -s nullglob
 pipeline_configs=("$ROOT_DIR"/.workflow/*.yml "$ROOT_DIR"/.workflow/*.yaml)
@@ -28,10 +28,11 @@ shopt -u nullglob
 # disabled until a size-bounded cross-job cache policy has been verified.
 # Do not remove the actual release artifact while fixing oversized caches.
 pipeline_config="${pipeline_configs[0]}"
-grep -Fxq '    branches:' "$pipeline_config"
-grep -Fxq '      - main' "$pipeline_config"
-if grep -Eq '^[[:space:]]*tags:' "$pipeline_config"; then
-    echo 'Release tag creation must not trigger another Gitee build' >&2
+grep -Fxq '    tags:' "$pipeline_config"
+grep -Fxq '      - v' "$pipeline_config"
+grep -Fxq '    - bash scripts/run-gitee-release.sh' "$pipeline_config"
+if grep -Eq '^[[:space:]]*branches:' "$pipeline_config"; then
+    echo 'Branch pushes must not trigger Gitee packaging' >&2
     exit 1
 fi
 [[ "$(grep -Ec '^[[:space:]]*caches:' "$pipeline_config")" == 1 ]] &&
@@ -121,7 +122,21 @@ assert_pipeline() {
 assert_pipeline none 0 4
 assert_pipeline none 0 4 release
 assert_pipeline none 0 4 all
-assert_pipeline none 0 4 release main
+# A stale main registration or inherited branch variable must fail before even
+# running regressions, rather than creating a tag and triggering another build.
+for branch_source in argument environment; do
+    : > "$FIXTURE_STAGES"
+    : > "$FIXTURE_COMMANDS"
+    status=0
+    if [[ "$branch_source" == argument ]]; then
+        CODEX_RELEASE_BRANCH= bash "$test_root/repo/scripts/run-gitee-release.sh" main \
+            > "$test_root/rejected-branch.log" 2>&1 || status=$?
+    else
+        CODEX_RELEASE_BRANCH=main bash "$test_root/repo/scripts/run-gitee-release.sh" \
+            > "$test_root/rejected-branch.log" 2>&1 || status=$?
+    fi
+    [[ "$status" == 2 && ! -s "$FIXTURE_STAGES" && ! -s "$FIXTURE_COMMANDS" ]]
+done
 assert_pipeline test-ci-environment.sh 42 1
 assert_pipeline test-ci-android.sh 42 2
 assert_pipeline test-ci-android.sh 124 2

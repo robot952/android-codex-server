@@ -1,23 +1,24 @@
 # Gitee Go Flutter Android 发布
 
-> 当前 `main` 自动发布入口的线上优化、问题修复和 v1.8.174 → v1.8.175 实测数据，见
+> 线上编译优化、问题修复和 v1.8.174 → v1.8.175 实测数据，见
 > [GITEE_BUILD_OPTIMIZATION.md](GITEE_BUILD_OPTIMIZATION.md)。本文保留发布入口、超时、触发和
 > 凭据边界；两份文档中的现行脚本行为以仓库工作流和脚本为准。
 
-当前只保留 `.workflow/流水线-flutter-refactor-编译.yml`，响应 **`main` 分支推送**；旧
-`.workflow/流水线-202608021802.yml` 已从当前分支移除。普通分支提交不会触发这条发布流水线。
-唯一入口调用 `bash scripts/run-gitee-release.sh main`，在同一个严格 Shell 中通过
+当前只保留 `.workflow/流水线-flutter-refactor-编译.yml`，响应 **`v<versionName>` 版本标签推送**；旧
+`.workflow/流水线-202608021802.yml` 已从当前分支移除。main 与功能分支推送只同步代码，不自动出包。
+唯一入口调用 `bash scripts/run-gitee-release.sh`，不传 `main`，在同一个严格 Shell 中通过
 `scripts/run-ci-stage.sh` 限时执行回归与 `bash scripts/publish-tag-release.sh`。任一阶段失败或超时
-就退出，不依赖平台多条命令的失败处理。发布先核对 `main` 当前提交和 Pubspec 版本，再构建、验证
+就退出，不依赖平台多条命令的失败处理。发布先核对已有版本标签、当前提交和 Pubspec 版本，再构建、验证
 稳定签名并将 APK、发布元数据和诊断摘要归档到 `dist/`。
 
-旧的 `v` 标签触发描述只适用于历史/可选入口，不能用于判断当前主线流水线是否会启动。当前默认
-只构建 Release APK；如需诊断双变体，显式设置 `CODEX_RELEASE_BUILD_MODE=all`。
+2026-10-20 起停止 main 自动发布；只有用户明确要求云端出包时才创建并推送版本标签，或手动重跑该标签。
+本地出包与发布仍可按交付要求单独执行。当前云端默认只构建 Release APK；如需诊断双变体，
+显式设置 `CODEX_RELEASE_BUILD_MODE=all`。
 
-`publish-tag-release.sh` 在 `main` 发布模式下先要求 `origin/main` 与当前提交一致，再由
-`publish-gitee-artifact.cjs --prepare-main` 根据 Pubspec 版本创建缺失的版本标签
-`v<versionName>`，并复核远端目标仍是当前提交；如果已有标签指向其他提交则拒绝覆盖。标签推送本身
-不触发第二条流水线。构建后，脚本先将
+`publish-tag-release.sh` 要求 Pubspec 对应的 `v<versionName>` 标签指向当前提交；标签不在本地时，
+最多用 60 秒从 origin 读取精确标签。缺失或指向别处都拒绝，不创建或移动标签。上传前再次核对远端目标。
+`run-gitee-release.sh` 拒绝旧 `main` 参数与 `CODEX_RELEASE_BRANCH`，防止旧平台注册项继续创建标签并重复出包。
+构建后，脚本先将
 APK、`release-metadata.txt` 和诊断摘要整理到 `dist/` 目录，再创建/校验正式 Gitee
 Release、上传同一个 APK，并下载公开附件核对大小与 SHA-256；流水线结束后平台才将 `dist/` 归档为构件。构件与 Gitee Release 附件是两个
 独立交付位置；应用内更新读取的是正式 Release。
@@ -33,9 +34,9 @@ Gitee Go 的删除入口提示按对应分支删除 YAML；迁移时还要核对
 本次作业内的磁盘缓存、Debug/Release 复用及 Gitee 预装 SDK 复用保持不变，不删除本机缓存；
 全新 runner 可能需要重新获取未预装依赖。恢复跨构建缓存前需另行验证体积受控的缓存策略与平台限制，
 不能直接重新加入整个 SDK 或 Gradle 目录。云端回归同时检查空缓存配置与 `dist/` 构件配置，
-所有原有构建、验签、超时和 main 分支触发规则不变。
+原有构建、验签和超时规则保留，当前触发器仅监听版本标签。
 
-当前 `main` 入口与旧 `scripts/build-gitee-release.sh` 共用
+当前标签入口与旧 `scripts/build-gitee-release.sh` 共用
 `scripts/prepare-ci-environment.sh` 准备 Flutter、Android SDK 和 Gradle，统一传递在线依赖、
 Pub 镜像和工具缓存环境。平台导出的
 `ANDROID_HOME`/`ANDROID_SDK_ROOT` 可能指向只读工具挂载；脚本先验证可写性，不能写入时
@@ -135,30 +136,31 @@ fixture 必须明确报告 Node 缺失，而不是创建目标为空的符号链
 
 ## 触发规则
 
-当前唯一 Gitee Go 流水线使用 **Push → Branches → `main`**：
+当前唯一 Gitee Go 流水线使用 **Push → Tags → 前缀 `v`**：
 
 ```yaml
 triggers:
   trigger: auto
   push:
-    branches:
-      precise:
-      - main
-      prefix: []
+    tags:
+      prefix:
+      - v
+      precise: []
       include: []
 ```
 
-`main` 推送成功后由流水线从 Pubspec 版本创建对应 `v<versionName>` 标签；标签是发布身份，不是触发器。
-相同提交重试可在 Gitee Go 运行记录重跑。代码有变化时推送新的 main 提交并递增 `versionName` 与
-build number，不能移动已有标签或用旧版本重发。若 Release 创建/上传结果不确定，应查看该次 Gitee
+main 推送不自动创建标签或构建。需要云端发布时先递增 `versionName` 与 build number，提交并同步两端 main，
+再显式创建对应 `v<versionName>` 标签并推送到两端；同一版本不要同时手动运行。
+相同提交重试可在 Gitee Go 运行记录重跑。手动启动也须检出已有匹配标签的提交，不能移动已有标签或用旧版本重发。
+若 Release 创建/上传结果不确定，应查看该次 Gitee
 Release 与公开附件状态后再决定是否只读重跑，不能盲目重复构建/上传。
 
 ## 修复后重新出包
 
 1. 修改源码，将 Pubspec 的可见版本和 build number 一起递增。
 2. 创建中文提交，按仓库协作约定将当前分支推送到 Gitee `origin` 和 GitHub `github`。
-3. 确认 `main` 已更新到本次提交；推送 `main` 自动启动 Gitee Go，不手动移动/推送版本标签。
-4. 在 Gitee Go 检查 `main` 对应提交、回归、analyze/test、Release 构建、稳定签名与发布回验结论；
+3. 确认两端 `main` 已更新到本次提交；只有用户要求云端出包时，才创建并推送匹配的版本标签到两端。
+4. 在 Gitee Go 检查版本标签对应提交、回归、analyze/test、Release 构建、稳定签名与发布回验结论；
    不能仅凭 Git 推送成功报告出包成功。
 5. 构建成功后从 `dist/` 构件下载归档，核对 APK 版本、稳定证书和 `release-metadata.txt` 的 SHA-256；
    另外确认正式 Gitee Release 的公开 APK 大小和 SHA-256 回验成功。
@@ -169,10 +171,10 @@ Release 与公开附件状态后再决定是否只读重跑，不能盲目重复
 
 ## 状态与凭据边界
 
-运行入口是仓库的 **流水线 / Gitee Go** 页面。查询时匹配 main commit、生成的版本标签和 Git SHA，不把历史失败记录
+运行入口是仓库的 **流水线 / Gitee Go** 页面。查询时匹配版本标签和 Git SHA，不把历史失败记录
 当作当前提交的结果；日志至少应包含失败阶段、最后一次重试及最终退出状态。
-Gitee Go 还必须在 main 构建环境中配置受保护的 `CODEX_RELEASE_TOKEN`，并具备仓库写权限；缺失时
+Gitee Go 还必须在版本标签构建环境中配置受保护的 `CODEX_RELEASE_TOKEN`，并具备仓库写权限；缺失时
 会在 SDK/依赖准备前失败。Git 推送凭据不能替代 Release API 权限。
 
-仅适用于旧自建 Runner 的标签入口与当前 main 云端入口不能在同一版本重复启用。Token 只放平台掩码
+旧自建 Runner 的入口与当前云端标签入口不能在同一版本重复启用。Token 只放平台掩码
 变量，不得写入 YAML 命令、源码、日志或提交；发布脚本不会将令牌传给公开 APK 下载请求。
