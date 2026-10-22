@@ -225,6 +225,7 @@ class _AttachmentHost extends _FingerprintClient
   String? uploadedName;
   Uint8List? uploadedBytes;
   int? uploadedMaxBytes;
+  int uploadCalls = 0;
 
   @override
   Future<String> uploadAttachment(
@@ -232,6 +233,7 @@ class _AttachmentHost extends _FingerprintClient
     Uint8List bytes, {
     int maxBytes = maxRemoteAttachmentBytes,
   }) async {
+    uploadCalls++;
     uploadedName = name;
     uploadedBytes = Uint8List.fromList(bytes);
     uploadedMaxBytes = maxBytes;
@@ -2715,8 +2717,72 @@ void main() {
     },
   );
 
+  test('local attachment preparation is bounded and does not upload', () async {
+    final host = _AttachmentHost();
+    final connections = ServerConnectionManager(clientFactory: () => host);
+    final agents = AgentConnectionManager(connections);
+    final controller = AppController(
+      _MemoryProfileStore(const StoredProfiles()),
+      connections,
+      agents,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      await agents.close();
+      await connections.close();
+    });
+    await _waitUntilInitialized(controller);
+    LocalAttachmentUpload file(int bytes, {String? text}) =>
+        LocalAttachmentUpload(
+          name: 'same-name.dat',
+          bytes: Uint8List(bytes),
+          mimeType: text == null ? 'application/octet-stream' : 'text/plain',
+          textContent: text,
+        );
+    final staged = controller.prepareLocalAttachments([file(1), file(1)]);
+    expect(staged.map((a) => a.id).toSet(), hasLength(2));
+    expect(staged.every((a) => a.remotePath.isEmpty), isTrue);
+    expect(controller.state.attachments, isEmpty);
+    expect(host.uploadCalls, 0);
+    expect(
+      () => staged.first.localUpload!.bytes[0] = 1,
+      throwsUnsupportedError,
+    );
+    expect(
+      () => controller.prepareLocalAttachments([file(0)]),
+      throwsStateError,
+    );
+    expect(
+      () => controller.prepareLocalAttachments([
+        file(maxLocalAttachmentBytes + 1),
+      ]),
+      throwsStateError,
+    );
+    expect(
+      () => controller.prepareLocalAttachments([
+        file(maxInlineTextAttachmentBytes + 1, text: 'too large'),
+      ]),
+      throwsStateError,
+    );
+    expect(
+      () =>
+          controller.prepareLocalAttachments(List.generate(9, (_) => file(1))),
+      throwsStateError,
+    );
+    final full = controller.prepareLocalAttachments([
+      file(maxLocalAttachmentBytes),
+      file(maxLocalAttachmentBytes),
+    ]);
+    expect(
+      () => controller.prepareLocalAttachments([file(1)], existing: full),
+      throwsStateError,
+    );
+    expect(host.uploadCalls, 0);
+    expect(controller.state.attachments, isEmpty);
+  });
+
   test(
-    'restores draft and uploaded attachment when starting a turn fails',
+    'stages attachments locally and reuses uploads after a failed send',
     () async {
       final store = _MemoryProfileStore(
         const StoredProfiles(
@@ -2759,23 +2825,27 @@ void main() {
         ),
       ]);
 
-      expect(host.uploadedName, 'notes.txt');
-      expect(host.uploadedBytes, orderedEquals(attachmentBytes));
-      expect(host.uploadedMaxBytes, maxInlineTextAttachmentBytes);
+      expect(host.uploadCalls, 0);
+      expect(host.uploadedName, isNull);
       expect(controller.state.attachmentUploading, isFalse);
-      expect(controller.state.attachments, const <PendingAttachment>[
-        PendingAttachment(
-          name: 'notes.txt',
-          remotePath: _AttachmentHost.remotePath,
-          mimeType: 'text/plain',
-          textContent: attachmentText,
-        ),
-      ]);
+      expect(controller.state.attachments, hasLength(1));
+      final staged = controller.state.attachments.single;
+      expect(staged.remotePath, isEmpty);
+      expect(staged.id, isNotEmpty);
+      expect(staged.localUpload?.bytes, orderedEquals(attachmentBytes));
+      // Picker-owned buffers may be reused or changed after returning. The
+      // staged payload must retain the exact bytes the user selected.
+      attachmentBytes[0] = 0;
+      expect(staged.localUpload?.bytes.first, 'a'.codeUnitAt(0));
 
       const draft = 'Inspect the attachment   ';
       controller.setComposerDraft(draft);
       await controller.sendMessage();
 
+      expect(host.uploadCalls, 1);
+      expect(host.uploadedName, 'notes.txt');
+      expect(host.uploadedBytes, orderedEquals(attachmentText.codeUnits));
+      expect(host.uploadedMaxBytes, maxInlineTextAttachmentBytes);
       expect(agent.startedThreadId, _FailingTurnAgent.thread.id);
       expect(agent.startedText, 'Inspect the attachment');
       expect(agent.startedAttachments, controller.state.attachments);
@@ -2810,55 +2880,73 @@ void main() {
         _FailingTurnAgent.thread.id,
       );
       await _waitUntil(() => store.value.composerDrafts[draftKey] == draft);
+      await controller.sendMessage();
+      expect(
+        host.uploadCalls,
+        1,
+        reason: 'retry must reuse a successful upload',
+      );
+      expect(controller.state.composerDraft, draft);
+      expect(controller.state.attachments.single.id, staged.id);
     },
   );
 
-  test('steers an active turn without starting a replacement turn', () async {
-    final store = _MemoryProfileStore(
-      const StoredProfiles(
-        profiles: [_firstProfile],
-        selectedProfileId: 'first',
-      ),
-    );
-    final host = _AttachmentHost();
-    final connections = ServerConnectionManager(clientFactory: () => host);
-    final agent = _SteeringAgent();
-    final agents = AgentConnectionManager(
-      connections,
-      clientFactory: (kind) => agent,
-    );
-    final controller = AppController(store, connections, agents);
-    addTearDown(() async {
-      controller.dispose();
-      await agents.close();
-      await connections.close();
-    });
-    await _waitUntilInitialized(controller);
-    await controller.requestConnect(_firstProfile);
-    await controller.ensureActiveAgent();
+  test(
+    'queues active input until explicitly steered without replacing turn',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _AttachmentHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _SteeringAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (kind) => agent,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(_firstProfile);
+      await controller.ensureActiveAgent();
 
-    controller.openThread(_SteeringAgent.activeThread);
-    await _waitUntil(
-      () =>
-          controller.state.activeThread?.id == _SteeringAgent.activeThread.id &&
-          !controller.state.loading,
-    );
-    expect(controller.state.running, isTrue);
-    expect(controller.state.activeTurnId, 'turn-running');
+      controller.openThread(_SteeringAgent.activeThread);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id ==
+                _SteeringAgent.activeThread.id &&
+            !controller.state.loading,
+      );
+      expect(controller.state.running, isTrue);
+      expect(controller.state.activeTurnId, 'turn-running');
 
-    controller.setComposerDraft('Continue with tests');
-    await controller.sendMessage();
+      controller.setComposerDraft('Continue with tests');
+      await controller.sendMessage();
 
-    expect(agent.steeredThreadId, _SteeringAgent.activeThread.id);
-    expect(agent.steeredTurnId, 'turn-running');
-    expect(agent.steeredText, 'Continue with tests');
-    expect(agent.steeredAttachments, isEmpty);
-    expect(agent.startedThreadId, isNull);
-    expect(controller.state.submitting, isFalse);
-    expect(controller.state.running, isTrue);
-    expect(controller.state.activeTurnId, 'turn-running');
-    expect(controller.state.timeline.last.text, 'Continue with tests');
-  });
+      expect(agent.steeredThreadId, isNull);
+      expect(controller.state.queuedMessages, hasLength(1));
+      await controller.steerQueuedMessage(
+        controller.state.queuedMessages.single.id,
+      );
+
+      expect(agent.steeredThreadId, _SteeringAgent.activeThread.id);
+      expect(agent.steeredTurnId, 'turn-running');
+      expect(agent.steeredText, 'Continue with tests');
+      expect(agent.steeredAttachments, isEmpty);
+      expect(agent.startedThreadId, isNull);
+      expect(controller.state.submitting, isFalse);
+      expect(controller.state.running, isTrue);
+      expect(controller.state.activeTurnId, 'turn-running');
+      expect(controller.state.timeline.last.text, 'Continue with tests');
+    },
+  );
 
   test('stops the active turn locally after interrupt succeeds', () async {
     final store = _MemoryProfileStore(

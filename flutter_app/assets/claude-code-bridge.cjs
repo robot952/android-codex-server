@@ -999,6 +999,12 @@ class ClaudeBridge {
     if (!pending) return;
     this.approvals.delete(id); clearTimeout(pending.timer);
     const { run, request, requestId, isQuestion } = pending;
+    if (run.pendingSteer) {
+      // Interrupt already cancels this native request. Do not let a racing
+      // approval authorize an old tool or send a stale reply into the new pass.
+      this.notify("serverRequest/resolved", { threadId: run.thread.id, requestId: id });
+      return;
+    }
     let answer = { behavior: "deny", message: "用户拒绝或取消了此次工具请求" };
     if (run.turn.status === "inProgress") {
       if (isQuestion && pending.questions.length && pending.questions.every((_, i) => result.answers?.[i]?.answers?.length)) {
@@ -1014,6 +1020,7 @@ class ClaudeBridge {
   }
   finish(run, status, error) {
     if (run.turn.status !== "inProgress") return;
+    this.cancelSteer(run, "当前回合已结束，引导消息未发送，请重试");
     run.turn.status = status; run.turn.completedAt = Date.now();
     clearTimeout(run.initTimer);
     run.thread.updatedAt = Date.now();
@@ -1208,6 +1215,8 @@ class ClaudeBridge {
       run.completedMessages = new Set();
       run.lastAssistantBlocks = [];
       run.toolAliases = new Map();
+      run.assistantPassStart = 0;
+      run.resultMessageId = null;
       run.truncated = new Set();
       run.usageByMessage = new Map();
       run.baseUsage = { ...ZERO_USAGE, ...previousUsage?.total };
@@ -1298,6 +1307,92 @@ class ClaudeBridge {
     return {};
   }
   fail(run, error) { this.finish(run, "failed", error); this.terminate(run); }
+  cancelSteer(run, message) {
+    const pending = run.pendingSteer;
+    if (!pending) return;
+    run.pendingSteer = null;
+    clearTimeout(pending.timer);
+    pending.reject(new Error(message));
+  }
+  steer(thread, prepared, params) {
+    const run = this.active.get(thread.id);
+    if (!run || run.turn.id !== params.expectedTurnId || run.turn.status !== "inProgress" || run.exiting) {
+      throw new Error("待引导的回合已失效，请等待当前状态更新后重试");
+    }
+    if (!run.initialized || run.compactOnly) throw new Error("Claude Code 正在初始化或压缩，请稍后再引导");
+    if (run.pendingSteer) throw new Error("正在发送上一条引导消息，请稍后重试");
+    const item = { id: uuid(), type: "userMessage", content: prepared.display };
+    if (run.turn.items.length >= 256 || jsonBytes(run.turn) + jsonBytes(item) + 1 > MAX_TURN - OUTPUT_RESERVE) {
+      throw new Error("当前回合内容已达上限，请等待回合结束后发送");
+    }
+    return new Promise((resolve, reject) => {
+      const pending = { item, content: prepared.content, resolve, reject };
+      run.pendingSteer = pending;
+      pending.timer = setTimeout(() => this.cancelSteer(run, "Claude Code 引导等待超时，消息尚未发送，请重试"), 15000);
+      // A normal user frame queues behind the active native request. Explicit
+      // steering first interrupts that request, then reuses the same process
+      // after its result boundary. It must not kill detached child Agents or
+      // open a competing --resume writer for this native session.
+      pending.controlId = uuid();
+      try {
+        if (!this.control(run, { type: "control_request", request_id: pending.controlId, request: { subtype: "interrupt" } })) {
+          this.cancelSteer(run, "Claude Code 输入通道已关闭，消息未发送");
+        }
+      } catch (_) {
+        this.cancelSteer(run, "Claude Code 输入通道已关闭，消息未发送");
+      }
+    });
+  }
+  continueSteer(run) {
+    const pending = run.pendingSteer;
+    if (!pending) return false;
+    run.pendingSteer = null;
+    clearTimeout(pending.timer);
+    try {
+      // The old request has stopped. Cancel only its App permission prompts;
+      // their native request IDs are no longer valid in the next pass.
+      for (const [id, approval] of this.approvals) if (approval.run === run) {
+        this.approvals.delete(id); clearTimeout(approval.timer);
+        this.notify("serverRequest/resolved", { threadId: run.thread.id, requestId: id });
+      }
+      for (const item of run.turn.items) if (item.status === "inProgress" && !this.isBackgroundActivity(run, item)) {
+        item.status = "interrupted";
+        this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(item) });
+      }
+      this.closeChildren(run, "failed");
+      if (run.turn.items.length >= 256 || jsonBytes(run.turn) + jsonBytes(pending.item) + 1 > MAX_TURN - OUTPUT_RESERVE) {
+        throw new Error("当前回合内容已达上限，引导消息未发送");
+      }
+      const stdin = run.child.stdin;
+      if (run.exiting || stdin.destroyed || stdin.writableEnded || !stdin.writable) throw new Error("Claude Code 输入通道已关闭，消息未发送");
+      run.turn.items.push(pending.item);
+      run.thread.updatedAt = Date.now();
+      run.thread.preview = bounded(pending.item.content.filter(item => item.type === "text").map(item => item.text).join("\n"), 1000) || "图片附件";
+      this.persist(run);
+      run.lastAssistantBlocks = [];
+      run.streamedByIndex.clear();
+      run.streamReplayByIndex.clear();
+      run.streamDeltaHistoryByIndex.clear();
+      run.toolAliases.clear();
+      // Some compatible streams omit message_start/IDs. Give each steered
+      // pass its own fallback identity so later output cannot modify old text.
+      run.streamMessageKey = "steer-" + pending.item.id;
+      run.streamMessageIdProvided = false;
+      run.messageId = null;
+      run.assistantPassStart = run.turn.items.length;
+      run.resultMessageId = pending.item.id;
+      if (!this.control(run, { type: "user", session_id: run.thread.claudeSessionId || run.thread.id, message: { role: "user", content: pending.content }, parent_tool_use_id: null })) {
+        throw new Error("Claude Code 输入通道已关闭，消息未发送");
+      }
+      this.notify("item/completed", { threadId: run.thread.id, turnId: run.turn.id, item: clone(pending.item) });
+      pending.resolve({ turnId: run.turn.id });
+    } catch (error) {
+      run.turn.items = run.turn.items.filter(item => item !== pending.item);
+      pending.reject(error);
+      this.fail(run, error.message);
+    }
+    return true;
+  }
   // A compaction pass that saw its boundary has already done its work; the CLI
   // only still has to go away.
   completePass(run) { this.finish(run, "completed"); this.terminate(run); }
@@ -1317,6 +1412,10 @@ class ClaudeBridge {
     // in-progress guard. User-role XML notifications are accepted as a
     // compatibility path for older Claude CLI builds.
     if (this.taskNotification(run, value)) return;
+    if (run.pendingSteer && value.type === "control_response" && value.response?.request_id === run.pendingSteer.controlId && value.response?.subtype !== "success") {
+      this.cancelSteer(run, "Claude Code 不支持此次引导，消息未发送");
+      return;
+    }
     if (run.turn.status !== "inProgress") {
       // A detached parent turn is already terminal, but the native CLI can
       // still flush child assistant/tool frames before its next prompt. Keep
@@ -1556,6 +1655,7 @@ class ClaudeBridge {
       run.streamDeltaHistoryByIndex.clear();
       run.toolAliases.clear();
     } else if (value.type === "result") {
+      if (this.continueSteer(run)) return;
       // Result input/output totals accumulate every tool loop (and subagents).
       // Only the latest assistant request measures the current context occupancy.
       const modelUsage = value.modelUsage?.[run.usageModel || run.actualModel];
@@ -1564,7 +1664,9 @@ class ClaudeBridge {
         run.contextWindow = reportedWindow;
         this.publishUsage(run);
       }
-      if (value.result && !run.turn.items.some(item => item.type === "agentMessage")) this.appendText(run, "assistant-" + run.turn.id, value.result);
+      if (value.result && !run.turn.items.slice(run.assistantPassStart || 0).some(item => item.type === "agentMessage")) {
+        this.appendText(run, "assistant-" + (run.resultMessageId || run.turn.id), value.result);
+      }
       this.finish(run, value.is_error ? "failed" : "completed", value.is_error ? (value.errors || [value.result || "Claude Code 执行失败"]).join("\n") : null);
       if (this.hasBackgroundChildren(run)) {
         // Do not close the native CLI while detached Agents are still alive;
@@ -1904,6 +2006,7 @@ class ClaudeBridge {
       if (method === "thread/read" || method === "thread/resume") return this.response(id, this.snapshot(thread, params));
       if (method === "thread/turns/list") return this.response(id, this.page(thread, params));
       if (method === "turn/start") return this.start(thread, prepareInput(params.input), params, id);
+      if (method === "turn/steer") return this.response(id, await this.steer(thread, prepareInput(params.input), params));
       if (method === "thread/compact/start") return this.response(id, await this.compact(thread, params, id));
       if (method === "turn/interrupt") {
         const run = this.active.get(thread.id);

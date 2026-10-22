@@ -32,7 +32,7 @@ function contentBlocks(message) {
     : [{ type: "text", text: String(message.content || "") }];
 }
 
-function respondMessage(response, input, content) {
+function respondMessage(response, input, content, hold = false) {
   const id = `msg_fixture_${++messageSequence}`;
   const message = {
     id, type: "message", role: "assistant", model: input.model || "claude-sonnet-4-6",
@@ -57,6 +57,13 @@ function respondMessage(response, input, content) {
   event("content_block_delta", { index: 0, delta: content.type === "tool_use"
     ? { type: "input_json_delta", partial_json: JSON.stringify(content.input) }
     : { type: "text_delta", text: content.text } });
+  if (hold) {
+    // Leave an actual model HTTP stream in progress until native interrupt
+    // cancels it. The upper bound also cleans up a failed fixture promptly.
+    const timer = setTimeout(() => response.end(), 20000);
+    response.once("close", () => clearTimeout(timer));
+    return;
+  }
   event("content_block_stop", { index: 0 });
   event("message_delta", { delta: { stop_reason: message.stop_reason, stop_sequence: null }, usage: { output_tokens: 10 } });
   event("message_stop", {});
@@ -91,14 +98,18 @@ const apiServer = http.createServer((request, response) => {
       for (let index = messages.length - 1; index >= 0; index--) {
         const match = contentBlocks(messages[index])
           .map(block => block.text || "").join("\n")
-          .match(/CLAUDE_BRIDGE_FIXTURE:(allow|deny|interrupt|image|resume|opus|haiku|custom|policy)/);
+          .match(/CLAUDE_BRIDGE_FIXTURE:(allow|deny|interrupt|image|resume|opus|haiku|custom|policy|steer|stream-hold)/);
         if (match) { mode = match[1]; promptIndex = index; break; }
       }
       assert(mode, "Model request did not contain the controlled prompt");
       requests.push({ mode, input });
+      if (mode === "stream-hold") {
+        respondMessage(response, input, { type: "text", text: "CLAUDE_BRIDGE_STREAM_IN_PROGRESS" }, true);
+        return;
+      }
       const hasResult = messages.slice(promptIndex + 1)
         .some(message => contentBlocks(message).some(block => block.type === "tool_result"));
-      const content = ["resume", "opus", "haiku", "custom"].includes(mode) || hasResult
+      const content = ["resume", "opus", "haiku", "custom", "steer"].includes(mode) || hasResult
         ? { type: "text", text: `CLAUDE_BRIDGE_${mode.toUpperCase()}_OK` }
         : { type: "tool_use", id: `toolu_fixture_${mode}`, name: "Write", input: {
           file_path: path.join(workspace, `${mode}.txt`),
@@ -258,6 +269,50 @@ async function main() {
     assert(requests.some(request => request.mode === "image" && request.input.messages.some(message => contentBlocks(message).some(block => block.type === "image"))), "Image bytes were not forwarded to Claude");
     assert(requests.filter(request => request.mode === "allow").every(request => request.input.output_config?.effort === "high"), "Known-model effort must reach the real API request");
 
+    peer.approvalAction = null;
+    const steeringThread = await peer.rpc("thread/start", { cwd: workspace });
+    const steeringStart = peer.messages.length;
+    const steeringTurn = await peer.rpc("turn/start", {
+      threadId: steeringThread.thread.id, model: "claude-sonnet-4-6",
+      input: [{ type: "text", text: "CLAUDE_BRIDGE_FIXTURE:interrupt" }], approvalPolicy: "on-request",
+    });
+    const oldApproval = await peer.wait("item/permissions/requestApproval", params => params.turnId === steeringTurn.turn.id, steeringStart);
+    const steered = await peer.rpc("turn/steer", {
+      threadId: steeringThread.thread.id, expectedTurnId: steeringTurn.turn.id,
+      input: [{ type: "text", text: "CLAUDE_BRIDGE_FIXTURE:steer" }, { type: "localImage", path: path.join(workspace, "fixture.png") }],
+    });
+    assert.equal(steered.turnId, steeringTurn.turn.id);
+    const steeringComplete = await peer.wait("turn/completed", params => params.turn.id === steeringTurn.turn.id, steeringStart);
+    assert.equal(steeringComplete.params.turn.status, "completed");
+    assert(!fs.existsSync(path.join(workspace, "interrupt.txt")), "Steering must not approve the interrupted tool");
+    const steerRequest = requests.find(request => request.mode === "steer");
+    assert(steerRequest?.input.messages.some(message => contentBlocks(message).some(block => block.type === "image")), "Steered image never reached the model");
+    assert(steerRequest.input.messages.some(message => contentBlocks(message).some(block => block.text?.includes("CLAUDE_BRIDGE_FIXTURE:interrupt"))), "Steering must preserve native context");
+    assert(peer.messages.slice(steeringStart).some(message => message.method === "serverRequest/resolved" && message.params.requestId === oldApproval.id));
+    assert.equal(peer.messages.slice(steeringStart).filter(message => message.method === "turn/completed" && message.params.turn.id === steeringTurn.turn.id).length, 1);
+    const steeringHistory = await peer.rpc("thread/read", { threadId: steeringThread.thread.id });
+    assert.equal(steeringHistory.initialTurnsPage.data[0].items.filter(item => item.type === "userMessage").length, 2);
+    assert(JSON.stringify(steeringHistory).includes("CLAUDE_BRIDGE_STEER_OK"));
+
+    const streamingThread = await peer.rpc("thread/start", { cwd: workspace });
+    const streamingStart = peer.messages.length;
+    const streamingTurn = await peer.rpc("turn/start", {
+      threadId: streamingThread.thread.id, model: "claude-sonnet-4-6",
+      input: [{ type: "text", text: "CLAUDE_BRIDGE_FIXTURE:stream-hold" }], approvalPolicy: "on-request",
+    });
+    await peer.wait("item/agentMessage/delta", params => params.turnId === streamingTurn.turn.id && params.delta.includes("STREAM_IN_PROGRESS"), streamingStart);
+    assert.equal((await peer.rpc("turn/steer", {
+      threadId: streamingThread.thread.id, expectedTurnId: streamingTurn.turn.id,
+      input: [{ type: "text", text: "CLAUDE_BRIDGE_FIXTURE:steer" }],
+    })).turnId, streamingTurn.turn.id);
+    const streamingComplete = await peer.wait("turn/completed", params => params.turn.id === streamingTurn.turn.id, streamingStart);
+    assert.equal(streamingComplete.params.turn.status, "completed");
+    const streamingHistory = await peer.rpc("thread/read", { threadId: streamingThread.thread.id });
+    const streamingItems = streamingHistory.initialTurnsPage.data[0].items;
+    assert.equal(streamingItems.filter(item => item.type === "userMessage").length, 2);
+    assert.deepEqual(streamingItems.filter(item => item.type === "agentMessage").map(item => item.text), ["CLAUDE_BRIDGE_STREAM_IN_PROGRESS", "CLAUDE_BRIDGE_STEER_OK"]);
+    assert.equal(peer.messages.slice(streamingStart).filter(message => message.method === "turn/completed" && message.params.turn.id === streamingTurn.turn.id).length, 1);
+
     const beforeRestart = await peer.rpc("thread/read", { threadId: threadIds.get("allow"), includeTurns: true });
     assert(JSON.stringify(beforeRestart).includes("CLAUDE_BRIDGE_ALLOW_OK"));
     assert.equal(beforeRestart.tokenUsage.last.inputTokens, 160, "Real CLI cached input must count toward context");
@@ -337,7 +392,7 @@ async function main() {
     assert.equal(fs.readFileSync(settingsFile, "utf8"), policySettings, "Per-turn effort must not rewrite the user's settings");
     const finalExit = await peer.close();
     assert.equal(finalExit.code, 0);
-    console.log("Claude Code real CLI integration: allow, deny, interrupt, image, streaming, persistence, context usage, model and effort forwarding, native policy preservation, and resumed model context passed (local mock API)");
+    console.log("Claude Code real CLI integration: allow, deny, interrupt, text/image steering, image, streaming, persistence, context usage, model and effort forwarding, native policy preservation, and resumed model context passed (local mock API)");
   } finally {
     await peer.close();
     apiServer.closeAllConnections();

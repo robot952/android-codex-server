@@ -1475,53 +1475,57 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('the model sheet no longer offers a per-conversation sub-agent model', (
-    tester,
-  ) async {
-    tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(400, 900);
-    addTearDown(tester.view.reset);
-    final manager = ServerConnectionManager();
-    final controller = _LayoutController(_MemoryStore(), manager);
-    addTearDown(manager.close);
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [appControllerProvider.overrideWith((ref) => controller)],
-        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
-      ),
-    );
-    controller.showState(
-      const AppUiState(
-        screen: AppScreen.work,
-        activeThread: AgentThread(id: 'subagent-thread', title: '子模型'),
-        activeAgent: AgentKind.claudeCode,
-        activeAgentCapabilities: AgentCapabilities.claudeCode,
-        models: [
-          AgentModel(id: 'claude-opus-5-5', displayName: 'Opus 5.5'),
-          AgentModel(id: 'claude-haiku-4-5', displayName: 'Haiku 4.5'),
-        ],
-        selectedModel: 'claude-opus-5-5',
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('composer-model-button')));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'the model sheet no longer offers a per-conversation sub-agent model',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(400, 900);
+      addTearDown(tester.view.reset);
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager);
+      addTearDown(manager.close);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      controller.showState(
+        const AppUiState(
+          screen: AppScreen.work,
+          activeThread: AgentThread(id: 'subagent-thread', title: '子模型'),
+          activeAgent: AgentKind.claudeCode,
+          activeAgentCapabilities: AgentCapabilities.claudeCode,
+          models: [
+            AgentModel(id: 'claude-opus-5-5', displayName: 'Opus 5.5'),
+            AgentModel(id: 'claude-haiku-4-5', displayName: 'Haiku 4.5'),
+          ],
+          selectedModel: 'claude-opus-5-5',
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('composer-model-button')));
+      await tester.pumpAndSettle();
 
-    // 子 Agent 模型只在设置页作为全局默认配置，对话内的选择区必须完全消失。
-    expect(
-      find.byKey(const ValueKey('thread-subagent-model-inherit')),
-      findsNothing,
-    );
-    expect(
-      find.byKey(const ValueKey('thread-subagent-model-claude-haiku-4-5')),
-      findsNothing,
-    );
-    expect(find.text('子 Agent 使用的模型；思考强度跟随主模型。'), findsNothing);
-    expect(find.text('跟随主模型'), findsNothing);
-    // 主模型选择本身不受影响。
-    expect(find.text('Opus 5.5'), findsWidgets);
-    expect(tester.takeException(), isNull);
-  });
+      // 子 Agent 模型只在设置页作为全局默认配置，对话内的选择区必须完全消失。
+      expect(
+        find.byKey(const ValueKey('thread-subagent-model-inherit')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('thread-subagent-model-claude-haiku-4-5')),
+        findsNothing,
+      );
+      expect(find.text('子 Agent 使用的模型；思考强度跟随主模型。'), findsNothing);
+      expect(find.text('跟随主模型'), findsNothing);
+      // 主模型选择本身不受影响。
+      expect(find.text('Opus 5.5'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   test('camera photo is prepared as an image attachment', () async {
     final directory = await Directory.systemTemp.createTemp(
@@ -1557,7 +1561,7 @@ void main() {
     expect(picker.cameraMetadata, isFalse);
   });
 
-  testWidgets('shows completed background agents above the composer', (
+  testWidgets('keeps completed sub-agent activities without composer summary', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -1607,17 +1611,16 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('3 个后台智能体'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('background-agents-toggle')));
-    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
+    expect(find.text('3 个后台智能体'), findsNothing);
     expect(find.text('check workspace'), findsWidgets);
     expect(find.text('check time'), findsWidgets);
     expect(find.text('check system'), findsWidgets);
-    expect(find.text('已完成'), findsNWidgets(6));
+    expect(find.text('已完成'), findsNWidgets(3));
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('shows six background agents after two parent turns', (
+  testWidgets('multiple parent turns do not restore removed agent summary', (
     tester,
   ) async {
     final manager = ServerConnectionManager();
@@ -1685,7 +1688,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.text('6 个后台智能体'), findsOneWidget);
+    expect(find.text('6 个后台智能体'), findsNothing);
+    expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
   });
 
   testWidgets(

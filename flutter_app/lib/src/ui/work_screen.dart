@@ -57,10 +57,12 @@ class WorkScreen extends ConsumerStatefulWidget {
     super.key,
     this.onLoadRemoteImage,
     this.fileExporter = const AndroidLocalFileExporter(),
+    this.imagePicker,
   });
 
   final RemoteImageLoader? onLoadRemoteImage;
   final LocalFileExporter fileExporter;
+  final ImagePicker? imagePicker;
 
   @override
   ConsumerState<WorkScreen> createState() => _WorkScreenState();
@@ -76,6 +78,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   bool _canScrollForward = false;
   bool _refreshing = false;
   bool _preparingAttachments = false;
+  int _attachmentSelectionGeneration = 0;
   String? _imageLoadingPath;
   int _imageReceivedBytes = 0;
   int? _imageTotalBytes;
@@ -121,6 +124,19 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
+    ref.listen<(String?, AgentKind, String?, AppScreen)>(
+      appControllerProvider.select(
+        (value) => (
+          value.selectedProfileId,
+          value.activeAgent,
+          value.activeThread?.id,
+          value.screen,
+        ),
+      ),
+      (previous, current) {
+        if (previous != current) _attachmentSelectionGeneration += 1;
+      },
+    );
     final isAgentWork = state.screen == AppScreen.agentWork;
     final readOnly = state.isThreadReadOnly;
     ref.listen<bool>(
@@ -334,8 +350,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   state: state,
                   controller: _composerController,
                   focusNode: _composerFocus,
-                  attachmentBusy:
-                      _preparingAttachments || state.attachmentUploading,
+                  attachmentBusy: _preparingAttachments,
                   onChanged: controller.setComposerDraft,
                   onTakePhoto: _takePhoto,
                   onAttachImage: () => _pickAttachments(imagesOnly: true),
@@ -351,7 +366,10 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   onEditGoal: () => _showGoalDialog(state, controller),
                   onToggleGoal: () => _toggleGoal(state, controller),
                   onClearGoal: () => _confirmClearGoal(controller),
-                  onOpenSubAgent: controller.openSubAgentThread,
+                  onDeleteQueued: controller.deleteQueuedMessage,
+                  onEditQueued: (message) =>
+                      _editQueuedMessage(message, controller),
+                  onSteerQueued: controller.steerQueuedMessage,
                 ),
             ],
           ),
@@ -388,6 +406,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   }
 
   Future<void> _addDebugLogs(AppController controller) async {
+    final selectionGeneration = _attachmentSelectionGeneration;
     try {
       final availableSlots =
           maxPendingAttachmentCount -
@@ -403,7 +422,11 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         title: '添加崩溃 / Debug 日志',
         maxSelection: availableSlots,
       );
-      if (ids == null || ids.isEmpty || !mounted) return;
+      if (ids == null ||
+          ids.isEmpty ||
+          !_canApplyAttachmentSelection(selectionGeneration)) {
+        return;
+      }
       final before = ref.read(appControllerProvider).attachments.length;
       await controller.addDebugLogAttachments(ids);
       if (!mounted) return;
@@ -413,6 +436,38 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       }
     } catch (error) {
       if (mounted) _showNotice(context, _displayError(error, '添加 Debug 日志失败'));
+    }
+  }
+
+  bool _canApplyAttachmentSelection(int generation) =>
+      mounted &&
+      generation == _attachmentSelectionGeneration &&
+      !ref.read(appControllerProvider).isThreadReadOnly;
+
+  Future<void> _editQueuedMessage(
+    QueuedMessage message,
+    AppController controller,
+  ) async {
+    if (!controller.beginEditQueuedMessage(message.id)) return;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => _ThreadMutationRouteGuard(
+          child: _QueuedMessageEditor(
+            message: message,
+            imagePicker: widget.imagePicker,
+            prepareAttachments: (uploads, existing) =>
+                controller.prepareLocalAttachments(uploads, existing: existing),
+            onSave: (text, attachments) => controller.updateQueuedMessage(
+              message.id,
+              text: text,
+              attachments: attachments,
+            ),
+          ),
+        ),
+      );
+    } finally {
+      controller.cancelEditQueuedMessage(message.id);
     }
   }
 
@@ -499,9 +554,14 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   }
 
   Future<void> _confirmStop(AppController controller) async {
+    final state = ref.read(appControllerProvider);
+    final preparingSend =
+        !state.running && (state.attachmentUploading || state.submitting);
     final confirmed = await _confirm(
-      title: '停止当前回复',
-      message: '确定停止当前正在运行的回复吗？已经生成的内容会保留。',
+      title: preparingSend ? '停止发送' : '停止当前回复',
+      message: preparingSend
+          ? '确定停止本次发送吗？待发送消息会保留，消息队列会暂停。'
+          : '确定停止当前正在运行的回复吗？已经生成的内容会保留，消息队列会暂停。',
       confirmLabel: '停止',
       destructive: true,
       icon: Icons.stop_circle_outlined,
@@ -709,15 +769,16 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
 
   Future<void> _pickAttachments({required bool imagesOnly}) async {
     if (_preparingAttachments ||
-        ref.read(appControllerProvider).isThreadReadOnly ||
-        ref.read(appControllerProvider).attachmentUploading) {
+        ref.read(appControllerProvider).isThreadReadOnly) {
       return;
     }
     if (imagesOnly) {
       await _pickImageAttachments();
       return;
     }
+    final selectionGeneration = _attachmentSelectionGeneration;
     try {
+      setState(() => _preparingAttachments = true);
       final result = await FilePicker.pickFiles(
         dialogTitle: '选择文件',
         type: FileType.any,
@@ -725,14 +786,18 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         withReadStream: true,
         readSequential: true,
       );
-      if (result == null || result.files.isEmpty || !mounted) return;
+      if (result == null ||
+          result.files.isEmpty ||
+          !_canApplyAttachmentSelection(selectionGeneration)) {
+        return;
+      }
+      if (!mounted || !context.mounted) return;
       final state = ref.read(appControllerProvider);
       if (state.attachments.length + result.files.length >
           maxPendingAttachmentCount) {
         _showNotice(context, '每次最多保留 $maxPendingAttachmentCount 个待发送附件');
         return;
       }
-      setState(() => _preparingAttachments = true);
       final uploads = <LocalAttachmentUpload>[];
       Object? firstError;
       var selectedBytes = 0;
@@ -762,7 +827,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
           firstError ??= error;
         }
       }
-      if (uploads.isNotEmpty && mounted) {
+      if (uploads.isNotEmpty &&
+          _canApplyAttachmentSelection(selectionGeneration)) {
         await ref
             .read(appControllerProvider.notifier)
             .uploadAttachments(uploads);
@@ -780,6 +846,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   }
 
   Future<void> _pickImageAttachments() async {
+    final selectionGeneration = _attachmentSelectionGeneration;
     final state = ref.read(appControllerProvider);
     final availableSlots = maxPendingAttachmentCount - state.attachments.length;
     if (availableSlots <= 0) {
@@ -789,10 +856,13 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     try {
       setState(() => _preparingAttachments = true);
       final images = await pickCompressedGalleryImages(
-        ImagePicker(),
+        widget.imagePicker ?? ImagePicker(),
         limit: availableSlots,
       );
-      if (images.isEmpty || !mounted) return;
+      if (images.isEmpty ||
+          !_canApplyAttachmentSelection(selectionGeneration)) {
+        return;
+      }
       if (images.length > availableSlots) {
         throw StateError('每次最多保留 $maxPendingAttachmentCount 个待发送附件');
       }
@@ -806,7 +876,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         }
         uploads.add(upload);
       }
-      if (uploads.isNotEmpty && mounted) {
+      if (uploads.isNotEmpty &&
+          _canApplyAttachmentSelection(selectionGeneration)) {
         await ref
             .read(appControllerProvider.notifier)
             .uploadAttachments(uploads);
@@ -821,9 +892,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   }
 
   Future<void> _takePhoto() async {
+    final selectionGeneration = _attachmentSelectionGeneration;
     if (_preparingAttachments ||
-        ref.read(appControllerProvider).isThreadReadOnly ||
-        ref.read(appControllerProvider).attachmentUploading) {
+        ref.read(appControllerProvider).isThreadReadOnly) {
       return;
     }
     if (ref.read(appControllerProvider).attachments.length >=
@@ -833,9 +904,14 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     }
     try {
       setState(() => _preparingAttachments = true);
-      final photo = await takeCompressedPhoto(ImagePicker());
-      if (photo == null || !mounted) return;
+      final photo = await takeCompressedPhoto(
+        widget.imagePicker ?? ImagePicker(),
+      );
+      if (photo == null || !_canApplyAttachmentSelection(selectionGeneration)) {
+        return;
+      }
       final upload = await imagePickerAttachment(photo);
+      if (!_canApplyAttachmentSelection(selectionGeneration)) return;
       await ref.read(appControllerProvider.notifier).uploadAttachments(
         <LocalAttachmentUpload>[upload],
       );
@@ -3125,198 +3201,6 @@ class _SubAgentPageTitle extends StatelessWidget {
   }
 }
 
-class _SubAgentStatusVisual extends StatelessWidget {
-  const _SubAgentStatusVisual({required this.agent});
-
-  final SubAgentPresentation agent;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = _subAgentStatusColor(agent.status);
-    if (agent.showsProgressIndicator) {
-      return SizedBox.square(
-        dimension: 14,
-        child: CircularProgressIndicator(
-          strokeWidth: 2,
-          color: color,
-          semanticsLabel: agent.status.label,
-        ),
-      );
-    }
-    return Text(
-      agent.status.label,
-      maxLines: 1,
-      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
-    );
-  }
-}
-
-Color _subAgentStatusColor(SubAgentDisplayStatus status) => switch (status) {
-  SubAgentDisplayStatus.preparing ||
-  SubAgentDisplayStatus.started ||
-  SubAgentDisplayStatus.updated ||
-  SubAgentDisplayStatus.working ||
-  SubAgentDisplayStatus.waiting => codexAmber,
-  SubAgentDisplayStatus.completed => codexGreen,
-  SubAgentDisplayStatus.interrupted ||
-  SubAgentDisplayStatus.failed ||
-  SubAgentDisplayStatus.unavailable => codexRed,
-  SubAgentDisplayStatus.stopped => codexMuted,
-};
-
-class _BackgroundAgentsPanel extends StatefulWidget {
-  const _BackgroundAgentsPanel({
-    required this.sessionId,
-    required this.agents,
-    required this.enabled,
-    required this.onOpenSubAgent,
-  });
-
-  final String sessionId;
-  final List<SubAgentPresentation> agents;
-  final bool enabled;
-  final void Function(String threadId, String agentName) onOpenSubAgent;
-
-  @override
-  State<_BackgroundAgentsPanel> createState() => _BackgroundAgentsPanelState();
-}
-
-class _BackgroundAgentsPanelState extends State<_BackgroundAgentsPanel> {
-  bool _expanded = false;
-
-  @override
-  void didUpdateWidget(_BackgroundAgentsPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.sessionId != widget.sessionId) _expanded = false;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final waitingCount = widget.agents
-        .where((agent) => agent.status == SubAgentDisplayStatus.waiting)
-        .length;
-    final label = waitingCount == 0
-        ? '${widget.agents.length} 个后台智能体'
-        : waitingCount == widget.agents.length
-        ? '${widget.agents.length} 个后台智能体 · 等待后台任务完成'
-        : '${widget.agents.length} 个后台智能体 · $waitingCount 个等待通知';
-    return Material(
-      color: _workRaised,
-      shape: RoundedRectangleBorder(
-        side: const BorderSide(color: _workBorder),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            key: const Key('background-agents-toggle'),
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-              child: Row(
-                children: [
-                  const Icon(Icons.smart_toy_outlined, size: 17),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      label,
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                  ),
-                  AnimatedRotation(
-                    turns: _expanded ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOutCubic,
-                    child: const Icon(Icons.keyboard_arrow_down, size: 20),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedSize(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: _expanded
-                ? Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Divider(height: 1, color: _workBorder),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 176),
-                        child: SingleChildScrollView(
-                          child: Column(
-                            children: [
-                              for (final agent in widget.agents)
-                                _BackgroundAgentRow(
-                                  agent: agent,
-                                  enabled: widget.enabled,
-                                  onOpenSubAgent: widget.onOpenSubAgent,
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  )
-                : const SizedBox.shrink(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _BackgroundAgentRow extends StatelessWidget {
-  const _BackgroundAgentRow({
-    required this.agent,
-    required this.enabled,
-    required this.onOpenSubAgent,
-  });
-
-  final SubAgentPresentation agent;
-  final bool enabled;
-  final void Function(String threadId, String agentName) onOpenSubAgent;
-
-  @override
-  Widget build(BuildContext context) {
-    final canOpen = enabled && agent.isOpenable;
-    return Semantics(
-      button: canOpen,
-      label: agent.path.isEmpty ? agent.name : '${agent.name}，${agent.path}',
-      value: agent.status.label,
-      child: Tooltip(
-        message: agent.path.isEmpty ? agent.name : agent.path,
-        child: InkWell(
-          key: ValueKey('background-agent:${agent.threadId}'),
-          onTap: canOpen
-              ? () => onOpenSubAgent(agent.threadId, agent.name)
-              : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-            child: Row(
-              children: [
-                _SubAgentAvatar(identity: agent.avatarIdentityKey),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    agent.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                _SubAgentStatusVisual(agent: agent),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _OlderHistoryIndicator extends StatelessWidget {
   const _OlderHistoryIndicator({required this.loading, required this.armed});
 
@@ -5162,6 +5046,369 @@ class _CodeBlock extends StatelessWidget {
   );
 }
 
+class _QueuedMessagesPanel extends StatelessWidget {
+  const _QueuedMessagesPanel({
+    required this.messages,
+    required this.enabled,
+    required this.onDelete,
+    required this.onEdit,
+    required this.onSteer,
+  });
+
+  final List<QueuedMessage> messages;
+  final bool enabled;
+  final ValueChanged<String> onDelete;
+  final Future<void> Function(QueuedMessage message) onEdit;
+  final Future<void> Function(String id) onSteer;
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    return Material(
+      key: const Key('queued-messages-panel'),
+      color: _workRaised,
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: _workBorder),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: keyboardVisible ? 112 : 180),
+        child: ListView.separated(
+          key: const Key('queued-messages-list'),
+          shrinkWrap: true,
+          primary: false,
+          padding: EdgeInsets.zero,
+          itemCount: messages.length,
+          separatorBuilder: (_, _) =>
+              const Divider(height: 1, color: _workBorder),
+          itemBuilder: (context, index) {
+            final message = messages[index];
+            final editable = enabled && !message.sending && !message.editing;
+            final status = message.sending
+                ? '正在发送'
+                : message.editing
+                ? '正在编辑'
+                : message.error != null
+                ? message.error!
+                : '排队 ${index + 1}';
+            final attachmentNames = message.attachments
+                .map((item) => item.name)
+                .join('、');
+            final preview = message.text.trim().isEmpty
+                ? attachmentNames
+                : message.text.trim();
+            return Padding(
+              key: ValueKey('queued-message:${message.id}'),
+              padding: const EdgeInsets.fromLTRB(9, 4, 2, 4),
+              child: Row(
+                children: [
+                  Icon(
+                    message.attachments.isEmpty
+                        ? Icons.playlist_add
+                        : Icons.attach_file,
+                    size: 16,
+                    color: codexMuted,
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Tooltip(
+                      message: [
+                        message.text,
+                        attachmentNames,
+                        status,
+                      ].where((part) => part.isNotEmpty).join('\n'),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            preview,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            message.attachments.isEmpty
+                                ? status
+                                : '$status · ${message.attachments.length} 个附件',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: message.error == null
+                                      ? codexMuted
+                                      : codexRed,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    key: ValueKey('queued-message-steer:${message.id}'),
+                    onPressed: editable
+                        ? () => unawaited(onSteer(message.id))
+                        : null,
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(40, 36),
+                      padding: const EdgeInsets.symmetric(horizontal: 5),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('引导', maxLines: 1),
+                  ),
+                  SizedBox.square(
+                    dimension: 36,
+                    child: IconButton(
+                      key: ValueKey('queued-message-delete:${message.id}'),
+                      tooltip: '删除待发送消息',
+                      padding: EdgeInsets.zero,
+                      onPressed: editable ? () => onDelete(message.id) : null,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                    ),
+                  ),
+                  SizedBox.square(
+                    dimension: 36,
+                    child: PopupMenuButton<String>(
+                      key: ValueKey('queued-message-menu:${message.id}'),
+                      tooltip: '待发送消息操作',
+                      enabled: editable,
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.more_horiz, size: 18),
+                      color: _workPopupSurface,
+                      shape: _workPopupShape,
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'edit', child: Text('编辑')),
+                      ],
+                      onSelected: (_) => unawaited(onEdit(message)),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _QueuedMessageEditor extends StatefulWidget {
+  const _QueuedMessageEditor({
+    required this.message,
+    required this.prepareAttachments,
+    required this.onSave,
+    this.imagePicker,
+  });
+
+  final QueuedMessage message;
+  final ImagePicker? imagePicker;
+  final List<PendingAttachment> Function(
+    List<LocalAttachmentUpload> uploads,
+    List<PendingAttachment> existing,
+  )
+  prepareAttachments;
+  final bool Function(String text, List<PendingAttachment> attachments) onSave;
+
+  @override
+  State<_QueuedMessageEditor> createState() => _QueuedMessageEditorState();
+}
+
+class _QueuedMessageEditorState extends State<_QueuedMessageEditor> {
+  late final TextEditingController _text;
+  late List<PendingAttachment> _attachments;
+  bool _preparing = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _text = TextEditingController(text: widget.message.text);
+    _attachments = List.of(widget.message.attachments);
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _addAttachments(String source) async {
+    if (_preparing) return;
+    final slots = maxPendingAttachmentCount - _attachments.length;
+    if (slots <= 0) {
+      setState(() => _error = '每条消息最多保留 $maxPendingAttachmentCount 个附件');
+      return;
+    }
+    setState(() {
+      _preparing = true;
+      _error = null;
+    });
+    try {
+      final uploads = <LocalAttachmentUpload>[];
+      if (source == 'file') {
+        final result = await FilePicker.pickFiles(
+          dialogTitle: '选择文件',
+          type: FileType.any,
+          allowMultiple: true,
+          withReadStream: true,
+          readSequential: true,
+        );
+        if (result == null || !mounted) return;
+        if (result.files.length > slots) {
+          throw StateError('每条消息最多保留 $maxPendingAttachmentCount 个附件');
+        }
+        var bytesRead = 0;
+        for (final file in result.files) {
+          final mime = attachmentMimeType(file.name);
+          final text = isTextAttachment(file.name, mime);
+          final bytes = await _readPickedFile(
+            file,
+            maxBytes: text
+                ? maxInlineTextAttachmentBytes
+                : maxLocalAttachmentBytes,
+          );
+          bytesRead += bytes.length;
+          if (bytesRead > maxPendingAttachmentTotalBytes) {
+            throw StateError('附件总大小不能超过 40 MB');
+          }
+          uploads.add(
+            LocalAttachmentUpload(
+              name: file.name,
+              bytes: bytes,
+              mimeType: mime,
+              textContent: text
+                  ? utf8.decode(bytes, allowMalformed: true)
+                  : null,
+            ),
+          );
+        }
+      } else {
+        final images = source == 'camera'
+            ? [?await takeCompressedPhoto(widget.imagePicker ?? ImagePicker())]
+            : await pickCompressedGalleryImages(
+                widget.imagePicker ?? ImagePicker(),
+                limit: slots,
+              );
+        if (!mounted) return;
+        if (images.length > slots) {
+          throw StateError('每条消息最多保留 $maxPendingAttachmentCount 个附件');
+        }
+        var bytesRead = 0;
+        for (final image in images) {
+          final upload = await imagePickerAttachment(image);
+          bytesRead += upload.bytes.length;
+          if (bytesRead > maxPendingAttachmentTotalBytes) {
+            throw StateError('附件总大小不能超过 40 MB');
+          }
+          uploads.add(upload);
+        }
+      }
+      if (!mounted || uploads.isEmpty) return;
+      final attachments = widget.prepareAttachments(uploads, _attachments);
+      setState(() => _attachments = List.of(attachments));
+    } catch (error) {
+      if (mounted) setState(() => _error = _displayError(error, '准备附件失败'));
+    } finally {
+      if (mounted) setState(() => _preparing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    key: const Key('queued-message-editor'),
+    title: const Text('编辑待发送消息'),
+    insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+    scrollable: true,
+    content: SizedBox(
+      width: 440,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            key: const Key('queued-message-edit-input'),
+            controller: _text,
+            minLines: 2,
+            maxLines: 5,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(hintText: '消息内容'),
+          ),
+          for (final attachment in _attachments)
+            Row(
+              key: ValueKey('queued-edit-attachment:${attachment.id}'),
+              children: [
+                Icon(
+                  attachment.mimeType.startsWith('image/')
+                      ? Icons.image_outlined
+                      : Icons.description_outlined,
+                  size: 18,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    attachment.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  key: ValueKey('queued-edit-remove:${attachment.id}'),
+                  tooltip: '移除附件',
+                  onPressed: _preparing
+                      ? null
+                      : () => setState(() {
+                          _attachments.removeWhere(
+                            (item) => item.id == attachment.id,
+                          );
+                        }),
+                  icon: const Icon(Icons.close, size: 18),
+                ),
+              ],
+            ),
+          PopupMenuButton<String>(
+            key: const Key('queued-edit-add-attachment'),
+            enabled: !_preparing,
+            tooltip: '添加附件',
+            onSelected: (source) => unawaited(_addAttachments(source)),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'camera', child: Text('拍照')),
+              PopupMenuItem(value: 'image', child: Text('选择图片')),
+              PopupMenuItem(value: 'file', child: Text('选择文件')),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('＋ 添加附件', style: TextStyle(color: _workLink)),
+            ),
+          ),
+          if (_preparing) const LinearProgressIndicator(minHeight: 2),
+          if (_error case final error?)
+            Text(error, style: const TextStyle(color: codexRed)),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      TextButton(
+        key: const Key('queued-message-save'),
+        onPressed:
+            _preparing || (_text.text.trim().isEmpty && _attachments.isEmpty)
+            ? null
+            : () {
+                if (widget.onSave(_text.text, List.of(_attachments))) {
+                  Navigator.of(context).pop();
+                } else {
+                  setState(() => _error = '未能保存，请检查消息或重新打开队列');
+                }
+              },
+        child: const Text('保存'),
+      ),
+    ],
+  );
+}
+
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.state,
@@ -5181,7 +5428,9 @@ class _Composer extends StatelessWidget {
     required this.onEditGoal,
     required this.onToggleGoal,
     required this.onClearGoal,
-    required this.onOpenSubAgent,
+    required this.onDeleteQueued,
+    required this.onEditQueued,
+    required this.onSteerQueued,
   });
 
   final AppUiState state;
@@ -5201,29 +5450,26 @@ class _Composer extends StatelessWidget {
   final Future<void> Function() onEditGoal;
   final Future<void> Function() onToggleGoal;
   final Future<void> Function() onClearGoal;
-  final void Function(String threadId, String agentName) onOpenSubAgent;
+  final ValueChanged<String> onDeleteQueued;
+  final Future<void> Function(QueuedMessage message) onEditQueued;
+  final Future<void> Function(String id) onSteerQueued;
 
   @override
   Widget build(BuildContext context) {
-    final canSend =
-        (controller.text.trim().isNotEmpty || state.attachments.isNotEmpty) &&
+    final hasContent =
+        controller.text.trim().isNotEmpty || state.attachments.isNotEmpty;
+    final showStop =
+        !hasContent &&
+        (state.running || state.attachmentUploading || state.submitting);
+    final actionEnabled =
         !state.loading &&
-        !state.submitting &&
-        !attachmentBusy;
-    final actionEnabled = switch ((state.submitting, state.running)) {
-      (true, _) => false,
-      (_, true) => !state.loading,
-      _ => canSend,
-    };
-    final actionActive = actionEnabled || state.submitting;
+        (showStop
+            ? state.activeAgentCapabilities.interruptTurn
+            : hasContent && !attachmentBusy);
+    final actionActive = actionEnabled;
     final permissionColor = state.approvalMode == ApprovalMode.fullAccess
         ? _workAmber
         : codexMuted;
-    final backgroundAgents = state.activeAgentCapabilities.subAgents
-        ? state.timeline.toBackgroundSubAgentPresentations()
-        : const <SubAgentPresentation>[];
-    final canOpenSubAgents =
-        !state.loading && !state.submitting && state.approvalQueue.isEmpty;
     final selectedModel = selectedAgentModel(state.models, state.selectedModel);
     final profile = state.profiles
         .where((candidate) => candidate.id == state.selectedProfileId)
@@ -5238,8 +5484,8 @@ class _Composer extends StatelessWidget {
     // 优先从 profile 读取（已保存的配置），如果没有则回退到 state.agentSettings（配置对话框中）
     final compactionWindow = state.activeAgent == AgentKind.claudeCode
         ? (profile?.modelSettings(state.activeAgent).contextWindowTokens ??
-            state.agentSettings?.contextWindowTokens ??
-            0)
+              state.agentSettings?.contextWindowTokens ??
+              0)
         : 0;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 170),
@@ -5264,12 +5510,13 @@ class _Composer extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                 ],
-                if (backgroundAgents.isNotEmpty) ...[
-                  _BackgroundAgentsPanel(
-                    sessionId: state.activeThread?.id ?? '',
-                    agents: backgroundAgents,
-                    enabled: canOpenSubAgents,
-                    onOpenSubAgent: onOpenSubAgent,
+                if (state.queuedMessages.isNotEmpty) ...[
+                  _QueuedMessagesPanel(
+                    messages: state.queuedMessages,
+                    enabled: !state.loading,
+                    onDelete: onDeleteQueued,
+                    onEdit: onEditQueued,
+                    onSteer: onSteerQueued,
                   ),
                   const SizedBox(height: 6),
                 ],
@@ -5298,7 +5545,7 @@ class _Composer extends StatelessWidget {
                             itemBuilder: (context, index) {
                               final attachment = state.attachments[index];
                               return InputChip(
-                                key: ValueKey(attachment.remotePath),
+                                key: ValueKey(attachment.id),
                                 avatar: Icon(
                                   attachment.mimeType.startsWith('image/')
                                       ? Icons.image_outlined
@@ -5315,11 +5562,9 @@ class _Composer extends StatelessWidget {
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                onDeleted: attachmentBusy || state.submitting
+                                onDeleted: attachmentBusy
                                     ? null
-                                    : () => onRemoveAttachment(
-                                        attachment.remotePath,
-                                      ),
+                                    : () => onRemoveAttachment(attachment.id),
                                 visualDensity: VisualDensity.compact,
                               );
                             },
@@ -5327,21 +5572,25 @@ class _Composer extends StatelessWidget {
                         ),
                         const SizedBox(height: 5),
                       ],
-                      if (attachmentBusy) ...[
+                      if (attachmentBusy || state.attachmentUploading) ...[
                         const LinearProgressIndicator(minHeight: 2),
+                        Text(
+                          attachmentBusy ? '正在准备附件…' : '正在上传待发送消息的附件…',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                         const SizedBox(height: 6),
                       ],
                       TextField(
                         key: const Key('composer-input'),
                         controller: controller,
                         focusNode: focusNode,
-                        enabled: !state.submitting,
+                        enabled: !state.loading,
                         minLines: 3,
                         maxLines: 6,
                         textInputAction: TextInputAction.newline,
                         onChanged: onChanged,
                         decoration: InputDecoration(
-                          hintText: state.running ? '提出后续变更要求' : '描述任务',
+                          hintText: state.running ? '输入消息，发送后排队' : '描述任务',
                           filled: false,
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
@@ -5361,10 +5610,7 @@ class _Composer extends StatelessWidget {
                             child: PopupMenuButton<String>(
                               key: const Key('composer-attachment-menu'),
                               tooltip: '添加附件',
-                              enabled:
-                                  !state.loading &&
-                                  !state.submitting &&
-                                  !attachmentBusy,
+                              enabled: !state.loading && !attachmentBusy,
                               padding: EdgeInsets.zero,
                               iconSize: 20,
                               color: _workPopupSurface,
@@ -5409,7 +5655,7 @@ class _Composer extends StatelessWidget {
                                       dense: true,
                                       contentPadding: EdgeInsets.zero,
                                       leading: Icon(Icons.image_outlined),
-                                      title: Text('上传图片'),
+                                      title: Text('选择图片'),
                                     ),
                                   ),
                                 ),
@@ -5420,7 +5666,7 @@ class _Composer extends StatelessWidget {
                                       dense: true,
                                       contentPadding: EdgeInsets.zero,
                                       leading: Icon(Icons.folder_open_outlined),
-                                      title: Text('上传文件'),
+                                      title: Text('选择文件'),
                                     ),
                                   ),
                                 ),
@@ -5630,9 +5876,10 @@ class _Composer extends StatelessWidget {
                           SizedBox.square(
                             dimension: 36,
                             child: IconButton(
-                              tooltip: state.running ? '停止' : '发送',
+                              key: const Key('composer-send-button'),
+                              tooltip: showStop ? '停止' : '发送',
                               onPressed: actionEnabled
-                                  ? state.running
+                                  ? showStop
                                         ? () => unawaited(onStop())
                                         : onSend
                                   : null,
@@ -5651,20 +5898,12 @@ class _Composer extends StatelessWidget {
                                 minimumSize: const Size.square(36),
                                 padding: EdgeInsets.zero,
                               ),
-                              icon: state.submitting
-                                  ? const SizedBox.square(
-                                      dimension: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Color(0xFF171717),
-                                      ),
-                                    )
-                                  : Icon(
-                                      state.running
-                                          ? Icons.stop_rounded
-                                          : Icons.arrow_upward_rounded,
-                                      size: state.running ? 18 : 20,
-                                    ),
+                              icon: Icon(
+                                showStop
+                                    ? Icons.stop_rounded
+                                    : Icons.arrow_upward_rounded,
+                                size: showStop ? 18 : 20,
+                              ),
                             ),
                           ),
                         ],
@@ -6173,7 +6412,9 @@ class _ContextUsageButton extends StatelessWidget {
   }) {
     if (compactionWindow > 0) {
       // 配置了压缩窗口，圆环按压缩窗口计算
-      final parts = <String>['占用按配置的压缩窗口 ${_formatTokens(compactionWindow)} 计算'];
+      final parts = <String>[
+        '占用按配置的压缩窗口 ${_formatTokens(compactionWindow)} 计算',
+      ];
       if (customModelWindow > 0) {
         parts.add('自定义模型参考上限 ${_formatTokens(customModelWindow)}');
       }

@@ -325,6 +325,7 @@ abstract class AgentCapabilities with _$AgentCapabilities {
     archiveThread: false,
     renameThread: true,
     interruptTurn: true,
+    steerTurn: true,
     // Both are served by the bridge: compaction re-runs the native session
     // through its `/compact` command, and delegated Task agents are published
     // as real child conversations.
@@ -576,7 +577,26 @@ abstract class PendingAttachment with _$PendingAttachment {
     required String remotePath,
     required String mimeType,
     String? textContent,
+    @Default('') String localId,
+    LocalAttachmentUpload? localUpload,
   }) = _PendingAttachment;
+}
+
+extension PendingAttachmentIdentity on PendingAttachment {
+  String get id => localId.isNotEmpty ? localId : remotePath;
+}
+
+/// In-memory only: local attachment bytes never enter profile or history JSON.
+@freezed
+abstract class QueuedMessage with _$QueuedMessage {
+  const factory QueuedMessage({
+    required String id,
+    required String text,
+    @Default(<PendingAttachment>[]) List<PendingAttachment> attachments,
+    @Default(false) bool sending,
+    @Default(false) bool editing,
+    String? error,
+  }) = _QueuedMessage;
 }
 
 const int maxLocalAttachmentBytes = 20 * 1024 * 1024;
@@ -851,6 +871,7 @@ abstract class AppUiState with _$AppUiState {
     ApprovalPrompt? approval,
     @Default(<ApprovalPrompt>[]) List<ApprovalPrompt> approvalQueue,
     @Default(<PendingAttachment>[]) List<PendingAttachment> attachments,
+    @Default(<QueuedMessage>[]) List<QueuedMessage> queuedMessages,
     @Default(false) bool attachmentUploading,
     @Default(0) int composerClearNonce,
     @Default('') String composerDraft,

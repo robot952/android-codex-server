@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const bridgePath = path.resolve(__dirname, "../flutter_app/assets/claude-code-bridge.cjs");
-const { ThreadStore, prepareInput, bounded, modelCatalog, usageBreakdown } = require(bridgePath);
+const { ClaudeBridge, ThreadStore, prepareInput, bounded, modelCatalog, usageBreakdown } = require(bridgePath);
 const timeoutMs = 5000;
 
 // The fake runs as a CLI subprocess and waits for the SDK control handshake.
@@ -56,7 +56,18 @@ function fakeClaudeMain() {
         }
         send({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: {} } });
       } else if (message.request.subtype === "interrupt") {
-        result("LATE_RESULT_AFTER_INTERRUPT");
+        if (scenario === "steer-held" || scenario === "steer-rejected-late") {
+          if (scenario === "steer-rejected-late") {
+            send({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "Fixture rejected interrupt" } });
+          }
+          const gate = setInterval(() => {
+            if (!fs.existsSync(workspaceFile("steer-release"))) return;
+            clearInterval(gate);
+            result("LATE_RESULT_AFTER_INTERRUPT");
+          }, 10);
+        } else {
+          result("LATE_RESULT_AFTER_INTERRUPT");
+        }
       }
       return;
     }
@@ -174,7 +185,7 @@ function fakeClaudeMain() {
       // The bridge must resolve it to the first visible card.
       send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-two", content: "/home/yan", is_error: false }] } });
       result("SEMANTIC_DUPLICATE_DONE");
-    } else if (scenario === "permission" || scenario === "question" || scenario === "cancel-approval") {
+    } else if (["permission", "question", "cancel-approval", "steer-held", "steer-rejected-late"].includes(scenario)) {
       request = scenario === "question"
         ? { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "fixture-tool", input: { questions: [
           { header: "颜色", question: "Which color?", options: [{ label: "Blue", description: "Cool" }, { label: "Red", description: "Warm" }] },
@@ -388,7 +399,7 @@ class Peer {
   }
   mark() { return this.messages.length; }
   send(value) { this.child.stdin.write(JSON.stringify(value) + "\n"); }
-  wait(predicate, after = 0) {
+  wait(predicate, after = 0, waitMs = timeoutMs) {
     return new Promise((resolve, reject) => {
       const waiter = { check: () => {
         const found = this.messages.slice(after).find(predicate);
@@ -399,15 +410,15 @@ class Peer {
         clearTimeout(timer); this.waiters.delete(waiter);
         error ? reject(error) : resolve(value);
       };
-      const timer = setTimeout(() => finish(new Error("timed out waiting for bridge response")), timeoutMs);
+      const timer = setTimeout(() => finish(new Error("timed out waiting for bridge response")), waitMs);
       this.waiters.add(waiter);
       waiter.check();
     });
   }
-  request(method, params = {}) {
+  request(method, params = {}, waitMs = timeoutMs) {
     const id = this.nextId++;
     // Register before writing, and retain events to avoid fast-response races.
-    const response = this.wait(message => message.id === id && !message.method);
+    const response = this.wait(message => message.id === id && !message.method, 0, waitMs);
     this.send({ id, method, params });
     return response;
   }
@@ -810,6 +821,157 @@ test("interrupt rejects stale turn ids, resolves approval and permits a new turn
   await peer.complete(next);
 });
 
+test("steering write rejection or exception never accepts or later sends an unsent message", async () => {
+  for (const stage of ["interrupt", "user"]) for (const failure of ["closed", "throw"]) {
+    const events = [], saved = [];
+    const bridge = new ClaudeBridge({ send: value => events.push(value) });
+    bridge.persist = run => saved.push(JSON.parse(JSON.stringify(run.turn)));
+    bridge.closeChildren = () => {};
+    bridge.terminate = () => {};
+    const run = {
+      initialized: true, thread: { id: "fixture-thread" },
+      turn: { id: "fixture-turn", status: "inProgress", items: [] },
+      child: { stdin: { writable: true } }, streamedByIndex: new Map(),
+      streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), toolAliases: new Map(),
+    };
+    bridge.active.set(run.thread.id, run);
+    bridge.control = (_run, value) => {
+      if ((value.type === "user") === (stage === "user")) {
+        if (failure === "throw") throw new Error("fixture write failed");
+        return false;
+      }
+      return true;
+    };
+    const pending = bridge.steer(run.thread, prepareInput([{ type: "text", text: "never accepted" }]), { expectedTurnId: run.turn.id });
+    const rejected = assert.rejects(pending, /通道已关闭|fixture write failed/);
+    if (stage === "user") assert.equal(bridge.continueSteer(run), true);
+    await rejected;
+    assert.equal(run.pendingSteer, null);
+    assert.equal(bridge.continueSteer(run), false, "A late result must not dispatch the rejected input");
+    assert.equal(run.turn.items.length, 0);
+    assert.ok(!events.some(value => value.params?.item?.type === "userMessage"));
+    if (stage === "user") {
+      assert.equal(run.turn.status, "failed");
+      assert.equal(saved.at(-1).items.length, 0, "Persisted history must not retain the rejected input");
+    }
+  }
+});
+
+test("explicit steering interrupts and sends text plus images on the same native process", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "permission");
+  const approval = await peer.wait(approvalFor(turn), turn.after);
+  const invalid = await peer.request("turn/steer", { threadId: id, expectedTurnId: crypto.randomUUID(), input: [{ type: "text", text: "CASE:image" }] });
+  assert.ok(invalid.error, "A stale turn must not interrupt or receive input");
+  const image = path.join(root, "steering.png");
+  fs.writeFileSync(image, Buffer.from("fixture image"));
+  const steered = await peer.ok("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [
+    { type: "text", text: "CASE:image" }, { type: "localImage", path: image },
+  ] });
+  assert.equal(steered.turnId, turn.id);
+  await peer.complete(turn);
+  assert.ok(peer.messages.some(message => message.method === "serverRequest/resolved" && message.params.requestId === approval.id));
+  const latest = (await peer.history(id))[0];
+  assert.equal(latest.items.filter(item => item.type === "userMessage").length, 2);
+  assert.deepEqual(assistantTexts(latest), ["IMAGE_RECEIVED"]);
+  assert.equal(peer.messages.filter(message => message.method === "turn/completed" && message.params.turn.id === turn.id).length, 1);
+  const audit = auditFor(root);
+  assert.equal(audit.filter(value => value.type === "spawn").length, 1);
+  const inputs = audit.filter(value => value.message?.type === "user");
+  assert.equal(inputs.length, 2);
+  assert.equal(inputs[0].pid, inputs[1].pid);
+  assert.ok(inputs[1].message.message.content.some(block => block.type === "image" && block.source.data));
+  assert.ok(!JSON.stringify(latest).includes("Zml4dHVyZSBpbWFnZQ=="), "History must not persist image bytes");
+});
+
+test("successive explicit steers keep one active turn and reject ordinary concurrent starts", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "hang");
+  await peer.wait(message => message.method === "item/agentMessage/delta", turn.after);
+  for (let count = 0; count < 2; count++) {
+    await peer.ok("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "CASE:hang" }] });
+    assert.equal((await peer.ok("thread/read", { threadId: id })).thread.status, "active");
+    assert.ok((await peer.request("turn/start", { threadId: id, input: [{ type: "text", text: "Must remain queued" }] })).error);
+  }
+  await peer.ok("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "CASE:fallback" }] });
+  await peer.complete(turn);
+  const history = (await peer.history(id))[0];
+  assert.equal(history.items.filter(item => item.type === "userMessage").length, 4);
+  assert.deepEqual(assistantTexts(history), ["WAITING", "WAITING", "WAITING", "FALLBACK_RESULT"], "each steered pass keeps distinct streamed/fallback output");
+  assert.equal(auditFor(root).filter(value => value.type === "spawn").length, 1);
+});
+
+test("a pending steer rejects duplicates and cannot allow a racing old approval", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "steer-held");
+  const approval = await peer.wait(approvalFor(turn), turn.after);
+  const pending = peer.request("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "CASE:fallback" }] });
+  await until(() => auditFor(root).some(value => value.message?.request?.subtype === "interrupt"));
+  const repeated = await peer.request("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "Must remain queued" }] });
+  assert.match(repeated.error.message, /上一条引导/);
+  peer.send({ id: approval.id, result: { permissions: approval.params.permissions } });
+  await peer.wait(message => message.method === "serverRequest/resolved" && message.params.requestId === approval.id);
+  await peer.ok("initialize");
+  assert.ok(!auditFor(root).some(value => value.message?.type === "control_response"), "an interrupted old tool cannot receive a late permission grant");
+  fs.writeFileSync(path.join(root, "steer-release"), "release");
+  assert.equal((await pending).error, undefined);
+  await peer.complete(turn);
+  assert.equal((await peer.history(id))[0].items.filter(item => item.type === "userMessage").length, 2);
+});
+
+test("foreground stop cancels a pending steer without sending its queued input", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "steer-held");
+  await peer.wait(approvalFor(turn), turn.after);
+  const pending = peer.request("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "Must remain queued" }] });
+  await until(() => auditFor(root).some(value => value.message?.request?.subtype === "interrupt"));
+  await peer.ok("turn/interrupt", { threadId: id, turnId: turn.id });
+  assert.match((await pending).error.message, /未发送/);
+  await peer.complete(turn, "interrupted");
+  assert.equal(auditFor(root).filter(value => value.message?.type === "user").length, 1);
+  assert.equal((await peer.history(id))[0].items.filter(item => item.type === "userMessage").length, 1);
+});
+
+test("rejected steering preserves the active turn and never sends on a late result", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "steer-rejected-late");
+  await peer.wait(approvalFor(turn), turn.after);
+  const rejected = await peer.request("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "Must remain queued" }] });
+  assert.match(rejected.error.message, /未发送/);
+  assert.equal((await peer.ok("thread/read", { threadId: id })).thread.status, "active");
+  fs.writeFileSync(path.join(root, "steer-release"), "release");
+  await peer.complete(turn);
+  assert.equal(auditFor(root).filter(value => value.message?.type === "user").length, 1);
+  assert.equal((await peer.history(id))[0].items.filter(item => item.type === "userMessage").length, 1);
+});
+
+test("steering times out without sending and ignores the late result boundary", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "steer-held");
+  await peer.wait(approvalFor(turn), turn.after);
+  const rejected = await peer.request("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "Must remain queued" }] }, 20000);
+  assert.match(rejected.error.message, /等待超时.*未发送/);
+  fs.writeFileSync(path.join(root, "steer-release"), "release");
+  await peer.complete(turn);
+  assert.equal(auditFor(root).filter(value => value.message?.type === "user").length, 1);
+  assert.equal((await peer.history(id))[0].items.filter(item => item.type === "userMessage").length, 1);
+});
+
+test("steering does not kill a background child or open another native writer", async ({ peer, root }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "delegation-background-interrupt");
+  const started = await peer.wait(message => message.method === "item/completed" && message.params.turnId === turn.id && message.params.item?.kind === "started", turn.after);
+  const childId = started.params.item.agentThreadId;
+  await peer.ok("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "CASE:hang" }] });
+  const child = await peer.ok("thread/read", { threadId: childId });
+  assert.equal(child.thread.status, "active");
+  assert.equal(child.initialTurnsPage.data[0].status, "inProgress");
+  await peer.ok("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "CASE:fallback" }] });
+  await peer.complete(turn);
+  assert.equal((await peer.ok("thread/read", { threadId: childId })).thread.status, "active");
+  assert.equal(auditFor(root).filter(value => value.type === "spawn").length, 1);
+});
+
 test("CLI cancellation resolves only its pending approval", async ({ peer, root }) => {
   const id = await peer.thread();
   const turn = await peer.turn(id, "cancel-approval");
@@ -826,6 +988,7 @@ test("interruption before initialize never sends a late user prompt", async ({ p
   const id = await peer.thread();
   const turn = await peer.turn(id, "hang", { model: "fixture-late-initialize" });
   await until(() => fs.existsSync(path.join(root, "audit.jsonl")) && auditFor(root).some(value => value.type === "initialize-held"));
+  assert.match((await peer.request("turn/steer", { threadId: id, expectedTurnId: turn.id, input: [{ type: "text", text: "Must remain queued" }] })).error.message, /初始化/);
   await peer.ok("turn/interrupt", { threadId: id, turnId: turn.id });
   await peer.complete(turn, "interrupted");
   assert.ok(!auditFor(root).some(value => value.message?.type === "user"));

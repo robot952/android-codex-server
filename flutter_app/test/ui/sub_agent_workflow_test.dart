@@ -165,7 +165,7 @@ void main({bool device = false}) {
       h.session.activity('parent', id, path: '/root/$id/review');
     }
     await pumpSubAgentEvents(tester);
-    expect(find.text('3 个后台智能体'), findsOneWidget);
+    expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
     expect(childChip('first'), findsOneWidget);
     expect(childChip('second'), findsOneWidget);
     expect(childChip('third'), findsOneWidget);
@@ -186,10 +186,8 @@ void main({bool device = false}) {
     expect(find.text('已完成'), findsWidgets);
     expect(find.text('失败'), findsWidgets);
     expect(find.text('已中断'), findsWidgets);
-    await tester.tap(find.byKey(const Key('background-agents-toggle')));
-    await pumpSubAgentEvents(tester);
     // Identity is bound to the thread, even when all three labels are equal.
-    await tester.tap(find.byKey(const ValueKey('background-agent:second')));
+    await tester.tap(childChip('second'));
     await pumpSubAgentEvents(tester);
     expect(h.controller.state.activeThread?.id, 'second');
     expect(h.controller.state.screen, AppScreen.agentWork);
@@ -214,9 +212,7 @@ void main({bool device = false}) {
       );
       await pumpSubAgentEvents(tester);
 
-      expect(find.text('1 个后台智能体 · 等待后台任务完成'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('background-agents-toggle')));
-      await pumpSubAgentEvents(tester);
+      expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
       expect(find.text('等待后台任务完成'), findsWidgets);
       expect(find.byType(CircularProgressIndicator), findsWidgets);
       expect(tester.takeException(), isNull);
@@ -309,9 +305,11 @@ void main({bool device = false}) {
         for (var i = 0; i < statuses.length; i++) 'worker-$i': statuses[i],
       });
       await pumpSubAgentEvents(tester);
-      await tester.tap(find.byKey(const Key('background-agents-toggle')));
-      await pumpSubAgentEvents(tester);
-      expect(find.text('5 个后台智能体'), findsOneWidget);
+      expect(find.byKey(const Key('background-agents-toggle')), findsNothing);
+      expect(
+        h.controller.state.timeline.toBackgroundSubAgentPresentations(),
+        hasLength(5),
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -339,7 +337,7 @@ void main({bool device = false}) {
           .toBackgroundSubAgentPresentations();
       expect(agents, hasLength(6));
       expect(agents.where((agent) => agent.status.isActive), hasLength(3));
-      expect(find.text('6 个后台智能体'), findsOneWidget);
+      expect(find.text('6 个后台智能体'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );

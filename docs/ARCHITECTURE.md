@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.181+313，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.182+314，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -71,7 +71,8 @@ Work 页面、审批、缓存和恢复状态机；各自的可见操作由 capab
   回退、归档、重命名、代码审查和线程目标；
 - 时间线 reducer（消息、思考、计划、命令、文件修改、工具、图片和协作活动）、图片预览/保存、
   generation 过滤以及按 lane 的会话缓存；
-- 本地图片/文件选择、有界读取、SFTP 暂存、上传中状态、待发附件移除，以及随 `turn/start` 发送；
+- 本地图片/文件选择、有界本地暂存、实际发送时才 SFTP 上传；Codex/OpenCode/Claude Code 共用多消息
+  FIFO 队列，支持文字/附件、删除、编辑和显式“引导”，上传失败保留内容并复用已成功文件；
 - Markdown 中的远程绝对文件链接、安全 SFTP 流式下载，以及 Android 系统文件选择器导出；
 - 独立 SSH PTY 终端（每台服务器独立 channel、xterm-256color、bounded scrollback）和 SFTP 文件管理
   （浏览、上传、下载、重命名、删除、复制/移动）；
@@ -106,6 +107,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/main.dart | Flutter 进程入口、ProviderScope | 当前运行 |
 | flutter_app/lib/src/app/codex_remote_app.dart | MaterialApp、全局错误 Snackbar、页面动画和 Back 行为 | 当前运行 |
 | flutter_app/lib/src/app/app_controller.dart | Riverpod StateNotifier；Profile、SSH、Agent lane、会话恢复/缓存、模型目录、Work 状态和持久化编排 | 当前运行 |
+| flutter_app/lib/src/app/app_controller_message_queue.dart | AppController 同库队列编排；按服务器/Agent/线程排队、明确终态调度、编辑/删除/引导、发送失败保护 | 当前运行；队列和附件正文仅在内存中 |
 | flutter_app/lib/src/domain/models.dart | Freezed/JSON 领域模型、Agent/线程/时间线/审批/上下文，以及安装/工作区/全局设置状态 | 当前与预留并存 |
 | flutter_app/lib/src/domain/model_catalog.dart | 自定义模型 ID/名称/token 上限归一化、远端/自定义目录合并、隐藏、编辑恢复与 API 模型选项映射 | 当前运行；供控制器和展示层共用 |
 | flutter_app/lib/src/persistence/profile_store.dart | 加密 Profile 存储、边界归一化、旧原生数据迁移 | 当前运行 |
@@ -259,6 +261,7 @@ AppUiState 是 Flutter 展示状态，字段分为：
 | 当前会话 | threads、activeThread、timeline、olderTurnsCursor、activeTurnId、running、turnTiming、aggregateDiff | 三种 Agent 共用 Work 链路；具体操作按 capability 开关 |
 | 会话控制 | models、selectedModel、selectedEffort、approvalMode、sandbox、approval、approvalQueue、activeGoal | 三种 Agent 共用；模型和 effort 按 lane、会话独立选择，其他操作按 capability 显示 |
 | 草稿/附件/上下文 | composerDraft、attachments、attachmentUploading、composerClearNonce、tokenUsage | 已使用；待发附件只属于当前活动会话，不长期持久化 |
+| 待发送队列 | queuedMessages | 从控制器按 profile + Agent + thread 的队列投影，支持多条、发送中、编辑中及失败状态；不写入历史或 Profile JSON |
 | 工作区 | workspacePickerVisible、workspaceLoading、workspaceCurrentPath、workspaceParentPath、workspaceDirectories、workspaceError | 已接入首次提示和手动目录浏览 |
 | 文件管理 | fileManagerProfileId、fileManagerLoading、fileManagerCurrentPath、fileManagerEntries、clipboard、operation、error | 控制器和 `FileManagerScreen` 已接入；按 profile/generation 校验 |
 | 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 按版本探测、升级/降级现有 CLI、安装/卸载连接组件并读取/保存原生 URL、Key、默认模型和 effort |
@@ -358,8 +361,9 @@ AppController 当前把 SSH 主机通道用于指纹、登录、资源采样、�
 文件管理；每个 Codex/OpenCode/Claude Code Agent lane 另建专用 `DartSshServerClient`。OpenCode 和 Claude Code 在该 transport 上打开
 无 PTY bridge exec；Codex 默认使用旧版无 PTY stdio exec，只有显式启用 durable transport 时才转发远端私有 Unix socket。这个边界与
 旧版 JSch 实现一致，Host 指标、SFTP、PTY 和心跳异常不能直接关闭正在工作的 Agent turn。Composer 通过系统 picker
-读取本地图片/文件，上传到当前 profile 的 SFTP 目录后形成待发项；控制器在每次结果写回前校验活动
-`profileId + AgentKind + threadId`。远程文件下载不把完整文件载入 Dart 内存，而是通过
+读取本地图片/文件，复制为不可变的有界本地待发项，不在选择时访问服务器。空闲发送、排队轮到该消息或
+点击“引导”时才上传到原 profile 的 SFTP 目录；队列捕获目标 `profileId + AgentKind + threadId`，
+每个上传及发送步骤检查连接身份和代次。远程文件下载不把完整文件载入 Dart 内存，而是通过
 `top.asdb.agent/file_export` MethodChannel 逐块写入 Android `ACTION_CREATE_DOCUMENT` 返回的 URI；
 取消、写入失败或未完成会尽力关闭并删除半成品。长时间安装通过独立流式 `sh -s` capability
 逐行回传进度；脚本正文和代理不会进入 SSH 命令参数。
@@ -493,8 +497,17 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
   页面和控制器共同阻止发送、停止、审批、权限/模型及会话修改，草稿保留。重试成功恢复输入，失败仍只读。
   只读页面保持当前路由并以有界轮询读取最新元数据和回合历史，不能要求用户返回列表后再进入才能看到进度；轮询不得恢复
   writer，也不得因为暂时读取失败覆盖最后一份可见快照。
-- Composer 发送时先插入 optimistic user row，`turn/start` 返回稳定 turn ID 后合并；活动回合中再次
-  发送且 Agent 支持时走 `turn/steer`，运行中显示停止图标且停止需要确认；事件 reducer 会合并消息
+- Composer 有文字或附件时始终显示发送按钮；只有正在对话且正文/附件都为空时显示停止按钮，停止仍需确认。
+  空闲点击发送直接进入发送流程，运行中发送则加入当前会话的多条 FIFO 队列，不隐式引导或中断。
+  队列只在匹配的回合明确成功结束后自动发送下一条，不能凭最终答案文本认定完成。
+  Composer 上方显示紧凑待发消息，可删除、通过三点菜单编辑正文/图片/文件，或点击“引导”立即发送；
+  编辑不改变顺序或覆盖主草稿，编辑中的队首暂停自动发送。显式引导在运行中使用 `turn/steer`，空闲时立即发送所选消息。
+  队列按服务器、Agent 和线程隔离；切页不会把消息发到新会话，断线、主动停止或失败后保留并暂停，需用户确认重试。
+  上传中停止会取消尚未派发的消息，不因没有远端 turn ID 而忽略；引导上传期间原回合结束时保留消息待确认，
+  不发送过期 turn/steer。异步问题回答与普通队列共用同线程派发互斥，避免完成通知与回答请求并发开启两轮。
+  服务器身份、工作目录、Agent 版本或 Provider 变化使旧队列失效，保留内容但禁止发到新配置；删除 Profile 清理所属队列。
+  每线程最多 20 条，全局最多 100 条、正文总量 1 MiB 字符；队列只在当前 App 进程保留，不承诺进程被杀后恢复。
+  实际上传完成后才插入 optimistic user row，`turn/start` 返回稳定 turn ID 后合并；事件 reducer 继续合并
   delta、命令输出、文件修改、思考/计划和完成状态；
 - 命令、文件修改和权限保留底部审批面板；`item/tool/requestUserInput`（兼容 `tool/requestUserInput`）
   使用独立提问弹窗，显示多问题、选项说明、`isOther` 自定义回答和 `isSecret` 私密输入。
@@ -524,7 +537,7 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
   才调用 cursor 分页。时间线使用带固定尾部 center sliver 的 `CustomScrollView`，所有消息向上增长，
   底部原点固定为 `pixels=0`，不依赖懒列表的估算 extent 做首屏或分页位置补偿；“正在加载更多...”作为
   覆盖层显示，不参与滚动几何。不满一屏时按消息 sliver 的真实高度补足尾部空白，使普通对话内容从顶部开始；
-  只有后台子 Agent 活动记录的会话不补这段空白，活动行贴近输入区，避免把已经在 Composer 面板汇总的活动
+  只有后台子 Agent 活动记录的会话不补这段空白，活动行贴近输入区，避免把短活动记录
   渲染成页面中间一大片空白。内容超过一屏后空白归零并继续保持最新消息位于底部。阅读旧消息时显示回到底部箭头；
 - 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，中心显示已用百分比，点击显示已用/剩余 tokens；
   圆环和模型名称组成靠右的弹性区域，模型变长时向权限按钮方向扩展并单行缩放，不能因固定空白提前省略；有效
@@ -540,11 +553,13 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
   Codex 使用 `thread/read` 和有界 `thread/turns/list`，不直接恢复或配置子任务。
   子页面标题为该 Agent 的名字和身份图标，底部留空，不显示 Composer、模型、权限、审批、提问弹窗或会话修改菜单。
   父代理发送消息显示为不可操作的“已向父代理发送消息”，不能将父线程计为新的子 Agent。
-  Composer 上方的后台 Agent 面板按整个父会话累计已确认的 child thread，并按 thread ID 去重；后续
-  父 turn 新建的 Agent 会追加到已有列表，未取得真实 child thread ID 的创建尝试不计入数量。
-- Composer 的附件菜单支持调用系统相机拍照，以及多选图片或文件；最多保留 8 项、一次选择总计不超过 40 MiB；单个普通附件
-  不超过 20 MiB，内联文本不超过 512 KiB。上传时显示无百分比的进度条，成功项显示可移除 chip，
-  发送时可只有附件而没有正文。离开会话会清空待发项；`turn/start` 失败会恢复草稿和待发附件，并移除
+  Composer 上方不再显示“几个后台智能体”的数量面板；时间线中的子 Agent 活动、只读详情入口及实际等待提示保留。
+- Composer 的附件菜单支持调用系统相机拍照，以及多选图片或文件；每条消息最多 8 项、总计不超过 40 MiB；单个普通附件
+  不超过 20 MiB，内联文本不超过 512 KiB，当前草稿和队列保留的本地文件总计不超过 80 MiB。
+  选择与排队时只显示本地可移除 chip，不执行 SFTP；轮到实际发送才显示无百分比上传进度。
+  发送时可只有附件而没有正文。离开会话会清空未入队的待发项，已入队内容留在原会话队列。
+  上传或 `turn/start` 失败保留消息/附件；首条空闲发送失败且没有新草稿/队列时恢复输入框，否则保留失败队列项。
+  成功上传的文件在本进程按原连接身份复用，后续文件或发送失败重试不会重复上传；删除未发送项不触发上传。失败时移除
   尚未得到服务器确认的 optimistic user row。服务器把文本附件内联回显时按文件名与乐观行合并；图片仍按
   远程路径合并，避免一条图片+日志消息被显示成两条，也不会把同名不同图片误合并。
 
@@ -685,8 +700,13 @@ Claude lane 有独立模型目录，包含准确的 `claude-opus-5-5` wire ID；
 都不在 App 侧推算实际模型窗口，取值限制为 CLI 接受的 `100000–1000000`（`claude --autocompact` 范围），
 越界值在写盘前拒绝，避免把无效值写进服务器 settings.json。读取时优先回显
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，老配置只有 `MAX_CONTEXT_TOKENS` 时退回读它。上下文用量来自 CLI
-真实 usage，窗口未知时不猜测百分比，自定义模型容量仅作独立参考，不用于重算占用圆环。压缩、steer、回退、审查、目标、
+真实 usage，窗口未知时不猜测百分比，自定义模型容量仅作独立参考，不用于重算占用圆环。压缩、回退、审查、目标、
 归档或子 Agent 独立导航能力仍关闭。
+
+`1.8.182` 起 Claude 同样支持显式“引导”：bridge 在同一 CLI 进程发出原生 interrupt，等旧请求的 result
+边界后向双向 stream-json stdin 写入新文字/图片；App turn ID 保持稳定，不另开竞争会话 writer。
+保留原生后台 Agent，不把引导等同于杀进程。初始化、压缩、重复引导或失效 turn 明确拒绝；等待有界，
+失败保留客户端消息供确认重试。普通发送仍由共享 FIFO 队列等待回合结束，不自动调用 interrupt。
 
 App 创建的会话摘要和有界回合存入当前 SSH 用户的 `~/.local/share/codex-remote/claude-history`，
 按工作目录筛选列表；通过私有文件、原子替换与 writer lock 防止并发覆盖。读取损坏记录不会使其他会话消失。
@@ -779,12 +799,12 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
 - Composer 用 viewInsets 驱动 170 ms `AnimatedPadding`，时间线在键盘视口缩小时直接 jump 到底部；
   FocusNode 没有 autofocus，Work 页面在生命周期进入 `inactive/paused/hidden/detached` 时主动 unfocus 并
   请求隐藏系统输入法，避免切回前台自动弹键盘。键盘动画与消息同帧移动仍需真机验证。
-- 空闲发送、运行停止、停止确认、权限模式、审批、上下文详情、回到底部、Markdown 链接确认、图片保存、
+- 空闲发送、运行时多消息排队/编辑/删除/显式引导、空输入运行时停止、停止确认、权限模式、审批、上下文详情、回到底部、Markdown 链接确认、图片保存、
   当前会话独立 effort 选择和自定义模型管理均已接入。
 - 子 Agent 事件由 `SubAgentPresentation` 按事件原序显示为紧凑活动行；后台索引单独按 child ID 合并。后台状态按
   `pendingInit/running/completed/interrupted/failed/shutdown/notFound` 和 activity 映射；同 turn 终态具有
   单向保护，后续 turn 才允许重新激活。有效 thread ID 的标签调用 `openSubAgentThread`，无 ID 的活动不会
-  伪造会话入口；Composer 面板以父会话为范围累计全部已确认 Agent，不按当前 turn 丢弃先前完成项。
+  伪造会话入口；Composer 上方的后台 Agent 数量面板已移除，不影响时间线的活动与详情导航。
 - 标准 `collabAgentToolCall` 按 receiver/agentsStates 投影独立子 Agent；无 receiver 的 wait 保持普通工具，
   创建失败不显示运行中。父回合完成或停止不能推断子回合也已完成；子 `turn/started`、匹配回合的终态与
   协作状态才更新当前子任务。按 lane + childThreadId 保存有界回合记录，迟到旧回合事件不得覆盖新任务。
@@ -797,9 +817,9 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
   切服务器/Agent、断开、删除、普通打开或返回列表都会清理栈，迟到回调不能改写新页面。
 - 父子切换前会 flush 260 ms 防抖草稿，模型、effort 和 TokenUsage 使用 `profileId + AgentKind + threadId`
   独立缓存，避免子会话覆盖父会话设置。
-- 输入附件已串起系统 picker、有界本地读取、SFTP 上传、无百分比上传中状态、待发 chip、移除和协议
-  编码。上传结果有 profile/thread guard，部分文件失败时保留已成功项并显示首个错误；发送失败会恢复
-  草稿和附件，避免用户重新选择文件。
+- 输入附件已串起系统 picker、有界本地读取、待发 chip、实际派发时 SFTP 上传和协议编码。
+  选择/编辑/排队不上传；上传结果校验原 profile/thread/连接代次，失败保留消息与本地字节，
+  部分成功上传在本进程重试复用。上传期间仍可编辑新草稿和排队下一条，不把新内容并入正在发送的消息。
 
 ### 9.6 远程安装和全局设置
 
@@ -1072,6 +1092,7 @@ Debian、Codex、工作区和本机 Profile。
 | 草稿、模型、思考强度、完成计时 | profileId + AgentKind + threadId | 当前 StoredProfiles 复合键 |
 | 审批队列 | profileId + AgentKind + threadId（请求 generation 由 Agent 客户端校验） | Flutter/Kotlin 控制器分桶；无 threadId 的旧协议使用 lane 兼容桶 |
 | 待发附件 | 当前活动 AppUiState；写回用 profileId + AgentKind + threadId guard | 不持久化；离开会话清空 |
+| 待发送消息队列 | profileId + AgentKind + threadId，另校验连接身份和 generation | 只存内存；切页保留原队列，断线/停止/失败暂停，进程结束清理 |
 | Agent 安装 job | profileId + AgentKind；同 profile 共享串行锁 | 当前 AppController + AgentConnectionManager；generation 拒绝断开后的旧结果 |
 | Agent 全局配置请求/状态 | profileId + AgentKind + requestId + connection generation | 当前 AppController + AgentConnectionManager；远程落盘在服务器用户全局文件 |
 | 终端 | profileId | 当前 `TerminalManager` 的独立 PTY session；隐藏可保活，关闭/断开清理 |
@@ -1351,6 +1372,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | --- | --- |
 | test/widget_test.dart | 空服务器首屏、1220x2712 连接阻塞遮罩、Back 阻断、2x 字体、私钥密码入口、未保存编辑确认 |
 | test/app/app_controller_test.dart | 初始化/持久化、Profile/指纹/资源/目录、附件与全局配置/API 模型获取/自定义模型目录和同步 generation、运行时安装，以及子 Agent 多层导航、加载中/重复返回、失败重试、错误 thread 防污染、会话设置隔离、审批按 thread 隔离/精确回答和迟到回调保护 |
+| test/app/message_queue_test.dart | 三种 Agent 的多条 FIFO、明确终态调度、编辑/删除/引导、延迟上传和部分失败重试、停止/断线/配置失效、跨线程/Agent 隔离、异步问题回复与派发互斥 |
 | test/app/profile_scoped_back_stack_test.dart | profile + Agent 栈隔离、pending pop 幂等、取消/迟到回调保护和清理 |
 | test/domain/models_test.dart | Profile 默认值、Agent 模型字段、复合偏好键、上下文/差异辅助模型 |
 | test/domain/model_catalog_test.dart | 空远端目录下保留会话模型/effort、自定义模型 ID/名称/token 上限、远端/自定义合并、隐藏、编辑恢复、API 选项筛选/应用，以及 OpenCode `custom-api/`、旧 `codex-remote/` 迁移、effort 和 managed ID |
@@ -1389,6 +1411,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/claude_code_workflow_test.dart | 生产 Claude adapter/controller/WorkScreen 配合受控 JSONL 对端，覆盖 capability 菜单、发送/流式回复、批准/拒绝、停止、重开和跨 Agent 历史隔离 |
 | test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
 | test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和目标竖屏无溢出 |
+| test/ui/message_queue_ui_test.dart | 三种 Agent 的发送/停止按钮、队列操作、附件选择/编辑本地暂存、跨页面 picker 结果隔离、窄屏大字体与键盘避让 |
 | test/ui/mcp_tool_card_test.dart | MCP 默认折叠、流式更新保留展开状态、条目/会话隔离、空输出、长按复制和窄屏大字体 |
 
 OpenCode bridge 另有 Node 门禁：`scripts/test-opencode-bridge.cjs`、
@@ -1407,7 +1430,11 @@ Claude Code 的 `scripts/test-claude-code-bridge.cjs` 使用假 CLI 验证协议
 这两类受控对端均不调用真实模型，也不替代用户 SSH 服务器登录、实际供应商 API 或厂商后台验收；
 验证分层见 [Claude Code 验证记录](CLAUDE_CODE_VALIDATION.md)。
 
-已有提问弹窗和 Claude 工作流的受控 Android integration 入口，尚无 golden test 或覆盖全部 Work/会话/文件/终端的 UI 测试；附件 picker、真实远端
+`integration_test/message_queue_workflow_test.dart` 使用真实 AppController/WorkScreen 与内存 Agent/Host 对端，验证
+队列及编辑弹窗的 Android 真实软键盘避让；不访问真实 SSH 或模型。附件选择由受控 picker 返回值验证，
+不能代替厂商相册/相机/文件选择器的端到端验收。
+
+已有提问弹窗、队列和 Claude 工作流的受控 Android integration 入口，尚无 golden test 或覆盖全部 Work/会话/文件/终端的 UI 测试；真实远端
 app-server、Android 前台 Service 和系统通知展示仍没有自动化覆盖（通知协议/去重逻辑已有纯 Dart 测试）。
 当前 `codex_agent_client_test.dart` 也未覆盖握手、请求超时、事件、审批或断线。新增共享状态、持久化、
 连接生命周期或跨页面行为时，必须补测试，不能只运行一个 Widget 用例。
@@ -1479,7 +1506,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 工作目录 | 首次 Agent 成功只提示一次；SFTP 浏览、错误显示、确认/记忆和手动重开；thread/start/turn/start 传递 workspace | 真机大目录、权限拒绝、连续切换与断线回归 |
 | 会话 | 搜索/刷新/新建/恢复、turn 历史分页、缓存优先、resume 通知缓冲/快照协调/顺序重放、运行转圈 | thread/list 下一页；真实长时 resume/delta 竞态、缓冲溢出和大历史降级压测 |
 | 会话设置 | wire 模型和 effort 可独立选择并按 profile + Agent + thread 持久化；自定义模型新增/编辑/删除、远端隐藏/恢复、API `/models` 筛选回填已接入 | 真实服务器 Provider 差异、权限和模型目录回归 |
-| 输入 | 草稿按复合键恢复；Composer 有 IME inset 和 viewport 同步；切后台主动 unfocus/隐藏输入法；本地附件 picker/上传/移除/发送及失败恢复 | 真机同帧验证、picker/Widget 自动化测试 |
+| 输入 | 草稿按复合键恢复；多条 FIFO 队列及编辑/删除/引导；本地附件延迟上传及失败复用；Composer 有 IME inset 和 viewport 同步，切后台主动收起键盘；受控 picker/Widget 回归已接入 | 真机同帧验证、厂商相册/相机/文件选择器验收 |
 | 对话动作 | 发送/停止、权限、审批、上下文、压缩、回退、归档、重命名、审查、目标 | 真实固定 Codex 版本全场景回归 |
 | 历史滚动 | Cupertino sliver 分页、三态提示、正文下移留白、位置补偿和回底部箭头 | 真实超长历史与连续分页回归 |
 | Markdown/图片/文件 | Markdown/裸 HTTP 链接确认；图片识别、SFTP 预览/保存；非图片远程文件链接经 SAF 流式保存 | 大文件、断线和厂商文件选择器异常路径回归 |
@@ -1509,8 +1536,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
    列表后台刷新不得阻塞打开已有会话、重探测已连接运行时或覆盖对话加载状态；快速点击只接受最新导航。
    已验证的实时订阅可在轻量权限校验后复用内存历史；冷启动使用有界压缩加密预览，服务器确认写入权后才解锁输入。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
-8. 运行会话显示停止图标，列表显示转圈；上下文小圆环点击只看占用，不弹压缩确认（当前已接入）。
-9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方累计全部已确认 Agent，连续两轮各创建 3 个时总数显示 6。
+8. Composer 有文字或附件时显示发送按钮；运行且空输入时才显示停止，列表运行态仍转圈。运行中普通发送进入多消息 FIFO 队列，支持删除、三点编辑和显式“引导”，Codex/OpenCode/Claude Code 交互一致。上下文小圆环点击只看占用，不弹压缩确认。
+9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方不再显示后台 Agent 数量面板，保留时间线活动和真实等待状态。
 10. 目标和操作菜单使用原生 app-server 能力，不依赖复杂斜杠解析（当前 Codex 已接入）。
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
 12. Agent 图标连续点击 10 次开启 Debug；最多 100 个日志文件/约 10 MiB，单文件约 100 KiB；日志可多选系统分享且脱敏，
@@ -1544,9 +1571,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 25. Agent 接入必须通过 RemoteAgentClient/AgentCapabilities，所有异步结果、缓存和审批队列按 profile + Agent + thread 隔离。
 26. SSH 登录是前置条件；无 Agent 时终端/文件仍可用，Agent 设置和工作目录灰显不可操作（终端/文件当前已接入；无 Agent 的真机行为仍需回归）。
 27. 图片消息使用“查看了图片”中文状态；点击打开图片预览，长按可调用系统保存到手机（当前已接入）。
-28. 本地图片/文件附件必须有选择、受限上传、待发列表、移除和失败恢复；当前端到端发送及
-    `turn/start` 失败恢复已接入；只有图片且正文为空时，本地乐观消息与服务器回显也必须按远端路径合并，
-    不能因压缩文件名和 UUID 暂存名不同显示两条，仍需真机 picker 和 Widget 自动化回归。
+28. 本地图片/文件附件必须有选择、受限暂存、待发列表、移除和失败恢复；选择或加入队列不得上传，只有空闲点击发送、轮到队列项或明确“引导”时才上传。失败重试复用已成功上传文件。只有图片且正文为空时，本地乐观消息与服务器回显也必须按远端路径合并，
+    不能因压缩文件名和 UUID 暂存名不同显示两条；受控 picker/Widget 已覆盖，仍需真机厂商选择器回归。
 29. Markdown 远程绝对文件链接只能在当前 SSH profile 内通过 SFTP 下载；必须使用系统保存位置选择器、
     分块写入并清理失败半成品，内部链接不得泄露给外部浏览器（当前已接入，仍需真机回归）。
 30. Codex 模型列表请求必须包含 `includeHidden: true`，展示服务端默认隐藏的所有模型，不仅限于 GPT-6。
@@ -1691,7 +1717,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   测试；通知权限、进程被杀、厂商省电、长时 PTY 和大文件行为仍需真机回归。
 - Markdown 远程绝对文件链接和独立文件管理都已有受限 SFTP/Android SAF 链路，但尚未完成真机大文件、
   断线和不同厂商文件选择器回归。
-- 附件已完成选择、上传中状态、移除、待发、发送和失败恢复链路，但缺少 picker/Widget 自动化覆盖；
+- 附件已有本地暂存、延迟上传、队列编辑/删除、部分失败重试和受控 picker/Widget 自动化覆盖；厂商相册、相机及文件选择器仍需真机验收。
   子 Agent 已有真实 child thread 导航和父子返回栈，但尚未完成真实服务器长时间嵌套与大历史回归。
 - thread/list 下一页入口已接入 Flutter 列表，按 lane 游标分页并自动去重；resume 已有有界通知缓冲、
   快照协调和顺序重放，OpenCode bridge 也会投影 `initialTurnsPage` 并遵守 `itemsView`，但超大活动
@@ -1699,7 +1725,7 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 应用内更新已接入 Gitee 检查、DownloadManager 和系统安装器；下载任务以受校验记录跨进程持久化并在
   启动时重绑，返回/取消安装可再次打开。真实网络、未知来源权限拒绝/返回、包签名校验和稳定证书覆盖安装
   仍需真机回归。
-- Android integration 目前仅覆盖受控提问弹窗；尚无 golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
+- Android integration 已覆盖受控提问、队列编辑、Claude 工作流及部分历史/终端场景；尚无 golden/完整 Work、文件管理或终端 Widget 测试；模拟器 smoke 只验证启动、
   方向、包名和 Crash/ANR，不代表真实 Agent 或应用内更新系统流程。本轮 358 项 Flutter test、release APK
   和 1220x2712/2712x1220 模拟器 smoke 已通过，仍不能替代真实服务器和 Android 真机端到端验收。
 - 当前 Flutter OpenCode adapter 和打包 bridge 已接线，Node quick gate 也有通过记录；这些自动 fixture、
@@ -2771,6 +2797,31 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - Gitee 线上方案、HTTP 413/仓库/SDK/下载与取消问题、v1.8.174 → v1.8.175 的实测对照和诊断边界已整理至
   [Gitee 构建优化记录](GITEE_BUILD_OPTIMIZATION.md)，当时采用 `main` 自动发布；当前标签触发规则见第 12 节。
   按用户要求暂停后续性能优化。
+
+### 17.83 多消息队列与附件延迟上传（2026-10-22）
+
+- 应用版本：`1.8.182+314`。Codex、OpenCode、Claude Code 运行中普通发送进入同一套多条 FIFO 队列；
+  文本、图片和文件均可排队，支持删除、三点编辑和显式“引导”。最终答案文本不是派发下一条的依据，
+  只有匹配回合的明确成功终态才推进；停止、失败、断线和身份变更均保留队列等待用户处理。
+- Composer 有文字或附件时显示发送，运行/上传中空输入时显示停止；移除上方的后台 Agent 数量面板，
+  时间线协作活动、详情导航与实际等待状态不受影响。队列和附件正文仅在当前进程内保留。
+- 选择、编辑和加入队列只创建有界本地不可变附件，不访问服务器；实际派发时才 SFTP 上传。
+  部分文件或回合发送失败保留正文与附件，重试复用成功上传的文件；跨会话 picker 结果丢弃，未发消息删除不上传。
+- Claude 显式引导复用同一 CLI 进程：原生 interrupt 后等旧 result 边界，再送入新文字/图片，保留后台任务。
+  有界等待、重复引导、停止交错、迟到 result 和 stdin 写入失败由独立协议回归覆盖。
+- 验证：核心定向 `136` 项、队列 Widget `9` 项及相关旧 UI `43` 项通过；最终 analyze 无问题、
+  Flutter 全量 `861` 项、Claude bridge `47` 场景及真实 CLI 的隔离本地模拟 API 联调通过。
+  Android 14 `1220x2712` 设备测试验证多条队列、编辑保存、主草稿保留和真实软键盘避让；
+  不访问用户 SSH 或付费模型，也不替代真机相册/相机验收。随后保留数据覆盖安装正常 Release，启动检查通过。
+- 本地发布主门禁成功轮 `5m56.929s`：Claude `28.099s`、Android 全门禁 `4m26.485s`、
+  Release 安装检查 `30.247s`、索引同步 `4.617s`、发布与内网回验 `25.449s`；
+  服务器/OpenCode 门禁及发布前 Release 校验命中缓存。Android 内测试 `1m28.546s`、Debug
+  `21.602s`、Release `2m28.999s`，嵌套阶段不重复相加。
+- 返工保留于任务计时：核心空值编译检查与两处测试同步、设备 IME 首帧覆盖测试输入、UI lint 及
+  异步弹窗 mounted 检查；修正后复验通过，未清缓存或清除 App 数据。设备测试通过不代表真实服务器端到端。
+- `dist/Agent-1.8.182.apk` 大小 `31,949,202` 字节，稳定证书未变；内网完整回下载与发布包 SHA-256
+  均为 `b0063628b76e2e7868bc16f183874a1c5bdda6e71e04b8bfdbe8cb45ca6668f0`。
+  外网 FRP 地址按用户要求仅提供、不回验；本轮不打版本标签、不触发云端出包。
 
 ## 18. 文档维护规则
 

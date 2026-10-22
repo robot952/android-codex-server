@@ -37,6 +37,8 @@ import '../ssh/server_connection_manager.dart';
 import '../ssh/ssh_server_client.dart';
 import '../ssh/terminal_manager.dart';
 
+part 'app_controller_message_queue.dart';
+
 final profileStoreProvider = Provider<ProfileStore>((ref) {
   return SecureProfileStore();
 });
@@ -198,6 +200,32 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, int> _customModelSyncRevisions = {};
   final Map<AgentConnectionKey, Lock> _customModelSyncLocks = {};
   final Map<AgentConnectionKey, ThreadSessionCache> _threadCaches = {};
+  final Map<String, _ThreadMessageQueue> _messageQueues = {};
+  int _queuedMessageSequence = 0;
+
+  @override
+  AppUiState get state => super.state;
+
+  @override
+  set state(AppUiState value) {
+    final profileId = value.selectedProfileId;
+    final threadId = value.activeThread?.id;
+    final queue = profileId == null || threadId == null
+        ? null
+        : _messageQueues[threadPreferenceKey(
+            profileId,
+            value.activeAgent,
+            threadId,
+          )];
+    super.state = value.copyWith(
+      queuedMessages: queue == null || value.screen == AppScreen.agentWork
+          ? const <QueuedMessage>[]
+          : List<QueuedMessage>.unmodifiable(
+              queue.items.map((item) => item.message),
+            ),
+    );
+  }
+
   final Map<AgentConnectionKey, ResumeNotificationBuffer>
   _resumeNotificationBuffers = {};
   final Map<String, _ThreadOpenRequest> _threadOpenRequests = {};
@@ -492,6 +520,7 @@ class AppController extends StateNotifier<AppUiState> {
       _removeStoredProfileSnapshots(existing, agents: affectedAgents);
       for (final agent in affectedAgents) {
         final key = AgentConnectionKey(profileId: normalized.id, agent: agent);
+        _invalidateMessageQueuesForLane(key, '服务器配置已改变，请删除旧队列后重新添加消息');
         _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
         _agentLoadRequests.remove(key);
         if (state.agentLoadingStates[key] == true) {
@@ -648,6 +677,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> deleteProfile(String profileId) async {
     await _ensureInitialized();
+    _messageQueues.removeWhere((_, queue) => queue.key.profileId == profileId);
     _forgetRetainedConnection(profileId);
     _cancelCustomModelSync(profileId);
     _clearSubAgentNavigationForProfile(profileId);
@@ -2626,86 +2656,153 @@ class AppController extends StateNotifier<AppUiState> {
     );
   }
 
-  /// Stages bounded local files through the active SSH connection. The
-  /// profile/thread guard prevents a picker result from being attached to a
-  /// different conversation after navigation while it is uploading.
+  final _attachmentUploads =
+      Expando<({ServerProfile profile, Future<PendingAttachment> result})>();
+  int _localAttachmentSequence = 0;
+
+  /// Keeps picker results locally. No SSH upload occurs until the message is
+  /// actually dispatched (not when a running conversation queues it).
   Future<void> uploadAttachments(
     Iterable<LocalAttachmentUpload> uploads,
   ) async {
     await _ensureInitialized();
-    if (state.isThreadReadOnly || state.loading) return;
+    if (!mounted || state.isThreadReadOnly || state.loading) return;
     final items = uploads.toList(growable: false);
     final profileId = state.selectedProfileId;
     final threadId = state.activeThread?.id;
     if (items.isEmpty ||
         profileId == null ||
         threadId == null ||
-        threadId.isEmpty ||
-        state.attachmentUploading) {
+        threadId.isEmpty) {
       return;
     }
-    final profile = state.profiles.firstWhereOrNull(
-      (candidate) => candidate.id == profileId,
-    );
-    if (profile == null) return;
-    final key = AgentConnectionKey(
-      profileId: profileId,
-      agent: state.activeAgent,
-    );
-    state = state.copyWith(attachmentUploading: true, error: null);
+    var attachments = List<PendingAttachment>.of(state.attachments);
     Object? firstError;
-    try {
-      for (final item in items) {
-        if (!mounted ||
-            !_isActiveThread(key, threadId) ||
-            state.isThreadReadOnly) {
-          return;
-        }
-        try {
-          final isText = item.textContent != null;
-          final maxBytes = isText
-              ? maxInlineTextAttachmentBytes
-              : maxLocalAttachmentBytes;
-          if (item.bytes.isEmpty) throw StateError('附件不能为空');
-          if (item.bytes.length > maxBytes) {
-            throw StateError(isText ? '文本附件不能超过 512 KB' : '附件不能超过 20 MB');
-          }
-          final remotePath = await _connections.uploadAttachment(
-            profile,
-            item.name,
-            item.bytes,
-            maxBytes: maxBytes,
-          );
-          if (!mounted ||
-              !_isActiveThread(key, threadId) ||
-              state.isThreadReadOnly) {
-            return;
-          }
-          state = state.copyWith(
-            attachments: [
-              ...state.attachments,
-              PendingAttachment(
-                name: item.name,
-                remotePath: remotePath,
-                mimeType: item.mimeType,
-                textContent: item.textContent,
-              ),
-            ],
-          );
-        } catch (error) {
-          firstError ??= error;
-        }
-      }
-    } finally {
-      if (mounted && _isActiveThread(key, threadId)) {
-        state = state.copyWith(
-          attachmentUploading: false,
-          error: firstError == null
-              ? state.error
-              : _message(firstError, '上传附件失败'),
-        );
+    for (final item in items) {
+      try {
+        attachments = prepareLocalAttachments([item], existing: attachments);
+      } catch (error) {
+        firstError ??= error;
       }
     }
+    state = state.copyWith(
+      attachments: List.unmodifiable(attachments),
+      error: firstError == null ? null : _message(firstError, '添加附件失败'),
+    );
+  }
+
+  /// Validates and stages a message's local files without mutating the composer
+  /// or touching the server. Queue editors can discard the result on cancel.
+  List<PendingAttachment> prepareLocalAttachments(
+    Iterable<LocalAttachmentUpload> uploads, {
+    List<PendingAttachment> existing = const [],
+  }) {
+    final attachments = List<PendingAttachment>.of(existing);
+    // Queue payloads stay in memory; keep the complete local outbox bounded,
+    // independently of the per-message 40 MiB / eight-attachment limits.
+    final sources = <LocalAttachmentUpload>{
+      for (final attachment in [
+        ...state.attachments,
+        ...attachments,
+        ..._queuedAttachments,
+      ])
+        if (attachment.localUpload != null) attachment.localUpload!,
+    };
+    var retainedBytes = sources.fold<int>(
+      0,
+      (sum, item) => sum + item.bytes.length,
+    );
+    var messageBytes = attachments.fold<int>(
+      0,
+      (sum, item) => sum + (item.localUpload?.bytes.length ?? 0),
+    );
+    for (final item in uploads) {
+      if (attachments.length >= maxPendingAttachmentCount) {
+        throw StateError('每条消息最多保留 $maxPendingAttachmentCount 个附件');
+      }
+      final isText = item.textContent != null;
+      final maxBytes = isText
+          ? maxInlineTextAttachmentBytes
+          : maxLocalAttachmentBytes;
+      if (item.bytes.isEmpty) throw StateError('附件不能为空');
+      if (item.bytes.length > maxBytes) {
+        throw StateError(isText ? '文本附件不能超过 512 KB' : '附件不能超过 20 MB');
+      }
+      if (messageBytes + item.bytes.length > maxPendingAttachmentTotalBytes) {
+        throw StateError('每条消息的附件总大小不能超过 40 MB');
+      }
+      if (retainedBytes + item.bytes.length > 80 * 1024 * 1024) {
+        throw StateError('待发送附件总大小不能超过 80 MB，请先发送或删除部分消息');
+      }
+      final local = LocalAttachmentUpload(
+        name: item.name,
+        bytes: Uint8List.fromList(item.bytes).asUnmodifiableView(),
+        mimeType: item.mimeType,
+        textContent: item.textContent,
+      );
+      attachments.add(
+        PendingAttachment(
+          name: item.name,
+          remotePath: '',
+          localId: 'local-attachment-${++_localAttachmentSequence}',
+          localUpload: local,
+          mimeType: item.mimeType,
+          textContent: item.textContent,
+        ),
+      );
+      messageBytes += item.bytes.length;
+      retainedBytes += item.bytes.length;
+    }
+    return List.unmodifiable(attachments);
+  }
+
+  /// Resolves only the captured message's attachments. Successful files are
+  /// reused if a later file or the turn request fails, so retries do not upload
+  /// them repeatedly. Expando ownership lets removed local payloads be freed.
+  Future<List<PendingAttachment>> _uploadMessageAttachments(
+    ServerProfile profile,
+    List<PendingAttachment> attachments, {
+    required bool Function() isCurrent,
+  }) async {
+    final resolved = <PendingAttachment>[];
+    for (final attachment in attachments) {
+      if (!mounted || !isCurrent()) throw StateError('附件发送已取消');
+      final local = attachment.localUpload;
+      if (local == null) {
+        if (attachment.remotePath.isEmpty) throw StateError('附件已不可用，请重新添加');
+        resolved.add(attachment);
+        continue;
+      }
+      var cached = _attachmentUploads[local];
+      if (cached != null &&
+          !cached.profile.hasSameConnectionIdentity(profile)) {
+        throw StateError('服务器连接配置已更新，请重新添加附件');
+      }
+      if (cached == null) {
+        final result = _connections
+            .uploadAttachment(
+              profile,
+              local.name,
+              local.bytes,
+              maxBytes: local.textContent == null
+                  ? maxLocalAttachmentBytes
+                  : maxInlineTextAttachmentBytes,
+            )
+            .then((path) => attachment.copyWith(remotePath: path));
+        cached = (profile: profile, result: result);
+        _attachmentUploads[local] = cached;
+      }
+      try {
+        resolved.add(await cached.result);
+      } catch (_) {
+        if (identical(_attachmentUploads[local]?.result, cached.result)) {
+          _attachmentUploads[local] = null;
+        }
+        rethrow;
+      }
+      if (!mounted || !isCurrent()) throw StateError('附件发送已取消');
+    }
+    return List.unmodifiable(resolved);
   }
 
   /// Stages selected local diagnostic sessions as ordinary text attachments.
@@ -2713,7 +2810,20 @@ class AppController extends StateNotifier<AppUiState> {
   /// operation that submits them to the active conversation.
   Future<void> addDebugLogAttachments(Iterable<String> logIds) async {
     await _ensureInitialized();
-    if (state.isThreadReadOnly) return;
+    if (!mounted || state.isThreadReadOnly) return;
+    final profileId = state.selectedProfileId;
+    final threadId = state.activeThread?.id;
+    if (profileId == null || threadId == null) return;
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    final navigationGeneration = _sessionNavigationGenerations[key] ?? 0;
+    bool isCurrent() =>
+        mounted &&
+        _isCurrentSessionNavigation(key, navigationGeneration, threadId) &&
+        state.screen == AppScreen.work &&
+        !state.isThreadReadOnly;
     final ids = logIds
         .map((id) => id.trim())
         .where((id) => id.isNotEmpty)
@@ -2744,18 +2854,18 @@ class AppController extends StateNotifier<AppUiState> {
         firstError ??= error;
       }
     }
-    if (uploads.isNotEmpty) await uploadAttachments(uploads);
-    if (firstError != null && mounted) {
+    if (uploads.isNotEmpty && isCurrent()) await uploadAttachments(uploads);
+    if (firstError != null && isCurrent()) {
       state = state.copyWith(error: _message(firstError, '添加 Debug 日志失败'));
     }
   }
 
-  void removeAttachment(String remotePath) {
+  void removeAttachment(String attachmentId) {
     if (state.isThreadReadOnly) return;
-    if (!mounted || remotePath.trim().isEmpty) return;
+    if (!mounted || attachmentId.trim().isEmpty) return;
     state = state.copyWith(
       attachments: state.attachments
-          .where((attachment) => attachment.remotePath != remotePath)
+          .where((attachment) => attachment.id != attachmentId)
           .toList(growable: false),
     );
   }
@@ -3505,8 +3615,22 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   Future<void> sendMessage({String? text}) async {
-    await _sendMessage(text: text);
+    await _enqueueComposerMessage(text: text);
   }
+
+  bool beginEditQueuedMessage(String id) => _beginEditQueuedMessage(id);
+
+  void cancelEditQueuedMessage(String id) => _cancelEditQueuedMessage(id);
+
+  bool updateQueuedMessage(
+    String id, {
+    required String text,
+    required List<PendingAttachment> attachments,
+  }) => _updateQueuedMessage(id, text: text, attachments: attachments);
+
+  void deleteQueuedMessage(String id) => _deleteQueuedMessage(id);
+
+  Future<void> steerQueuedMessage(String id) => _steerQueuedMessage(id);
 
   /// Answers a non-blocking question without consuming the main composer's
   /// draft or attachments. The originating question remains bound to its
@@ -3700,6 +3824,10 @@ class AppController extends StateNotifier<AppUiState> {
       );
     }
 
+    final sendLease = _beginIndependentMessageSend(profile, key, thread);
+    if (sendLease == null) return false;
+    String? acceptedTurnId;
+    var sendFailed = false;
     state = state.copyWith(
       timeline: [...state.timeline, optimistic],
       composerDraft: preserveComposer ? state.composerDraft : '',
@@ -3728,6 +3856,8 @@ class AppController extends StateNotifier<AppUiState> {
       if (!mounted ||
           !_isActiveThread(key, thread.id) ||
           state.isThreadReadOnly ||
+          sendLease.revision != sendLease.queue.revision ||
+          !_queueProfileMatches(sendLease.queue) ||
           isCurrent?.call() == false) {
         discardUnsentQuestion();
         return false;
@@ -3760,7 +3890,9 @@ class AppController extends StateNotifier<AppUiState> {
             requireConnected: true,
           );
         }
-        if (isCurrent?.call() == false) {
+        if (isCurrent?.call() == false ||
+            sendLease.revision != sendLease.queue.revision ||
+            !_queueProfileMatches(sendLease.queue)) {
           discardUnsentQuestion();
           return false;
         }
@@ -3779,6 +3911,7 @@ class AppController extends StateNotifier<AppUiState> {
               : profile.workspace,
         );
       }
+      acceptedTurnId = turnId;
       if (canApplyToCurrentThread()) {
         _diagnostics.info(
           'Message',
@@ -3818,6 +3951,7 @@ class AppController extends StateNotifier<AppUiState> {
       }
       return true;
     } catch (error, stack) {
+      sendFailed = true;
       _diagnostics.warn(
         'Message',
         'send_failed profile=$profileId agent=${key.agent.name} thread=${thread.id}',
@@ -3861,6 +3995,12 @@ class AppController extends StateNotifier<AppUiState> {
         }
       }
       return false;
+    } finally {
+      _finishIndependentMessageSend(
+        sendLease,
+        acceptedTurnId: acceptedTurnId,
+        failed: sendFailed,
+      );
     }
   }
 
@@ -3870,16 +4010,15 @@ class AppController extends StateNotifier<AppUiState> {
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     final turnId = state.activeTurnId;
-    if (profileId == null ||
-        thread == null ||
-        turnId == null ||
-        turnId.isEmpty) {
+    if (profileId == null || thread == null) {
       return;
     }
     final key = AgentConnectionKey(
       profileId: profileId,
       agent: state.activeAgent,
     );
+    _pauseMessageQueue(key, thread.id, '已暂停队列，点击“引导”继续发送');
+    if (turnId == null || turnId.isEmpty) return;
     _settleVisibleTurnLocally(key, thread.id, turnId, stopped: true);
     try {
       await _agents.interruptTurn(key, threadId: thread.id, turnId: turnId);
@@ -6397,6 +6536,7 @@ class AppController extends StateNotifier<AppUiState> {
     _agentLoadRevisions[key] = (_agentLoadRevisions[key] ?? 0) + 1;
     _agentLoadRequests.remove(key);
     if (!preserveExistingThreads) {
+      _invalidateMessageQueuesForLane(key, '服务商已改变，请删除旧队列后重新添加消息');
       // A Provider switch changes the server's thread namespace. Do not let a
       // stale transcript be used when the new Provider reuses a thread ID.
       _threadCaches[key]?.clear();
@@ -6839,6 +6979,10 @@ class AppController extends StateNotifier<AppUiState> {
       final previousPhase = previousConnections[key]?.phase;
       final nextPhase = connections[key]?.phase;
       if (previousPhase == nextPhase) continue;
+      if (previousPhase == ConnectionPhase.connected &&
+          nextPhase != ConnectionPhase.connected) {
+        _pauseMessageQueuesForLane(key, '连接已中断，重连后点击“引导”发送');
+      }
       _diagnostics.info(
         'Agent',
         'state profile=${key.profileId} agent=${key.agent.name} '
@@ -6902,6 +7046,7 @@ class AppController extends StateNotifier<AppUiState> {
     bool publishCompletion = true,
   }) {
     if (!mounted) return;
+    _observeMessageQueueEvent(envelope);
     final active = _isActiveKey(envelope.key);
     switch (envelope.event) {
       case RemoteAgentDiagnostic(
@@ -7769,6 +7914,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   @override
   void dispose() {
+    _messageQueues.clear();
     for (final profileId in _retainedHostConnections.toList()) {
       _invalidateConnectionRecovery(profileId);
     }
