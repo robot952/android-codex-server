@@ -2884,6 +2884,18 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - 按用户本次明确授权，采用 `v1.8.185` 标签触发两端云端发布，不继续本地 analyze、测试或 APK 编译。
   门禁及正式 Release 的实际结果以对应流水线为准，不把新增测试或旧版本 APK 当成已通过/已包含修复。
   日常 main 推送规则不变，其他修改仍不自动打标签；本次不检查外网 FRP 下载。
+- 发布结果：GitHub/Gitee 的 `main` 与 `v1.8.185` 标签均已同步至代码提交
+  `177e60f68e63c82648b4af11abaa207cec9c50c1`。GitHub Actions `39961945988` 的标签检查、
+  Android、iOS、Windows 编译和正式 Release 发布全部成功；Android/iOS job 包含全量 analyze/test。
+  本轮新增 Android 设备测试入口未执行，不将云端单元/Widget 测试记作真机或模拟器交互验收。
+- Gitee 正式 Release APK 已完整下载，包名 `top.asdb.agent`、版本 `1.8.185+317`、非调试标记和原稳定证书
+  均通过校验。该云端 APK 直接更新本机 `codex.apk` / `agent.apk` 两个别名，未重新编译；内网完整下载
+  与原产物一致，大小 `31,963,354` 字节，SHA-256 为
+  `6cccc99bca168e7d275ebcfb2e29d5eab6f7b5d9410f51f276991e805a0fde8f`。
+  稳定证书 SHA-256 仍为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+- GitHub 云端从启动到全部完成为 `12m18s`；本机下载 GitHub 资产遇到 `120s` 超时，改取 Gitee 同版本
+  正式包用时 `16.130s`，内网整包回验 `115ms`。两端独立构建的 APK 哈希不同，固定地址采用上述 Gitee 包；
+  失败和后续成功阶段均保留在任务计时记录中，外网 FRP 按用户要求未回验。
 
 ## 18. 文档维护规则
 
