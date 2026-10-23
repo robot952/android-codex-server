@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.182+314，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.183+315，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2822,6 +2822,15 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - `dist/Agent-1.8.182.apk` 大小 `31,949,202` 字节，稳定证书未变；内网完整回下载与发布包 SHA-256
   均为 `b0063628b76e2e7868bc16f183874a1c5bdda6e71e04b8bfdbe8cb45ca6668f0`。
   外网 FRP 地址按用户要求仅提供、不回验；本轮不打版本标签、不触发云端出包。
+
+### 17.84 消息队列版本云端发布（2026-10-23）
+
+- 应用版本递增至 `1.8.183+315`，包含第 17.83 节的三种 Agent 多消息队列、队列编辑/删除/引导、
+  输入按钮切换与附件延迟上传；本次只更新发布版本，不改变功能或稳定签名。
+- 按用户明确的云端出包要求，直接同步 GitHub/Gitee 的 `main` 与匹配的 `v1.8.183` 标签，
+  由现有标签流水线执行测试、构建与正式 Release 发布，不重复本地测试、构建或模拟器门禁。
+  云端是否成功及产物校验以对应流水线和 Release 元数据为准，不能由本地旧包推断。
+- 日常 `main` 推送继续仅同步代码；后续云端出包仍须用户明确要求，不移动已有版本标签。
 
 ## 18. 文档维护规则
 
