@@ -1354,7 +1354,6 @@ abstract final class CodexPayloadParser {
         'id',
         'turnId',
       ], marker: '');
-      final turnStatus = _wireType(turn['status']);
       for (final itemValue in _asList(
         turn['items'],
         maxItems: _maxTimelineItemsPerTurn,
@@ -1367,12 +1366,7 @@ abstract final class CodexPayloadParser {
           _applySubAgentStates(result, item, turnId);
         }
         result.addAll(
-          parseItems(
-                item,
-                turnId: turnId,
-                historical: true,
-                turnStatus: turnStatus,
-              )
+          parseItems(item, turnId: turnId, historical: true)
               .map(
                 (entry) =>
                     parentId.isNotEmpty &&
@@ -1405,15 +1399,9 @@ abstract final class CodexPayloadParser {
     Map<String, Object?> item, {
     required String turnId,
     bool historical = false,
-    String turnStatus = '',
   }) {
     if (_firstString(item, const ['type']) != 'collabAgentToolCall') {
-      final entry = parseItem(
-        item,
-        turnId: turnId,
-        historical: historical,
-        turnStatus: turnStatus,
-      );
+      final entry = parseItem(item, turnId: turnId, historical: historical);
       return entry == null ? const [] : [entry];
     }
     final states =
@@ -1478,7 +1466,6 @@ abstract final class CodexPayloadParser {
     Map<String, Object?> item, {
     required String turnId,
     bool historical = false,
-    String turnStatus = '',
   }) {
     final type = _firstString(item, const <String>['type']);
     if (type.isEmpty) return null;
@@ -1572,7 +1559,6 @@ abstract final class CodexPayloadParser {
         id: id,
         turnId: boundedTurnId,
         historical: historical,
-        turnStatus: turnStatus,
       ),
       'webSearch' || 'web_search' || 'webSearchCall' || 'web_search_call' =>
         _parseToolItem(item: item, id: id, turnId: boundedTurnId),
@@ -1645,21 +1631,17 @@ abstract final class CodexPayloadParser {
     );
   }
 
-  /// Reads the compaction lifecycle from the item first, then from its turn.
-  /// Older app-server payloads omit both fields, so they retain the historical
-  /// completed fallback used by the previous parser.
+  /// Only an item's own status or a live lifecycle event identifies an active
+  /// compaction. The v2 history schema contains just id/type: its enclosing
+  /// turn may keep running (or fail later) after the compaction has finished.
   static String contextCompactionStatus(
     Map<String, Object?> item, {
-    String turnStatus = '',
     String lifecycleMethod = '',
   }) {
     final itemStatus = _normalizeContextCompactionStatus(
       _wireType(item['status']),
     );
     if (itemStatus.isNotEmpty) return itemStatus;
-
-    final parsedTurnStatus = _normalizeContextCompactionStatus(turnStatus);
-    if (parsedTurnStatus.isNotEmpty) return parsedTurnStatus;
 
     return switch (lifecycleMethod) {
       'item/started' => 'inProgress',
@@ -1691,9 +1673,8 @@ abstract final class CodexPayloadParser {
     required String id,
     required String turnId,
     required bool historical,
-    required String turnStatus,
   }) {
-    final status = contextCompactionStatus(item, turnStatus: turnStatus);
+    final status = contextCompactionStatus(item);
     return TimelineEntry(
       id: id,
       kind: TimelineKind.notice,

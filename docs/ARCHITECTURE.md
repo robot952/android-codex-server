@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.184+316，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.185+317，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -261,7 +261,7 @@ AppUiState 是 Flutter 展示状态，字段分为：
 | 当前会话 | threads、activeThread、timeline、olderTurnsCursor、activeTurnId、running、turnTiming、aggregateDiff | 三种 Agent 共用 Work 链路；具体操作按 capability 开关 |
 | 会话控制 | models、selectedModel、selectedEffort、approvalMode、sandbox、approval、approvalQueue、activeGoal | 三种 Agent 共用；模型和 effort 按 lane、会话独立选择，其他操作按 capability 显示 |
 | 草稿/附件/上下文 | composerDraft、attachments、attachmentUploading、composerClearNonce、tokenUsage | 已使用；待发附件只属于当前活动会话，不长期持久化 |
-| 待发送队列 | queuedMessages | 从控制器按 profile + Agent + thread 的队列投影，支持多条、发送中、编辑中及失败状态；不写入历史或 Profile JSON |
+| 待发送队列与发送反馈 | queuedMessages、messageSending | 按 profile + Agent + thread 投影；空闲立即发送不显示队列行，上传/发送确认中按钮旋转禁用；支持多条待发、编辑和失败恢复，不写入历史或 Profile JSON |
 | 工作区 | workspacePickerVisible、workspaceLoading、workspaceCurrentPath、workspaceParentPath、workspaceDirectories、workspaceError | 已接入首次提示和手动目录浏览 |
 | 文件管理 | fileManagerProfileId、fileManagerLoading、fileManagerCurrentPath、fileManagerEntries、clipboard、operation、error | 控制器和 `FileManagerScreen` 已接入；按 profile/generation 校验 |
 | 安装/全局设置 | remoteSetup*、agentSetupStates、agentSettings*、apiModelOptions* | Codex/OpenCode 运行时与全局设置已接入；Claude Code 按版本探测、升级/降级现有 CLI、安装/卸载连接组件并读取/保存原生 URL、Key、默认模型和 effort |
@@ -499,6 +499,9 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
   writer，也不得因为暂时读取失败覆盖最后一份可见快照。
 - Composer 有文字或附件时始终显示发送按钮；只有正在对话且正文/附件都为空时显示停止按钮，停止仍需确认。
   空闲点击发送直接进入发送流程，运行中发送则加入当前会话的多条 FIFO 队列，不隐式引导或中断。
+  上传附件和等待 start/steer 确认期间，按钮改为旋转刷新图标并禁用，防止重复点击；实时回合已开始但
+  RPC 尚未确认时也保持旋转。空闲立即发送只复用内部派发互斥，不在可见队列中闪现；完成后恢复发送/停止，
+  失败恢复正文与附件，已有新草稿或切页时则保留可重试的失败队列项。发送中仍可编辑下一条草稿，但确认前不能再次发送。
   队列只在匹配的回合明确成功结束后自动发送下一条，不能凭最终答案文本认定完成。
   Composer 上方显示紧凑待发消息，可删除、通过三点菜单编辑正文/图片/文件，或点击“引导”立即发送；
   编辑不改变顺序或覆盖主草稿，编辑中的队首暂停自动发送。显式引导在运行中使用 `turn/steer`，空闲时立即发送所选消息。
@@ -736,6 +739,11 @@ thread、权限模式与只读模式共享进行中的恢复请求；导航变�
 约 2 MiB 字符权重，并额外保留有限的有效 TokenUsage。更早历史通过 cursor 获取，按
 `(turnId, kind, id)` 复合身份去重后前插并更新缓存。
 
+上下文压缩按条目自身生命周期显示：官方 v2 历史 `contextCompaction` 可能只有 `id/type`，此时显示为
+历史已完成，不能继承父回合的 `inProgress/failed/interrupted`。父回合在压缩完成后仍可继续运行。
+只有条目明确的状态或实时 `item/started` 才显示正在压缩，`item/completed` 结束该状态；真实的新压缩
+事件仍正常显示。打开/恢复页面不会主动请求模型压缩，也不因历史提示而修改服务器压缩阈值。
+
 resume 期间同 generation 的实时通知会进入有界 `ResumeNotificationBuffer`；响应携带入站
 `responseSequence`，控制器先用 `reconcileResumedTimeline` 合并已缓存旧页与服务器快照，再按 wire
 sequence 重放快照之后的通知。缓冲区保留终态、合并相邻 delta，并在溢出时给出诊断。客户端对超大
@@ -819,7 +827,8 @@ requestId 和 threadId，切换会话、迟到事件、断线和归档只影响�
   独立缓存，避免子会话覆盖父会话设置。
 - 输入附件已串起系统 picker、有界本地读取、待发 chip、实际派发时 SFTP 上传和协议编码。
   选择/编辑/排队不上传；上传结果校验原 profile/thread/连接代次，失败保留消息与本地字节，
-  部分成功上传在本进程重试复用。上传期间仍可编辑新草稿和排队下一条，不把新内容并入正在发送的消息。
+  部分成功上传在本进程重试复用。上传/发送确认期间仍可编辑新草稿和暂存附件，但发送按钮保持旋转禁用；
+  确认后运行中的后续消息正常入队，不把新内容并入正在发送的消息。
 
 ### 9.6 远程安装和全局设置
 
@@ -1546,7 +1555,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
    列表后台刷新不得阻塞打开已有会话、重探测已连接运行时或覆盖对话加载状态；快速点击只接受最新导航。
    已验证的实时订阅可在轻量权限校验后复用内存历史；冷启动使用有界压缩加密预览，服务器确认写入权后才解锁输入。
 7. 更早历史通过下拉释放加载，提示随手势出现，内容向下留白（当前已接入）。
-8. Composer 有文字或附件时显示发送按钮；运行且空输入时才显示停止，列表运行态仍转圈。运行中普通发送进入多消息 FIFO 队列，支持删除、三点编辑和显式“引导”，Codex/OpenCode/Claude Code 交互一致。上下文小圆环点击只看占用，不弹压缩确认。
+8. Composer 有文字或附件时显示发送按钮；运行且空输入时才显示停止，列表运行态仍转圈。上传与发送确认中按钮旋转且不可操作，空闲立即发送不短暂显示队列行；结束/失败恢复按钮及可重试内容。运行中普通发送进入多消息 FIFO 队列，支持删除、三点编辑和显式“引导”，Codex/OpenCode/Claude Code 交互一致。上下文小圆环点击只看占用，不弹压缩确认；历史压缩条目不能借用父回合运行态显示为新压缩。
 9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方不再显示后台 Agent 数量面板，保留时间线活动和真实等待状态。
 10. 目标和操作菜单使用原生 app-server 能力，不依赖复杂斜杠解析（当前 Codex 已接入）。
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
@@ -2862,6 +2871,19 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   均为 `2bb38828c71b28a865662599fd1bf4d47b33bea68a571093e26a4bdede3ebd42`；包名为 `top.asdb.agent`，
   稳定证书 SHA-256 仍为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
   外网 FRP 地址按用户要求仅提供、不回验；只做本地出包，推送两端 `main`，不创建标签或触发云端发布。
+
+### 17.86 历史压缩状态与即时发送反馈（2026-10-23）
+
+- 应用版本：`1.8.185+317`。恢复历史中缺少状态的 `contextCompaction` 不再继承父回合状态，避免已经完成
+  的压缩在页面重进时显示为“正在压缩”。条目明确状态及实时开始/完成仍按真实事件处理，不自动发起压缩。
+- Codex、OpenCode、Claude Code 共用发送反馈：空闲立即发送不显示临时队列行，附件上传及等待发送确认
+  期间按钮持续旋转且禁用。实时 `turn/started` 先到也不能提前解锁；确认后继续正常发送/排队，失败保留
+  原正文和附件，新草稿不被覆盖，切换会话不串发送状态。
+- 已补充官方历史形状、实时压缩生命周期、缓存校正和连续重进回归，以及三种 Agent 的文本/附件发送、
+  重复点击、上传/RPC 失败恢复、草稿保留与跨会话状态回归；Android 受控队列设备入口也覆盖旋转按钮。
+- 按用户本次明确授权，采用 `v1.8.185` 标签触发两端云端发布，不继续本地 analyze、测试或 APK 编译。
+  门禁及正式 Release 的实际结果以对应流水线为准，不把新增测试或旧版本 APK 当成已通过/已包含修复。
+  日常 main 推送规则不变，其他修改仍不自动打标签；本次不检查外网 FRP 下载。
 
 ## 18. 文档维护规则
 

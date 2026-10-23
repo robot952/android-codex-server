@@ -91,8 +91,103 @@ Future<void> _edit(WidgetTester tester, String id) async {
   await pumpQueueEvents(tester);
 }
 
+Future<void> verifyImmediateSendingFeedback(
+  WidgetTester tester, {
+  required AgentKind kind,
+  bool withAttachment = true,
+}) async {
+  final h = await pumpQueueApp(tester, kind: kind, running: false);
+  final upload = Completer<void>();
+  final reply = Completer<void>();
+  h.host.uploadGate = upload;
+  h.agent.replyGate = reply;
+  addTearDown(() {
+    if (!upload.isCompleted) upload.complete();
+    if (!reply.isCompleted) reply.complete();
+  });
+  if (withAttachment) {
+    await tester.runAsync(
+      () => h.controller.uploadAttachments([
+        LocalAttachmentUpload(
+          name: 'pending.png',
+          bytes: Uint8List.fromList([1, 2, 3]),
+          mimeType: 'image/png',
+        ),
+      ]),
+    );
+    await pumpQueueEvents(tester);
+    expect(h.host.uploads, isEmpty);
+  } else {
+    await tester.enterText(queueComposer, 'send now');
+    await tester.pump();
+  }
+  await tester.tap(queueSend);
+  await pumpQueueEvents(tester);
+  expect(h.controller.state.messageSending, isTrue);
+  expect(h.controller.state.queuedMessages, isEmpty);
+  expect(find.byKey(const Key('queued-messages-panel')), findsNothing);
+  expect(tester.widget<IconButton>(queueSend).tooltip, '发送中');
+  expect(tester.widget<IconButton>(queueSend).onPressed, isNull);
+  final indicator = find.byKey(const Key('composer-sending-indicator'));
+  expect(find.byIcon(Icons.sync_rounded), findsOneWidget);
+  final rotation = tester.widget<RotationTransition>(indicator).turns;
+  final angle = rotation.value;
+  await tester.pump(const Duration(milliseconds: 150));
+  expect(rotation.value, isNot(angle));
+
+  await tester.enterText(queueComposer, 'next draft');
+  await tester.pump();
+  await tester.tap(queueSend);
+  await pumpQueueEvents(tester);
+  expect(h.controller.state.composerDraft, 'next draft');
+  expect(h.controller.state.queuedMessages, isEmpty);
+  expect(h.agent.starts, hasLength(withAttachment ? 0 : 1));
+  expect(tester.widget<IconButton>(queueSend).onPressed, isNull);
+
+  upload.complete();
+  await pumpQueueEvents(tester);
+  expect(h.agent.starts, hasLength(1));
+  expect(h.controller.state.running, isTrue);
+  // turn/started can precede the start RPC response. Keep the send lock until
+  // confirmation, even though the generic submitting flag has been cleared.
+  expect(h.controller.state.messageSending, isTrue);
+  expect(tester.widget<IconButton>(queueSend).onPressed, isNull);
+  expect(indicator, findsOneWidget);
+  expect(h.controller.state.queuedMessages, isEmpty);
+
+  reply.complete();
+  await pumpQueueEvents(tester);
+  expect(h.controller.state.messageSending, isFalse);
+  expect(indicator, findsNothing);
+  expect(tester.widget<IconButton>(queueSend).tooltip, '发送');
+  expect(tester.widget<IconButton>(queueSend).onPressed, isNotNull);
+  expect(h.controller.state.composerDraft, 'next draft');
+  await tester.tap(queueSend);
+  await pumpQueueEvents(tester);
+  expect(h.controller.state.queuedMessages.single.text, 'next draft');
+  expect(h.agent.starts, hasLength(1));
+  expect(h.host.uploads, withAttachment ? ['pending.png'] : isEmpty);
+  expect(tester.widget<IconButton>(queueSend).tooltip, '停止');
+  expect(tester.takeException(), isNull);
+}
+
 void main() {
   for (final kind in AgentKind.values) {
+    for (final withAttachment in [false, true]) {
+      testWidgets(
+        '${kind.name}: immediate ${withAttachment ? 'attachment' : 'text'} send spins without queue flicker',
+        (tester) async {
+          tester.view.devicePixelRatio = 1;
+          tester.view.physicalSize = const Size(420, 900);
+          addTearDown(tester.view.reset);
+          await verifyImmediateSendingFeedback(
+            tester,
+            kind: kind,
+            withAttachment: withAttachment,
+          );
+        },
+      );
+    }
     testWidgets('${kind.name}: content sends to a multi-message queue', (
       tester,
     ) async {
@@ -153,47 +248,45 @@ void main() {
     expect(tester.widget<IconButton>(queueSend).tooltip, '停止');
   });
 
-  testWidgets('uploading permits another queued message and can be stopped', (
-    tester,
-  ) async {
-    final h = await pumpQueueApp(tester, running: false);
-    final gate = Completer<void>();
-    h.host.uploadGate = gate;
-    addTearDown(() {
-      if (!gate.isCompleted) gate.complete();
-    });
-    await tester.runAsync(
-      () => h.controller.uploadAttachments([
-        LocalAttachmentUpload(
-          name: 'pending.png',
-          bytes: Uint8List.fromList([1, 2, 3]),
-          mimeType: 'image/png',
-        ),
-      ]),
+  for (final failUpload in [true, false]) {
+    testWidgets(
+      'send failure restores the button and draft: upload=$failUpload',
+      (tester) async {
+        final h = await pumpQueueApp(tester, running: false);
+        h.host.failName = failUpload ? 'retry.png' : null;
+        h.agent.failNext = !failUpload;
+        await tester.runAsync(
+          () => h.controller.uploadAttachments([
+            LocalAttachmentUpload(
+              name: 'retry.png',
+              bytes: Uint8List.fromList([1, 2, 3]),
+              mimeType: 'image/png',
+            ),
+          ]),
+        );
+        await _send(tester, 'retry draft');
+        expect(h.controller.state.messageSending, isFalse);
+        expect(h.controller.state.queuedMessages, isEmpty);
+        expect(h.controller.state.attachments.single.name, 'retry.png');
+        expect(
+          tester.widget<TextField>(queueComposer).controller!.text,
+          'retry draft',
+        );
+        expect(tester.widget<IconButton>(queueSend).tooltip, '发送');
+        expect(tester.widget<IconButton>(queueSend).onPressed, isNotNull);
+        expect(
+          find.byKey(const Key('composer-sending-indicator')),
+          findsNothing,
+        );
+        h.host.failName = null;
+        await tester.tap(queueSend);
+        await pumpQueueEvents(tester);
+        expect(h.agent.starts.last.text, 'retry draft');
+        expect(tester.widget<IconButton>(queueSend).tooltip, '停止');
+        expect(tester.takeException(), isNull);
+      },
     );
-    await pumpQueueEvents(tester);
-    expect(h.host.uploads, isEmpty);
-    await tester.tap(queueSend);
-    await pumpQueueEvents(tester);
-    expect(h.host.uploads, ['pending.png']);
-    expect(h.controller.state.attachmentUploading, isTrue);
-    expect(tester.widget<IconButton>(queueSend).tooltip, '停止');
-    expect(tester.widget<IconButton>(queueSend).onPressed, isNotNull);
-    expect(find.text('正在上传待发送消息的附件…'), findsOneWidget);
-    await _send(tester, 'during upload');
-    expect(h.controller.state.queuedMessages, hasLength(2));
-    expect(h.agent.starts, isEmpty);
-    await tester.tap(queueSend);
-    await pumpQueueEvents(tester);
-    await tester.tap(find.text('停止'));
-    await pumpQueueEvents(tester);
-    gate.complete();
-    await pumpQueueEvents(tester);
-    expect(h.agent.starts, isEmpty);
-    expect(h.controller.state.queuedMessages, hasLength(2));
-    expect(h.controller.state.queuedMessages.every((m) => !m.sending), isTrue);
-    expect(tester.takeException(), isNull);
-  });
+  }
 
   testWidgets(
     'edit keeps position and composer draft; delete and steer bind correctly',

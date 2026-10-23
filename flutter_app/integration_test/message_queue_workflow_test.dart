@@ -1,12 +1,26 @@
+import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import '../test/ui/message_queue_ui_test.dart'
-    show pumpQueueApp, pumpQueueEvents, queueComposer, queueSend;
+    show
+        pumpQueueApp,
+        pumpQueueEvents,
+        queueComposer,
+        queueSend,
+        verifyImmediateSendingFeedback;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  for (final kind in AgentKind.values) {
+    testWidgets(
+      'Android ${kind.name} send spins until upload and confirmation',
+      (tester) async {
+        await verifyImmediateSendingFeedback(tester, kind: kind);
+      },
+    );
+  }
   testWidgets('Android queue and editor stay above the real keyboard', (
     tester,
   ) async {

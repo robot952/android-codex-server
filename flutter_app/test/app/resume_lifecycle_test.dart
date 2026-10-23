@@ -681,6 +681,57 @@ void main() {
   );
 
   test(
+    'reopening an active turn does not restart its completed compaction notice',
+    () async {
+      final agent = _ResumeAgent(threads: const [_threadAActive]);
+      final harness = await _createHarness(agent);
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      first.complete(const AgentSession(thread: _threadAActive, timeline: []));
+      await _waitUntil(() => !harness.controller.state.loading);
+      for (final method in ['item/started', 'item/completed']) {
+        agent.emit(
+          _notificationWithParams(method, {
+            'threadId': _threadA.id,
+            'turnId': 'turn-a',
+            'item': {'id': 'compact-a', 'type': 'contextCompaction'},
+          }),
+        );
+      }
+      await _drainAsyncWork();
+      expect(harness.controller.state.timeline.single.status, 'completed');
+      expect(harness.controller.state.running, isTrue);
+      for (var reopen = 0; reopen < 2; reopen++) {
+        harness.controller.backToThreadList();
+        final resume = agent.gateNextResume(_threadA.id);
+        harness.controller.openThread(_threadAActive);
+        await _waitUntil(() => agent.resumeCalls.length == reopen + 2);
+        resume.complete(
+          AgentSession(
+            thread: _threadAActive,
+            timeline: CodexPayloadParser.parseTimeline({
+              'turns': [
+                {
+                  'id': 'turn-a',
+                  'status': 'inProgress',
+                  'items': [
+                    {'id': 'compact-a', 'type': 'contextCompaction'},
+                  ],
+                },
+              ],
+            }),
+          ),
+        );
+        await _waitUntil(() => !harness.controller.state.loading);
+        expect(harness.controller.state.running, isTrue);
+        expect(harness.controller.state.timeline.single.status, 'completed');
+        expect(harness.controller.state.timeline.single.text, '历史：上下文已压缩');
+      }
+    },
+  );
+
+  test(
     'live warm cache avoids another fetch and includes background output',
     () async {
       final agent = _ReusableResumeAgent(threads: const [_threadAActive]);

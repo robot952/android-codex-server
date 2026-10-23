@@ -1,9 +1,39 @@
+import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('reconcileResumedTimeline', () {
+    test(
+      'fresh history corrects an old false running compaction without duplication',
+      () {
+        final fresh = CodexPayloadParser.parseTimeline({
+          'turns': [
+            {
+              'id': 'turn-1',
+              'status': 'inProgress',
+              'items': [
+                {'id': 'compact-1', 'type': 'contextCompaction'},
+              ],
+            },
+          ],
+        });
+        final result = reconcileResumedTimeline(
+          cachedTimeline: [
+            fresh.single.copyWith(status: 'inProgress', text: '正在压缩上下文'),
+          ],
+          cachedNextCursor: null,
+          refreshedTimeline: fresh,
+          refreshedNextCursor: null,
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 10,
+        );
+        expect(result.timeline, fresh);
+        expect(result.timeline.single.status, 'completed');
+      },
+    );
+
     test(
       'retains cached prefix and older cursor for same-revision overlap',
       () {

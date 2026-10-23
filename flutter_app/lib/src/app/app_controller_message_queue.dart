@@ -9,12 +9,16 @@ class _QueuedMessageEntry {
     this.message,
     this.settings, {
     this.restoreComposer = false,
+    this.visibleInQueue = true,
     this.originalDraft,
   });
 
   QueuedMessage message;
   final AppUiState settings;
   final bool restoreComposer;
+  // Immediate sends share FIFO's dispatch lease and failure handling, but are
+  // represented by the composer's busy button instead of a temporary queue row.
+  bool visibleInQueue;
   String? originalDraft;
 }
 
@@ -140,7 +144,12 @@ extension MessageQueueController on AppController {
 
   Future<void> _enqueueComposerMessage({String? text}) async {
     await _ensureInitialized();
-    if (!mounted || state.isThreadReadOnly || state.loading) return;
+    if (!mounted ||
+        state.isThreadReadOnly ||
+        state.loading ||
+        state.messageSending) {
+      return;
+    }
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
     final profile = state.profiles.firstWhereOrNull((p) => p.id == profileId);
@@ -190,6 +199,11 @@ extension MessageQueueController on AppController {
       queue.pauseReason = null;
       queue.generation = _agents.generation(key);
     }
+    final sendImmediately =
+        queue.items.isEmpty &&
+        !queue.running &&
+        queue.dispatch == null &&
+        !queue.paused;
     final entry = _QueuedMessageEntry(
       QueuedMessage(
         id: 'queued-${DateTime.now().microsecondsSinceEpoch}-${_queuedMessageSequence++}',
@@ -206,8 +220,8 @@ extension MessageQueueController on AppController {
         approvalMode: state.approvalMode,
         sandbox: state.sandbox,
       ),
-      restoreComposer:
-          queue.items.isEmpty && !queue.running && queue.dispatch == null,
+      restoreComposer: sendImmediately,
+      visibleInQueue: !sendImmediately,
       originalDraft: draftBeforeSend,
     );
     queue.items.add(entry);
@@ -695,6 +709,9 @@ extension MessageQueueController on AppController {
       final reason = requestSent
           ? '发送未获确认，请核对对话后点击“引导”重试'
           : _message(error, '发送失败，请重试');
+      // A failed immediate send must remain recoverable if a newer draft or
+      // navigation prevents restoring it to the composer.
+      entry.visibleInQueue = true;
       _pauseMessageQueue(queue.key, queue.thread.id, reason);
       entry.message = entry.message.copyWith(sending: false, error: reason);
       if (optimisticAdded && _queueProfileMatches(queue)) {

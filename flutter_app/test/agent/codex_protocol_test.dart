@@ -866,6 +866,7 @@ void main() {
                 <String, Object?>{
                   'id': 'compact-interrupted',
                   'type': 'contextCompaction',
+                  'status': 'interrupted',
                 },
               ],
             },
@@ -897,6 +898,33 @@ void main() {
         ]);
       },
     );
+
+    for (final turnStatus in [
+      'inProgress',
+      'completed',
+      'failed',
+      'interrupted',
+    ]) {
+      test(
+        'statusless compaction history does not inherit $turnStatus turn',
+        () {
+          final timeline = CodexPayloadParser.parseTimeline({
+            'turns': [
+              {
+                'id': 'turn-1',
+                'status': turnStatus,
+                'items': [
+                  // The official ContextCompactionThreadItem has no status.
+                  {'id': 'compact-1', 'type': 'contextCompaction'},
+                ],
+              },
+            ],
+          });
+          expect(timeline.single.status, 'completed');
+          expect(timeline.single.text, '历史：上下文已压缩');
+        },
+      );
+    }
 
     test('normalizes web search items without exposing result metadata', () {
       final formal = CodexPayloadParser.parseItem(<String, Object?>{

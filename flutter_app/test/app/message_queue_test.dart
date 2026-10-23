@@ -14,6 +14,87 @@ LocalAttachmentUpload image(String name) => LocalAttachmentUpload(
 void main() {
   for (final kind in AgentKind.values) {
     test(
+      '${kind.name} immediate send stays out of queue until upload and RPC finish',
+      () async {
+        final h = QueueHarness(kind: kind);
+        addTearDown(h.close);
+        await h.open(running: false);
+        final upload = h.host.uploadGate = Completer<void>();
+        final reply = h.agent.replyGate = Completer<void>();
+        addTearDown(() {
+          if (!upload.isCompleted) upload.complete();
+          if (!reply.isCompleted) reply.complete();
+        });
+        final visibleQueues = <List<QueuedMessage>>[];
+        final removeListener = h.controller.addListener(
+          (state) => visibleQueues.add(state.queuedMessages),
+          fireImmediately: false,
+        );
+        addTearDown(removeListener);
+        await h.controller.uploadAttachments([image('direct.png')]);
+        final send = h.send('send now');
+        await queueWait(() => h.host.uploads.isNotEmpty);
+        expect(h.controller.state.messageSending, isTrue);
+        expect(h.controller.state.queuedMessages, isEmpty);
+        // A second activation cannot submit the next draft during this send.
+        h.controller.setComposerDraft('next draft');
+        await h.controller.sendMessage();
+        expect(h.controller.state.composerDraft, 'next draft');
+        expect(h.controller.state.queuedMessages, isEmpty);
+        upload.complete();
+        await queueWait(() => h.agent.starts.isNotEmpty);
+        expect(h.controller.state.running, isTrue);
+        // turn/started may clear generic submitting before the RPC is accepted.
+        expect(h.controller.state.messageSending, isTrue);
+        expect(h.controller.state.queuedMessages, isEmpty);
+        reply.complete();
+        await send;
+        expect(h.controller.state.messageSending, isFalse);
+        expect(visibleQueues.every((queue) => queue.isEmpty), isTrue);
+        expect(h.host.uploads, ['direct.png']);
+        expect(h.agent.starts, hasLength(1));
+        await h.controller.sendMessage();
+        expect(h.controller.state.queuedMessages.single.text, 'next draft');
+        expect(h.agent.starts, hasLength(1));
+      },
+    );
+
+    for (final failUpload in [false, true]) {
+      test(
+        '${kind.name} failed immediate ${failUpload ? 'upload' : 'RPC'} restores composer and clears busy',
+        () async {
+          final h = QueueHarness(kind: kind);
+          addTearDown(h.close);
+          await h.open(running: false);
+          await h.controller.uploadAttachments([image('retry-direct.png')]);
+          if (failUpload) {
+            h.host.failName = 'retry-direct.png';
+          } else {
+            h.agent.failNext = true;
+          }
+          await h.send('preserve draft   ');
+          expect(h.controller.state.messageSending, isFalse);
+          expect(h.controller.state.queuedMessages, isEmpty);
+          expect(h.controller.state.composerDraft, 'preserve draft   ');
+          expect(
+            h.controller.state.attachments.single.name,
+            'retry-direct.png',
+          );
+          h.host.failName = null;
+          await h.controller.sendMessage();
+          expect(h.controller.state.messageSending, isFalse);
+          expect(h.agent.starts.last.text, 'preserve draft');
+          expect(
+            h.host.uploads,
+            failUpload
+                ? ['retry-direct.png', 'retry-direct.png']
+                : ['retry-direct.png'],
+          );
+        },
+      );
+    }
+
+    test(
       '${kind.name} queues multiple messages and uploads only at FIFO dispatch',
       () async {
         final h = QueueHarness(kind: kind);
@@ -147,9 +228,16 @@ void main() {
       await queueWait(() => h.agent.starts.length == 1);
       await h.send('next');
       expect(h.agent.starts, hasLength(1));
+      expect(h.controller.state.messageSending, isTrue);
+      expect(h.controller.state.queuedMessages, isEmpty);
+      expect(h.controller.state.composerDraft, 'next');
       h.agent.replyGate = null;
       gate.complete();
       await send;
+      expect(h.controller.state.messageSending, isFalse);
+      expect(h.controller.state.running, isFalse);
+      expect(h.controller.state.activeTurnId, isNull);
+      await h.controller.sendMessage();
       await queueWait(
         () =>
             h.agent.starts.length == 2 &&
@@ -161,7 +249,7 @@ void main() {
   );
 
   test(
-    'upload in flight allows another queued image and keeps newer composer',
+    'upload in flight preserves the next draft and attachments without submitting them',
     () async {
       final h = QueueHarness();
       addTearDown(h.close);
@@ -173,16 +261,58 @@ void main() {
       await h.controller.uploadAttachments([image('next.png')]);
       await h.send('next');
       h.controller.setComposerDraft('still typing');
-      expect(h.controller.state.queuedMessages, hasLength(2));
+      expect(h.controller.state.queuedMessages, isEmpty);
+      expect(h.controller.state.messageSending, isTrue);
       expect(h.host.uploads, ['first.png']);
       h.host.uploadGate = null;
       gate.complete();
       await send;
       expect(h.controller.state.composerDraft, 'still typing');
+      expect(h.controller.state.queuedMessages, isEmpty);
+      expect(h.controller.state.attachments.single.name, 'next.png');
+      expect(h.controller.state.messageSending, isFalse);
+      h.controller.setComposerDraft('next');
+      await h.controller.sendMessage();
       expect(h.controller.state.queuedMessages.single.text, 'next');
       h.agent.complete('turn-1');
       await queueWait(() => h.agent.starts.length == 2);
       expect(h.host.uploads, ['first.png', 'next.png']);
+    },
+  );
+
+  test(
+    'busy immediate send is isolated when switching and reopening threads',
+    () async {
+      final h = QueueHarness();
+      addTearDown(h.close);
+      await h.open(running: false);
+      final gate = h.host.uploadGate = Completer<void>();
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      await h.controller.uploadAttachments([image('held-direct.png')]);
+      final send = h.send('direct');
+      await queueWait(() => h.controller.state.messageSending);
+      h.controller.openThread(h.agent.threads['other-thread']!);
+      await queueWait(
+        () =>
+            h.controller.state.activeThread?.id == 'other-thread' &&
+            !h.controller.state.loading,
+      );
+      expect(h.controller.state.messageSending, isFalse);
+      expect(h.controller.state.queuedMessages, isEmpty);
+      h.controller.openThread(h.agent.threads['queue-thread']!);
+      await queueWait(
+        () =>
+            h.controller.state.activeThread?.id == 'queue-thread' &&
+            !h.controller.state.loading,
+      );
+      expect(h.controller.state.messageSending, isTrue);
+      expect(h.controller.state.queuedMessages, isEmpty);
+      gate.complete();
+      await send;
+      expect(h.controller.state.messageSending, isFalse);
+      expect(h.agent.starts.single.text, 'direct');
     },
   );
 

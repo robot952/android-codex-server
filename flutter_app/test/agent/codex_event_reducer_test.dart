@@ -114,6 +114,38 @@ void main() {
     expect(state.activeThread?.status, 'idle');
   });
 
+  test(
+    'statusless live compaction follows item events, not the running turn',
+    () {
+      var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
+      CodexRpcNotification compaction(String method, String id) =>
+          _notification(method, {
+            'threadId': 'thread-1',
+            'turnId': 'turn-1',
+            'item': {'id': id, 'type': 'contextCompaction'},
+          });
+      state = reduceCodexNotification(
+        state,
+        compaction('item/started', 'compact-1'),
+      );
+      expect(state.timeline.single.text, '正在压缩上下文');
+      expect(state.timeline.single.status, 'inProgress');
+      state = reduceCodexNotification(
+        state,
+        compaction('item/completed', 'compact-1'),
+      );
+      expect(state.timeline.single.text, '上下文已压缩');
+      expect(state.timeline.single.status, 'completed');
+      expect(state.running, isTrue);
+      state = reduceCodexNotification(
+        state,
+        compaction('item/started', 'compact-2'),
+      );
+      expect(state.timeline.map((e) => e.status), ['completed', 'inProgress']);
+      expect(state.activeTurnId, 'turn-1');
+    },
+  );
+
   test('preserves a failed compaction instead of reporting completion', () {
     var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
     state = reduceCodexNotification(

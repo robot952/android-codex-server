@@ -872,6 +872,7 @@ abstract class AppUiState with _$AppUiState {
     @Default(<ApprovalPrompt>[]) List<ApprovalPrompt> approvalQueue,
     @Default(<PendingAttachment>[]) List<PendingAttachment> attachments,
     @Default(<QueuedMessage>[]) List<QueuedMessage> queuedMessages,
+    @Default(false) bool messageSending,
     @Default(false) bool attachmentUploading,
     @Default(0) int composerClearNonce,
     @Default('') String composerDraft,

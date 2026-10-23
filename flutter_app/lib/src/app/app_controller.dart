@@ -218,10 +218,16 @@ class AppController extends StateNotifier<AppUiState> {
             threadId,
           )];
     super.state = value.copyWith(
+      messageSending:
+          queue != null &&
+          value.screen == AppScreen.work &&
+          queue.items.any((item) => item.message.sending),
       queuedMessages: queue == null || value.screen == AppScreen.agentWork
           ? const <QueuedMessage>[]
           : List<QueuedMessage>.unmodifiable(
-              queue.items.map((item) => item.message),
+              queue.items
+                  .where((item) => item.visibleInQueue)
+                  .map((item) => item.message),
             ),
     );
   }

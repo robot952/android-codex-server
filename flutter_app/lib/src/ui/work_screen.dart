@@ -5046,6 +5046,34 @@ class _CodeBlock extends StatelessWidget {
   );
 }
 
+class _SendingMessageIcon extends StatefulWidget {
+  const _SendingMessageIcon();
+
+  @override
+  State<_SendingMessageIcon> createState() => _SendingMessageIconState();
+}
+
+class _SendingMessageIconState extends State<_SendingMessageIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _rotation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _rotation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RotationTransition(
+    key: const Key('composer-sending-indicator'),
+    turns: _rotation,
+    child: const Icon(Icons.sync_rounded, size: 20),
+  );
+}
+
 class _QueuedMessagesPanel extends StatelessWidget {
   const _QueuedMessagesPanel({
     required this.messages,
@@ -5459,14 +5487,16 @@ class _Composer extends StatelessWidget {
     final hasContent =
         controller.text.trim().isNotEmpty || state.attachments.isNotEmpty;
     final showStop =
+        !state.messageSending &&
         !hasContent &&
         (state.running || state.attachmentUploading || state.submitting);
     final actionEnabled =
         !state.loading &&
+        !state.messageSending &&
         (showStop
             ? state.activeAgentCapabilities.interruptTurn
             : hasContent && !attachmentBusy);
-    final actionActive = actionEnabled;
+    final actionActive = actionEnabled || state.messageSending;
     final permissionColor = state.approvalMode == ApprovalMode.fullAccess
         ? _workAmber
         : codexMuted;
@@ -5877,7 +5907,11 @@ class _Composer extends StatelessWidget {
                             dimension: 36,
                             child: IconButton(
                               key: const Key('composer-send-button'),
-                              tooltip: showStop ? '停止' : '发送',
+                              tooltip: state.messageSending
+                                  ? '发送中'
+                                  : showStop
+                                  ? '停止'
+                                  : '发送',
                               onPressed: actionEnabled
                                   ? showStop
                                         ? () => unawaited(onStop())
@@ -5891,19 +5925,21 @@ class _Composer extends StatelessWidget {
                                     ? codexText
                                     : const Color(0xFF555555),
                                 foregroundColor: const Color(0xFF171717),
-                                disabledForegroundColor: const Color(
-                                  0xFFB0B0B0,
-                                ),
+                                disabledForegroundColor: state.messageSending
+                                    ? const Color(0xFF171717)
+                                    : const Color(0xFFB0B0B0),
                                 shape: const CircleBorder(),
                                 minimumSize: const Size.square(36),
                                 padding: EdgeInsets.zero,
                               ),
-                              icon: Icon(
-                                showStop
-                                    ? Icons.stop_rounded
-                                    : Icons.arrow_upward_rounded,
-                                size: showStop ? 18 : 20,
-                              ),
+                              icon: state.messageSending
+                                  ? const _SendingMessageIcon()
+                                  : Icon(
+                                      showStop
+                                          ? Icons.stop_rounded
+                                          : Icons.arrow_upward_rounded,
+                                      size: showStop ? 18 : 20,
+                                    ),
                             ),
                           ),
                         ],
