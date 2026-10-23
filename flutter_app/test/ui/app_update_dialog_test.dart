@@ -222,6 +222,168 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final (width, height, textScale) in [
+    (390.0, 844.0, 1.0),
+    (360.0, 800.0, 1.0),
+    (320.0, 640.0, 1.0),
+    (360.0, 800.0, 2.0),
+    (320.0, 640.0, 2.0),
+  ]) {
+    testWidgets('update actions use two compact rows at $width/$textScale', (
+      tester,
+    ) async {
+      tester.view.physicalSize = Size(width, height);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await _pumpDialog(
+        tester,
+        _controller(_ImmediateUpdatePlatform()),
+        textScale: textScale,
+      );
+
+      final ignore = _actionRect(tester, '忽略此版本');
+      final later = _actionRect(tester, '下次提醒');
+      final manual = _actionRect(tester, '手动下载');
+      final primary = _actionRect(tester, '下载更新');
+      expect(ignore.center.dy, closeTo(later.center.dy, 0.5));
+      expect(manual.center.dy, closeTo(primary.center.dy, 0.5));
+      expect(ignore.right, lessThan(later.left));
+      expect(manual.right, lessThan(primary.left));
+      expect(ignore.bottom, lessThanOrEqualTo(manual.top));
+      expect(manual.left, closeTo(ignore.left, 0.5));
+      expect(primary.right, closeTo(later.right, 0.5));
+      expect(manual.width, closeTo(primary.width, 0.5));
+      if (textScale == 1) {
+        expect(primary.bottom - ignore.top, lessThanOrEqualTo(120));
+      }
+      for (final label in ['忽略此版本', '下次提醒', '手动下载', '下载更新']) {
+        expect(find.text(label).hitTestable(), findsOneWidget);
+        expect(_actionRect(tester, label).height, greaterThanOrEqualTo(48));
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('long release notes scroll without moving the compact actions', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await _pumpDialog(
+      tester,
+      _controller(_ImmediateUpdatePlatform()),
+      textScale: 2,
+      update: AppUpdateInfo(
+        versionName: '1.8.1',
+        apkFileName: 'Agent-1.8.1.apk',
+        changes: List.generate(
+          30,
+          (index) => AppUpdateReleaseNote(
+            versionName: '1.8.1',
+            gitCommit: 'abcdef1',
+            message: '更新记录 $index：优化界面布局，保留下载和安装操作。',
+          ),
+        ),
+      ),
+    );
+
+    final footer = tester.getRect(
+      find.byKey(const ValueKey('app-update-actions')),
+    );
+    final content = find.byKey(const ValueKey('app-update-content'));
+    final scrollable = tester.state<ScrollableState>(
+      find.descendant(of: content, matching: find.byType(Scrollable)),
+    );
+    expect(scrollable.position.maxScrollExtent, greaterThan(0));
+    await tester.drag(content, const Offset(0, -300));
+    await tester.pumpAndSettle();
+
+    expect(scrollable.position.pixels, greaterThan(0));
+    expect(
+      tester.getRect(find.byKey(const ValueKey('app-update-actions'))),
+      footer,
+    );
+    for (final label in ['忽略此版本', '下次提醒', '手动下载', '下载更新']) {
+      expect(find.text(label).hitTestable(), findsOneWidget);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final (installStatus, installLabel) in [
+    (AppUpdateDownloadStatus.installing, '重新打开安装'),
+    (AppUpdateDownloadStatus.awaitingInstallPermission, '继续安装'),
+  ]) {
+    testWidgets(
+      'compact actions follow download and $installStatus at 2x text',
+      (tester) async {
+        tester.view.physicalSize = const Size(320, 640);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final pendingSnapshot = Completer<AppUpdateDownloadSnapshot?>();
+        final platform = _ImmediateUpdatePlatform()
+          ..pendingSnapshot = pendingSnapshot
+          ..installStatus = installStatus;
+        final controller = _controller(platform);
+        await _pumpDialog(tester, controller, textScale: 2);
+
+        await tester.tap(find.text('下载更新'));
+        await tester.pump();
+        expect(find.text('忽略此版本'), findsNothing);
+        expect(find.text('后台继续').hitTestable(), findsOneWidget);
+        expect(
+          tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+          isNull,
+        );
+        expect(
+          _actionRect(tester, '手动下载').center.dy,
+          closeTo(_actionRect(tester, '下载中').center.dy, 0.5),
+        );
+        expect(tester.takeException(), isNull);
+
+        pendingSnapshot.complete(_downloadedSnapshot);
+        await tester.pumpAndSettle();
+        expect(find.text('安装更新').hitTestable(), findsOneWidget);
+        await tester.tap(find.text('安装更新'));
+        await tester.pumpAndSettle();
+        expect(find.text(installLabel).hitTestable(), findsOneWidget);
+        expect(
+          _actionRect(tester, '手动下载').center.dy,
+          closeTo(_actionRect(tester, installLabel).center.dy, 0.5),
+        );
+        expect(
+          _actionRect(tester, '手动下载').height,
+          _actionRect(tester, installLabel).height,
+        );
+        expect(platform.installRequests, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('both reminder actions retain their independent callbacks', (
+    tester,
+  ) async {
+    var ignored = 0;
+    var later = 0;
+    final platform = _ImmediateUpdatePlatform();
+    await _pumpDialog(
+      tester,
+      _controller(platform),
+      onIgnore: () => ignored += 1,
+      onLater: () => later += 1,
+    );
+
+    await tester.tap(find.text('忽略此版本'));
+    await tester.tap(find.text('下次提醒'));
+    expect(ignored, 1);
+    expect(later, 1);
+    expect(platform.downloadRequests, 0);
+  });
+
   testWidgets('download actions fit a narrow screen with large text', (
     tester,
   ) async {
@@ -240,6 +402,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 }
+
+Rect _actionRect(WidgetTester tester, String label) => tester.getRect(
+  find
+      .ancestor(
+        of: find.text(label),
+        matching: find.bySubtype<ButtonStyleButton>(),
+      )
+      .first,
+);
 
 const _update = AppUpdateInfo(
   versionName: '1.8.1',
@@ -263,11 +434,25 @@ AppUpdateController _controller(AppUpdatePlatform platform) {
   );
 }
 
+// Shared with the Android layout regression; no real download or installer runs.
+Future<void> pumpAppUpdateDialogFixture(
+  WidgetTester tester, {
+  required AppUpdateInfo update,
+  double textScale = 1,
+}) => _pumpDialog(
+  tester,
+  _controller(_ImmediateUpdatePlatform()),
+  update: update,
+  textScale: textScale,
+);
+
 Future<void> _pumpDialog(
   WidgetTester tester,
   AppUpdateController controller, {
   AppUpdateInfo update = _update,
   double textScale = 1,
+  VoidCallback? onLater,
+  VoidCallback? onIgnore,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -283,8 +468,8 @@ Future<void> _pumpDialog(
         home: Scaffold(
           body: AppUpdateDialog(
             update: update,
-            onLater: () {},
-            onIgnore: () {},
+            onLater: onLater ?? () {},
+            onIgnore: onIgnore ?? () {},
           ),
         ),
       ),
@@ -296,6 +481,7 @@ class _ImmediateUpdatePlatform implements AppUpdatePlatform {
   int downloadRequests = 0;
   int installRequests = 0;
   PlatformException? downloadError;
+  AppUpdateDownloadStatus installStatus = AppUpdateDownloadStatus.installing;
   Completer<AppUpdateDownloadSnapshot?>? pendingSnapshot;
   final removedDownloads = <String>[];
 
@@ -312,7 +498,7 @@ class _ImmediateUpdatePlatform implements AppUpdatePlatform {
   @override
   Future<AppUpdateInstallOutcome> installDownload(String downloadId) async {
     installRequests += 1;
-    return const AppUpdateInstallOutcome(AppUpdateDownloadStatus.installing);
+    return AppUpdateInstallOutcome(installStatus);
   }
 
   @override

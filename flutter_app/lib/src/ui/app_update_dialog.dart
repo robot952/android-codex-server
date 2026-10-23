@@ -30,7 +30,20 @@ class AppUpdateDialog extends ConsumerWidget {
       download.downloadedBytes,
       download.totalBytes,
     );
+    final canIgnore =
+        download.status == AppUpdateDownloadStatus.idle ||
+        download.status == AppUpdateDownloadStatus.failed;
+    final dismissStyle = TextButton.styleFrom(
+      foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
+      minimumSize: const Size(0, 48),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+    );
     return AlertDialog(
+      constraints: const BoxConstraints(maxWidth: 440),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+      contentPadding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+      actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
       title: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -46,8 +59,9 @@ class AppUpdateDialog extends ConsumerWidget {
         ],
       ),
       content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420, maxHeight: 340),
+        constraints: const BoxConstraints(maxWidth: 400, maxHeight: 340),
         child: SingleChildScrollView(
+          key: const ValueKey('app-update-content'),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -79,27 +93,57 @@ class AppUpdateDialog extends ConsumerWidget {
         ),
       ),
       actions: [
-        TextButton.icon(
-          onPressed: () => unawaited(_openManualDownload(context)),
-          icon: const Icon(Icons.open_in_browser),
-          label: const Text('手动下载'),
-        ),
-        if (download.status == AppUpdateDownloadStatus.idle ||
-            download.status == AppUpdateDownloadStatus.failed)
-          TextButton(onPressed: onIgnore, child: const Text('忽略此版本')),
-        TextButton(
-          onPressed: onLater,
-          child: Text(
-            download.status == AppUpdateDownloadStatus.downloading ||
-                    download.status == AppUpdateDownloadStatus.downloaded ||
-                    download.status ==
-                        AppUpdateDownloadStatus.awaitingInstallPermission ||
-                    download.status == AppUpdateDownloadStatus.installing
-                ? '后台继续'
-                : '下次提醒',
+        // A single footer keeps AlertDialog's OverflowBar from turning all four
+        // actions into a column when their combined width exceeds the dialog.
+        SizedBox(
+          key: const ValueKey('app-update-actions'),
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _UpdateActionRow(
+                leading: canIgnore
+                    ? TextButton(
+                        style: dismissStyle,
+                        onPressed: onIgnore,
+                        child: const Text('忽略此版本', textAlign: TextAlign.center),
+                      )
+                    : const SizedBox.shrink(),
+                trailing: TextButton(
+                  style: dismissStyle,
+                  onPressed: onLater,
+                  child: Text(
+                    canIgnore ? '下次提醒' : '后台继续',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _UpdateActionRow(
+                leading: OutlinedButton(
+                  onPressed: () => unawaited(_openManualDownload(context)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.onSurface,
+                    minimumSize: const Size(0, 48),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text('手动下载', textAlign: TextAlign.center),
+                ),
+                trailing: _PrimaryUpdateAction(
+                  update: update,
+                  download: download,
+                ),
+              ),
+            ],
           ),
         ),
-        _PrimaryUpdateAction(update: update, download: download),
       ],
     );
   }
@@ -119,6 +163,25 @@ class AppUpdateDialog extends ConsumerWidget {
       context,
     ).showSnackBar(const SnackBar(content: Text('无法打开浏览器，请稍后重试')));
   }
+}
+
+class _UpdateActionRow extends StatelessWidget {
+  const _UpdateActionRow({required this.leading, required this.trailing});
+
+  final Widget leading;
+  final Widget trailing;
+
+  @override
+  Widget build(BuildContext context) => IntrinsicHeight(
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(child: leading),
+        const SizedBox(width: 8),
+        Expanded(child: trailing),
+      ],
+    ),
+  );
 }
 
 class _DownloadStatus extends StatelessWidget {
@@ -199,44 +262,45 @@ class _PrimaryUpdateAction extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.read(appUpdateProvider.notifier);
-    switch (download.status) {
-      case AppUpdateDownloadStatus.downloading:
-        return FilledButton.icon(
-          onPressed: null,
-          icon: const SizedBox.square(
-            dimension: 17,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          label: const Text('下载中'),
-        );
-      case AppUpdateDownloadStatus.downloaded:
-        return FilledButton(
-          onPressed: () => unawaited(controller.installDownloadedUpdate()),
-          child: const Text('安装更新'),
-        );
-      case AppUpdateDownloadStatus.awaitingInstallPermission:
-        return FilledButton(
-          onPressed: () => unawaited(controller.installDownloadedUpdate()),
-          child: const Text('继续安装'),
-        );
-      case AppUpdateDownloadStatus.installing:
-        return FilledButton(
-          onPressed: () => unawaited(controller.installDownloadedUpdate()),
-          child: const Text('重新打开安装'),
-        );
-      case AppUpdateDownloadStatus.failed:
-        return FilledButton.icon(
-          onPressed: () => unawaited(controller.startDownload(update)),
-          icon: const Icon(Icons.download, size: 18),
-          label: const Text('重新下载'),
-        );
-      case AppUpdateDownloadStatus.idle:
-        return FilledButton.icon(
-          onPressed: () => unawaited(controller.startDownload(update)),
-          icon: const Icon(Icons.download, size: 18),
-          label: const Text('下载更新'),
-        );
-    }
+    final label = switch (download.status) {
+      AppUpdateDownloadStatus.downloading => '下载中',
+      AppUpdateDownloadStatus.downloaded => '安装更新',
+      AppUpdateDownloadStatus.awaitingInstallPermission => '继续安装',
+      AppUpdateDownloadStatus.installing => '重新打开安装',
+      AppUpdateDownloadStatus.failed => '重新下载',
+      AppUpdateDownloadStatus.idle => '下载更新',
+    };
+    final VoidCallback? onPressed = switch (download.status) {
+      AppUpdateDownloadStatus.downloading => null,
+      AppUpdateDownloadStatus.downloaded ||
+      AppUpdateDownloadStatus.awaitingInstallPermission ||
+      AppUpdateDownloadStatus.installing => () => unawaited(
+        controller.installDownloadedUpdate(),
+      ),
+      AppUpdateDownloadStatus.failed || AppUpdateDownloadStatus.idle =>
+        () => unawaited(controller.startDownload(update)),
+    };
+    return FilledButton(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(0, 48),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: download.status == AppUpdateDownloadStatus.downloading
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox.square(
+                  dimension: 17,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 6),
+                Flexible(child: Text(label, textAlign: TextAlign.center)),
+              ],
+            )
+          : Text(label, textAlign: TextAlign.center),
+    );
   }
 }
 

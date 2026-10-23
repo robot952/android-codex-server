@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.183+315，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.184+316，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1038,6 +1038,12 @@ Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR
 应用内下载中或失败后仍可使用；该操作不创建或取消 DownloadManager 任务，也不关闭弹窗或忽略版本。
 浏览器打开失败时显示可重试的中文提示，弹窗已关闭后的迟到结果不再操作页面。
 
+更新弹窗的操作区显式固定为紧凑两行双列：第一行“忽略此版本 / 下次提醒”，第二行“手动下载 /
+下载更新”。提醒操作使用弱化文字，手动下载使用描边，主下载/安装操作保持高亮；下载中隐藏忽略入口，
+提醒改为“后台继续”，两个下载操作仍并排。不能把四个按钮直接交给 `AlertDialog` 的默认 `OverflowBar`，
+否则普通手机宽度下会全部退为竖排。每个按钮点击区域至少 48 dp；窄屏和大字体允许文字自然换行，
+不缩小系统字体或截断操作名称。更新日志独立滚动，底部操作固定可见。
+
 下载交给 Android `DownloadManager`，目标文件名附加时间戳避免同名覆盖；Flutter 以约 1 秒节流轮询下载
 字节数并展示下载中、完成、等待未知来源权限、等待系统安装和失败状态。“后台继续”只关闭弹窗，不取消
 系统下载。下载版本、资源名和 `downloadId` 以受校验的 JSON 持久化；启动时会重绑仍存在的任务，已完成的
@@ -1406,7 +1412,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/workspace_picker_dialog_test.dart | 父/子目录、确认、加载和关闭、错误显示，以及窄屏/放大字体边界 |
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
-| test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待、后台继续，以及浏览器手动下载的资源地址、失败重试、任务保留和窄屏大字体 |
+| test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待、后台继续、浏览器地址/失败重试/任务保留，以及 320/360/390 dp 两行双列几何、大字体、长日志滚动和提醒回调 |
 | test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
 | test/ui/claude_code_workflow_test.dart | 生产 Claude adapter/controller/WorkScreen 配合受控 JSONL 对端，覆盖 capability 菜单、发送/流式回复、批准/拒绝、停止、重开和跨 Agent 历史隔离 |
 | test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
@@ -1433,6 +1439,10 @@ Claude Code 的 `scripts/test-claude-code-bridge.cjs` 使用假 CLI 验证协议
 `integration_test/message_queue_workflow_test.dart` 使用真实 AppController/WorkScreen 与内存 Agent/Host 对端，验证
 队列及编辑弹窗的 Android 真实软键盘避让；不访问真实 SSH 或模型。附件选择由受控 picker 返回值验证，
 不能代替厂商相册/相机/文件选择器的端到端验收。
+
+`integration_test/app_update_dialog_layout_test.dart` 在 Android 使用生产更新弹窗与内存下载/安装对端，
+验证真实字体下的两行双列、长日志独立滚动、2 倍字体和下载/安装入口；不检查线上 Release，
+不下载真实 APK、不调用系统安装器。设备测试结束后仍须覆盖安装正常 Release。
 
 已有提问弹窗、队列和 Claude 工作流的受控 Android integration 入口，尚无 golden test 或覆盖全部 Work/会话/文件/终端的 UI 测试；真实远端
 app-server、Android 前台 Service 和系统通知展示仍没有自动化覆盖（通知协议/去重逻辑已有纯 Dart 测试）。
@@ -2831,6 +2841,27 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   由现有标签流水线执行测试、构建与正式 Release 发布，不重复本地测试、构建或模拟器门禁。
   云端是否成功及产物校验以对应流水线和 Release 元数据为准，不能由本地旧包推断。
 - 日常 `main` 推送继续仅同步代码；后续云端出包仍须用户明确要求，不移动已有版本标签。
+
+### 17.85 更新弹窗紧凑双列布局（2026-10-23）
+
+- 应用版本：`1.8.184+316`。修复四个按钮总宽度超出默认操作栏后被全部堆成一列的问题，显式划分
+  提醒行与下载行，保留四个操作及原下载/安装状态机，不修改浏览器地址、忽略版本或后台继续语义。
+- 更新日志独立滚动，操作区保持可见；按钮等宽、同排等高且点击区域至少 48 dp。覆盖 320/360/390 dp、
+  2 倍字体、长日志，以及下载中、已下载、未知来源授权等待、安装重开和失败重试。
+- 定向更新状态机与弹窗回归 `34` 项通过；Android 14 `1220x2712` 受控设备测试 `2` 项通过，
+  已核对普通字体和 2 倍字体截图。测试使用内存下载/安装对端，不替代真机下载与系统安装器验收。
+- 唯一一次本地 `publish --reuse` 主门禁通过：analyze 无问题、完整 Flutter 测试、Claude bridge `47` 场景
+  及官方 CLI 的隔离本地模拟 API 联调、Debug/Release 编译、原生运行库校验均通过；随后保留数据覆盖安装
+  正常 Release，竖屏启动与截图检查通过，模拟器没有遗留测试入口。
+- 主门禁 `6m11.331s`：Claude `28.511s`、Android 全门禁 `4m37.469s`、Release 安装检查 `23.848s`、
+  索引同步 `0.748s`、本地发布及内网回验 `25.318s`；服务器/OpenCode 门禁及发布前 Release 校验命中缓存。
+  Android 内部 Release 编译 `2m32.187s`，属于嵌套计时，不与 Android 总阶段重复相加。
+  旧布局的几何断言先按预期失败，修复后通过；首次截图错过设备测试停留窗口，重跑后完成截图核对。
+  任务总耗时含文档重读和交付收尾，以 `.workflow-cache/task-timings/` 的任务记录为准，不当作编译耗时。
+- `dist/Agent-1.8.184.apk` 大小 `31,950,302` 字节，构建包、两个本地发布别名和内网完整下载 SHA-256
+  均为 `2bb38828c71b28a865662599fd1bf4d47b33bea68a571093e26a4bdede3ebd42`；包名为 `top.asdb.agent`，
+  稳定证书 SHA-256 仍为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+  外网 FRP 地址按用户要求仅提供、不回验；只做本地出包，推送两端 `main`，不创建标签或触发云端发布。
 
 ## 18. 文档维护规则
 
