@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.185+317，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.186+318，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -2940,6 +2940,27 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `2026-10-23T15:17:37Z` 开始，累计时长含跨轮等待、文档恢复和收尾，以任务 ledger 为准，不当作编译耗时。
 - 本次不升级 APK 版本、不创建版本标签或云端出包；本地门禁构建不代表固定下载地址已更新。
   真实模型质量、OAuth 登录及 Windows 实机仍按上述能力边界验收。
+
+### 17.88 智能标题本地 APK 交付（2026-10-24）
+
+- 将第 17.87 节的智能标题功能纳入 `1.8.186+318` 安装包；同时递增可见版本与 versionCode，
+  使用原稳定证书，支持保留用户数据覆盖安装。
+- 本轮仅本地构建与发布，固定内外网下载地址随本地 APK 一起更新；内网回验包身份和完整哈希，
+  外网 FRP 按用户要求只发布、不回验。不创建版本标签，不触发云端出包；代码同步两端 main。
+- 本地 `publish --reuse` 一次通过，analyze 无问题、Flutter 全量 `922` 项、Claude bridge `48` 场景及
+  官方 CLI 的隔离本地模拟 API 联调、Debug/Release 编译、原生运行库校验均通过。Android 14
+  `1220x2712` 模拟器保留数据覆盖安装正常 Release，启动和截图检查通过，页面显示 `v1.8.186`。
+  不调用真实付费模型，不将启动 smoke 记作真实 Provider 标题质量验收。
+- 主门禁 `5m39.071s`：服务器/OpenCode 门禁复用缓存，Claude `28.747s`、暂停模拟器 `5.091s`、
+  Android 全门禁 `4m15.594s`、释放 Gradle `0.612s`、Release 启动检查 `22.034s`、索引同步
+  `0.491s`、本地发布及内网回验 `25.011s`、调度 `1.294s`。Android 内 analyze `7.739s`、
+  测试 `1m31.310s`、Debug `36.233s`、Release `1m57.775s`，嵌套计时不重复相加；无失败返工。
+  从首次版本修改到交付收尾的总耗时记录在 `.workflow-cache/task-timings/` 的
+  `ai-title-apk-20261024` 任务，不与前一轮功能开发总耗时混算。
+- `dist/Agent-1.8.186.apk` 大小 `31,993,462` 字节，包名 `top.asdb.agent`、版本 `1.8.186+318`；
+  构建包、两个本机发布别名和内网完整下载 SHA-256 均为
+  `3f5387840772d76f6b44131310e462dba028d46f9f1e5bd5694bc1e6ab6e996e`。
+  稳定签名证书 SHA-256 仍为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
 
 ## 18. 文档维护规则
 
