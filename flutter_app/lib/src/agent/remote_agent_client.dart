@@ -252,6 +252,15 @@ abstract interface class RemoteAgentThreadMutationClient {
   Future<void> clearThreadGoal(String threadId);
 }
 
+/// Independent, tool-free title request; never starts or steers a conversation.
+abstract interface class RemoteAgentTitleClient {
+  Future<String> generateThreadTitle(
+    ServerProfile profile, {
+    required String text,
+    String? model,
+  });
+}
+
 /// Optional per-user configuration capability. Implementations must edit the
 /// Agent's global user files, never a repository-local configuration.
 abstract interface class RemoteAgentGlobalSettingsClient {

@@ -128,7 +128,7 @@ void main() {
       expect(source, contains('module.exports = {'));
       expect(
         OpenCodeBootstrap.bridgeSha256(source),
-        '56e7ff47749278e1c60ac46294bae0ebbdd835b7607f2bc8930ba906777763d5',
+        '353b2059cc3a0c5d1ba8342b26d279c480122500e4dd3670ad0cab9f64068947',
       );
     });
   });

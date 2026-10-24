@@ -108,6 +108,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/app/codex_remote_app.dart | MaterialApp、全局错误 Snackbar、页面动画和 Back 行为 | 当前运行 |
 | flutter_app/lib/src/app/app_controller.dart | Riverpod StateNotifier；Profile、SSH、Agent lane、会话恢复/缓存、模型目录、Work 状态和持久化编排 | 当前运行 |
 | flutter_app/lib/src/app/app_controller_message_queue.dart | AppController 同库队列编排；按服务器/Agent/线程排队、明确终态调度、编辑/删除/引导、发送失败保护 | 当前运行；队列和附件正文仅在内存中 |
+| flutter_app/lib/src/app/app_controller_thread_title.dart、flutter_app/lib/src/agent/thread_title.dart | 新会话首次发送后的异步智能标题、请求/响应校验和手动改名竞态保护 | 当前实现；失败保持原名，不插入聊天回合 |
 | flutter_app/lib/src/domain/models.dart | Freezed/JSON 领域模型、Agent/线程/时间线/审批/上下文，以及安装/工作区/全局设置状态 | 当前与预留并存 |
 | flutter_app/lib/src/domain/model_catalog.dart | 自定义模型 ID/名称/token 上限归一化、远端/自定义目录合并、隐藏、编辑恢复与 API 模型选项映射 | 当前运行；供控制器和展示层共用 |
 | flutter_app/lib/src/persistence/profile_store.dart | 加密 Profile 存储、边界归一化、旧原生数据迁移 | 当前运行 |
@@ -802,6 +803,26 @@ profileId + AgentKind + threadId
 `AppController._pendingApprovalsByThread`，Kotlin 使用对应的 `pendingApprovalsByThread`。回答时同时校验
 requestId 和 threadId，切换会话、迟到事件、断线和归档只影响对应分桶。
 
+### 9.4.1 新会话智能标题
+
+仅当前 App 进程新建且可重命名的主会话，在第一条普通消息成功被服务器接受后尝试一次；采用该次
+发送实际选择的模型及其 Provider，异步生成并远程重命名，同时更新 lane 列表与内存缓存。
+不延长发送按钮的旋转阶段，不增加用户/助手回合，不发送附件、历史、工具或系统凭据到提示正文。
+只摘要首条正文的前 6000 个 Unicode 字符，标题限单行 80 字符；纯附件首条、旧会话、引导和后续消息不补生成。
+失败、超时、无有效文字、拒答或截断响应均保留原截断标题，不自动重试，也不显示额外聊天错误。
+
+Codex 从当前服务器读取 API 配置，以独立 Responses 请求生成；Windows 原生 Host 使用同一解析器。
+OpenCode 从所选模型解析实际 Provider、wire ID 和协议，当前支持 OpenAI Responses 与 OpenAI-compatible
+Chat Completions SDK；Claude 使用原生设置的 Anthropic Messages API。OAuth/CLI 登录但没有可用 API key、
+未知 Provider SDK 或没有配置模型时直接回退，不读取 OAuth token、不新增 CLI 会话。
+这是一次额外模型请求，可能产生少量 token 费用；不承诺所有 Provider/登录方式均可生成。
+
+请求结果绑定 profile + Agent + thread、连接身份及双层 generation；删除、归档、Provider/身份变更、
+断线或销毁后不应用迟到结果。切到别的会话仍可更新原会话，但不污染当前标题或时间线。
+用户手动重命名立即取消自动结果；已在途的自动改名与手动改名串行，最终以用户命名为准。
+Claude 当前 bridge writer 内的改名同时更新活动 run 对象，避免后续流式保存恢复旧名字；其他进程
+的 writer 占用仍然拒绝修改。
+
 ### 9.5 Work UI、IME 和子 Agent（当前实现与缺口）
 
 - Composer 用 viewInsets 驱动 170 ms `AnimatedPadding`，时间线在键盘视口缩小时直接 jump 到底部；
@@ -1388,6 +1409,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/widget_test.dart | 空服务器首屏、1220x2712 连接阻塞遮罩、Back 阻断、2x 字体、私钥密码入口、未保存编辑确认 |
 | test/app/app_controller_test.dart | 初始化/持久化、Profile/指纹/资源/目录、附件与全局配置/API 模型获取/自定义模型目录和同步 generation、运行时安装，以及子 Agent 多层导航、加载中/重复返回、失败重试、错误 thread 防污染、会话设置隔离、审批按 thread 隔离/精确回答和迟到回调保护 |
 | test/app/message_queue_test.dart | 三种 Agent 的多条 FIFO、明确终态调度、编辑/删除/引导、延迟上传和部分失败重试、停止/断线/配置失效、跨线程/Agent 隔离、异步问题回复与派发互斥 |
+| test/app/thread_title_test.dart、test/agent/thread_title_test.dart | 三种 Agent 首次发送/失败回退、非阻塞队列、手动命名竞态与跨线程隔离；提示边界、完整 Responses/SSE 与 Chat 响应校验 |
 | test/app/profile_scoped_back_stack_test.dart | profile + Agent 栈隔离、pending pop 幂等、取消/迟到回调保护和清理 |
 | test/domain/models_test.dart | Profile 默认值、Agent 模型字段、复合偏好键、上下文/差异辅助模型 |
 | test/domain/model_catalog_test.dart | 空远端目录下保留会话模型/effort、自定义模型 ID/名称/token 上限、远端/自定义合并、隐藏、编辑恢复、API 选项筛选/应用，以及 OpenCode `custom-api/`、旧 `codex-remote/` 迁移、effort 和 managed ID |
@@ -1610,6 +1632,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     保留发布总超时、阶段超时和有限重试，不能为让构建变绿而跳过失败测试。
 36. 日常修改完成后推送两端 main，不自动触发远端出包。只有用户明确要求云端发布时才创建并推送版本标签；
     本地出包可按交付要求执行，不因修改触发云端构建。两端手动云端发布也必须使用已有的匹配版本标签。
+37. 新对话首条文字成功发送后，使用所选模型异步摘要会话标题；失败保留原截断名，不阻塞对话、不新增
+    聊天回合或读取附件内容，手动重命名始终优先。旧会话不批量补标题，不借此触发压缩或额外工具调用。
 
 ## 15. 修改影响图和顺序
 
@@ -2896,6 +2920,26 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - GitHub 云端从启动到全部完成为 `12m18s`；本机下载 GitHub 资产遇到 `120s` 超时，改取 Gitee 同版本
   正式包用时 `16.130s`，内网整包回验 `115ms`。两端独立构建的 APK 哈希不同，固定地址采用上述 Gitee 包；
   失败和后续成功阶段均保留在任务计时记录中，外网 FRP 按用户要求未回验。
+
+### 17.87 新会话异步智能标题（2026-10-24）
+
+- Codex/OpenCode/Claude Code 在新会话首条文字成功发送后，以实际选择的模型异步摘要标题；失败保持原名。
+  相关流程和 API 登录限制见 9.4.1；用户手动命名优先，不生成额外聊天或工具记录。
+- 定向验证使用临时 HOME、假凭据和 loopback 协议，不访问真实模型。覆盖纯函数、私有 Shell 请求、
+  OpenCode 所选 Provider/协议映射、Claude 独立 RPC 及活动 writer 改名、控制器和原队列回归。
+- 验证结果：标题及相邻队列/adapter 定向 `126` 项通过；最终 analyze 无问题、Flutter 全量 `922` 项、
+  Claude bridge `48` 场景及官方 CLI 的隔离本地模拟 API 联调、Debug/Release 编译、原生运行库校验均通过。
+  Android 14 `1220x2712` 模拟器保留数据安装正常 Release 并通过启动与截图检查；该 smoke 不代表真实
+  Provider 标题质量、真机长时行为或 Windows 实机已经验收。
+- 最终 `full --reuse` 用时 `6m03.046s`：服务器/OpenCode 门禁命中缓存，Claude `28.658s`、Android
+  全门禁 `5m07.741s`、释放 Gradle `0.576s`、Release 启动检查 `24.053s`、索引同步 `0.574s`、
+  调度 `1.225s`。Android 内 analyze `4.906s`、全量测试 `1m30.635s`、Debug `43.685s`、Release
+  `2m45.754s`，属于嵌套计时，不与总阶段重复相加。
+- 返工保留在任务计时：Flutter SDK 版本检查联网等待后中止首轮门禁，一处 lint 缺少花括号及 bridge
+  内容更新后的固定审核哈希断言分别修正并复验；未执行 clean 或清空 App 数据。任务从
+  `2026-10-23T15:17:37Z` 开始，累计时长含跨轮等待、文档恢复和收尾，以任务 ledger 为准，不当作编译耗时。
+- 本次不升级 APK 版本、不创建版本标签或云端出包；本地门禁构建不代表固定下载地址已更新。
+  真实模型质量、OAuth 登录及 Windows 实机仍按上述能力边界验收。
 
 ## 18. 文档维护规则
 

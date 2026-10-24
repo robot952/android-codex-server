@@ -205,22 +205,26 @@ class QueueAgent extends Fake
 }
 
 class QueueHarness {
-  QueueHarness({AgentKind kind = AgentKind.codex})
-    : profile = ServerProfile(
-        id: 'queue-profile',
-        name: 'Queue fixture',
-        host: 'fixture.invalid',
-        hostFingerprint: 'SHA256:fixture',
-        remoteCommand: 'fixture-app-server',
-        workspacePromptShown: true,
-        activeAgent: kind,
-      ) {
+  QueueHarness({
+    AgentKind kind = AgentKind.codex,
+    QueueAgent Function(AgentKind)? clientFactory,
+  }) : profile = ServerProfile(
+         id: 'queue-profile',
+         name: 'Queue fixture',
+         host: 'fixture.invalid',
+         hostFingerprint: 'SHA256:fixture',
+         remoteCommand: 'fixture-app-server',
+         workspacePromptShown: true,
+         activeAgent: kind,
+       ) {
     store = QueueStore(profile);
     hosts = ServerConnectionManager(clientFactory: () => host);
     agents = AgentConnectionManager(
       hosts,
-      clientFactory: (kind) =>
-          clients.putIfAbsent(kind, () => QueueAgent(kind)),
+      clientFactory: (kind) => clients.putIfAbsent(
+        kind,
+        () => clientFactory?.call(kind) ?? QueueAgent(kind),
+      ),
     );
     controller = AppController(store, hosts, agents);
   }

@@ -7,6 +7,7 @@ import 'claude_code_bridge_asset.dart';
 import 'codex_agent_client.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
+import 'thread_title.dart';
 
 typedef ClaudeCodeBridgeLoader = Future<String> Function();
 
@@ -153,6 +154,25 @@ class ClaudeCodeAgentClient extends CodexAgentClient
       hasStoredAuthentication: value['hasStoredAuthentication'] == true,
       contextWindowTokens: _settingsTokens(value['contextWindowTokens']),
     );
+  }
+
+  @override
+  Future<String> generateThreadTitle(
+    ServerProfile profile, {
+    required String text,
+    String? model,
+  }) async {
+    final result = _settingsMap(
+      await requestAdapterExtension(
+        'agent/title/generate',
+        params: <String, Object?>{
+          'prompt': buildThreadTitlePrompt(text),
+          'model': model,
+        },
+        timeout: const Duration(seconds: 45),
+      ),
+    );
+    return normalizeGeneratedThreadTitle(_settingsString(result, 'title'));
   }
 
   @override

@@ -21,6 +21,23 @@ class _RecordingOpenCodeClient extends OpenCodeAgentClient {
   final List<_AdapterRequest> requests = <_AdapterRequest>[];
   final List<Object?> responses = <Object?>[];
   bool reportConnected = true;
+  AgentGlobalSettings? titleSettings;
+  String? titleModel;
+  ModelApiProtocol? titleProtocol;
+
+  @override
+  Future<String> generateTitleUsingSettings(
+    ServerProfile profile, {
+    required AgentGlobalSettings settings,
+    required String text,
+    required String model,
+    required ModelApiProtocol apiProtocol,
+  }) async {
+    titleSettings = settings;
+    titleModel = model;
+    titleProtocol = apiProtocol;
+    return '智能标题';
+  }
 
   @override
   bool get isConnected => reportConnected;
@@ -329,6 +346,64 @@ void main() {
   });
 
   group('OpenCode global settings', () {
+    for (final protocol in ModelApiProtocol.values) {
+      test(
+        'title resolves selected provider and exact protocol: $protocol',
+        () async {
+          final client = _RecordingOpenCodeClient();
+          addTearDown(client.close);
+          client.responses.add({
+            'baseUrl': 'https://selected.example.invalid/v1',
+            'apiKey': 'selected-fixture-key',
+            'modelProvider': 'selected',
+            'model': 'selected/wire-model',
+            'apiProtocol': protocol == ModelApiProtocol.responses
+                ? 'responses'
+                : 'chat_completions',
+          });
+          expect(
+            await client.generateThreadTitle(
+              const ServerProfile(id: 'server'),
+              text: '首条消息',
+              model: 'selected/catalog-model',
+            ),
+            '智能标题',
+          );
+          expect(client.requests.single.method, 'agent/title/settings');
+          expect(client.requests.single.params, {
+            'model': 'selected/catalog-model',
+          });
+          expect(
+            client.titleSettings!.baseUrl,
+            'https://selected.example.invalid/v1',
+          );
+          expect(client.titleSettings!.apiKey, 'selected-fixture-key');
+          expect(client.titleModel, 'wire-model');
+          expect(client.titleProtocol, protocol);
+        },
+      );
+    }
+
+    test(
+      'title rejects unsupported provider without making a model request',
+      () async {
+        final client = _RecordingOpenCodeClient();
+        addTearDown(client.close);
+        client.responses.add({
+          'model': 'unsupported/model',
+          'apiProtocol': 'anthropic',
+        });
+        await expectLater(
+          client.generateThreadTitle(
+            const ServerProfile(id: 'server'),
+            text: '首条消息',
+          ),
+          throwsFormatException,
+        );
+        expect(client.titleSettings, isNull);
+      },
+    );
+
     test('reads every bridge setting including the actual API key', () async {
       final client = _RecordingOpenCodeClient();
       addTearDown(client.close);

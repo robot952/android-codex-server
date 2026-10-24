@@ -348,6 +348,25 @@ globalThis.__claudeRemoteSettings = (() => {
       return { successful: true, message: "Anthropic Messages API 连接成功" };
     } catch (error) { return { successful: false, message: error.message }; }
   }
+  async function generateTitle(params = {}) {
+    const prompt = params.prompt;
+    if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 50000 || prompt.includes("\0")) {
+      throw new Error("标题摘要文字无效");
+    }
+    const selected = model(params.model || readSettings().model);
+    if (!selected) throw new Error("没有可用的标题模型");
+    // A standalone, tool-free request. Never resume or compact a CLI session.
+    const result = await request(requestConfig({}), "messages", {
+      model: selected, max_tokens: 256, messages: [{ role: "user", content: prompt }],
+    });
+    if (result?.type !== "message" || result.role !== "assistant" ||
+        !["end_turn", "stop_sequence"].includes(result.stop_reason) ||
+        !Array.isArray(result.content) || !result.content.length ||
+        result.content.some(part => part?.type !== "text" || typeof part.text !== "string")) {
+      throw new Error("标题请求未返回完整文字");
+    }
+    return { title: result.content.map(part => part.text).join("") };
+  }
   async function listApiModels(params = {}) {
     const result = await request(requestConfig(params), "models");
     const source = result?.data || result?.models;
@@ -367,6 +386,6 @@ globalThis.__claudeRemoteSettings = (() => {
     }
     return values;
   }
-  return { readSettings, writeSettings, testSettings, listApiModels, launchEnvironment };
+  return { readSettings, writeSettings, testSettings, generateTitle, listApiModels, launchEnvironment };
 })();
 if (typeof module !== "undefined") module.exports = globalThis.__claudeRemoteSettings;

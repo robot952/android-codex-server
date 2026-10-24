@@ -318,6 +318,35 @@ try {
     connected: ["custom"],
     all: [{ id: "custom", options: {} }],
   }, "").apiKey, "stored-test-key");
+  const titleConfig = {
+    model: "default/unused",
+    provider: { custom: {
+      npm: "@ai-sdk/openai-compatible",
+      options: { baseURL: "https://title.example.com/v1", apiKey: "{env:TITLE_KEY}" },
+      models: { alias: { id: "wire-model" } },
+    } },
+  };
+  const titleSettings = bridge.mapTitleSettings(titleConfig, { all: [] }, "custom/alias", "");
+  assert.equal(titleSettings.model, "custom/wire-model", "resolve the selected model, not the global default");
+  assert.equal(titleSettings.apiKey, "stored-test-key");
+  assert.equal(titleSettings.baseUrl, "https://title.example.com/v1");
+  assert.equal(titleSettings.apiProtocol, "chat_completions");
+  const runtime = { all: [{ id: "custom", key: "runtime-test-key", models: {
+    alias: { api: { id: "runtime-wire", npm: "@ai-sdk/openai", url: "https://runtime.example.com/v1" } },
+  } }] };
+  const responses = bridge.mapTitleSettings(titleConfig, runtime, "custom/alias", "http://localhost:7890");
+  assert.equal(responses.apiProtocol, "responses");
+  assert.equal(responses.apiKey, "runtime-test-key");
+  assert.equal(responses.model, "custom/runtime-wire");
+  assert.equal(responses.proxyUrl, "http://localhost:7890");
+  assert.throws(() => bridge.mapTitleSettings(titleConfig, runtime, "missing/alias", ""));
+  assert.throws(() => bridge.mapTitleSettings(titleConfig, runtime, "custom/bad model", ""));
+  assert.throws(() => bridge.mapTitleSettings({ model: "oauth/alias", provider: {
+    oauth: { npm: "@ai-sdk/openai", options: { baseURL: "https://title.example.com/v1" } },
+  } }, { all: [] }, null, ""), /API/);
+  assert.throws(() => bridge.mapTitleSettings({ model: "custom/alias", provider: {
+    custom: { npm: "@ai-sdk/anthropic", options: { baseURL: "https://title.example.com/v1" } },
+  } }, { all: [] }, null, ""), /Provider/);
 } finally {
   if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME;
   else process.env.XDG_DATA_HOME = previousDataHome;

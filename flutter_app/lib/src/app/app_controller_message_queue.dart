@@ -661,6 +661,14 @@ extension MessageQueueController on AppController {
         'Message',
         'send_accepted profile=${queue.key.profileId} agent=${queue.key.agent.name} thread=${queue.thread.id} turn=$turnId',
       );
+      if (!steer) {
+        _maybeGenerateThreadTitle(
+          queue.key,
+          queue.thread.id,
+          entry.message.text,
+          model,
+        );
+      }
       if (_queueProfileMatches(queue)) {
         _updateQueueThread(queue, (value) {
           final preserve =

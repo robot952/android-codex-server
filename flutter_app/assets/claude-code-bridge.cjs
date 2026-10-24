@@ -1989,6 +1989,7 @@ class ClaudeBridge {
       if (method === "agent/settings/read") return this.response(id, settings.readSettings());
       if (method === "agent/settings/write") return this.response(id, await settings.writeSettings(params));
       if (method === "agent/settings/test") return this.response(id, await settings.testSettings(params));
+      if (method === "agent/title/generate") return this.response(id, await settings.generateTitle(params));
       if (method === "agent/models/list") return this.response(id, await settings.listApiModels(params));
       if (method === "thread/list") {
         const search = String(params.searchTerm || "").toLowerCase();
@@ -2023,9 +2024,25 @@ class ClaudeBridge {
         return this.response(id, {});
       }
       if (method === "thread/name/set") {
-        const unlock = this.store.lock(thread.id);
-        try { const current = this.store.get(thread.id); current.name = bounded(params.name, 160).trim(); if (!current.name) throw new Error("会话名称不能为空"); this.store.save(current); }
-        finally { unlock(); }
+        const name = bounded(params.name, 160).trim();
+        if (!name) throw new Error("会话名称不能为空");
+        const run = this.active.get(thread.id);
+        if (run?.unlock && !run.unlockReleased) {
+          // This bridge already owns the writer lock. Persist the live object
+          // so subsequent streaming saves cannot put the old name back.
+          run.thread.name = name;
+          this.store.save(run.thread);
+        } else {
+          const unlock = this.store.lock(thread.id);
+          try {
+            const current = this.store.get(thread.id);
+            current.name = name;
+            this.store.save(current);
+            for (const detached of this.detachedRuns) {
+              if (detached.thread.id === thread.id) detached.thread.name = name;
+            }
+          } finally { unlock(); }
+        }
         return this.response(id, {});
       }
       this.error(id, "Claude Code 暂不支持此操作", -32601);

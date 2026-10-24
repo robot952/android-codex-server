@@ -203,6 +203,34 @@ class OpenCodeAgentClient extends CodexAgentClient
   }
 
   @override
+  Future<String> generateThreadTitle(
+    ServerProfile profile, {
+    required String text,
+    String? model,
+  }) async {
+    // Resolve the selected model's provider, not the global default provider.
+    final result = await requestAdapterExtension(
+      'agent/title/settings',
+      params: <String, Object?>{'model': model},
+      timeout: _openCodeSettingsTimeout,
+    );
+    final settings = parseOpenCodeGlobalSettings(result);
+    final protocol = result is Map ? result['apiProtocol'] : null;
+    if (protocol != 'responses' && protocol != 'chat_completions') {
+      throw const FormatException('当前 Provider 暂不支持智能标题');
+    }
+    return generateTitleUsingSettings(
+      profile,
+      settings: settings,
+      text: text,
+      model: openCodeApiModelId(settings.model),
+      apiProtocol: protocol == 'responses'
+          ? ModelApiProtocol.responses
+          : ModelApiProtocol.chatCompletions,
+    );
+  }
+
+  @override
   Future<void> writeGlobalSettings(
     ServerProfile profile, {
     required String baseUrl,

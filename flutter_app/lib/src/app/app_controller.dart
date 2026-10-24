@@ -21,6 +21,7 @@ import '../agent/remote_agent_client.dart';
 import '../agent/remote_bootstrap.dart';
 import '../agent/resume_notification_buffer.dart';
 import '../agent/thread_session_cache.dart';
+import '../agent/thread_title.dart';
 import '../domain/model_catalog.dart';
 import '../domain/models.dart';
 import '../domain/async_question_reply.dart';
@@ -38,6 +39,7 @@ import '../ssh/ssh_server_client.dart';
 import '../ssh/terminal_manager.dart';
 
 part 'app_controller_message_queue.dart';
+part 'app_controller_thread_title.dart';
 
 final profileStoreProvider = Provider<ProfileStore>((ref) {
   return SecureProfileStore();
@@ -201,6 +203,7 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, Lock> _customModelSyncLocks = {};
   final Map<AgentConnectionKey, ThreadSessionCache> _threadCaches = {};
   final Map<String, _ThreadMessageQueue> _messageQueues = {};
+  final Map<String, _ThreadTitleAttempt> _threadTitleAttempts = {};
   int _queuedMessageSequence = 0;
 
   @override
@@ -609,6 +612,7 @@ class AppController extends StateNotifier<AppUiState> {
         _workspaceStateProfileId = null;
       }
       _threadCaches.removeWhere((key, _) => key.profileId == normalized.id);
+      _invalidateThreadTitles((key) => key.profileId == normalized.id);
       _clearSubAgentHistory('${normalized.id}\u0000');
       _subAgentTurns.removeWhere(
         (key, _) => key.startsWith('${normalized.id}\u0000'),
@@ -730,6 +734,7 @@ class AppController extends StateNotifier<AppUiState> {
         : state.selectedProfileId;
     final agentData = _withoutAgentProfileData(state, profileId);
     _threadCaches.removeWhere((key, _) => key.profileId == profileId);
+    _invalidateThreadTitles((key) => key.profileId == profileId);
     _clearSubAgentHistory('$profileId\u0000');
     _subAgentTurns.removeWhere((key, _) => key.startsWith('$profileId\u0000'));
     _resumeNotificationBuffers.removeWhere(
@@ -1674,6 +1679,7 @@ class AppController extends StateNotifier<AppUiState> {
     )..remove(key);
     _clearAgentThreadPagination(key);
     _threadCaches.remove(key);
+    _invalidateThreadTitles((candidate) => candidate == key);
     unawaited(_threadSnapshotStore.removeScope(_snapshotScope(profile, agent)));
     _clearSubAgentHistory(threadPreferenceKey(key.profileId, key.agent, ''));
     _subAgentTurns.removeWhere(
@@ -2922,6 +2928,7 @@ class AppController extends StateNotifier<AppUiState> {
         nextTurnsCursor: session.nextTurnsCursor,
         tokenUsage: session.tokenUsage,
       );
+      _rememberNewThreadForTitle(profile, key, session.thread.id);
       _threadGoals.remove(
         threadPreferenceKey(key.profileId, key.agent, session.thread.id),
       );
@@ -4246,6 +4253,10 @@ class AppController extends StateNotifier<AppUiState> {
     try {
       await _agents.archiveThread(key, threadId: thread.id);
       if (!mounted) return;
+      _invalidateThreadTitles(
+        (candidate) => candidate == key,
+        threadId: thread.id,
+      );
       _threadCaches[key]?.remove(thread.id);
       _removeStoredThread(key, thread);
       if (!mounted || !_isActiveThread(key, thread.id)) return;
@@ -4325,26 +4336,26 @@ class AppController extends StateNotifier<AppUiState> {
       agent: state.activeAgent,
     );
     if (!_beginThreadMutation(key, thread.id)) return;
+    final attempt =
+        _threadTitleAttempts[threadPreferenceKey(
+          profileId,
+          key.agent,
+          thread.id,
+        )];
+    // Cancel before awaiting anything. If the automatic rename is already in
+    // flight, serialize so this explicit user choice is the final remote name.
+    attempt?.cancelled = true;
     try {
-      await _agents.setThreadName(key, threadId: thread.id, name: clean);
-      if (!mounted || !_isActiveThread(key, thread.id)) return;
-      final renamed = (state.activeThread ?? thread).copyWith(title: clean);
-      final cache = _threadCaches[key];
-      final cached = cache?.getStale(thread.id);
-      if (cached != null) {
-        cache!.put(
-          cached.thread.copyWith(title: clean),
-          cached.timeline,
-          nextTurnsCursor: cached.nextTurnsCursor,
-          tokenUsage: cached.tokenUsage,
-        );
+      Future<void> rename() async {
+        await _agents.setThreadName(key, threadId: thread.id, name: clean);
+        if (mounted) _applyThreadName(key, thread.id, clean);
       }
-      final lists = _replaceLaneThread(state.agentThreadLists, key, renamed);
-      state = state.copyWith(
-        activeThread: renamed,
-        agentThreadLists: lists,
-        threads: lists[key] ?? state.threads,
-      );
+
+      if (attempt == null) {
+        await rename();
+      } else {
+        await attempt.lock.synchronized(rename);
+      }
     } catch (error) {
       _setThreadMutationError(key, thread.id, error, '重命名会话失败');
     } finally {
@@ -7921,6 +7932,7 @@ class AppController extends StateNotifier<AppUiState> {
   @override
   void dispose() {
     _messageQueues.clear();
+    _invalidateThreadTitles((_) => true);
     for (final profileId in _retainedHostConnections.toList()) {
       _invalidateConnectionRecovery(profileId);
     }

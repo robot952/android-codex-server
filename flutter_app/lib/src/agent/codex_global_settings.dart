@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../domain/models.dart';
+import 'thread_title.dart';
 
 const _settingsPrefix = '__CODEX_GLOBAL_';
 const _testPrefix = '__CODEX_CONNECTION_TEST_';
@@ -653,6 +654,58 @@ String buildTestCodexGlobalSettingsScript({
   required String proxyUrl,
   required String testModel,
   ModelApiProtocol? apiProtocol,
+}) => _buildCodexModelRequestScript(
+  baseUrl: baseUrl,
+  apiKey: apiKey,
+  proxyUrl: proxyUrl,
+  testModel: testModel,
+  apiProtocol: apiProtocol,
+);
+
+String buildGenerateThreadTitleScript({
+  required AgentGlobalSettings settings,
+  required String text,
+  required String model,
+  ModelApiProtocol apiProtocol = ModelApiProtocol.responses,
+}) => _buildCodexModelRequestScript(
+  baseUrl: settings.baseUrl,
+  apiKey: settings.apiKey,
+  proxyUrl: settings.proxyUrl,
+  testModel: model,
+  apiProtocol: apiProtocol,
+  titlePrompt: buildThreadTitlePrompt(text),
+);
+
+String parseGeneratedThreadTitle(String output) {
+  if (output.length > codexConnectionTestMaxOutputBytes) {
+    throw const FormatException('标题响应过大');
+  }
+  final values = _prefixedValues(output, _testPrefix);
+  if (values['STATUS'] != 'SUCCESS' ||
+      !RegExp(r'^2\d\d$').hasMatch(values['HTTP_STATUS'] ?? '') ||
+      !const {'responses', 'chat/completions'}.contains(values['API'])) {
+    throw const FormatException('标题请求失败');
+  }
+  final data = const LineSplitter()
+      .convert(output)
+      .where((line) => line.startsWith('${_testPrefix}DATA='))
+      .map((line) => line.substring('${_testPrefix}DATA='.length))
+      .join();
+  return parseThreadTitleResponse(
+    base64.decode(data),
+    values['API'] == 'responses'
+        ? ModelApiProtocol.responses
+        : ModelApiProtocol.chatCompletions,
+  );
+}
+
+String _buildCodexModelRequestScript({
+  required String baseUrl,
+  required String apiKey,
+  required String proxyUrl,
+  required String testModel,
+  ModelApiProtocol? apiProtocol,
+  String? titlePrompt,
 }) {
   final configuredBaseUrl = normalizeCodexBaseUrl(baseUrl);
   final normalizedBaseUrl = configuredBaseUrl.isEmpty
@@ -662,10 +715,24 @@ String buildTestCodexGlobalSettingsScript({
   final normalizedProxy = normalizeCodexProxyUrl(proxyUrl);
   final normalizedModel = normalizeCodexModel(testModel, '测试模型');
   final baseEndpoint = normalizedBaseUrl.replaceFirst(RegExp(r'/+$'), '');
-  final responsesBody =
-      '{"model":"$normalizedModel","input":"Reply only OK.","stream":true}';
-  final chatBody =
-      '{"model":"$normalizedModel","messages":[{"role":"user","content":"ping"}]}';
+  final responsesBody = titlePrompt == null
+      ? '{"model":"$normalizedModel","input":"Reply only OK.","stream":true}'
+      : jsonEncode(
+          buildThreadTitleBody(
+            model: normalizedModel,
+            prompt: titlePrompt,
+            protocol: ModelApiProtocol.responses,
+          ),
+        );
+  final chatBody = titlePrompt == null
+      ? '{"model":"$normalizedModel","messages":[{"role":"user","content":"ping"}]}'
+      : jsonEncode(
+          buildThreadTitleBody(
+            model: normalizedModel,
+            prompt: titlePrompt,
+            protocol: ModelApiProtocol.chatCompletions,
+          ),
+        );
   final apiMode = switch (apiProtocol) {
     ModelApiProtocol.responses => 'responses',
     ModelApiProtocol.chatCompletions => 'chat/completions',

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:codex_remote/src/agent/codex_global_settings.dart';
+import 'package:codex_remote/src/agent/thread_title.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -379,6 +380,98 @@ supports_websockets = false
   });
 
   group('Codex connection test script', () {
+    for (final protocol in ModelApiProtocol.values) {
+      test(
+        'title request uses selected model and private files: $protocol',
+        () async {
+          const key = "fixture-title-'private'";
+          const model = 'selected-title-model';
+          const text = '请帮我完善消息队列与附件上传';
+          const base = 'https://gateway.example.com/v1';
+          final home = await _apiFixtureHome(apiKey: key, model: model);
+          final responses = protocol == ModelApiProtocol.responses;
+          await File(
+            '${home.path}/expected-${responses ? 'responses' : 'chat'}',
+          ).writeAsString(
+            jsonEncode(
+              buildThreadTitleBody(
+                model: model,
+                prompt: buildThreadTitlePrompt(text),
+                protocol: protocol,
+              ),
+            ),
+          );
+          final result = await _runShell(
+            buildGenerateThreadTitleScript(
+              settings: const AgentGlobalSettings(
+                baseUrl: base,
+                apiKey: key,
+                proxyUrl: '',
+              ),
+              text: text,
+              model: model,
+              apiProtocol: protocol,
+            ),
+            home: home,
+            environment: _fakeCurlEnvironment(
+              home,
+              responses ? 'title_success' : 'fallback',
+            ),
+          );
+          expect(result.exitCode, 0, reason: result.stderr);
+          expect(
+            parseGeneratedThreadTitle(result.stdout),
+            responses ? '智能会话标题' : 'OK',
+          );
+          expect(
+            await File('${home.path}/curl-endpoints').readAsString(),
+            '$base/${responses ? 'responses' : 'chat/completions'}\n',
+          );
+          expect(
+            await File('${home.path}/curl-arguments').readAsString(),
+            isNot(contains(key)),
+          );
+          expect(result.stdout, isNot(contains(key)));
+          expect(result.stderr, isNot(contains(key)));
+        },
+      );
+    }
+
+    test('a truncated title stream keeps the original title', () async {
+      const model = 'selected-title-model';
+      final home = await _apiFixtureHome(apiKey: 'fixture-key', model: model);
+      await File('${home.path}/expected-responses').writeAsString(
+        jsonEncode(
+          buildThreadTitleBody(
+            model: model,
+            prompt: buildThreadTitlePrompt('First message'),
+            protocol: ModelApiProtocol.responses,
+          ),
+        ),
+      );
+      final result = await _runShell(
+        buildGenerateThreadTitleScript(
+          settings: const AgentGlobalSettings(
+            baseUrl: 'https://gateway.example.com/v1',
+            apiKey: 'fixture-key',
+          ),
+          text: 'First message',
+          model: model,
+        ),
+        home: home,
+        environment: _fakeCurlEnvironment(home, 'responses_truncated'),
+      );
+      expect(result.exitCode, 0, reason: result.stderr);
+      expect(
+        () => parseGeneratedThreadTitle(result.stdout),
+        throwsFormatException,
+      );
+      expect(
+        await File('${home.path}/curl-endpoints').readAsString(),
+        'https://gateway.example.com/v1/responses\n',
+      );
+    });
+
     test(
       'uses Responses and keeps the API key out of arguments and output',
       () async {

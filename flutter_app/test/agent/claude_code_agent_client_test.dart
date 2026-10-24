@@ -610,6 +610,39 @@ __CODEX_REMOTE_CLAUDE_LAUNCHER_SHA256=${ClaudeCodeBootstrap.bridgeSha256(ClaudeC
     skip: _linuxInstallerSkip,
   );
 
+  test(
+    'title uses a separate RPC with the selected model and no chat turn',
+    () async {
+      final session = _Session();
+      final client = ClaudeCodeAgentClient(
+        sessionOpener: (_, _) async => session,
+      );
+      addTearDown(client.close);
+      const profile = ServerProfile(id: 'server');
+      final host = _Host();
+      await client.connect(profile, host);
+      final title = await client.generateThreadTitle(
+        profile,
+        text: '优化附件队列',
+        model: 'selected-claude',
+      );
+      expect(title, '附件队列优化');
+      final request = session.requests.singleWhere(
+        (r) => r['method'] == 'agent/title/generate',
+      );
+      expect((request['params'] as Map)['model'], 'selected-claude');
+      expect((request['params'] as Map)['prompt'], contains('优化附件队列'));
+      expect(
+        session.requests.where(
+          (r) => r['method'] == 'turn/start' || r['method'] == 'thread/start',
+        ),
+        isEmpty,
+      );
+      expect(host.commands, isEmpty);
+      expect(host.scripts, isEmpty);
+    },
+  );
+
   test('settings use Claude extension RPCs and preserve blank keys', () async {
     final session = _Session();
     final client = ClaudeCodeAgentClient(
@@ -935,6 +968,7 @@ class _Session implements CodexSession {
         'hasStoredAuthentication': true,
       },
       'agent/settings/test' => {'successful': true, 'message': 'API 连接成功'},
+      'agent/title/generate' => {'title': '标题：“附件队列优化”'},
       'agent/models/list' => [
         {
           'modelId': 'claude-opus-5-5',

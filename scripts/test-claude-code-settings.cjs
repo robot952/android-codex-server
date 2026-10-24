@@ -285,6 +285,8 @@ async function main() {
         if (responseMode === "redirect") { response.writeHead(302, { Location: "http://localhost:1/secret" }); response.end(); return; }
         response.setHeader("Content-Type", "application/json");
         if (responseMode === "malformed") { response.end("not json fake-secret"); return; }
+        if (responseMode === "truncated") { response.end(JSON.stringify({ type: "message", role: "assistant", stop_reason: "max_tokens", content: [{ type: "text", text: "Partial" }] })); return; }
+        if (responseMode === "tool") { response.end(JSON.stringify({ type: "message", role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", name: "Bash" }] })); return; }
         if (request.url === "/v1/models") {
           response.end(JSON.stringify({ data: [{ id: "claude-opus-5-5", display_name: "Opus 5.5", context_window: 1000000 },
             { id: "claude-opus-5-5" }, { id: "invalid model" }, { id: "custom-alias" }] })); return;
@@ -295,7 +297,7 @@ async function main() {
     });
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
-    write({ env: { ANTHROPIC_AUTH_TOKEN: "fake-header-token", ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_MODEL: "m-claude" } });
+    write({ env: { ANTHROPIC_AUTH_TOKEN: "fake-header-token", ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_MODEL: "m-claude", HTTPS_PROXY: "" } });
     const nativeBefore = fs.readFileSync(filename);
     cp.spawn = (command, args, options) => {
       assert.equal(command, "curl");
@@ -317,6 +319,26 @@ async function main() {
     assert.equal(models[0].contextWindowTokens, 1000000);
     assert.equal(requests.at(-1).url, "/v1/models");
     assert.deepEqual(fs.readFileSync(filename), nativeBefore);
+    assert.deepEqual(await settings.generateTitle({ prompt: "Summarize the first message", model: "selected-title-model" }), { title: "OK" });
+    assert.deepEqual(requests.at(-1).body, {
+      model: "selected-title-model", max_tokens: 256,
+      messages: [{ role: "user", content: "Summarize the first message" }],
+    });
+    assert.equal(requests.at(-1).url, "/v1/messages");
+    await settings.generateTitle({ prompt: "Default selected model" });
+    assert.equal(requests.at(-1).body.model, "m-claude");
+    assert.deepEqual(fs.readFileSync(filename), nativeBefore, "title generation never saves settings");
+    const requestCount = requests.length;
+    for (const prompt of ["", "x".repeat(50001), "bad\0prompt"]) {
+      await assert.rejects(settings.generateTitle({ prompt }));
+    }
+    assert.equal(requests.length, requestCount, "invalid input makes no API request");
+    for (const mode of ["incomplete", "malformed", "unauthorized", "redirect", "truncated", "tool"]) {
+      responseMode = mode;
+      await assert.rejects(settings.generateTitle({ prompt: "Summarize", model: "selected-title-model" }));
+      assert.deepEqual(fs.readFileSync(filename), nativeBefore);
+    }
+    responseMode = "valid";
     for (const mode of ["incomplete", "malformed", "unauthorized", "redirect"]) {
       responseMode = mode;
       result = await settings.testSettings({ baseUrl, apiKey: "draft-key", proxyUrl: "", testModel: "claude-opus-5-5" });

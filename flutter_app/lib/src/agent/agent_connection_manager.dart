@@ -645,6 +645,26 @@ class AgentConnectionManager {
     _requireCurrentRequest(key, entry, generation, 'Agent 重命名请求已失效');
   }
 
+  Future<String> generateThreadTitle(
+    AgentConnectionKey key, {
+    required String text,
+    String? model,
+  }) async {
+    final entry = _requireConnected(key);
+    final generation = entry.generation;
+    final client = entry.client;
+    if (client is! RemoteAgentTitleClient) {
+      throw UnsupportedError('当前 Agent 不支持智能标题');
+    }
+    final title = await (client as RemoteAgentTitleClient).generateThreadTitle(
+      entry.profile,
+      text: text,
+      model: model,
+    );
+    _requireCurrentRequest(key, entry, generation, '标题请求已失效');
+    return title;
+  }
+
   Future<void> startReview(
     AgentConnectionKey key, {
     required String threadId,

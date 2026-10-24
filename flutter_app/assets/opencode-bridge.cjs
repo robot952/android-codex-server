@@ -1565,6 +1565,43 @@ function mapGlobalSettings(config, providers, proxyUrl) {
   };
 }
 
+function mapTitleSettings(config, providers, selectedModel, proxyUrl) {
+  const reference = String(selectedModel || config.model || "").trim();
+  const selected = parseModel(reference);
+  if (!selected || reference.length > 512 || /[\x00-\x20\x7f]/.test(reference)) {
+    throw new Error("没有可用的标题模型");
+  }
+  const configured = objectValue(objectValue(config.provider)[selected.providerID]);
+  const runtime = (providers.all || []).find(item => item?.id === selected.providerID) || {};
+  const definition = objectValue(objectValue(configured.models)[selected.modelID]);
+  const runtimeModel = objectValue(objectValue(runtime.models)[selected.modelID]);
+  const api = objectValue(runtimeModel.api);
+  const modelProvider = objectValue(runtimeModel.provider);
+  const npm = String(objectValue(definition.provider).npm || api.npm ||
+    modelProvider.npm || configured.npm || runtime.npm || "");
+  if (![managedResponsesProviderPackage, managedProviderPackage].includes(npm)) {
+    throw new Error("当前 Provider 暂不支持智能标题");
+  }
+  const baseUrl = String(objectValue(configured.options).baseURL ||
+    objectValue(runtime.options).baseURL || api.url || modelProvider.api || "");
+  const literalKey = String(objectValue(configured.options).apiKey || "");
+  const key = runtime.key || (!/^\{(?:env|file):/.test(literalKey) ? literalKey : "") ||
+    readStoredApiKey(selected.providerID);
+  if (!baseUrl || !key) throw new Error("标题模型缺少 API 配置");
+  return {
+    baseUrl, apiKey: key, proxyUrl: String(proxyUrl || ""),
+    model: selected.providerID + "/" + String(api.id || definition.id || runtimeModel.id || selected.modelID),
+    modelProvider: selected.providerID,
+    apiProtocol: npm === managedResponsesProviderPackage ? responsesProtocol : chatCompletionsProtocol,
+  };
+}
+
+async function readTitleSettings(params) {
+  const config = await request("/global/config") || {};
+  const providers = await request("/provider") || {};
+  return mapTitleSettings(config, providers, params.model, readProxyUrl());
+}
+
 async function readGlobalSettings() {
   const config = await request("/global/config") || {};
   const providers = await request("/provider") || {};
@@ -1895,6 +1932,9 @@ async function handleRequest(method, params) {
   }
   if (method === "agent/settings/read") {
     return readGlobalSettings();
+  }
+  if (method === "agent/title/settings") {
+    return readTitleSettings(params);
   }
   if (method === "agent/settings/write") {
     return writeGlobalSettings(params);
@@ -2636,6 +2676,7 @@ module.exports = {
   healthVersion: healthVersion,
   isSessionActive: isSessionActive,
   mapGlobalSettings: mapGlobalSettings,
+  mapTitleSettings: mapTitleSettings,
   mapMessageTokenUsage: mapMessageTokenUsage,
   mapModels: mapModels,
   mapPart: mapPart,

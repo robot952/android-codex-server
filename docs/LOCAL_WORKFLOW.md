@@ -456,6 +456,12 @@ Gitee 的 `run-gitee-release.sh` 默认只构建 Release APK，保留 analyze、
 该优化不会消除首次 Release 的依赖下载/Gradle 冷启动成本，不能把旧日志整段 Debug 耗时当作确定节省量。
 设备测试入口同样保留默认 Pub 步骤，以在 Release 后重新生成含测试插件的 Debug 注册表。
 
+智能标题定向回归使用 `test/app/thread_title_test.dart`、`test/agent/thread_title_test.dart` 及
+`codex_global_settings_test.dart`、`opencode_agent_client_test.dart`、`claude_code_agent_client_test.dart`。
+Node bridge/settings 回归验证实际协议与活动 writer 改名；均使用假凭据、临时 HOME 或 loopback，
+不消耗模型额度。新会话仅首次成功发送尝试一次，失败原名保留；旧会话、纯附件和手动标题不得被改写。
+该能力需要可用的 Provider API key，不以真实 OAuth/CLI 登录测试代替离线门禁；一次标题请求可能产生 token 费用。
+
 多消息队列的定向回归使用 `test/app/message_queue_test.dart` 和 `test/ui/message_queue_ui_test.dart`。
 设备入口为 `integration_test/message_queue_workflow_test.dart`，通过相同 Flutter 命令在模拟器执行，
 验证多条队列、编辑弹窗和 Android 真实软键盘避让；Host/Agent 使用内存对端，不上传到真实服务器、

@@ -12,6 +12,7 @@ import '../agent/codex_global_settings.dart';
 import '../agent/codex_host_capabilities.dart';
 import '../agent/open_code_bootstrap.dart';
 import '../agent/remote_bootstrap.dart';
+import '../agent/thread_title.dart';
 import '../domain/install_progress_format.dart';
 import '../domain/models.dart';
 import '../ssh/ssh_server_client.dart';
@@ -60,6 +61,7 @@ class WindowsLocalServerClient
         RemoteServerCodexRuntimeClient,
         RemoteServerOpenCodeRuntimeClient,
         RemoteServerCodexSettingsClient,
+        RemoteServerModelTitleClient,
         RemoteServerAttachmentClient,
         RemoteServerImageClient,
         RemoteServerFileClient,
@@ -724,6 +726,39 @@ class WindowsLocalServerClient
     if (normalizedKey.isNotEmpty) {
       await _loginWithApiKey(profile, normalizedKey);
     }
+  }
+
+  @override
+  Future<String> generateModelTitle(
+    ServerProfile profile, {
+    required AgentGlobalSettings settings,
+    required String text,
+    required String model,
+    required ModelApiProtocol apiProtocol,
+  }) async {
+    _requireConnectedProfile(profile);
+    final key = normalizeCodexApiKey(settings.apiKey);
+    final selected = normalizeCodexModel(model, '标题模型');
+    if (key.isEmpty || selected.isEmpty) throw StateError('缺少标题 API 配置');
+    final base = _normalizedApiBase(settings.baseUrl);
+    final endpoint = apiProtocol == ModelApiProtocol.responses
+        ? 'responses'
+        : 'chat/completions';
+    final result = await _httpTestResponse(
+      Uri.parse('$base/$endpoint'),
+      key,
+      normalizeCodexProxyUrl(settings.proxyUrl),
+      buildThreadTitleBody(
+        model: selected,
+        prompt: buildThreadTitlePrompt(text),
+        protocol: apiProtocol,
+      ),
+    );
+    _requireConnectedProfile(profile);
+    if (result.status < 200 || result.status >= 300) {
+      throw StateError('标题请求失败');
+    }
+    return parseThreadTitleResponse(result.bytes, apiProtocol);
   }
 
   @override

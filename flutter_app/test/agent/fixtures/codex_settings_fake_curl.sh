@@ -66,6 +66,10 @@ case "$api" in
 esac
 
 case "$FAKE_CURL_MODE:$api" in
+  title_success:responses)
+    printf 'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"智能会话标题"}]}]}}\n\n' > "$output_file"
+    printf '200'
+    ;;
   responses_success:responses) printf '200' ;;
   responses_truncated:responses)
     printf 'data: {"type":"response.output_text.delta","delta":"OK"}\n\n' > "$output_file"

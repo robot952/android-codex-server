@@ -1072,6 +1072,20 @@ test("bad history records are isolated and symlink reads are rejected", async ({
   assert.equal((await peer.ok("initialize")).serverInfo.name, "claude-code-bridge");
 });
 
+test("owning connection can rename an active thread without losing the name on later saves", async ({ peer }) => {
+  const id = await peer.thread();
+  const turn = await peer.turn(id, "hang");
+  await peer.wait(message => message.method === "item/agentMessage/delta", turn.after);
+  await peer.ok("thread/name/set", { threadId: id, name: "Generated title" });
+  assert.equal((await peer.ok("thread/read", { threadId: id })).thread.name, "Generated title");
+  await peer.ok("turn/interrupt", { threadId: id, turnId: turn.id });
+  await peer.complete(turn, "interrupted");
+  assert.equal((await peer.ok("thread/resume", { threadId: id })).thread.name, "Generated title");
+  const next = await peer.turn(id, "fallback");
+  await peer.complete(next);
+  assert.equal((await peer.ok("thread/read", { threadId: id })).thread.name, "Generated title");
+});
+
 test("two connections cannot start or rename a live writer", async ({ peer, root, fake, peers }) => {
   const id = await peer.thread();
   const turn = await peer.turn(id, "hang");

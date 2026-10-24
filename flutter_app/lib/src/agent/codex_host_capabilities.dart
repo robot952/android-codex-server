@@ -29,6 +29,17 @@ abstract interface class RemoteServerOpenCodeRuntimeClient {
   Future<void> uninstallOpenCodeRuntime(ServerProfile profile);
 }
 
+/// Native HTTP title requests, also usable with OpenCode provider settings.
+abstract interface class RemoteServerModelTitleClient {
+  Future<String> generateModelTitle(
+    ServerProfile profile, {
+    required AgentGlobalSettings settings,
+    required String text,
+    required String model,
+    required ModelApiProtocol apiProtocol,
+  });
+}
+
 /// Native Host operations for the user's Codex configuration and API access.
 abstract interface class RemoteServerCodexSettingsClient {
   Future<AgentGlobalSettings> readCodexSettings(ServerProfile profile);

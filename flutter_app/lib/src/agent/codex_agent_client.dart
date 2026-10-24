@@ -388,6 +388,7 @@ class CodexAgentClient
         RemoteAgentThreadCreateClient,
         RemoteAgentApprovalClient,
         RemoteAgentThreadMutationClient,
+        RemoteAgentTitleClient,
         RemoteAgentGlobalSettingsClient,
         RemoteAgentApiModelClient,
         RemoteAgentRuntimeClient,
@@ -1440,6 +1441,57 @@ class CodexAgentClient
       maxOutputBytes: 64 * 1024,
     );
     return parseCodexGlobalSettings(output);
+  }
+
+  @override
+  Future<String> generateThreadTitle(
+    ServerProfile profile, {
+    required String text,
+    String? model,
+  }) async {
+    final settings = await readGlobalSettings(profile);
+    return generateTitleUsingSettings(
+      profile,
+      settings: settings,
+      text: text,
+      model: model?.trim().isNotEmpty == true ? model!.trim() : settings.model,
+      apiProtocol: ModelApiProtocol.responses,
+    );
+  }
+
+  /// Kept in the adapter so credentials never enter controller/UI state.
+  Future<String> generateTitleUsingSettings(
+    ServerProfile profile, {
+    required AgentGlobalSettings settings,
+    required String text,
+    required String model,
+    required ModelApiProtocol apiProtocol,
+  }) async {
+    final connectedHost = _requireConnectedSettingsHost(profile);
+    if (settings.apiKey.trim().isEmpty || model.trim().isEmpty) {
+      throw StateError('当前登录方式未提供标题 API 配置');
+    }
+    if (connectedHost is RemoteServerModelTitleClient) {
+      return (connectedHost as RemoteServerModelTitleClient).generateModelTitle(
+        profile,
+        settings: settings,
+        text: text,
+        model: model,
+        apiProtocol: apiProtocol,
+      );
+    }
+    final output = await _requireScriptSettingsHost(connectedHost)
+        .runShellScript(
+          buildGenerateThreadTitleScript(
+            settings: settings,
+            text: text,
+            model: model,
+            apiProtocol: apiProtocol,
+          ),
+          timeout: const Duration(seconds: 35),
+          maxOutputBytes: codexConnectionTestMaxOutputBytes,
+        );
+    return parseGeneratedThreadTitle(output);
   }
 
   @override
