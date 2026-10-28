@@ -10,6 +10,7 @@ import '../domain/models.dart';
 import '../ssh/ssh_server_client.dart';
 import 'codex_global_settings.dart';
 import 'codex_host_capabilities.dart';
+import 'codex_metrics_asset.dart';
 import 'codex_protocol.dart';
 import 'provider_transport_notice.dart';
 import 'remote_agent_client.dart';
@@ -403,6 +404,7 @@ class CodexAgentClient
     this.threadRequestTimeout = const Duration(seconds: 180),
     this.maxLineChars = 8 * 1024 * 1024,
     this.useDurableTransport = false,
+    this.metricsRelayLoader,
     CodexSessionOpener? sessionOpener,
     this.dedicatedHostFactory,
     AgentKind processAgent = AgentKind.codex,
@@ -434,6 +436,7 @@ class CodexAgentClient
   /// by the old Android client and is required for reliable collaboration
   /// turns on hosts where the detached socket path is unavailable.
   final bool useDurableTransport;
+  final Future<String> Function()? metricsRelayLoader;
   final CodexSessionOpener _sessionOpener;
   final bool _usesDefaultSessionOpener;
   final CodexDedicatedHostFactory? dedicatedHostFactory;
@@ -599,7 +602,21 @@ class CodexAgentClient
     }
 
     final scope = _protocol.beginGeneration();
-    final command = buildSessionCommand(profile);
+    var command = buildSessionCommand(profile);
+    if (kind == AgentKind.codex &&
+        !useDurableTransport &&
+        sessionHost is! LocalRemoteServerClient &&
+        (_usesDefaultSessionOpener || metricsRelayLoader != null) &&
+        supportsCodexMetricsRelay(profile.remoteCommand)) {
+      try {
+        final source = await (metricsRelayLoader ?? CodexMetricsAsset.load)();
+        if (source.trim().isNotEmpty) {
+          command = buildCodexAppServerCommand(profile, metricsSource: source);
+        }
+      } catch (_) {
+        // Optional statistics must never prevent a normal Agent connection.
+      }
+    }
     late CodexSession session;
     try {
       if (useDurableTransport &&
@@ -2291,7 +2308,16 @@ String _durableRemoteCommand(String value) {
   return '$command --listen "unix://\$CODEX_REMOTE_SOCKET"';
 }
 
-String buildCodexAppServerCommand(ServerProfile profile) {
+bool supportsCodexMetricsRelay(String command) =>
+    supportsDurableCodexAppServer(command) &&
+    RegExp(r'(^|/)(codex|codex-remote)\s+app-server\b').hasMatch(command) &&
+    !RegExp(r'(^|\s)(-c|--config)(=|\s)').hasMatch(command) &&
+    !RegExp(r'''[;&|<>\n\r`$]''').hasMatch(command);
+
+String buildCodexAppServerCommand(
+  ServerProfile profile, {
+  String? metricsSource,
+}) {
   final remoteCommand = profile.remoteCommand.trim();
   if (remoteCommand.isEmpty) {
     throw StateError('Codex 远程启动命令不能为空');
@@ -2306,10 +2332,24 @@ String buildCodexAppServerCommand(ServerProfile profile) {
   // completes its initialize handshake. SSH channel teardown still closes
   // this foreground process, while explicit durable cleanup is handled by the
   // connection manager.
+  var launcher = 'exec $remoteCommand';
+  if (metricsSource != null && supportsCodexMetricsRelay(remoteCommand)) {
+    final script = '$metricsSource\nrunRelay(process.argv[1]);';
+    launcher =
+        '{ metrics_node="\$(command -v node 2>/dev/null || true)"; '
+        'if [ -z "\$metrics_node" ]; then '
+        'for candidate in "\$HOME"/.local/share/codex-remote/runtime/*/bin/node; do '
+        '[ ! -x "\$candidate" ] || metrics_node="\$candidate"; done; fi; '
+        'if [ -n "\$metrics_node" ] && "\$metrics_node" -e '
+        '${_shellQuote('process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)')} '
+        '>/dev/null 2>&1; then '
+        'exec "\$metrics_node" -e ${_shellQuote(script)} -- ${_shellQuote(remoteCommand)}; '
+        'else exec $remoteCommand; fi; }';
+  }
   return 'if [ -r "\$HOME/.codex/codex-remote.env" ]; then '
       '. "\$HOME/.codex/codex-remote.env"; fi; '
       '$changeDirectory'
-      'exec $remoteCommand';
+      '$launcher';
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";

@@ -13,7 +13,7 @@ void showUsageHistory(BuildContext context) {
   ).push<void>(MaterialPageRoute(builder: (_) => const UsageHistoryScreen()));
 }
 
-String usageTokenLabel(int? value, {bool compact = false}) {
+String usageTokenLabel(int? value, {bool compact = true}) {
   if (value == null) return '—';
   if (!compact || value < 1000) return '$value';
   if (value < 1000000) return '${(value / 1000).toStringAsFixed(1)}k';

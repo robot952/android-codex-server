@@ -470,6 +470,12 @@ Node bridge/settings 回归验证实际协议与活动 writer 改名；均使用
 处理中显示/完成隐藏、整块点击和离线设置入口；四种自然日筛选、确认清空与重启防重放必须覆盖。
 未知首字/单次耗时显示 `—`，不得把整轮计时填入。持久化/Agent 修改按风险运行 `full`；
 未请求交付时不修改固定下载包、不递增版本或创建标签。
+服务端计时由 `scripts/test-codex-request-metrics.cjs` 随服务器脚本门禁验证，涵盖延迟遥测、
+多请求/工具间隔、WebSocket 预热、重试、重放和缺失时间戳；手机接收时钟不得作为计时来源。
+需要原生内核验证时，显式运行
+`CODEX_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-request-metrics-live.cjs [--ws]`：
+该入口只连接隔离回环假 API，分别验证 SSE/WebSocket 和客户端暂停读取，不使用真实凭据或计费接口。
+布局回归同时检查四项同一行、窄屏/大字体无溢出、Token 明细及汇总统一 `k/M/G` 缩写。
 
 多消息队列的定向回归使用 `test/app/message_queue_test.dart` 和 `test/ui/message_queue_ui_test.dart`。
 设备入口为 `integration_test/message_queue_workflow_test.dart`，通过相同 Flutter 命令在模拟器执行，

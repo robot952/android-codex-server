@@ -83,6 +83,28 @@ void main() {
       expect(usage.state.records, hasLength(1));
       expect(usage.state.records.single.model, 'actual-fixture-model');
 
+      final beforeMetrics = harness.controller.state;
+      final late = params('first');
+      late['requestMetrics'] = {
+        ...(late['requestMetrics'] as Map<String, dynamic>),
+        'source': 'server',
+        'startedAtMillis': DateTime.now()
+            .subtract(const Duration(hours: 1))
+            .millisecondsSinceEpoch,
+        'firstTokenMillis': 350,
+        'durationMillis': 650,
+      };
+      agent.emit(
+        _notificationWithParams('thread/requestMetrics/updated', late),
+      );
+      await _waitUntil(
+        () => usage.state.records.single.firstTokenMillis == 350,
+      );
+      expect(usage.state.records, hasLength(1));
+      expect(harness.controller.state.timeline, beforeMetrics.timeline);
+      expect(harness.controller.state.tokenUsage, beforeMetrics.tokenUsage);
+      expect(harness.controller.state.running, beforeMetrics.running);
+
       harness.controller.backToThreadList();
       agent.emit(
         _notificationWithParams('thread/tokenUsage/updated', params('second')),
@@ -95,6 +117,13 @@ void main() {
         _notificationWithParams('thread/tokenUsage/updated', params('third')),
       );
       await _waitUntil(() => usage.state.records.length == 3);
+      expect(harness.controller.state.activeThread?.id, _threadB.id);
+      expect(harness.controller.state.tokenUsage, foregroundUsage);
+      agent.emit(
+        _notificationWithParams('thread/requestMetrics/updated', late),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(usage.state.records, hasLength(3));
       expect(harness.controller.state.activeThread?.id, _threadB.id);
       expect(harness.controller.state.tokenUsage, foregroundUsage);
       expect(

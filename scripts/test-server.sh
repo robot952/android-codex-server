@@ -30,6 +30,8 @@ input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     server/codex-app-server-ssh \
     server/smoke-test.mjs \
     protocol/codex-version.txt \
+    flutter_app/assets/codex-request-metrics.cjs \
+    scripts/test-codex-request-metrics.cjs \
     scripts/test-server.sh \
     scripts/workflow-lib.sh)"
 node_identity="$(node --version)"
@@ -52,6 +54,7 @@ bash -n \
     server/install-codex-pinned.sh \
     server/codex-app-server-ssh
 node --check server/smoke-test.mjs
+node scripts/test-codex-request-metrics.cjs
 
 workflow_write_stamp "$stamp_path" "$fingerprint"
 echo "Server script gate passed in $(workflow_elapsed "$started_seconds")"

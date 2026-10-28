@@ -172,18 +172,17 @@ class RequestUsageController extends StateNotifier<UsageHistoryState> {
     if (_dismissed.contains(id)) return;
     final now = _nowMillis();
     final started = usageInteger(metrics?['startedAtMillis']);
+    final validStart =
+        started != null &&
+        started > 0 &&
+        started <= now + const Duration(minutes: 5).inMilliseconds;
     final record = RequestUsageRecord(
       id: id,
       profileId: profileId,
       agent: agent,
       provider: normalizedProvider,
       threadId: threadId,
-      recordedAtMillis:
-          started != null &&
-              started > 0 &&
-              started <= now + const Duration(minutes: 5).inMilliseconds
-          ? started
-          : now,
+      recordedAtMillis: validStart ? started : now,
       model:
           usageIdentifier(metrics?['model'] ?? params['model']) ??
           _records[id]?.model ??
@@ -195,6 +194,7 @@ class RequestUsageController extends StateNotifier<UsageHistoryState> {
       // These fields describe an upstream model request, NEVER turn timings.
       firstTokenMillis: usageInteger(metrics?['firstTokenMillis']),
       durationMillis: usageInteger(metrics?['durationMillis']),
+      hasServerTimestamp: validStart && metrics?['source'] == 'server',
     );
     final merged = _records[id]?.merge(record) ?? record;
     if (jsonEncode(_records[id]?.toJson()) == jsonEncode(merged.toJson())) {

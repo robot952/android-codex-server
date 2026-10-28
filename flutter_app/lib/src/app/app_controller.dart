@@ -6240,6 +6240,7 @@ class AppController extends StateNotifier<AppUiState> {
   ) {
     if (_requestUsage == null || threadId.isEmpty) return;
     if (message.method != 'thread/tokenUsage/updated' &&
+        message.method != 'thread/requestMetrics/updated' &&
         message.method != 'turn/started') {
       return;
     }
@@ -7273,6 +7274,9 @@ class AppController extends StateNotifier<AppUiState> {
         if (publishCompletion) {
           _observeRequestUsage(envelope.key, routedMessage, eventThreadId);
         }
+        // Delayed server timing enriches one usage record only. Replaying its
+        // old counters through the timeline reducer would regress the ring.
+        if (routedMessage.method == 'thread/requestMetrics/updated') return;
         if (!_applyChildSubAgentLifecycle(envelope.key, routedMessage)) return;
         final resumeBuffer = _resumeNotificationBuffers[envelope.key];
         final buffered = resumeBuffer?.offer(routedMessage) ?? false;
@@ -8867,11 +8871,9 @@ List<TimelineEntry> _mergeRefreshedTimeline(
         }
       }
     }
-    for (
-      var index = minimumRefreshedIndex;
-      index < refreshed.length;
-      index += 1
-    ) {
+    // Stable identities remain valid even when an older client cached a row
+    // at the wrong position. Search the whole snapshot to repair that order.
+    for (var index = 0; index < refreshed.length; index += 1) {
       if (refreshedIndex >= 0) break;
       if (!consumed.contains(index) &&
           _timelineIdentity(refreshed[index]) ==
@@ -8906,37 +8908,33 @@ List<TimelineEntry> _mergeRefreshedTimeline(
     }
   }
 
-  final result = <TimelineEntry>[];
-  final emittedCached = <int>{};
-  for (
-    var refreshedIndex = 0;
-    refreshedIndex < refreshed.length;
-    refreshedIndex += 1
-  ) {
-    final cachedIndex = cachedByRefreshed[refreshedIndex];
-    if (cachedIndex == null) continue;
-    // Keep cache-only detail rows in their original segment, then emit the
-    // matched row in the authoritative refreshed order. This handles a late
-    // command that appears after the final answer in the live cache without
-    // moving genuinely cache-only command details to a different turn.
-    for (var index = 0; index < cachedIndex; index += 1) {
-      if (!matches.containsKey(index) && emittedCached.add(index)) {
-        result.add(cached[index]);
-      }
-    }
-    if (emittedCached.add(cachedIndex)) {
-      result.add(
-        mergeCodexTimelineEntry(cached[cachedIndex], refreshed[refreshedIndex]),
-      );
-    }
-  }
+  // Preserve cache-only details at their next known anchor. A trailing segment
+  // stays immediately after its last anchor, ahead of genuinely new output.
+  // Every refreshed row (not only matched rows) must retain server order.
+  final cacheSegments = <int, List<TimelineEntry>>{};
+  var segment = <TimelineEntry>[];
+  var trailingPosition = 0;
   for (var cachedIndex = 0; cachedIndex < cached.length; cachedIndex += 1) {
-    if (emittedCached.add(cachedIndex)) {
-      result.add(cached[cachedIndex]);
+    final anchor = matches[cachedIndex];
+    if (anchor == null) {
+      segment.add(cached[cachedIndex]);
+    } else {
+      (cacheSegments[anchor] ??= []).addAll(segment);
+      segment = [];
+      trailingPosition = anchor + 1;
     }
   }
-  for (var index = 0; index < refreshed.length; index += 1) {
-    if (!consumed.contains(index)) result.add(refreshed[index]);
+  (cacheSegments[trailingPosition] ??= []).addAll(segment);
+  final result = <TimelineEntry>[];
+  for (var index = 0; index <= refreshed.length; index += 1) {
+    result.addAll(cacheSegments[index] ?? const []);
+    if (index == refreshed.length) break;
+    final cachedIndex = cachedByRefreshed[index];
+    result.add(
+      cachedIndex == null
+          ? refreshed[index]
+          : mergeCodexTimelineEntry(cached[cachedIndex], refreshed[index]),
+    );
   }
   return result;
 }

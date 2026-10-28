@@ -76,6 +76,52 @@ void main() {
   );
 
   test(
+    'late server timing corrects receipt time without inventing another request',
+    () async {
+      final started = now
+          .subtract(const Duration(hours: 1))
+          .millisecondsSinceEpoch;
+      feed(usageParams(requestId: null));
+      feed(usageParams(requestId: null, cumulative: 240));
+      feed(
+        usageParams(
+          requestId: null,
+          metrics: {
+            'source': 'server',
+            'startedAtMillis': started,
+            'firstTokenMillis': 350,
+            'durationMillis': 650,
+          },
+        ),
+      );
+      expect(controller.state.records, hasLength(2));
+      final older = controller.state.records.last;
+      expect(older.recordedAtMillis, started);
+      expect(older.hasServerTimestamp, isTrue);
+      expect(older.firstTokenMillis, 350);
+      expect(older.durationMillis, 650);
+      feed(usageParams(requestId: null));
+      expect(controller.state.records.last.recordedAtMillis, started);
+      await controller.flush();
+      final restored = RequestUsageRecord.fromJson(older.toJson())!;
+      expect(restored.hasServerTimestamp, isTrue);
+      expect(restored.firstTokenMillis, 350);
+      await controller.clear();
+      feed(
+        usageParams(
+          requestId: null,
+          metrics: {
+            'source': 'server',
+            'startedAtMillis': started,
+            'firstTokenMillis': 350,
+          },
+        ),
+      );
+      expect(controller.state.records, isEmpty);
+    },
+  );
+
+  test(
     'profile, agent, provider and thread isolate otherwise identical IDs',
     () {
       feed(usageParams());

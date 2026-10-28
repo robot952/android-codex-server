@@ -11,6 +11,15 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/request_usage_fixture.dart';
 
 void main() {
+  test('token labels use compact units in summaries and records', () {
+    expect(usageTokenLabel(null), '—');
+    expect(usageTokenLabel(0), '0');
+    expect(usageTokenLabel(999), '999');
+    expect(usageTokenLabel(1000), '1.0k');
+    expect(usageTokenLabel(106900), '106.9k');
+    expect(usageTokenLabel(236782), '236.8k');
+    expect(usageTokenLabel(1000000), '1.0M');
+  });
   testWidgets(
     'filters all four local date ranges and clear requires confirmation',
     (tester) async {
@@ -77,8 +86,35 @@ void main() {
     },
   );
 
+  testWidgets('history cards and totals both abbreviate large token counts', (
+    tester,
+  ) async {
+    final now = DateTime(2026, 10, 28, 12);
+    final store = MemoryRequestUsageStore()
+      ..snapshot = UsageHistorySnapshot(
+        records: [usageFixture(input: 12345, output: 2345)],
+      );
+    final controller = RequestUsageController(
+      store,
+      nowMillis: () => now.millisecondsSinceEpoch,
+    );
+    await controller.ready;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [requestUsageProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(home: UsageHistoryScreen(now: () => now)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('12.3k'), findsWidgets);
+    expect(find.textContaining('2.3k'), findsWidgets);
+    expect(find.textContaining('12345'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
-    'two-row icon summary is one large touch target, opens history at 2x text',
+    'single-row icon summary stays compact and opens history at 2x text',
     (tester) async {
       tester.view.physicalSize = const Size(640, 1600);
       tester.view.devicePixelRatio = 2;
@@ -122,10 +158,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('12.3k'), findsOneWidget);
       final target = find.byKey(const ValueKey('request-usage-summary'));
-      expect(tester.getSize(target).height, greaterThanOrEqualTo(48));
+      expect(tester.getSize(target).height, inInclusiveRange(32, 40));
       expect(
         tester.getTopLeft(find.byIcon(Icons.arrow_upward)).dy,
-        lessThan(tester.getTopLeft(find.byIcon(Icons.cached)).dy),
+        tester.getTopLeft(find.byIcon(Icons.cached)).dy,
       );
       // Tap the blank central gap, not an icon or a number.
       await tester.tapAt(tester.getCenter(target));

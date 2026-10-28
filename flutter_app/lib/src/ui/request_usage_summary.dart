@@ -5,7 +5,7 @@ import '../app/request_usage_controller.dart';
 import '../domain/models.dart';
 import 'usage_history_screen.dart';
 
-/// The whole two-line region is one touch target, including gaps between values.
+/// The compact row is one touch target, including gaps between values.
 class RequestUsageSummary extends ConsumerWidget {
   const RequestUsageSummary({
     super.key,
@@ -64,52 +64,45 @@ class RequestUsageSummary extends ConsumerWidget {
           label: '最近一次请求用量，点击查看消耗统计',
           button: true,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 48),
+            constraints: const BoxConstraints(minHeight: 32),
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (var index = 0; index < 4; index += 2)
-                    Row(
-                      children: [
-                        for (final value in values.skip(index).take(2))
-                          Expanded(
-                            child: Tooltip(
-                              message: '${value.$2}：${value.$3}',
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 2,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      value.$1,
-                                      size: 12,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
-                                    ),
-                                    const SizedBox(width: 2),
-                                    Expanded(
-                                      child: Text(
-                                        value.$3,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(fontSize: 11),
-                                      ),
-                                    ),
-                                  ],
-                                ),
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              // Keep system text scaling. At extreme widths/font sizes the
+              // row can scroll, instead of clipping values or adding height.
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final value in values)
+                      Tooltip(
+                        message: '${value.$2}：${value.$3}',
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                value.$1,
+                                size: 11,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
-                            ),
+                              const SizedBox(width: 2),
+                              Text(
+                                value.$3,
+                                maxLines: 1,
+                                style: Theme.of(
+                                  context,
+                                ).textTheme.bodySmall?.copyWith(fontSize: 10),
+                              ),
+                            ],
                           ),
-                      ],
-                    ),
-                ],
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),

@@ -1104,6 +1104,41 @@ void main() {
     );
   });
 
+  test(
+    'optional server metrics relay keeps workspace quoting and foreground launch',
+    () async {
+      const profile = ServerProfile(
+        id: 'server',
+        workspace: "/srv/team's app",
+        remoteCommand: '~/.local/bin/codex-remote app-server --listen stdio://',
+      );
+      final command = buildCodexAppServerCommand(
+        profile,
+        metricsSource: 'function runRelay(command) { /* fixture */ }',
+      );
+      expect(command, contains('exec "\$metrics_node" -e'));
+      expect(
+        command,
+        contains('else exec ~/.local/bin/codex-remote app-server'),
+      );
+      expect(command, contains('&& { metrics_node='));
+      expect(command, isNot(contains('setsid')));
+      expect(command, isNot(contains('nohup')));
+      expect(command, isNot(contains('base_url')));
+      final syntax = await Process.run('/bin/sh', ['-n', '-c', command]);
+      expect(syntax.exitCode, 0, reason: '${syntax.stderr}');
+      expect(supportsCodexMetricsRelay('custom-bridge --stdio'), isFalse);
+      expect(
+        supportsCodexMetricsRelay('codex app-server | tee output'),
+        isFalse,
+      );
+      expect(
+        supportsCodexMetricsRelay('codex app-server --listen ws://localhost:1'),
+        isFalse,
+      );
+    },
+  );
+
   test('keeps legacy stdio as the default Agent transport', () async {
     final host = _FakeCodexHost();
     final client = CodexAgentClient();

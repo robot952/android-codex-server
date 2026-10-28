@@ -17,6 +17,7 @@ class RequestUsageRecord {
     this.totalTokens,
     this.firstTokenMillis,
     this.durationMillis,
+    this.hasServerTimestamp = false,
   });
 
   final String id;
@@ -33,6 +34,7 @@ class RequestUsageRecord {
   final int? totalTokens;
   final int? firstTokenMillis;
   final int? durationMillis;
+  final bool hasServerTimestamp;
 
   RequestUsageRecord merge(RequestUsageRecord next) => RequestUsageRecord(
     id: id,
@@ -40,7 +42,10 @@ class RequestUsageRecord {
     agent: agent,
     provider: provider,
     threadId: threadId,
-    recordedAtMillis: recordedAtMillis,
+    recordedAtMillis: next.hasServerTimestamp
+        ? next.recordedAtMillis
+        : recordedAtMillis,
+    hasServerTimestamp: hasServerTimestamp || next.hasServerTimestamp,
     model: next.model ?? model,
     inputTokens: _maximum(inputTokens, next.inputTokens),
     outputTokens: _maximum(outputTokens, next.outputTokens),
@@ -70,6 +75,7 @@ class RequestUsageRecord {
     'totalTokens': totalTokens,
     'firstTokenMillis': firstTokenMillis,
     'durationMillis': durationMillis,
+    'hasServerTimestamp': hasServerTimestamp,
   };
 
   static RequestUsageRecord? fromJson(Map<String, dynamic> value) {
@@ -104,6 +110,7 @@ class RequestUsageRecord {
       totalTokens: usageInteger(value['totalTokens']),
       firstTokenMillis: usageInteger(value['firstTokenMillis']),
       durationMillis: usageInteger(value['durationMillis']),
+      hasServerTimestamp: value['hasServerTimestamp'] == true,
     );
   }
 }

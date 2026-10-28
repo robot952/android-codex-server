@@ -13,6 +13,85 @@ import '../support/sub_agent_harness.dart';
 import 'sub_agent_workflow_test.dart' show pumpSubAgentEvents;
 
 void main({bool device = false}) {
+  testWidgets(
+    'reopen restores a missing old user before work, never as a new tail',
+    (tester) async {
+      if (!device) {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(390, 844);
+        addTearDown(tester.view.reset);
+      }
+      final h = (await tester.runAsync(
+        () async => SubAgentHarness(session: _PagedSession()),
+      ))!;
+      final peer = h.session as _PagedSession;
+      final items = <Map<String, Object?>>[
+        {
+          'id': 'work',
+          'type': 'commandExecution',
+          'command': 'printf history-fixture',
+          'status': 'completed',
+        },
+        {'id': 'compact', 'type': 'contextCompaction', 'status': 'completed'},
+      ];
+      peer.threads['parent']!['updatedAt'] = 10;
+      peer.threads['parent']!['turns'] = <Map<String, Object?>>[
+        {'id': 'active-turn', 'status': 'inProgress', 'items': items},
+      ];
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(h.close);
+      });
+      await tester.runAsync(
+        () => h.start().timeout(const Duration(seconds: 8)),
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((_) => h.controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      await pumpSubAgentEvents(tester);
+      expect(h.controller.state.timeline.map((row) => row.id), [
+        'work',
+        'compact',
+      ]);
+      items.insert(0, {
+        'id': 'old-question',
+        'type': 'userMessage',
+        'content': [
+          {'type': 'text', 'text': 'Previously sent request (fixture)'},
+        ],
+      });
+      for (var revision = 11; revision <= 13; revision++) {
+        h.controller.backToThreadList();
+        await pumpSubAgentEvents(tester);
+        peer.threads['parent']!['updatedAt'] = revision;
+        h.controller.openThread(
+          AgentThread(
+            id: 'parent',
+            title: 'History fixture',
+            updatedAt: revision,
+          ),
+        );
+        await pumpSubAgentEvents(tester);
+        expect(h.controller.state.timeline.map((row) => row.id), [
+          'old-question',
+          'work',
+          'compact',
+        ]);
+        expect(find.text('Previously sent request (fixture)'), findsOneWidget);
+        expect(
+          peer.requests.where((request) => request['method'] == 'turn/start'),
+          isEmpty,
+        );
+        expect(tester.takeException(), isNull);
+      }
+    },
+  );
   testWidgets('paged reopen retains answers before a new user-only turn', (
     tester,
   ) async {

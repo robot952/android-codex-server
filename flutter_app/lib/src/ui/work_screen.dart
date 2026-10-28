@@ -3924,7 +3924,7 @@ class _TurnTimingFooterState extends State<_TurnTimingFooter> {
               Expanded(child: _ProcessingStatusText(elapsed: elapsed)),
               const SizedBox(width: 8),
               SizedBox(
-                width: (constraints.maxWidth * 0.48).clamp(132.0, 192.0),
+                width: (constraints.maxWidth * 0.65).clamp(160.0, 250.0),
                 child: RequestUsageSummary(
                   profileId: widget.profileId,
                   agent: widget.agent,

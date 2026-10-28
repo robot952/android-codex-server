@@ -248,7 +248,7 @@ void main() {
         find.descendant(of: summary, matching: find.text('12.3k')),
         findsOneWidget,
       );
-      expect(tester.getSize(summary).height, greaterThanOrEqualTo(48));
+      expect(tester.getSize(summary).height, inInclusiveRange(32, 40));
       expect(tester.takeException(), isNull);
 
       controller.showState(running.copyWith(selectedProfileId: 'other-server'));

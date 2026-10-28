@@ -5,6 +5,83 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('reconcileResumedTimeline', () {
+    test('restored user stays before cached work across repeated reopen', () {
+      const user = TimelineEntry(
+        id: 'user-before-work',
+        kind: TimelineKind.userMessage,
+        text: '提供安装包',
+        turnId: 'turn-1',
+      );
+      const command = TimelineEntry(
+        id: 'command',
+        kind: TimelineKind.command,
+        command: 'flutter test',
+        turnId: 'turn-1',
+      );
+      const compact = TimelineEntry(
+        id: 'compact',
+        kind: TimelineKind.notice,
+        status: 'completed',
+        turnId: 'turn-1',
+      );
+      const fresh = [user, command, compact];
+      var cached = <TimelineEntry>[command, compact];
+      for (var reopen = 0; reopen < 3; reopen++) {
+        final result = reconcileResumedTimeline(
+          cachedTimeline: cached,
+          cachedNextCursor: 'older',
+          refreshedTimeline: fresh,
+          refreshedNextCursor: 'older',
+          cachedThreadUpdatedAt: 10,
+          refreshedThreadUpdatedAt: 11,
+        );
+        expect(result.timeline, fresh);
+        cached = result.timeline;
+      }
+    });
+
+    test('repairs an already misplaced cached user using server order', () {
+      const user = TimelineEntry(
+        id: 'user',
+        kind: TimelineKind.userMessage,
+        text: '继续',
+        turnId: 'turn-1',
+      );
+      const answer = TimelineEntry(
+        id: 'answer',
+        kind: TimelineKind.agentMessage,
+        text: '处理中',
+        turnId: 'turn-1',
+      );
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const [answer, user],
+        cachedNextCursor: null,
+        refreshedTimeline: const [user, answer],
+        refreshedNextCursor: null,
+      );
+      expect(result.timeline, const [user, answer]);
+    });
+
+    test('keeps unmatched refreshed items between authoritative anchors', () {
+      TimelineEntry item(
+        String id, {
+        TimelineKind kind = TimelineKind.agentMessage,
+        String turn = 'turn-1',
+      }) => TimelineEntry(id: id, kind: kind, text: id, turnId: turn);
+      final user = item('user', kind: TimelineKind.userMessage);
+      final answer = item('answer');
+      final middle = item('middle', kind: TimelineKind.reasoning);
+      final nextUser = user.copyWith(id: 'user-2', turnId: 'turn-2');
+      final fresh = [user, middle, answer, nextUser];
+      final result = reconcileResumedTimeline(
+        cachedTimeline: [user, answer],
+        cachedNextCursor: null,
+        refreshedTimeline: fresh,
+        refreshedNextCursor: null,
+      );
+      expect(result.timeline, fresh);
+    });
+
     test(
       'fresh history corrects an old false running compaction without duplication',
       () {
@@ -828,13 +905,13 @@ void main() {
         );
 
         expect(result.timeline.map((entry) => entry.text), <String>[
+          'new agent',
+          'new plan',
           'old agent',
           '',
           'new anchor',
-          'new agent',
-          'new plan',
         ]);
-        expect(result.timeline[1].command, 'old command');
+        expect(result.timeline[3].command, 'old command');
         expect(result.nextCursor, 'older');
       },
     );
