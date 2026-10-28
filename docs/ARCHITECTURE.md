@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.187+319，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.188+320，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -138,7 +138,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化；代理聚焦时收起运行时信息 | 当前运行；IME 安全，与旧 Compose 聚焦行为一致 |
 | flutter_app/lib/src/ui/workspace_picker_dialog.dart | 当前远端路径、父/子目录浏览、加载/错误显示和目录确认 | 当前运行 |
 | flutter_app/lib/src/ui/work_screen.dart | 当前线程时间线、Composer、附件选择/上传、审批、模型/自定义模型管理/权限、会话操作、图片预览/保存、远程文件保存、上下文环和子 Agent 子会话入口 | 当前运行 |
-| flutter_app/lib/src/ui/request_usage_summary.dart、flutter_app/lib/src/ui/usage_history_screen.dart | 处理中两行指标、整块点击入口、请求明细/汇总、四种日期筛选和确认清空 | 当前运行；列表设置也可离线进入 |
+| flutter_app/lib/src/ui/request_usage_summary.dart、flutter_app/lib/src/ui/usage_history_screen.dart | 处理中单行指标、整块点击入口、请求明细/汇总、四种日期筛选和确认清空 | 当前运行；列表设置也可离线进入 |
 | flutter_app/lib/src/ui/sub_agent_presentation.dart | 子 Agent 活动分组、稳定身份色、独立状态映射和终态保护 | 当前运行；由 WorkScreen 接线 |
 | flutter_app/lib/src/ui/model_selection_presentation.dart | wire 模型名、当前模型匹配、思考强度和模型容量展示映射 | 当前运行；由 WorkScreen 接线 |
 | flutter_app/lib/src/app/profile_scoped_back_stack.dart | 按 profile + Agent 隔离的父子会话返回栈、pending pop 幂等和清理 | 当前运行 |
@@ -554,7 +554,7 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
 - 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，中心显示已用百分比，点击显示已用/剩余 tokens；
   圆环和模型名称组成靠右的弹性区域，模型变长时向权限按钮方向扩展并单行缩放，不能因固定空白提前省略；有效
   TokenUsage 在 lane cache 中保留，返回同一会话可立即恢复；未知窗口显示 `?`，不猜比例；
-- 只有正在处理时，耗时尾行右侧显示最近单次请求的输入、输出、缓存命中及首字延迟，分两行使用小图标与数值；
+- 只有正在处理时，耗时尾行右侧显示最近单次请求的输入、输出、缓存命中及首字延迟，单行使用小图标与数值；
   整块区域可点击进入“消耗统计”，完成后不保留该指标块。未知值显示 `—`，不影响原上下文圆环。
 - Markdown 可选择文本，解析出的 HTTP/HTTPS Markdown link 和紧邻中文标点的裸 URL 显示蓝色，点击先确认
   后交给系统浏览器；标准 Markdown link 只显示 label，不把目标 URL 复制到正文；
@@ -1205,7 +1205,11 @@ flutter_app/build/app/outputs/flutter-apk/app-debug.apk
 flutter_app/build/app/outputs/flutter-apk/app-release.apk
 ~~~
 
-Flutter 迁移已合并到 main；向 GitHub 和 Gitee 推送 main 或功能分支只同步代码，不自动出包。
+每次应用修改完成后，默认执行本地 `publish --reuse`，交付包含本次修改的新 APK 并更新固定下载文件，
+不再等待用户另行索要安装包。沿用稳定签名，同时递增可见 patch 版本和 build number；内网完整下载回验，
+外网 FRP 只提供地址、不回验。只有用户明确暂缓出包时例外；纯文档更新不单独生成无功能变化的 APK。
+
+Flutter 迁移已合并到 main；向 GitHub 和 Gitee 推送 main 或功能分支只同步代码，不自动触发云端出包。
 两端只在推送 `v<versionName>` 版本标签时自动发布；手动运行也须使用已有且与 Pubspec 匹配的版本标签。
 Gitee Go 的 Flutter 发布流水线只监听 `v` 前缀标签推送，使用固定 Flutter `3.44.8`、JDK 17、Android
 Platform/Build Tools 36 和 NDK `28.2.13676358` 构建 Release APK。构建后由
@@ -1462,7 +1466,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/app/thread_title_test.dart、test/agent/thread_title_test.dart | 三种 Agent 首次发送/失败回退、非阻塞队列、手动命名竞态与跨线程隔离；提示边界、完整 Responses/SSE 与 Chat 响应校验 |
 | test/app/request_usage_controller_test.dart | 稳定请求合并/去重、累计量拆分、服务器/Agent/Provider/线程隔离、历史过滤、清空防重放、读写失败重试、保留边界、元数据隐私及自然日筛选 |
 | test/persistence/request_usage_store_test.dart | 独立实例读写、原子替换、版本/损坏/大小/数量限制、非法行保留有效数据及并发写入 |
-| test/ui/usage_history_screen_test.dart | 四种日期范围、汇总/未知值、确认清空、错误重试和两行指标整块点击/窄屏大字体 |
+| test/ui/usage_history_screen_test.dart | 四种日期范围、汇总/未知值、确认清空、错误重试和单行指标整块点击/窄屏大字体 |
 | test/app/profile_scoped_back_stack_test.dart | profile + Agent 栈隔离、pending pop 幂等、取消/迟到回调保护和清理 |
 | test/domain/models_test.dart | Profile 默认值、Agent 模型字段、复合偏好键、上下文/差异辅助模型 |
 | test/domain/model_catalog_test.dart | 空远端目录下保留会话模型/effort、自定义模型 ID/名称/token 上限、远端/自定义合并、隐藏、编辑恢复、API 选项筛选/应用，以及 OpenCode `custom-api/`、旧 `codex-remote/` 迁移、effort 和 managed ID |
@@ -1683,8 +1687,10 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 34. MCP 工具调用默认折叠，用户点击后才显示详情；运行中、完成和失败均使用同一交互，状态更新不能自动展开。
 35. Gitee 同一版本只保留一个自动构建入口；清理历史分支的旧流水线 YAML 后再推送标签，不同时手动重跑。
     保留发布总超时、阶段超时和有限重试，不能为让构建变绿而跳过失败测试。
-36. 日常修改完成后推送两端 main，不自动触发远端出包。只有用户明确要求云端发布时才创建并推送版本标签；
-    本地出包可按交付要求执行，不因修改触发云端构建。两端手动云端发布也必须使用已有的匹配版本标签。
+36. 每次应用修改完成后都要本地发布包含本次修改的新 APK，并给出完整内外网下载地址，不能只推送源码。
+    默认使用 `publish --reuse`，沿用稳定签名并递增版本，内网回验、外网 FRP 不回验；用户明确暂缓出包时例外。
+    代码推送两端 main 不自动触发远端出包；只有用户明确要求云端发布时才创建并推送版本标签。
+    两端手动云端发布也必须使用已有的匹配版本标签，不能同时重复本地和云端构建。
 37. 新对话首条文字成功发送后，使用所选模型异步摘要会话标题；失败保留原截断名，不阻塞对话、不新增
     聊天回合或读取附件内容，手动重命名始终优先。旧会话不批量补标题，不借此触发压缩或额外工具调用。
 38. 处理中尾行右侧只用一行小图标/数字显示最近单次请求的输入、输出、缓存命中和首字；完成后隐藏。
@@ -3081,6 +3087,27 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `1m22.110s`，不与外层阶段重复累加。前期历史排序复现失败两次和旧 48 dp 布局断言失败已修复，
   后续定向及全量测试通过；失败记录保留于任务计时 `history-order-metrics-20261028`。
 - 本轮不改变 `1.8.187+319`、不创建发布标签或更新固定下载文件；新功能须在后续新 APK 中安装。
+
+### 17.92 历史顺序与单行指标修复包交付（2026-10-28）
+
+- 将第 17.91 节的旧消息恢复顺序修复、服务端首字/请求耗时、单行指标及 Token 紧凑单位纳入
+  `1.8.188+320` APK。包名 `top.asdb.agent`、原稳定签名不变，支持保留数据覆盖安装；APK 内的
+  `codex-request-metrics.cjs` 已与当前源码逐字节摘要核对一致。未追加新业务改动。
+- 按用户新增长期约定，今后每次应用修改完成默认本地出包并给出下载地址，不再仅推送代码后等待用户索要。
+  已同步根 AGENTS、本地流程及第 12/14 节；本轮不打版本标签、不触发云端构建，代码同步两端 main。
+- 唯一一次 `publish --reuse` 主门禁通过：analyze 无问题、Flutter 全量 `953` 项、Claude bridge `48`
+  场景及官方 CLI 隔离回环集成、Debug/Release 编译、原生运行库检查通过。Android 14 竖屏模拟器保留
+  数据覆盖安装正常 Release，启动和截图检查通过，首页显示 `v1.8.188`。本轮不调用真实付费模型，
+  启动 smoke 不替代真实 Provider、手机后台行为或统计页面的真机端到端验收。
+- 发布主门禁 `5m39.608s`：服务器 `0.046s`、OpenCode `0.151s` 均命中缓存，Claude `28.739s`、
+  暂停模拟器 `6.100s`、Android 全门禁 `4m14.973s`、释放 Gradle `0.618s`、Release 启动检查
+  `21.949s`、索引同步 `0.490s`、本地发布及内网回验 `25.196s`、调度 `1.346s`。Android 内 analyze
+  `7.919s`、测试 `1m33.549s`、Debug `37.045s`、Release `1m53.490s`，属于嵌套计时，不重复相加。
+  发布前 Release 校验复用缓存，无失败返工；本轮总耗时记录于 `history-metrics-apk-20261028` 任务 ledger。
+- `dist/Agent-1.8.188.apk` 大小 `32,085,010` 字节，构建包、归档、两个本机发布别名及内网完整下载
+  SHA-256 均为 `d71a1444b2b2f7c5a1993c288398003bb383af816159866d409232690cf1a74c`。
+  稳定证书 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+  内网下载用时 `126ms`，包名、版本和证书回验通过；外网 FRP 按用户要求仅提供地址、不回验。
 
 ## 18. 文档维护规则
 
