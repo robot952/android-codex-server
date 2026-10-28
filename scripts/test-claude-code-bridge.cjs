@@ -122,9 +122,10 @@ function fakeClaudeMain() {
     } else if (scenario === "stream-no-id") {
       // Claude-compatible gateways may omit the message ID on message_start
       // but include one on the final assistant snapshot.
-      send({ type: "stream_event", event: { type: "message_start", message: {} } });
+      send({ type: "stream_event", event: { type: "message_start", message: { usage: { input_tokens: 100, output_tokens: 0 } } } });
       send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "无 ID 仍只显示一次" } } });
-      send({ type: "assistant", message: { id: "message-no-id", content: [{ type: "text", text: "无 ID 仍只显示一次" }] } });
+      send({ type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 20 } } });
+      send({ type: "assistant", message: { id: "message-no-id", usage: { input_tokens: 100, output_tokens: 20 }, content: [{ type: "text", text: "无 ID 仍只显示一次" }] } });
       result("无 ID 仍只显示一次");
     } else if (scenario === "stream-replay-delta") {
       // A reconnect may replay the last delta verbatim, then send a
@@ -508,6 +509,10 @@ test("streamed text reconciles when message_start omits its ID", async ({ peer }
   assert.deepEqual(assistantTexts((await peer.history(id))[0]), ["无 ID 仍只显示一次"]);
   const deltas = peer.messages.filter(message => message.method === "item/agentMessage/delta" && message.params.turnId === turn.id);
   assert.deepEqual(deltas.map(message => message.params.delta), ["无 ID 仍只显示一次"]);
+  const usage = (await peer.ok("thread/read", { threadId: id })).tokenUsage;
+  assert.equal(usage.total.totalTokens, 120, "temporary stream keys cannot double-count a request");
+  const live = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" && message.params.threadId === id && !message.params.requestMetrics.historical);
+  assert.deepEqual(live.map(message => message.params.requestMetrics.requestId), ["message-no-id"]);
 });
 
 test("replayed stream deltas keep one item and append only unseen suffix", async ({ peer }) => {
@@ -673,6 +678,11 @@ test("current context includes cache tokens, deduplicates usage and survives res
   assert.equal(snapshot.tokenUsage.modelContextWindow, 1000000);
   const usageEvent = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" && message.params.threadId === id).at(-1);
   assert.deepEqual(usageEvent.params.tokenUsage, snapshot.tokenUsage);
+  assert.deepEqual(usageEvent.params.requestMetrics, { historical: true });
+  const requests = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" && message.params.threadId === id && !message.params.requestMetrics.historical);
+  assert.deepEqual([...new Set(requests.map(message => message.params.requestMetrics.requestId))].sort(), ["usage-first", "usage-latest"]);
+  assert.equal(requests.at(-1).params.requestMetrics.usage.totalTokens, 380, "late usage belongs to the old request, not the context ring's latest request");
+  assert.equal(requests.at(-1).params.requestMetrics.durationMillis, undefined, "aggregate CLI duration is not a per-request duration");
   await peer.close();
   const restarted = new Peer(root, fake, peer.state);
   peers.push(restarted);

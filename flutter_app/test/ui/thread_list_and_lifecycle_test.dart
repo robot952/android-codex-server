@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:codex_remote/src/app/codex_remote_app.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
+import 'package:codex_remote/src/app/request_usage_controller.dart';
 import 'package:codex_remote/src/domain/models.dart' hide ConnectionState;
 import 'package:codex_remote/src/domain/models.dart'
     as domain
@@ -12,10 +13,13 @@ import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/terminal_manager.dart';
 import 'package:codex_remote/src/ui/theme.dart';
 import 'package:codex_remote/src/ui/thread_list_screen.dart';
+import 'package:codex_remote/src/ui/usage_history_screen.dart';
 import 'package:codex_remote/src/ui/work_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/request_usage_fixture.dart';
 
 class _MemoryStore implements ProfileStore {
   @override
@@ -92,6 +96,51 @@ class _ConnectedTerminalManager extends TerminalManager {
 }
 
 void main() {
+  testWidgets('usage statistics are accessible from settings while offline', (
+    tester,
+  ) async {
+    final manager = ServerConnectionManager();
+    final controller = _ThreadListController(_MemoryStore(), manager);
+    addTearDown(manager.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appControllerProvider.overrideWith((ref) => controller),
+          requestUsageStoreProvider.overrideWithValue(
+            MemoryRequestUsageStore(),
+          ),
+        ],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: const ThreadListScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    controller.showState(
+      const AppUiState(
+        profiles: [
+          ServerProfile(
+            id: 'server',
+            name: '离线服务器',
+            host: 'example.test',
+            username: 'root',
+            authMode: AuthMode.password,
+          ),
+        ],
+        selectedProfileId: 'server',
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    expect(find.text('消耗统计'), findsOneWidget);
+    await tester.tap(find.text('消耗统计'));
+    await tester.pumpAndSettle();
+    expect(find.byType(UsageHistoryScreen), findsOneWidget);
+    expect(find.text('该日期范围暂无记录'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
   test(
     'formats thread timestamps as relative time at every requested scale',
     () {

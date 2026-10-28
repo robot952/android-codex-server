@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/app/app_controller.dart';
+import 'package:codex_remote/src/app/request_usage_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/platform/local_file_exporter.dart';
@@ -18,6 +19,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
+
+import '../support/request_usage_fixture.dart';
 
 class _MemoryStore implements ProfileStore {
   @override
@@ -184,6 +187,92 @@ Future<void> _jumpToTranscriptStart(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'request metrics appear only while processing without scope leaks',
+    (tester) async {
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = const Size(640, 1600);
+      addTearDown(tester.view.reset);
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager);
+      addTearDown(manager.close);
+      final store = MemoryRequestUsageStore();
+      final usage = RequestUsageController(store);
+      await usage.ready;
+      usage.observe(
+        profileId: 'server',
+        agent: AgentKind.codex,
+        provider: 'fixture-provider',
+        threadId: 'thread',
+        params: usageParams(input: 12345, metrics: {'firstTokenMillis': 350}),
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appControllerProvider.overrideWith((ref) => controller),
+            requestUsageProvider.overrideWith((ref) => usage),
+          ],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: const TextScaler.linear(2)),
+              child: child!,
+            ),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final running = AppUiState(
+        screen: AppScreen.work,
+        selectedProfileId: 'server',
+        activeThread: const AgentThread(
+          id: 'thread',
+          title: '统计布局',
+          modelProvider: 'fixture-provider',
+        ),
+        running: true,
+        activeTurnId: 'turn-1',
+        turnTiming: TurnTiming(threadId: 'thread', startedAtMillis: now - 2000),
+      );
+      controller.showState(running);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      final summary = find.byKey(const ValueKey('request-usage-summary'));
+      expect(summary, findsOneWidget);
+      expect(
+        find.descendant(of: summary, matching: find.text('12.3k')),
+        findsOneWidget,
+      );
+      expect(tester.getSize(summary).height, greaterThanOrEqualTo(48));
+      expect(tester.takeException(), isNull);
+
+      controller.showState(running.copyWith(selectedProfileId: 'other-server'));
+      await tester.pump();
+      expect(
+        find.descendant(of: summary, matching: find.text('12.3k')),
+        findsNothing,
+      );
+      controller.showState(
+        running.copyWith(
+          running: false,
+          activeTurnId: null,
+          turnTiming: TurnTiming(
+            threadId: 'thread',
+            startedAtMillis: now - 2000,
+            completedAtMillis: now,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(summary, findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   test('matches the legacy follow-output state machine', () {
     expect(

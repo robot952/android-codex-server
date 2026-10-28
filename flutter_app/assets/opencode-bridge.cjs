@@ -191,11 +191,11 @@ function mapMessageTokenUsage(info, contextWindowTokens) {
   const totalTokens = cachedInputTokens + inputTokens + outputTokens +
     reasoningOutputTokens + cacheWriteTokens;
   const contextWindow = nonNegativeTokenCount(contextWindowTokens);
-  if (totalTokens <= 0 || contextWindow <= 0) return null;
+  if (totalTokens <= 0) return null;
   const last = {
     cachedInputTokens: cachedInputTokens,
-    inputTokens: inputTokens,
-    outputTokens: outputTokens,
+    inputTokens: inputTokens + cachedInputTokens + cacheWriteTokens,
+    outputTokens: outputTokens + reasoningOutputTokens,
     reasoningOutputTokens: reasoningOutputTokens,
     totalTokens: totalTokens,
   };
@@ -223,14 +223,15 @@ function modelContextWindowForInfo(info, sessionID) {
   return modelContextWindows.get(reference) || 0;
 }
 
-function publishTokenUsage(sessionID, tokenUsage) {
+function publishTokenUsage(sessionID, tokenUsage, requestMetrics = { historical: true }) {
   if (!sessionID || !tokenUsage) return;
-  const signature = JSON.stringify(tokenUsage);
+  const signature = JSON.stringify([tokenUsage, requestMetrics]);
   if (publishedTokenUsage.get(sessionID) === signature) return;
   publishedTokenUsage.set(sessionID, signature);
   notify("thread/tokenUsage/updated", {
     threadId: sessionID,
     tokenUsage: tokenUsage,
+    requestMetrics: requestMetrics,
   });
 }
 
@@ -275,7 +276,11 @@ async function publishTokenUsageForInfo(info, sessionID) {
     await refreshModelContextWindows();
     usage = tokenUsageForInfo(info, sessionID);
   }
-  publishTokenUsage(sessionID, usage);
+  publishTokenUsage(sessionID, usage, {
+    requestId: typeof info.id === "string" ? info.id : null,
+    model: modelReferenceFromInfo(info, sessionID),
+    startedAtMillis: Number.isSafeInteger(info.time && info.time.created) ? info.time.created : null,
+  });
 }
 
 function toolStatus(state) {

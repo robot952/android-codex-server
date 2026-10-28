@@ -19,6 +19,7 @@ import 'async_question_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'markdown_links.dart';
 import 'model_selection_presentation.dart';
+import 'request_usage_summary.dart';
 import 'sub_agent_presentation.dart';
 import 'theme.dart';
 import 'work_content.dart';
@@ -2609,6 +2610,10 @@ class _Transcript extends StatelessWidget {
           key: const ValueKey('turn-timing-footer'),
           running: state.running,
           timing: timing,
+          profileId: state.selectedProfileId ?? '',
+          agent: state.activeAgent,
+          provider: state.activeThread?.modelProvider ?? '',
+          threadId: threadId ?? '',
         ),
       );
     }
@@ -3842,10 +3847,18 @@ class _TurnTimingFooter extends StatefulWidget {
     super.key,
     required this.running,
     required this.timing,
+    required this.profileId,
+    required this.agent,
+    required this.provider,
+    required this.threadId,
   });
 
   final bool running;
   final TurnTiming? timing;
+  final String profileId;
+  final AgentKind agent;
+  final String provider;
+  final String threadId;
 
   @override
   State<_TurnTimingFooter> createState() => _TurnTimingFooterState();
@@ -3896,19 +3909,31 @@ class _TurnTimingFooterState extends State<_TurnTimingFooter> {
           ? null
           : _formatTurnElapsed(timing.startedAtMillis, _nowMillis);
       return Semantics(
-        label: elapsed == null ? 'Codex 正在处理' : 'Codex 正在处理，已运行 $elapsed',
-        child: Row(
-          children: [
-            const SizedBox.square(
-              dimension: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: codexText,
+        label: elapsed == null ? '正在处理' : '正在处理，已运行 $elapsed',
+        child: LayoutBuilder(
+          builder: (context, constraints) => Row(
+            children: [
+              const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: codexText,
+                ),
               ),
-            ),
-            const SizedBox(width: 9),
-            _ProcessingStatusText(elapsed: elapsed),
-          ],
+              const SizedBox(width: 9),
+              Expanded(child: _ProcessingStatusText(elapsed: elapsed)),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: (constraints.maxWidth * 0.48).clamp(132.0, 192.0),
+                child: RequestUsageSummary(
+                  profileId: widget.profileId,
+                  agent: widget.agent,
+                  provider: widget.provider,
+                  threadId: widget.threadId,
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -3930,13 +3955,15 @@ class _TurnTimingFooterState extends State<_TurnTimingFooter> {
             color: stopped ? _workAmber : _workGreen,
           ),
           const SizedBox(width: 9),
-          Text(
-            stopped
-                ? '已停止  $elapsed'
-                : '$elapsed  完成于 ${_formatTurnCompletionTime(completedAt)}',
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: codexMuted),
+          Expanded(
+            child: Text(
+              stopped
+                  ? '已停止  $elapsed'
+                  : '$elapsed  完成于 ${_formatTurnCompletionTime(completedAt)}',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: codexMuted),
+            ),
           ),
         ],
       ),
@@ -3969,7 +3996,9 @@ class _ProcessingStatusTextState extends State<_ProcessingStatusText>
   @override
   Widget build(BuildContext context) {
     final baseColor = codexMuted.withValues(alpha: 0.64);
-    return Row(
+    return Wrap(
+      spacing: 6,
+      runSpacing: 2,
       children: [
         AnimatedBuilder(
           animation: _controller,
@@ -3992,7 +4021,6 @@ class _ProcessingStatusTextState extends State<_ProcessingStatusText>
           child: Text('正在处理', style: Theme.of(context).textTheme.bodySmall),
         ),
         if (widget.elapsed != null) ...[
-          const SizedBox(width: 6),
           Text(
             widget.elapsed!,
             style: Theme.of(

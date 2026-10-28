@@ -10,6 +10,7 @@ import '../platform/windows_local_server_client.dart';
 import '../ssh/terminal_manager.dart';
 import 'server_metrics_strip.dart';
 import 'theme.dart';
+import 'usage_history_screen.dart';
 
 class ThreadListScreen extends ConsumerStatefulWidget {
   const ThreadListScreen({super.key, this.now});
@@ -160,9 +161,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
           ),
           IconButton(
             tooltip: '设置',
-            onPressed: hostConnected
-                ? () => _showThreadSettings(context, state, controller)
-                : null,
+            onPressed: () => _showThreadSettings(context, state, controller),
             icon: const Icon(Icons.settings),
           ),
           IconButton(
@@ -382,6 +381,10 @@ void _showThreadSettings(
               ?.phase ==
           ConnectionPhase.connected,
       canConfigureAgent: state.activeAgentCapabilities.globalSettings,
+      onUsageHistory: () {
+        Navigator.of(context).pop();
+        showUsageHistory(context);
+      },
       onSelectWorkspace: () {
         Navigator.of(context).pop();
         controller.showWorkspacePicker();
@@ -460,6 +463,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
     required this.showAgentVersion,
     required this.agentVersionEnabled,
     required this.onSelectAgentVersion,
+    required this.onUsageHistory,
   });
 
   final AgentKind agent;
@@ -470,6 +474,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
   final bool showAgentVersion;
   final bool agentVersionEnabled;
   final VoidCallback onSelectAgentVersion;
+  final VoidCallback onUsageHistory;
 
   @override
   Widget build(BuildContext context) {
@@ -480,42 +485,51 @@ class _ThreadSettingsDialog extends StatelessWidget {
           color: codexRaised,
           borderRadius: BorderRadius.circular(8),
           clipBehavior: Clip.antiAlias,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
-                child: Text(
-                  '设置',
-                  style: Theme.of(context).textTheme.titleMedium,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+                  child: Text(
+                    '设置',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
-              ),
-              _SettingsActionRow(
-                icon: Icons.folder,
-                title: '选择工作目录',
-                detail: '切换新会话默认使用的目录',
-                enabled: agentConnected,
-                onTap: onSelectWorkspace,
-              ),
-              _SettingsActionRow(
-                icon: Icons.settings,
-                title: '配置 ${agent.label}',
-                detail: '模型地址、API 密钥和代理',
-                enabled: agentConnected && canConfigureAgent,
-                onTap: onConfigureAgent,
-              ),
-              if (showAgentVersion)
                 _SettingsActionRow(
-                  icon: Icons.system_update_alt,
-                  title: '${agent.label} 版本',
-                  detail: agentVersionEnabled
-                      ? _versionActionDetail(agent)
-                      : '运行时操作进行中，请稍后再试',
-                  enabled: agentVersionEnabled,
-                  onTap: onSelectAgentVersion,
+                  icon: Icons.folder,
+                  title: '选择工作目录',
+                  detail: '切换新会话默认使用的目录',
+                  enabled: agentConnected,
+                  onTap: onSelectWorkspace,
                 ),
-            ],
+                _SettingsActionRow(
+                  icon: Icons.settings,
+                  title: '配置 ${agent.label}',
+                  detail: '模型地址、API 密钥和代理',
+                  enabled: agentConnected && canConfigureAgent,
+                  onTap: onConfigureAgent,
+                ),
+                if (showAgentVersion)
+                  _SettingsActionRow(
+                    icon: Icons.system_update_alt,
+                    title: '${agent.label} 版本',
+                    detail: agentVersionEnabled
+                        ? _versionActionDetail(agent)
+                        : '运行时操作进行中，请稍后再试',
+                    enabled: agentVersionEnabled,
+                    onTap: onSelectAgentVersion,
+                  ),
+                _SettingsActionRow(
+                  icon: Icons.bar_chart_outlined,
+                  title: '消耗统计',
+                  detail: '按请求查看 Token 和耗时',
+                  enabled: true,
+                  onTap: onUsageHistory,
+                ),
+              ],
+            ),
           ),
         ),
       ),

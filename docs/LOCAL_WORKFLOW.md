@@ -462,6 +462,15 @@ Node bridge/settings 回归验证实际协议与活动 writer 改名；均使用
 不消耗模型额度。新会话仅首次成功发送尝试一次，失败原名保留；旧会话、纯附件和手动标题不得被改写。
 该能力需要可用的 Provider API key，不以真实 OAuth/CLI 登录测试代替离线门禁；一次标题请求可能产生 token 费用。
 
+请求统计定向回归使用 `test/app/request_usage_controller_test.dart`、
+`test/persistence/request_usage_store_test.dart`、`test/ui/usage_history_screen_test.dart`，并运行
+`test/app/resume_lifecycle_test.dart`、`test/ui/work_screen_layout_test.dart`、
+`test/ui/thread_list_and_lifecycle_test.dart` 与 `test/agent/open_code_bootstrap_test.dart` 验证生产接线。
+均用合成用量/本地存储，不读取用户日志或调用付费模型。检查重复通知/历史重放不多计、后台隔离、
+处理中显示/完成隐藏、整块点击和离线设置入口；四种自然日筛选、确认清空与重启防重放必须覆盖。
+未知首字/单次耗时显示 `—`，不得把整轮计时填入。持久化/Agent 修改按风险运行 `full`；
+未请求交付时不修改固定下载包、不递增版本或创建标签。
+
 多消息队列的定向回归使用 `test/app/message_queue_test.dart` 和 `test/ui/message_queue_ui_test.dart`。
 设备入口为 `integration_test/message_queue_workflow_test.dart`，通过相同 Flutter 命令在模拟器执行，
 验证多条队列、编辑弹窗和 Android 真实软键盘避让；Host/Agent 使用内存对端，不上传到真实服务器、
@@ -642,6 +651,7 @@ fixture 随 `scripts/test-workflow.sh` 检查中断、超时、坏段、错误�
 | 发送按钮 | 有正文或附件时为发送，只有运行且输入为空才为停止；上传/发送确认期间为禁用的旋转刷新图标，空闲立即发送不闪入队列；确认/失败恢复，停止确认仍保留，Composer 上方不再出现后台 Agent 数量框 |
 | 附件延迟上传 | 添加/编辑/入队不执行 SFTP；空闲发送、队列轮到或引导才上传，删除未发送项不上传；上传失败保留正文/附件，部分成功文件重试不重传，上传/确认中只可编辑下一条草稿与附件，不可重复发送 |
 | 历史压缩状态 | 官方历史条目仅有 id/type 时显示历史已完成，不继承父回合运行状态；连续重进不制造新压缩提示，真正的实时开始/完成仍正确显示 |
+| 请求统计 | 仅处理中显示最近单次请求的两行图标/数值；整块点击及离线设置均进入同页，四种日期范围与确认清空正确；历史恢复不多计、不串服务器/Agent/会话，未上报指标显示 — |
 | 队列恢复边界 | 最终答案文本不提前发送下一条；停止、失败、断线后队列暂停待确认，迟到 RPC 不复活已完成回合；队列仅在当前进程内保留，不承诺杀进程恢复 |
 | 新建/编辑/删除 Profile | 默认用户 `root`；校验地址/端口；删除只删本地配置 |
 | 密码/私钥连接 | 指纹首次确认；变化时显示旧/新指纹；取消保留旧值；确认替换后重连；失败不影响其他服务器 |

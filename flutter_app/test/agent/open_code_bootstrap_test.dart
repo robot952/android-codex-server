@@ -121,16 +121,45 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('OpenCode bridge asset', () {
-    test('is bundled and matches the reviewed Kotlin bridge', () async {
+    test('is bundled and matches the reviewed Flutter bridge', () async {
       final source = await OpenCodeBridgeAsset.load();
 
       expect(source, startsWith('"use strict";'));
       expect(source, contains('module.exports = {'));
       expect(
         OpenCodeBootstrap.bridgeSha256(source),
-        '353b2059cc3a0c5d1ba8342b26d279c480122500e4dd3670ad0cab9f64068947',
+        '96fb3fd7cdb29a8a3952d91dd5b4f85fee51c85fe43a7339ae269db0fdc8a4ba',
       );
     });
+
+    test(
+      'production bridge reports cache-inclusive input without a known window',
+      () async {
+        final result = await Process.run('node', [
+          '-e',
+          r'''
+const assert = require('node:assert/strict');
+const bridge = require(process.argv[1]);
+const info = {tokens: {input: 11, output: 5, reasoning: 2, cache: {read: 7, write: 3}}};
+const usage = bridge.mapMessageTokenUsage(info, 400000);
+assert.deepEqual(usage.last, {
+  cachedInputTokens: 7, inputTokens: 21, outputTokens: 7,
+  reasoningOutputTokens: 2, totalTokens: 28,
+});
+assert.equal(usage.modelContextWindow, 400000);
+assert.deepEqual(bridge.mapMessageTokenUsage(info, 0).last, usage.last);
+assert.equal(bridge.mapMessageTokenUsage({tokens: {}}, 0), null);
+assert.equal(bridge.mapMessageTokenUsage({tokens: {input: -1, output: 'invalid'}}, 0), null);
+''',
+          File('assets/opencode-bridge.cjs').absolute.path,
+        ]);
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+      },
+    );
   });
 
   group('OpenCode runtime probe', () {

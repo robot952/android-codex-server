@@ -109,6 +109,8 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/app/app_controller.dart | Riverpod StateNotifier；Profile、SSH、Agent lane、会话恢复/缓存、模型目录、Work 状态和持久化编排 | 当前运行 |
 | flutter_app/lib/src/app/app_controller_message_queue.dart | AppController 同库队列编排；按服务器/Agent/线程排队、明确终态调度、编辑/删除/引导、发送失败保护 | 当前运行；队列和附件正文仅在内存中 |
 | flutter_app/lib/src/app/app_controller_thread_title.dart、flutter_app/lib/src/agent/thread_title.dart | 新会话首次发送后的异步智能标题、请求/响应校验和手动改名竞态保护 | 当前实现；失败保持原名，不插入聊天回合 |
+| flutter_app/lib/src/app/request_usage_controller.dart、flutter_app/lib/src/domain/request_usage.dart | 独立用量状态、单次请求身份/指标归一化、去重、日期筛选及有界保留 | 当前运行；消费实时用量，非回合计时或账单 |
+| flutter_app/lib/src/persistence/request_usage_store.dart | 本机请求统计元数据、独立 isolate 编解码、串行原子落盘和读取失败保护 | 当前运行；不保存正文、地址或凭据 |
 | flutter_app/lib/src/domain/models.dart | Freezed/JSON 领域模型、Agent/线程/时间线/审批/上下文，以及安装/工作区/全局设置状态 | 当前与预留并存 |
 | flutter_app/lib/src/domain/model_catalog.dart | 自定义模型 ID/名称/token 上限归一化、远端/自定义目录合并、隐藏、编辑恢复与 API 模型选项映射 | 当前运行；供控制器和展示层共用 |
 | flutter_app/lib/src/persistence/profile_store.dart | 加密 Profile 存储、边界归一化、旧原生数据迁移 | 当前运行 |
@@ -136,6 +138,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/ui/remote_setup_dialog.dart | 运行时信息、代理输入、总体/下载进度、失败重试和安装中最小化；代理聚焦时收起运行时信息 | 当前运行；IME 安全，与旧 Compose 聚焦行为一致 |
 | flutter_app/lib/src/ui/workspace_picker_dialog.dart | 当前远端路径、父/子目录浏览、加载/错误显示和目录确认 | 当前运行 |
 | flutter_app/lib/src/ui/work_screen.dart | 当前线程时间线、Composer、附件选择/上传、审批、模型/自定义模型管理/权限、会话操作、图片预览/保存、远程文件保存、上下文环和子 Agent 子会话入口 | 当前运行 |
+| flutter_app/lib/src/ui/request_usage_summary.dart、flutter_app/lib/src/ui/usage_history_screen.dart | 处理中两行指标、整块点击入口、请求明细/汇总、四种日期筛选和确认清空 | 当前运行；列表设置也可离线进入 |
 | flutter_app/lib/src/ui/sub_agent_presentation.dart | 子 Agent 活动分组、稳定身份色、独立状态映射和终态保护 | 当前运行；由 WorkScreen 接线 |
 | flutter_app/lib/src/ui/model_selection_presentation.dart | wire 模型名、当前模型匹配、思考强度和模型容量展示映射 | 当前运行；由 WorkScreen 接线 |
 | flutter_app/lib/src/app/profile_scoped_back_stack.dart | 按 profile + Agent 隔离的父子会话返回栈、pending pop 幂等和清理 | 当前运行 |
@@ -271,6 +274,10 @@ AppUiState 是 Flutter 展示状态，字段分为：
 应用自身更新不属于 `AppUiState`：`appUpdateProvider` 持有独立 `AppUpdateState`，记录已安装版本、检查中、
 可用 Release、是否自动提示和 DownloadManager 状态。不要把它混入某个服务器 profile，也不要把远程
 Agent 运行时或连接组件安装状态与手机 APK 更新状态混为一谈。
+
+请求消耗统计同样独立于 `AppUiState`：`requestUsageProvider` 持有本机 `UsageHistoryState`，
+`AppController` 在实时事件入口观测用量，Widget 只按当前服务器、Agent、Provider 和线程选择最近一笔。
+统计页使用普通 Navigator 路由，不改变连接、活动会话、输入草稿或正在运行的回合。
 
 ServerProfile 当前保存名称、主机、端口、用户名、密码/私钥、指纹、工作目录、代理、权限模式、
 `remoteCommand` 和 Agent 偏好。新增字段必须有默认值并保持旧 JSON 可解析。`AgentCapabilities` 描述
@@ -464,6 +471,7 @@ Back 仍可操作；确认保存的是当前展示路径，不是某个目录行
 解锁输入框或覆盖对话错误。连续点击同一会话去重，不同会话只采用最后一次导航；取消或切页后的结果不能退回列表。
 
 齿轮菜单提供工作目录、当前 Agent 配置和当前 Agent 版本入口，文件管理由顶栏入口打开。
+菜单还提供独立的“消耗统计”，SSH/Agent 离线时仍可进入本机记录；连接依赖的原操作继续灰显。
 Codex、OpenCode、Claude Code 均可从版本弹窗刷新稳定版本列表并选择升级或降级；目录请求与错误独立，
 请求失败仍可使用已保存版本。Claude Code 明确提示直接修改服务器现有 CLI、保留登录配置。
 配置项只在当前 Agent 已连接且声明
@@ -546,6 +554,8 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
 - 上下文圆环只按服务器返回的 `last.total / modelContextWindow` 计算，中心显示已用百分比，点击显示已用/剩余 tokens；
   圆环和模型名称组成靠右的弹性区域，模型变长时向权限按钮方向扩展并单行缩放，不能因固定空白提前省略；有效
   TokenUsage 在 lane cache 中保留，返回同一会话可立即恢复；未知窗口显示 `?`，不猜比例；
+- 只有正在处理时，耗时尾行右侧显示最近单次请求的输入、输出、缓存命中及首字延迟，分两行使用小图标与数值；
+  整块区域可点击进入“消耗统计”，完成后不保留该指标块。未知值显示 `—`，不影响原上下文圆环。
 - Markdown 可选择文本，解析出的 HTTP/HTTPS Markdown link 和紧邻中文标点的裸 URL 显示蓝色，点击先确认
   后交给系统浏览器；标准 Markdown link 只显示 label，不把目标 URL 复制到正文；
 - `[名称](/absolute/server/path)` 会转换成仅 App 内部识别的安全链接；PNG/JPG/WebP/GIF/BMP 路径点击后
@@ -822,6 +832,35 @@ Chat Completions SDK；Claude 使用原生设置的 Anthropic Messages API。OAu
 用户手动重命名立即取消自动结果；已在途的自动改名与手动改名串行，最终以用户命名为准。
 Claude 当前 bridge writer 内的改名同时更新活动 run 对象，避免后续流式保存恢复旧名字；其他进程
 的 writer 占用仍然拒绝修改。
+
+### 9.4.2 本机请求消耗统计
+
+统计入口来自实时 `thread/tokenUsage/updated`，在导航/恢复缓冲前观测一次；恢复重放不重复观测，
+历史快照、上下文容量变更和 bridge 标记 `requestMetrics.historical=true` 的通知不新增请求。
+记录身份绑定 `profileId + AgentKind + Provider + threadId`：有上游 request/message ID 时取其稳定身份，
+Codex v2 缺少请求 ID 时使用 turn ID 与累计计数标识该次用量。重复通知及同 ID 的流式用量合并为一笔，
+相同 token 数但累计量不同的请求仍分开；晚到旧请求不替换最近请求的时间戳。后台会话也记录，
+但不把其指标显示到当前会话。模型优先采用上游实际模型，否则采用该 turn 开始时捕获的选择值。
+
+OpenCode bridge 将 assistant message ID/模型作为实时请求元数据，并统一输入包含 cache read/write、
+输出包含 reasoning 的口径；没有 context window 时仍可统计实际 Token，圆环继续显示未知窗口。
+Claude bridge 使用真实 assistant message ID 聚合 start/delta/final usage；缺少 stream message ID 时
+等最终稳定 ID 再记录，防止临时 ID 与最终 ID 双计。迟到旧消息更新其自身用量，不借用最新消息数据。
+缓存命中是输入的子集，不再次加入总 Token；缺失、无效或负数与真实的零值区分。
+
+首字与总耗时只接受明确属于单次模型请求的 `requestMetrics.firstTokenMillis/durationMillis`；
+当前部分 CLI/原生 Codex 通知不提供这些值，此时显示 `—`，不能用整轮耗时、工具等待或首个文字事件估算。
+仅记录本机实际收到的 Agent 用量，不补算离线期间请求、不抓取账单；独立标题/API 测试未上报用量时
+也不计入。不保证与供应商账单一致，不因缺指标新增付费请求或改写现有模型调用。
+
+`UsageHistoryScreen` 展示逐笔模型、Agent、时间、输入/输出/缓存、首字、总耗时和总 Token，以及范围汇总；
+今天、昨天、近 7 天、近 30 天均按本机自然日边界筛选，每分钟刷新日期。清空需二次确认，删除所有日期的
+本机明细，不删对话或中断请求；保留有界身份哈希，避免已清空记录被重复通知恢复。两个入口共用同一页。
+
+数据位于应用私有支持目录 `request_usage_v1.json`，只含数值、时间、模型和不含 URL 的作用域 ID，
+不保存提示/回答、服务器地址、Key 或原始通知。最多近 90 天/10000 笔及 20000 个已删除身份哈希，文件
+上限 12 MiB；编解码在独立 isolate，写入串行且临时文件原子替换。读取失败显示错误并禁止自动覆盖原文件，
+新用量仍在内存显示；重试合并原数据，用户明确清空才可替换损坏文件。保存失败保留内存并允许重试。
 
 ### 9.5 Work UI、IME 和子 Agent（当前实现与缺口）
 
@@ -1125,6 +1164,7 @@ Debian、Codex、工作区和本机 Profile。
 | 会话/模型列表和 loading | profileId + AgentKind + 当前 Provider | 当前 AppUiState lane maps；Codex thread/list 使用 modelProviders 过滤 |
 | 活动时间线、运行态、目标 | profileId + AgentKind + Provider + threadId | 当前控制器用 active-key/thread guard；目标对象不长期持久化 |
 | transcript/TokenUsage cache | profileId + AgentKind + Provider，cache 内再按 threadId | 当前 ThreadSessionCache；切换 Provider 时清空 lane cache |
+| 请求统计/最近一笔指标 | profileId + AgentKind + Provider + threadId + 稳定请求身份 | 独立 requestUsageProvider/私有元数据文件；历史重放不新增，筛选/清空不改会话 |
 | 草稿、模型、思考强度、完成计时 | profileId + AgentKind + threadId | 当前 StoredProfiles 复合键 |
 | 审批队列 | profileId + AgentKind + threadId（请求 generation 由 Agent 客户端校验） | Flutter/Kotlin 控制器分桶；无 threadId 的旧协议使用 lane 兼容桶 |
 | 待发附件 | 当前活动 AppUiState；写回用 profileId + AgentKind + threadId guard | 不持久化；离开会话清空 |
@@ -1410,6 +1450,9 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/app/app_controller_test.dart | 初始化/持久化、Profile/指纹/资源/目录、附件与全局配置/API 模型获取/自定义模型目录和同步 generation、运行时安装，以及子 Agent 多层导航、加载中/重复返回、失败重试、错误 thread 防污染、会话设置隔离、审批按 thread 隔离/精确回答和迟到回调保护 |
 | test/app/message_queue_test.dart | 三种 Agent 的多条 FIFO、明确终态调度、编辑/删除/引导、延迟上传和部分失败重试、停止/断线/配置失效、跨线程/Agent 隔离、异步问题回复与派发互斥 |
 | test/app/thread_title_test.dart、test/agent/thread_title_test.dart | 三种 Agent 首次发送/失败回退、非阻塞队列、手动命名竞态与跨线程隔离；提示边界、完整 Responses/SSE 与 Chat 响应校验 |
+| test/app/request_usage_controller_test.dart | 稳定请求合并/去重、累计量拆分、服务器/Agent/Provider/线程隔离、历史过滤、清空防重放、读写失败重试、保留边界、元数据隐私及自然日筛选 |
+| test/persistence/request_usage_store_test.dart | 独立实例读写、原子替换、版本/损坏/大小/数量限制、非法行保留有效数据及并发写入 |
+| test/ui/usage_history_screen_test.dart | 四种日期范围、汇总/未知值、确认清空、错误重试和两行指标整块点击/窄屏大字体 |
 | test/app/profile_scoped_back_stack_test.dart | profile + Agent 栈隔离、pending pop 幂等、取消/迟到回调保护和清理 |
 | test/domain/models_test.dart | Profile 默认值、Agent 模型字段、复合偏好键、上下文/差异辅助模型 |
 | test/domain/model_catalog_test.dart | 空远端目录下保留会话模型/effort、自定义模型 ID/名称/token 上限、远端/自定义合并、隐藏、编辑恢复、API 选项筛选/应用，以及 OpenCode `custom-api/`、旧 `codex-remote/` 迁移、effort 和 managed ID |
@@ -1422,14 +1465,14 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/user_input_dialog_test.dart | 提问弹窗、选项说明、自定义输入、多问题、队列、键盘/大字体、私密输入与失败重试 |
 | test/agent/codex_global_settings_test.dart | Shell 语法、临时 HOME 配置读写、Provider/Key/`supports_websockets` 保留与更新、权限、`/models` 解析/去重、0600 header 文件和密钥不泄漏、自动 Responses/Chat 回退、显式 API 协议严格不回退和 HTTP/网络错误映射 |
 | test/agent/opencode_agent_client_test.dart | capability、workspace quoting、运行时生命周期、全局设置、真实 Key、Provider 前缀、模型同步/tombstone/缓存和显式 API 协议 |
-| test/agent/open_code_bootstrap_test.dart | 打包 bridge hash、固定版本探测、安装/卸载脚本语法、HTTP/HTTPS 代理防注入和托管卸载边界 |
+| test/agent/open_code_bootstrap_test.dart | 打包 bridge hash、生产 bridge 的缓存包含口径/未知窗口用量、固定版本探测、安装/卸载脚本语法、HTTP/HTTPS 代理防注入和托管卸载边界 |
 | test/agent/claude_code_agent_client_test.dart | Claude CLI/Node 探测、连接组件校验与安装/卸载边界、JSONL 接入和启动环境隔离 |
 | test/ssh/ssh_server_client_test.dart | `sh -s`/长任务脚本只走 stdin、EOF、非零退出、输出上限、超时，以及跨 chunk UTF-8/CRLF/末行进度回调 |
 | test/agent/remote_bootstrap_test.dart | runtime 探测、兼容命令、依赖错误、固定版本、HTTP/HTTPS 代理防注入、进度解析和安装/卸载边界 |
 | test/agent/codex_event_reducer_test.dart | turn/delta 生命周期、后台 thread 隔离、TokenUsage 窗口保护、旧 turn 完成防护，以及空 started/完整 completed 的乐观用户消息与图片附件合并 |
 | test/agent/agent_connection_manager_test.dart | profile + Agent lane、host 断开、generation/旧请求防护、连接前不提前暴露 capability、steer 转发和自定义模型同步迟到结果隔离 |
 | test/agent/thread_session_cache_test.dart | 会话缓存 TTL、LRU、权重上限和上下文用量隔离 |
-| test/app/resume_lifecycle_test.dart | resume 通知缓冲/顺序、迟到响应保护，以及返回列表后后台 timeline/TokenUsage 写回缓存并在重进时恢复 |
+| test/app/resume_lifecycle_test.dart | resume 通知缓冲/顺序、迟到响应保护、恢复期间统计只记一次，以及返回列表后后台 timeline/TokenUsage/请求统计隔离 |
 | test/ui/sub_agent_presentation_test.dart | 子 Agent 状态映射、同 turn 终态保护、跨 turn 重启、相邻活动分组和稳定身份色 |
 | test/ui/model_selection_presentation_test.dart | catalog id/wire model 匹配、模型/effort 标签和容量格式 |
 | test/platform/local_file_exporter_test.dart | Android 导出会话 begin/write/complete/abort、分块上限和关闭后拒绝写入 |
@@ -1444,10 +1487,10 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/agent_settings_dialog_test.dart | Codex/OpenCode 字段顺序、真实 Key 回显/隐藏、测试草稿、保存二次确认、Provider 保留、IME 尺寸和忙碌状态 |
 | test/ui/remote_setup_dialog_test.dart | 运行时信息、固定版本/路径、代理输入、总体/下载进度、失败重试、最小化，以及先聚焦再注入 IME inset 的键盘避让与信息收起 |
 | test/ui/app_update_dialog_test.dart | 更新日志、下载完成、安装等待、后台继续、浏览器地址/失败重试/任务保留，以及 320/360/390 dp 两行双列几何、大字体、长日志滚动和提醒回调 |
-| test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态和 Work 生命周期键盘收起判定 |
+| test/ui/thread_list_and_lifecycle_test.dart | Agent 断线隐藏缓存列表、搜索过滤、`working` 运行态、Work 生命周期键盘收起及离线设置进入统计页 |
 | test/ui/claude_code_workflow_test.dart | 生产 Claude adapter/controller/WorkScreen 配合受控 JSONL 对端，覆盖 capability 菜单、发送/流式回复、批准/拒绝、停止、重开和跨 Agent 历史隔离 |
 | test/ui/server_metrics_strip_test.dart | 资源指标在目标竖屏中保持自然宽度、紧凑间距和左对齐 |
-| test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序和目标竖屏无溢出 |
+| test/ui/work_screen_layout_test.dart | Work 页面原版时间线布局、思考/命令折叠、图片卡片、Composer 控件顺序、处理中指标显示/完成隐藏与窄屏大字体无溢出 |
 | test/ui/message_queue_ui_test.dart | 三种 Agent 的发送/停止按钮、队列操作、附件选择/编辑本地暂存、跨页面 picker 结果隔离、窄屏大字体与键盘避让 |
 | test/ui/mcp_tool_card_test.dart | MCP 默认折叠、流式更新保留展开状态、条目/会话隔离、空输出、长按复制和窄屏大字体 |
 
@@ -1634,6 +1677,9 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
     本地出包可按交付要求执行，不因修改触发云端构建。两端手动云端发布也必须使用已有的匹配版本标签。
 37. 新对话首条文字成功发送后，使用所选模型异步摘要会话标题；失败保留原截断名，不阻塞对话、不新增
     聊天回合或读取附件内容，手动重命名始终优先。旧会话不批量补标题，不借此触发压缩或额外工具调用。
+38. 处理中尾行右侧只用两行小图标/数字显示最近单次请求的输入、输出、缓存命中和首字；完成后隐藏。
+    整块可点击进入请求统计，列表设置也保留离线入口；支持今天/昨天/近 7 天/近 30 天和确认清空。
+    单次请求指标不得冒充回合累计或账单，未知值显示 `—`；历史恢复不能制造额外消耗记录。
 
 ## 15. 修改影响图和顺序
 
@@ -2961,6 +3007,25 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   构建包、两个本机发布别名和内网完整下载 SHA-256 均为
   `3f5387840772d76f6b44131310e462dba028d46f9f1e5bd5694bc1e6ab6e996e`。
   稳定签名证书 SHA-256 仍为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.89 本机请求消耗统计（2026-10-28）
+
+- 处理中尾行新增两行小图标/数值，显示当前会话最近单次请求的输入、输出、缓存命中和首字；完成后隐藏。
+  整块点击和对话列表设置的“消耗统计”进入同一页，后者离线仍可使用；支持逐笔明细、范围汇总、
+  今天/昨天/近 7 天/近 30 天及确认清空。协议口径、去重和持久化边界见 9.4.2。
+- 定向回归 `133` 项通过；最终 analyze 无问题、Flutter 全量 `945` 项、Claude bridge `48` 场景及
+  官方 CLI 的隔离本地模拟 API 联调、Debug/Release 构建均通过。正常 Release 在 Android 14
+  `1220x2712` 模拟器保留数据覆盖安装，启动与截图检查通过；统计交互由 Widget 测试验证，
+  不将启动 smoke 记作真实 Provider 或用户真机端到端验收，本轮不调用真实付费模型。
+- 成功的 `full --reuse` 用时 `5m26.084s`：服务器/OpenCode 门禁命中缓存，Claude `28.319s`、
+  Android 全门禁 `4m26.290s`、释放 Gradle `0.612s`、Release 启动检查 `26.310s`、索引同步
+  `3.078s`、调度 `1.284s`。Android 内 analyze `5.881s`、测试 `1m36.022s`、Debug `1m15.996s`、
+  Release `1m25.553s`，属于嵌套计时，不与 Android 总阶段重复相加。
+- 返工包括合成零值测试数据、独立 isolate 的闭包捕获、Flutter 3.44 Tooltip 定位、窄屏大字体布局、
+  bridge 固定哈希及四处静态检查提示；修正后上述回归全部通过，失败记录保留在
+  `.workflow-cache/task-timings/` 的 `request-usage-20261028` 任务中，任务总时长不当作编译耗时。
+- 版本保持 `1.8.186+318`，本轮仅同步两端 main，不创建标签或触发云端出包，也不更新固定下载地址。
+  未上报的单次首字/耗时显示 `—`；仅记录本机收到的用量，不补算离线请求或冒充供应商账单。
 
 ## 18. 文档维护规则
 

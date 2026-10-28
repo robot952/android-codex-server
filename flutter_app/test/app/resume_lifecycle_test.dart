@@ -6,6 +6,7 @@ import 'package:codex_remote/src/agent/remote_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_bootstrap.dart';
 import 'package:codex_remote/src/agent/thread_session_cache.dart';
 import 'package:codex_remote/src/app/app_controller.dart';
+import 'package:codex_remote/src/app/request_usage_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/persistence/thread_snapshot_store.dart';
@@ -14,6 +15,8 @@ import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/request_usage_fixture.dart';
 
 const _profile = ServerProfile(
   id: 'server',
@@ -50,6 +53,57 @@ const _threadB = AgentThread(
 );
 
 void main() {
+  test(
+    'usage counts live notifications once during resume and in the background',
+    () async {
+      final usage = RequestUsageController(MemoryRequestUsageStore());
+      addTearDown(usage.dispose);
+      await usage.ready;
+      final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
+      final harness = await _createHarness(agent, usage: usage);
+      final pending = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadAActive);
+      await _waitUntil(() => agent.resumeCalls.length == 1);
+      Map<String, dynamic> params(String id) => {
+        ...usageParams(
+          requestId: id,
+          metrics: {'model': 'actual-fixture-model'},
+        ),
+        'threadId': _threadA.id,
+        'turnId': 'turn-a',
+      };
+      agent.emit(
+        _notificationWithParams('thread/tokenUsage/updated', params('first')),
+      );
+      await _waitUntil(() => usage.state.records.length == 1);
+      pending.complete(
+        const AgentSession(thread: _threadAActive, timeline: []),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(usage.state.records, hasLength(1));
+      expect(usage.state.records.single.model, 'actual-fixture-model');
+
+      harness.controller.backToThreadList();
+      agent.emit(
+        _notificationWithParams('thread/tokenUsage/updated', params('second')),
+      );
+      await _waitUntil(() => usage.state.records.length == 2);
+      harness.controller.openThread(_threadB);
+      await _waitUntil(() => !harness.controller.state.loading);
+      final foregroundUsage = harness.controller.state.tokenUsage;
+      agent.emit(
+        _notificationWithParams('thread/tokenUsage/updated', params('third')),
+      );
+      await _waitUntil(() => usage.state.records.length == 3);
+      expect(harness.controller.state.activeThread?.id, _threadB.id);
+      expect(harness.controller.state.tokenUsage, foregroundUsage);
+      expect(
+        usage.state.records.every((r) => r.threadId == _threadA.id),
+        isTrue,
+      );
+      await usage.flush();
+    },
+  );
   test(
     'updated latest user-only page retains overlapping older context',
     () async {
@@ -2013,6 +2067,7 @@ Future<_Harness> _createHarness(
   StoredProfiles? storedProfiles,
   bool waitForAgent = true,
   ThreadSnapshotStore? snapshots,
+  RequestUsageController? usage,
 }) async {
   final store = _MemoryProfileStore(
     storedProfiles ??
@@ -2033,6 +2088,9 @@ Future<_Harness> _createHarness(
     null,
     null,
     snapshots,
+    null,
+    null,
+    usage,
   );
   addTearDown(() async {
     controller.dispose();

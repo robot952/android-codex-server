@@ -920,9 +920,9 @@ class ClaudeBridge {
     }
     run.usageByMessage.set(messageId, breakdown);
     if (isLatest) { run.lastUsage = breakdown; run.lastUsageId = messageId; }
-    this.publishUsage(run);
+    this.publishUsage(run, { requestId: messageId, model: model || run.usageModel, usage: breakdown });
   }
-  publishUsage(run) {
+  publishUsage(run, requestMetrics = { historical: true }) {
     if (!run.lastUsage) return;
     const total = { ...run.baseUsage };
     for (const value of run.usageByMessage.values()) for (const key of Object.keys(ZERO_USAGE)) total[key] += value[key];
@@ -934,7 +934,7 @@ class ClaudeBridge {
     // 压缩窗口，恢复会话时拿它当容量会算错。
     run.thread.modelWindow = run.contextWindow;
     run.thread.usageModel = run.usageModel;
-    this.notify("thread/tokenUsage/updated", { threadId: run.thread.id, turnId: run.turn.id, tokenUsage: clone(run.thread.tokenUsage) });
+    this.notify("thread/tokenUsage/updated", { threadId: run.thread.id, turnId: run.turn.id, tokenUsage: clone(run.thread.tokenUsage), requestMetrics: clone(requestMetrics) });
     this.changed(run);
   }
   item(run, id, type, fields = {}) {
@@ -1491,11 +1491,13 @@ class ClaudeBridge {
         // here would recreate text/tool cards under fresh transport IDs.
         run.messageUsage = { ...event.message?.usage };
         run.messageModel = event.message?.model || run.actualModel;
-        this.usage(run, run.messageId, run.messageUsage, run.messageModel);
+        // Without a real message ID wait for the final assistant snapshot;
+        // counting this temporary stream key would double-count its real ID.
+        if (run.streamMessageIdProvided) this.usage(run, run.messageId, run.messageUsage, run.messageModel);
       }
       if (event.type === "message_delta" && event.usage && run.messageId) {
         run.messageUsage = { ...run.messageUsage, ...event.usage };
-        this.usage(run, run.messageId, run.messageUsage, run.messageModel);
+        if (run.streamMessageIdProvided) this.usage(run, run.messageId, run.messageUsage, run.messageModel);
       }
       const index = Number.isSafeInteger(event.index) && event.index >= 0 ? event.index : 0;
       if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
