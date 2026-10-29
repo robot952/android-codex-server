@@ -131,6 +131,7 @@ String? usageIdentifier(Object? value) {
 }
 
 enum UsagePeriod {
+  all('全部日期'),
   today('今天'),
   yesterday('昨天'),
   week('近7天'),
@@ -140,9 +141,11 @@ enum UsagePeriod {
   final String label;
 
   bool contains(int epochMillis, DateTime now) {
+    if (this == all) return true;
     final local = now.toLocal();
     final dayStart = DateTime(local.year, local.month, local.day);
     final start = switch (this) {
+      all => dayStart,
       today => dayStart,
       yesterday => DateTime(local.year, local.month, local.day - 1),
       week => DateTime(local.year, local.month, local.day - 6),
@@ -172,6 +175,19 @@ class UsageTotals {
       if (record.totalTokens case final value?) {
         totalTokens = (totalTokens ?? 0) + value;
       }
+      final input = record.inputTokens;
+      final cached = record.cachedInputTokens;
+      // Only comparable pairs contribute to the weighted rate. Missing cache
+      // usage is unknown, not a cache miss; malformed counts must not exceed 100%.
+      if (input != null &&
+          cached != null &&
+          input >= 0 &&
+          cached >= 0 &&
+          cached <= input) {
+        cacheRateRequests++;
+        _cacheRateInput += input;
+        _cacheRateHits += cached;
+      }
     }
   }
 
@@ -180,4 +196,9 @@ class UsageTotals {
   int? outputTokens;
   int? cachedInputTokens;
   int? totalTokens;
+  int cacheRateRequests = 0;
+  int _cacheRateInput = 0;
+  int _cacheRateHits = 0;
+  double? get cacheHitRate =>
+      _cacheRateInput == 0 ? null : _cacheRateHits / _cacheRateInput;
 }

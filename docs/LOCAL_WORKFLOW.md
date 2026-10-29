@@ -481,6 +481,13 @@ Node bridge/settings 回归验证实际协议与活动 writer 改名；均使用
 `CODEX_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-request-metrics-live.cjs [--ws]`：
 该入口只连接隔离回环假 API，分别验证 SSE/WebSocket 和客户端暂停读取，不使用真实凭据或计费接口。
 布局回归同时检查四项同一行、窄屏/大字体无溢出、Token 明细及汇总统一 `k/M/G` 缩写。
+`CODEX_TEST_BIN=/absolute/path/to/codex ./scripts/flutter-tool.sh test --no-pub test/agent/codex_agent_client_test.dart`
+还会运行两项可选回环用例：使用客户端 `connect` 真正生成的启动命令（包括带引号的可执行文件路径），
+验证 SSE/WebSocket 首字、总耗时以及暂停读取三秒；不再仅绕过启动判定直接运行计时脚本。
+模型筛选、全部日期及加权缓存命中率由 `test/ui/usage_history_screen_test.dart` 和
+`test/app/request_usage_controller_test.dart` 覆盖，包含空数据、缺失计数、零输入和无效缓存计数。
+设备入口 `integration_test/request_usage_workflow_test.dart` 使用内存记录，验证单行处理时间、
+点击指标进入统计页、模型筛选与命中率，保留截图窗口；完成后主发布门禁覆盖安装正常 Release。
 
 多消息队列的定向回归使用 `test/app/message_queue_test.dart` 和 `test/ui/message_queue_ui_test.dart`。
 设备入口为 `integration_test/message_queue_workflow_test.dart`，通过相同 Flutter 命令在模拟器执行，

@@ -138,7 +138,7 @@ void main() {
     await tester.tap(find.text('消耗统计'));
     await tester.pumpAndSettle();
     expect(find.byType(UsageHistoryScreen), findsOneWidget);
-    expect(find.text('该日期范围暂无记录'), findsOneWidget);
+    expect(find.text('当前筛选暂无记录'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
   test(

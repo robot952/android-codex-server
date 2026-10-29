@@ -105,7 +105,16 @@ async function main() {
     args.push("app-server", "--listen", "stdio://");
     const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
     const command = [process.env.CODEX_TEST_BIN, ...args].map(quote).join(" ");
-    child = spawn(process.execPath, [relay, command], { cwd: home, stdio: ["pipe", "pipe", "pipe"],
+    const launch = process.env.CODEX_TEST_LAUNCH_COMMAND;
+    if (launch) {
+      // Exercise the exact shell command built by the mobile client's connect
+      // path. Keep provider settings in this isolated HOME, like a real host.
+      fs.writeFileSync(path.join(home, "config.toml"), Object.entries(overrides)
+        .filter(([key]) => !key.startsWith("otel."))
+        .map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join("\n"));
+    }
+    child = spawn(launch ? "/bin/sh" : process.execPath,
+      launch ? ["-c", launch] : [relay, command], { cwd: home, stdio: ["pipe", "pipe", "pipe"],
       env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home, RUST_LOG: "error",
         HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost" } });
     child.stderr.on("data", data => { stderr = (stderr + data).slice(-8000); });

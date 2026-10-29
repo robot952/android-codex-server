@@ -2308,11 +2308,22 @@ String _durableRemoteCommand(String value) {
   return '$command --listen "unix://\$CODEX_REMOTE_SOCKET"';
 }
 
-bool supportsCodexMetricsRelay(String command) =>
-    supportsDurableCodexAppServer(command) &&
-    RegExp(r'(^|/)(codex|codex-remote)\s+app-server\b').hasMatch(command) &&
-    !RegExp(r'(^|\s)(-c|--config)(=|\s)').hasMatch(command) &&
-    !RegExp(r'''[;&|<>\n\r`$]''').hasMatch(command);
+bool supportsCodexMetricsRelay(String command) {
+  if (!supportsDurableCodexAppServer(command) ||
+      RegExp(r'(^|\s)(-c|--config)(=|\s)').hasMatch(command) ||
+      RegExp(r'''[;&|<>\n\r`$]''').hasMatch(command)) {
+    return false;
+  }
+  // Runtime discovery shell-quotes absolute paths, including paths with spaces.
+  // Inspect the executable token rather than matching the basename followed by
+  // whitespace (which silently excluded every discovered quoted executable).
+  final match = RegExp(
+    r'''^(?:'([^']+)'|"([^"]+)"|([^\s'"]+))\s+app-server\b''',
+  ).firstMatch(command.trim());
+  if (match == null) return false;
+  final executable = match.group(1) ?? match.group(2) ?? match.group(3)!;
+  return RegExp(r'(^|/)(codex|codex-remote)$').hasMatch(executable);
+}
 
 String buildCodexAppServerCommand(
   ServerProfile profile, {

@@ -3921,10 +3921,20 @@ class _TurnTimingFooterState extends State<_TurnTimingFooter> {
                 ),
               ),
               const SizedBox(width: 9),
-              Expanded(child: _ProcessingStatusText(elapsed: elapsed)),
+              // Keep the status and elapsed time together; reserve only their
+              // natural width instead of assigning 65% of the row to metrics.
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: constraints.maxWidth * 0.8,
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: _ProcessingStatusText(elapsed: elapsed),
+                ),
+              ),
               const SizedBox(width: 8),
-              SizedBox(
-                width: (constraints.maxWidth * 0.65).clamp(160.0, 250.0),
+              Expanded(
                 child: RequestUsageSummary(
                   profileId: widget.profileId,
                   agent: widget.agent,
@@ -3996,9 +4006,8 @@ class _ProcessingStatusTextState extends State<_ProcessingStatusText>
   @override
   Widget build(BuildContext context) {
     final baseColor = codexMuted.withValues(alpha: 0.64);
-    return Wrap(
-      spacing: 6,
-      runSpacing: 2,
+    return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         AnimatedBuilder(
           animation: _controller,
@@ -4021,6 +4030,7 @@ class _ProcessingStatusTextState extends State<_ProcessingStatusText>
           child: Text('正在处理', style: Theme.of(context).textTheme.bodySmall),
         ),
         if (widget.elapsed != null) ...[
+          const SizedBox(width: 6),
           Text(
             widget.elapsed!,
             style: Theme.of(

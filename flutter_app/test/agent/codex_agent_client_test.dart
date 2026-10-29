@@ -7,6 +7,7 @@ import 'package:codex_remote/src/agent/codex_agent_client.dart';
 import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/agent/opencode_agent_client.dart';
 import 'package:codex_remote/src/agent/remote_agent_client.dart';
+import 'package:codex_remote/src/agent/remote_bootstrap.dart';
 import 'package:codex_remote/src/domain/model_catalog.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
@@ -1155,6 +1156,103 @@ void main() {
     expect(host.runCount, 0);
     client.close();
   });
+
+  test(
+    'discovered quoted Codex commands enable server timing on connect',
+    () async {
+      for (final path in [
+        '/root/.local/bin/codex-remote',
+        '/srv/team space/codex',
+      ]) {
+        final inspection = AgentRuntimeInspection(
+          os: 'Linux',
+          architecture: 'x86_64',
+          home: '/root',
+          libc: 'glibc',
+          hasShell: true,
+          hasTar: true,
+          hasSha256: true,
+          hasFlock: true,
+          hasSetsidWait: true,
+          managedVersion: 'codex-cli $pinnedCodexVersion',
+          managedPath: path,
+        );
+        String? openedCommand;
+        final client = CodexAgentClient(
+          metricsRelayLoader: () async => 'function runRelay(command) {}',
+          sessionOpener: (_, command) async {
+            openedCommand = command;
+            return _FakeCodexSession();
+          },
+        );
+        addTearDown(client.close);
+        await client.connect(
+          ServerProfile(id: 's', remoteCommand: inspection.compatibleCommand!),
+          _FakeCodexHost(),
+        );
+        expect(
+          openedCommand,
+          contains('exec "\$metrics_node" -e'),
+          reason: path,
+        );
+      }
+      expect(
+        supportsCodexMetricsRelay('"/srv/team space/codex" app-server'),
+        isTrue,
+      );
+      for (final command in [
+        'echo /bin/codex app-server',
+        "'/bin/codex' app-server -c model=test",
+        "'/bin/codex' app-server; echo nope",
+        "'/bin/codex' app-server --listen ws://localhost:1",
+      ]) {
+        expect(supportsCodexMetricsRelay(command), isFalse, reason: command);
+      }
+    },
+  );
+
+  for (final websocket in [false, true]) {
+    test(
+      'production connect command measures server TTFT over ${websocket ? 'WebSocket' : 'HTTPS'}',
+      () async {
+        final binary = Platform.environment['CODEX_TEST_BIN']!;
+        String? launch;
+        final client = CodexAgentClient(
+          metricsRelayLoader: () =>
+              File('assets/codex-request-metrics.cjs').readAsString(),
+          sessionOpener: (_, command) async {
+            launch = command;
+            return _FakeCodexSession();
+          },
+        );
+        addTearDown(client.close);
+        await client.connect(
+          ServerProfile(
+            id: 's',
+            remoteCommand: '${shellQuote(binary)} app-server --listen stdio://',
+          ),
+          _FakeCodexHost(),
+        );
+        expect(launch, contains('exec "\$metrics_node" -e'));
+        final result = await Process.run(
+          'node',
+          [
+            '../scripts/test-codex-request-metrics-live.cjs',
+            if (websocket) '--ws',
+          ],
+          environment: {'CODEX_TEST_LAUNCH_COMMAND': launch!},
+        );
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+      },
+      skip: Platform.environment['CODEX_TEST_BIN'] == null
+          ? 'Opt-in loopback probe requires an installed Codex binary'
+          : false,
+    );
+  }
 
   test('builds a stable detached Unix-socket app-server command', () async {
     const profile = ServerProfile(

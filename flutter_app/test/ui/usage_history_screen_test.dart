@@ -60,7 +60,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('today-model'), findsOneWidget);
+      expect(find.text('today-model'), findsWidgets);
       expect(find.text('1 笔请求'), findsOneWidget);
       for (final (label, count) in [('昨天', 1), ('近7天', 3), ('近30天', 4)]) {
         await tester.tap(find.byKey(const ValueKey('usage-period')));
@@ -80,7 +80,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.state.records, isEmpty);
       expect(store.snapshot.records, isEmpty);
-      expect(find.text('该日期范围暂无记录'), findsOneWidget);
+      expect(find.text('当前筛选暂无记录'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -109,6 +109,69 @@ void main() {
     expect(find.textContaining('12.3k'), findsWidgets);
     expect(find.textContaining('2.3k'), findsWidgets);
     expect(find.textContaining('12345'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('model and date filters update weighted cache rate together', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(360, 800);
+    addTearDown(tester.view.reset);
+    final now = DateTime(2026, 10, 28, 12);
+    final store = MemoryRequestUsageStore()
+      ..snapshot = UsageHistorySnapshot(
+        records: [
+          usageFixture(model: 'model-A', input: 100, cached: 50),
+          usageFixture(id: 'b', model: 'model-B', input: 900, cached: 810),
+          usageFixture(
+            id: 'c',
+            model: 'model-A',
+            input: 400,
+            cached: 100,
+            at: now.subtract(const Duration(days: 1)).millisecondsSinceEpoch,
+          ),
+          usageFixture(id: 'd', model: null, input: 50, cached: null),
+        ],
+      );
+    final controller = RequestUsageController(
+      store,
+      nowMillis: () => now.millisecondsSinceEpoch,
+    );
+    await controller.ready;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [requestUsageProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(
+          theme: buildCodexTheme(),
+          home: UsageHistoryScreen(now: () => now),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    Future<void> select(String key, String label) async {
+      await tester.tap(find.byKey(ValueKey(key)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label).last);
+      await tester.pumpAndSettle();
+    }
+
+    expect(find.text('缓存命中率 86.0%'), findsOneWidget);
+    await select('usage-model', 'model-A');
+    expect(find.text('1 笔请求'), findsOneWidget);
+    expect(find.text('缓存命中率 50.0%'), findsOneWidget);
+    await select('usage-period', '全部日期');
+    expect(find.text('2 笔请求'), findsOneWidget);
+    expect(find.text('缓存命中率 30.0%'), findsOneWidget);
+    await select('usage-model', '全部模型');
+    expect(find.text('4 笔请求'), findsOneWidget);
+    expect(find.text('缓存命中率 68.6%'), findsOneWidget);
+    await select('usage-model', '模型未上报');
+    expect(find.text('缓存命中率 —'), findsOneWidget);
+    await select('usage-period', '昨天');
+    expect(find.text('0 笔请求'), findsOneWidget);
+    expect(find.text('缓存命中率 —'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

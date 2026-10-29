@@ -39,6 +39,7 @@ class UsageHistoryScreen extends ConsumerStatefulWidget {
 
 class _UsageHistoryScreenState extends ConsumerState<UsageHistoryScreen> {
   UsagePeriod _period = UsagePeriod.today;
+  String _modelFilter = 'all';
   bool _clearing = false;
   Timer? _timer;
 
@@ -88,8 +89,32 @@ class _UsageHistoryScreenState extends ConsumerState<UsageHistoryScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(requestUsageProvider);
     final now = widget.now?.call() ?? DateTime.now();
+    String modelKey(RequestUsageRecord record) =>
+        record.model == null ? 'unknown' : 'model:${record.model}';
+    final modelOptions =
+        {
+          'all': '全部模型',
+          for (final record in state.records)
+            modelKey(record): record.model ?? '模型未上报',
+          if (_modelFilter != 'all')
+            _modelFilter: _modelFilter == 'unknown'
+                ? '模型未上报'
+                : _modelFilter.substring(6),
+        }.entries.toList()..sort(
+          (a, b) => a.key == b.key
+              ? 0
+              : a.key == 'all'
+              ? -1
+              : b.key == 'all'
+              ? 1
+              : a.value.compareTo(b.value),
+        );
     final records = state.records
-        .where((r) => _period.contains(r.recordedAtMillis, now))
+        .where(
+          (r) =>
+              _period.contains(r.recordedAtMillis, now) &&
+              (_modelFilter == 'all' || modelKey(r) == _modelFilter),
+        )
         .toList();
     final totals = UsageTotals(records);
     return Scaffold(
@@ -132,6 +157,32 @@ class _UsageHistoryScreenState extends ConsumerState<UsageHistoryScreen> {
                 ],
                 onChanged: (value) {
                   if (value != null) setState(() => _period = value);
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: DropdownButtonFormField<String>(
+                key: const ValueKey('usage-model'),
+                initialValue: _modelFilter,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '模型',
+                  isDense: true,
+                ),
+                items: [
+                  for (final option in modelOptions)
+                    DropdownMenuItem(
+                      value: option.key,
+                      child: Text(
+                        option.value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) setState(() => _modelFilter = value);
                 },
               ),
             ),
@@ -194,19 +245,24 @@ class _UsageHistoryScreenState extends ConsumerState<UsageHistoryScreen> {
                                 Text(
                                   '总 Token ${usageTokenLabel(totals.totalTokens)}',
                                 ),
+                                Text(
+                                  '缓存命中率 ${totals.cacheHitRate == null ? '—' : '${(totals.cacheHitRate! * 100).toStringAsFixed(1)}%'}',
+                                  key: const ValueKey('usage-cache-hit-rate'),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              '仅统计本机收到的 Agent 请求用量，非账单。缓存命中包含在输入中，不重复相加。'
-                              '未上报的指标显示 —，汇总仅相加已知值。最多保留近 90 天、10000 笔。',
+                              '缓存已计入输入。命中率 = 缓存合计 ÷ 输入合计'
+                              '（有效 ${totals.cacheRateRequests}/${totals.requests} 笔）。'
+                              '未知值显示 —。仅统计本机收到的用量，非账单；最多保留 90 天、10000 笔。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const Divider(height: 24),
                             if (records.isEmpty)
                               const Padding(
                                 padding: EdgeInsets.symmetric(vertical: 32),
-                                child: Center(child: Text('该日期范围暂无记录')),
+                                child: Center(child: Text('当前筛选暂无记录')),
                               ),
                           ],
                         );

@@ -10,6 +10,36 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/request_usage_fixture.dart';
 
 void main() {
+  test(
+    'cache rate weights comparable token counts and leaves missing data unknown',
+    () {
+      final totals = UsageTotals([
+        usageFixture(input: 100, cached: 50),
+        usageFixture(input: 900, cached: 810),
+        usageFixture(input: 1000, cached: null),
+        usageFixture(input: null, cached: 50),
+        usageFixture(input: 10, cached: 20),
+      ]);
+      expect(totals.cacheHitRate, closeTo(.86, .0001));
+      expect(totals.cacheRateRequests, 2);
+      expect(UsageTotals([]).cacheHitRate, isNull);
+      expect(
+        UsageTotals([usageFixture(input: 0, cached: 0)]).cacheHitRate,
+        isNull,
+      );
+      expect(
+        UsageTotals([usageFixture(input: 100, cached: 0)]).cacheHitRate,
+        0,
+      );
+      expect(
+        UsagePeriod.all.contains(
+          DateTime(2026, 9, 1).millisecondsSinceEpoch,
+          DateTime(2026, 10, 28),
+        ),
+        isTrue,
+      );
+    },
+  );
   final now = DateTime(2026, 10, 28, 12);
   late MemoryRequestUsageStore store;
   late RequestUsageController controller;

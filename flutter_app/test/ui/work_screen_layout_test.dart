@@ -237,7 +237,10 @@ void main() {
         ),
         running: true,
         activeTurnId: 'turn-1',
-        turnTiming: TurnTiming(threadId: 'thread', startedAtMillis: now - 2000),
+        turnTiming: TurnTiming(
+          threadId: 'thread',
+          startedAtMillis: now - 363000,
+        ),
       );
       controller.showState(running);
       await tester.pump(const Duration(milliseconds: 100));
@@ -249,6 +252,11 @@ void main() {
         findsOneWidget,
       );
       expect(tester.getSize(summary).height, inInclusiveRange(32, 40));
+      // Even at 320 dp and 2x text the elapsed time stays beside the label.
+      expect(
+        tester.getCenter(find.text('正在处理')).dy,
+        closeTo(tester.getCenter(find.text('6m 3s')).dy, 1),
+      );
       expect(tester.takeException(), isNull);
 
       controller.showState(running.copyWith(selectedProfileId: 'other-server'));

@@ -28,9 +28,10 @@ class MemoryRequestUsageStore implements RequestUsageStore {
 RequestUsageRecord usageFixture({
   String id = 'a',
   int? at,
-  String model = 'fixture-model',
+  String? model = 'fixture-model',
   int? input = 100,
   int? output = 20,
+  int? cached = 50,
 }) => RequestUsageRecord(
   id: id.padRight(64, id),
   profileId: 'server',
@@ -41,7 +42,7 @@ RequestUsageRecord usageFixture({
   model: model,
   inputTokens: input,
   outputTokens: output,
-  cachedInputTokens: 50,
+  cachedInputTokens: cached,
   totalTokens: input != null && output != null ? input + output : null,
   firstTokenMillis: 350,
   durationMillis: 2100,
