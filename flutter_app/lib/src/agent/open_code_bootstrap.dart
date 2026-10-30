@@ -409,13 +409,20 @@ case " $ACTUAL_FLAT " in
   *) printf 'OpenCode 版本校验失败: %s\n' "$ACTUAL" >&2; exit 65 ;;
 esac
 progress 95 100 '校验 OpenCode 运行时 __OPENCODE_VERSION__' "$ACTUAL"
+# The bundled bridge can exceed Linux's per-argument limit after base64
+# encoding. Feed it through stdin, and validate before replacing any release.
+printf '%s' __BRIDGE_BASE64_SHELL__ | "$NODE" -e 'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], Buffer.from(fs.readFileSync(0, "utf8"), "base64"), { mode: 384 })' "$WORK/bridge.cjs"
+ACTUAL_HASH="$(sha256sum "$WORK/bridge.cjs" | cut -d ' ' -f 1)"
+if [ "$ACTUAL_HASH" != '__BRIDGE_SHA256__' ]; then
+  printf 'OpenCode 桥接程序完整性校验失败\n' >&2
+  exit 65
+fi
+"$NODE" --check "$WORK/bridge.cjs" >/dev/null
+printf '%s\n' '__BRIDGE_SHA256__' > "$WORK/bridge.sha256"
 rm -rf -- "$RELEASE"
 mv "$WORK" "$RELEASE"
-mkdir -p "$OPENCODE_ROOT"
-BRIDGE="$OPENCODE_ROOT/bridge.cjs"
-"$NODE" -e 'require("node:fs").writeFileSync(process.argv[1], Buffer.from(process.argv[2], "base64"), { mode: 384 })' \
-  "$BRIDGE" __BRIDGE_BASE64_SHELL__
-printf '%s\n' '__BRIDGE_SHA256__' > "$OPENCODE_ROOT/bridge.sha256"
+mv -f "$RELEASE/bridge.cjs" "$OPENCODE_ROOT/bridge.cjs"
+mv -f "$RELEASE/bridge.sha256" "$OPENCODE_ROOT/bridge.sha256"
 WRAPPER="$BIN_DIR/.codex-remote-opencode-bridge.$$"
 cat > "$WRAPPER" <<'EOF'
 #!/bin/sh

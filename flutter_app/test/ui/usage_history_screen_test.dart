@@ -221,7 +221,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('12.3k'), findsOneWidget);
       final target = find.byKey(const ValueKey('request-usage-summary'));
-      expect(tester.getSize(target).height, inInclusiveRange(32, 40));
+      expect(tester.getSize(target).height, inInclusiveRange(24, 40));
       expect(
         tester.getTopLeft(find.byIcon(Icons.arrow_upward)).dy,
         tester.getTopLeft(find.byIcon(Icons.cached)).dy,

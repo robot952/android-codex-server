@@ -188,6 +188,101 @@ Future<void> _jumpToTranscriptStart(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  for (final width in [440.0, 600.0]) {
+    testWidgets('processing strip is compact and right aligned at $width dp', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = Size(width, 800);
+      addTearDown(tester.view.reset);
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager);
+      addTearDown(manager.close);
+      final usage = RequestUsageController(MemoryRequestUsageStore());
+      await usage.ready;
+      usage.observe(
+        profileId: 'server',
+        agent: AgentKind.codex,
+        provider: 'fixture-provider',
+        threadId: 'thread',
+        params: usageParams(
+          input: 174600,
+          output: 450,
+          metrics: {'firstTokenMillis': 8150},
+        ),
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appControllerProvider.overrideWith((ref) => controller),
+            requestUsageProvider.overrideWith((ref) => usage),
+          ],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      controller.showState(
+        AppUiState(
+          screen: AppScreen.work,
+          selectedProfileId: 'server',
+          activeThread: const AgentThread(
+            id: 'thread',
+            title: '布局验证',
+            modelProvider: 'fixture-provider',
+          ),
+          running: true,
+          turnTiming: TurnTiming(
+            threadId: 'thread',
+            startedAtMillis: DateTime.now().millisecondsSinceEpoch - 363000,
+          ),
+          timeline: List.generate(
+            30,
+            (index) => TimelineEntry(
+              id: 'reply-$index',
+              kind: TimelineKind.agentMessage,
+              text: '历史消息 $index：保持正常的消息间距。',
+            ),
+          ),
+          aggregateDiff:
+              'diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new',
+        ),
+      );
+      for (var frame = 0; frame < 6; frame++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      final footer = tester.getRect(
+        find.byKey(const ValueKey('turn-timing-footer')).last,
+      );
+      final metrics = tester.getRect(
+        find.byKey(const ValueKey('request-usage-summary')),
+      );
+      final previous = tester.getRect(
+        find.byKey(const ValueKey('aggregate-diff')).last,
+      );
+      final composer = tester.getRect(
+        find.byKey(const Key('composer-surface')),
+      );
+      expect(footer.height, 24);
+      expect(footer.top - previous.bottom, closeTo(4, 0.1));
+      expect(composer.top - footer.bottom, closeTo(7, 0.1));
+      expect(
+        metrics.right - tester.getRect(find.text('8.15s')).right,
+        closeTo(3, 0.1),
+      );
+      expect(
+        tester.getCenter(find.text('正在处理')).dy,
+        closeTo(tester.getCenter(find.text('6m 3s')).dy, 1),
+      );
+      expect(find.text('174.6k').hitTestable(), findsOneWidget);
+      expect(find.text('8.15s').hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
   testWidgets(
     'request metrics appear only while processing without scope leaks',
     (tester) async {
@@ -251,7 +346,7 @@ void main() {
         find.descendant(of: summary, matching: find.text('12.3k')),
         findsOneWidget,
       );
-      expect(tester.getSize(summary).height, inInclusiveRange(32, 40));
+      expect(tester.getSize(summary).height, inInclusiveRange(24, 40));
       // Even at 320 dp and 2x text the elapsed time stays beside the label.
       expect(
         tester.getCenter(find.text('正在处理')).dy,

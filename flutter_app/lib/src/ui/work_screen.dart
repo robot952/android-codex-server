@@ -2618,9 +2618,9 @@ class _Transcript extends StatelessWidget {
       );
     }
     trailingItems.add(
-      const KeyedSubtree(
-        key: ValueKey('transcript-tail-spacer'),
-        child: SizedBox(height: 6),
+      KeyedSubtree(
+        key: const ValueKey('transcript-tail-spacer'),
+        child: SizedBox(height: state.running ? 2 : 6),
       ),
     );
     final itemCount = rows.length + trailingItems.length;
@@ -2641,11 +2641,19 @@ class _Transcript extends StatelessWidget {
           delegate: SliverChildBuilderDelegate(
             (context, index) {
               final sourceIndex = itemCount - index - 1;
+              // The processing strip is adjacent to the composer, not another
+              // message card. Avoid stacking normal message gaps around it.
+              final beforeProcessing = state.running && index == 2;
+              final isProcessing = state.running && index == 1;
               return Padding(
                 key: itemKeys[sourceIndex],
                 padding: EdgeInsets.only(
                   top: index == itemCount - 1 ? _transcriptVerticalPadding : 0,
-                  bottom: index == 0 ? 0 : 10,
+                  bottom: index == 0 || isProcessing
+                      ? 0
+                      : beforeProcessing
+                      ? 4
+                      : 10,
                 ),
                 child: sourceIndex < rows.length
                     ? buildRow(rows[sourceIndex])
@@ -5589,6 +5597,7 @@ class _Composer extends StatelessWidget {
                   const SizedBox(height: 6),
                 ],
                 Container(
+                  key: const Key('composer-surface'),
                   width: double.infinity,
                   decoration: BoxDecoration(
                     color: const Color(0xFF1B1B1B),

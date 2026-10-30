@@ -38,6 +38,47 @@ Future<void> _writeFile(String path, String contents) async {
   await file.writeAsString(contents);
 }
 
+// Run the real generated installer and real Node, substituting only npm's
+// network/package work. A regular node wrapper is needed by the runtime probe.
+Future<Directory> _createInstallHome() async {
+  final home = await Directory.systemTemp.createTemp('opencode-install-');
+  addTearDown(() => home.delete(recursive: true));
+  final node = await Process.run('node', ['-p', 'process.execPath']);
+  expect(node.exitCode, 0, reason: '${node.stderr}');
+  final bin = '${home.path}/.local/share/codex-remote/runtime/node/bin';
+  await _writeFile(
+    '$bin/node',
+    '#!/bin/sh\nexec ${shellQuote((node.stdout as String).trim())} "\$@"\n',
+  );
+  await _writeFile(
+    '$bin/npm',
+    '#!/bin/sh\nexec "\$(dirname "\$0")/node" "\$(dirname "\$0")/npm.cjs" "\$@"\n',
+  );
+  await _writeFile('$bin/npm.cjs', r'''
+const fs = require('node:fs');
+const dependencies = JSON.parse(fs.readFileSync('package.json', 'utf8')).dependencies;
+const packages = Object.fromEntries(Object.entries(dependencies).map(([name, version]) =>
+  [`node_modules/${name}`, {version}]));
+if (process.argv[2] === 'install') {
+  fs.writeFileSync('package-lock.json', JSON.stringify({packages}));
+} else if (process.argv[2] === 'ci') {
+  fs.mkdirSync('node_modules/.bin', {recursive: true});
+  for (const [path, pkg] of Object.entries(packages)) {
+    fs.mkdirSync(`${path}/bin`, {recursive: true});
+    fs.writeFileSync(`${path}/package.json`, JSON.stringify(pkg));
+    if (path.includes('opencode-linux-')) {
+      fs.writeFileSync(`${path}/bin/opencode`, `#!/bin/sh\nprintf '%s\\n' '${pkg.version}'\n`, {mode: 0o700});
+    }
+  }
+} else {
+  throw new Error(`Unexpected npm command: ${process.argv[2]}`);
+}
+''');
+  final chmod = await Process.run('chmod', ['700', '$bin/node', '$bin/npm']);
+  expect(chmod.exitCode, 0);
+  return home;
+}
+
 Future<_ShellResult> _runWrapper(
   String wrapper, {
   required String home,
@@ -315,6 +356,106 @@ __CODEX_REMOTE_OPENCODE_INVALID
   });
 
   group('OpenCode managed install', () {
+    test(
+      'installs the production bridge above the Linux argument limit',
+      () async {
+        final home = await _createInstallHome();
+        final bridge = await OpenCodeBridgeAsset.load();
+        expect(
+          base64Encode(utf8.encode(bridge)).length,
+          greaterThan(128 * 1024),
+        );
+        const version = '1.19.3';
+        final root = '${home.path}/.local/share/codex-remote';
+        await _writeFile('$root/runtime/keep', 'shared runtime');
+        final result = await _runShell(
+          OpenCodeBootstrap.installScript(
+            openCodeVersion: version,
+            bridgeSource: bridge,
+          ),
+          home: home.path,
+        );
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        expect(result.stdout, contains('安装完成'));
+        final installed = File('$root/opencode/bridge.cjs');
+        expect(await installed.readAsBytes(), utf8.encode(bridge));
+        expect((await installed.stat()).mode & 0x1ff, 0x180);
+        expect(
+          (await File('$root/opencode/bridge.sha256').readAsString()).trim(),
+          OpenCodeBootstrap.bridgeSha256(bridge),
+        );
+        final probe = await _runShell(
+          OpenCodeBootstrap.probeScriptFor(openCodeVersion: version),
+          home: home.path,
+        );
+        expect(probe.exitCode, 0, reason: probe.stderr);
+        expect(OpenCodeBootstrap.parseProbe(probe.stdout).version, version);
+        expect(
+          OpenCodeBootstrap.parseProbe(probe.stdout).bridgeSha256,
+          OpenCodeBootstrap.bridgeSha256(bridge),
+        );
+        expect(
+          await File('$root/runtime/keep').readAsString(),
+          'shared runtime',
+        );
+        expect(
+          Directory(
+            '$root/opencode',
+          ).listSync().where((entry) => entry.path.contains('/.install-')),
+          isEmpty,
+        );
+      },
+    );
+
+    for (final invalid in ['checksum', 'syntax']) {
+      test(
+        'preserves the installed release when bridge $invalid fails',
+        () async {
+          final home = await _createInstallHome();
+          final root = '${home.path}/.local/share/codex-remote/opencode';
+          final oldFiles = [
+            '$root/bridge.cjs',
+            '$root/bridge.sha256',
+            '$root/releases/1.19.3/keep',
+            '${home.path}/.local/bin/codex-remote-opencode-bridge',
+          ];
+          for (final path in oldFiles) {
+            await _writeFile(path, 'previous install');
+          }
+          const validSource = 'console.log("ok");';
+          var script = OpenCodeBootstrap.installScript(
+            openCodeVersion: '1.19.3',
+            bridgeSource: invalid == 'syntax' ? 'function {' : validSource,
+          );
+          if (invalid == 'checksum') {
+            script = script.replaceAll(
+              base64Encode(utf8.encode(validSource)),
+              base64Encode(utf8.encode('console.log("tampered");')),
+            );
+          }
+          final result = await _runShell(script, home: home.path);
+          expect(result.exitCode, isNot(0), reason: result.stdout);
+          expect(
+            result.stderr,
+            contains(invalid == 'checksum' ? '完整性校验失败' : 'SyntaxError'),
+          );
+          for (final path in oldFiles) {
+            expect(await File(path).readAsString(), 'previous install');
+          }
+          expect(
+            Directory(
+              root,
+            ).listSync().where((entry) => entry.path.contains('/.install-')),
+            isEmpty,
+          );
+        },
+      );
+    }
+
     test('uses pinned packages, bridge hash, and HTTP proxy', () async {
       const bridge = "console.log('bridge');\n";
       const proxy = r"https://example.com/'$(touch${IFS}/tmp/injected)'";

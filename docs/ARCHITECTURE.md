@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.189+321，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.190+322，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -3150,6 +3150,36 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   均为 `04575e785ab047cf71c626347370c5e9a623b829cf6601b99ab00c86bda7c79e`。
   稳定证书 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
   内网完整下载 `120ms`，包名、版本、证书回验通过；外网 FRP 未请求。
+
+### 17.94 OpenCode 安装参数越界与处理栏留白修复（2026-10-30）
+
+- 修复 OpenCode 下载完成后 `node: Argument list too long`：随包桥接文件为 100,819 字节，
+  Base64 后超过 Linux 单个进程参数的 128 KiB 上限。安装脚本改为 shell 内置 `printf` 经标准输入
+  交给 Node 解码，不再将桥接正文作为 Node 参数。生成文件先在安装临时目录校验 SHA-256 和
+  `node --check`，通过后才替换选中版本的运行文件及桥接/哈希；失败清理临时文件并保留原安装。
+  不更改固定默认版本或用户选中的版本，不重装共享 Node，也不修改系统 OpenCode。
+- 运行中的用量指标靠右对齐；普通字号状态行最小高度由 32dp 缩为 24dp，上一条内容到状态行的间距
+  从 10dp 缩为 4dp，状态行后取消额外 10dp 列表间距，尾部占位从 6dp 缩为 2dp，与输入框边框共隔
+  7dp。消息之间、已完成状态、短会话顶部定位维持原规则；大字体按内容增高，极窄指标区域仍可横滑。
+- 回归使用真实随包桥接、真实 Node 和离线 npm fixture 跑完整生成脚本，覆盖用户选择的 `1.19.3`、
+  超长 Base64、落盘内容/权限/哈希、探测与临时文件清理，以及内容损坏、语法错误不覆盖旧安装。
+  布局测试直接测量状态栏高度、上下距离、右边界，并保留 320dp 两倍字体下时间不换行与统计入口检查。
+- 本次版本为 `1.8.190+322`，沿用稳定签名，本地发布并同步两端 main；外网 FRP 仅提供地址、不回验。
+- 验证完成：62 项定向测试、analyze、全量 961 项 Flutter 测试通过（2 项可选原生测试未启用）；
+  Claude bridge 48 场景及真实 CLI 回环集成通过。Android 14 上完整检查长会话状态栏、键盘弹出、
+  点击统计及模型筛选；右对齐和上下距离的实测断言通过，截图为 `.workflow-cache/usage-strip-190.png`。
+  最终重新覆盖安装正常 Release，启动截图确认首页 `v1.8.190`。初次定向测试的紧凑高度及宽屏对齐
+  断言调整后复验通过，无主门禁失败或重复全量构建。
+- 发布主门禁耗时 `6m34.616s`：服务器 `0.088s`、OpenCode `0.166s`（缓存命中），Claude `29.576s`，
+  暂停模拟器 `20.280s`，Android `4m45.942s`，释放 Gradle `0.798s`，Release 启动 `27.891s`，
+  索引同步 `2.890s`，发布 `25.453s`，调度 `1.532s`。Android 内依赖 `1.668s`、静态检查 `10.634s`、
+  测试 `1m37.118s`、Debug `24.521s`、Release `2m30.566s` 是嵌套计时，不重复相加。
+  定向首轮 `22.690s`、复验 `18.080s`，Android 页面验证 `1m35.940s`；完整任务记录见
+  `.workflow-cache/task-timings/opencode-layout-190.tsv`。
+- `dist/Agent-1.8.190.apk` 为 `32,091,894` 字节；构建、归档、本地别名及内网完整下载 SHA-256
+  均为 `2e43359a485aaa00ec9baa2830b255119a6a10ca57abdec0638e7d88d068974c`。
+  稳定签名证书 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`，
+  内网下载回验耗时 `123ms`；外网 FRP 未请求。
 
 ## 18. 文档维护规则
 

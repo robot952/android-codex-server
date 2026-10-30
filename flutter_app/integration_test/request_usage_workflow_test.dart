@@ -78,13 +78,16 @@ void main() {
           threadId: 'thread',
           startedAtMillis: DateTime.now().millisecondsSinceEpoch - 363000,
         ),
-        timeline: const [
-          TimelineEntry(
-            id: 'reply',
-            kind: TimelineKind.agentMessage,
-            text: '首字计时来自服务器。点击下方统计区域可以查看请求明细，并按模型和日期筛选。',
-          ),
+        timeline: [
+          for (var index = 0; index < 30; index++)
+            TimelineEntry(
+              id: 'reply-$index',
+              kind: TimelineKind.agentMessage,
+              text: '首字计时来自服务器。点击下方统计区域可以查看请求明细，并按模型和日期筛选。',
+            ),
         ],
+        aggregateDiff:
+            'diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new',
       ),
     );
     // WorkScreen reveals history after its initial bottom-anchor frames.
@@ -95,6 +98,23 @@ void main() {
     final elapsed = tester.getCenter(find.textContaining(RegExp(r'^6m \ds$')));
     expect(label.dy, closeTo(elapsed.dy, 1));
     expect(find.text('350ms').hitTestable(), findsOneWidget);
+    final footer = tester.getRect(
+      find.byKey(const ValueKey('turn-timing-footer')).last,
+    );
+    final metrics = tester.getRect(
+      find.byKey(const ValueKey('request-usage-summary')),
+    );
+    final previous = tester.getRect(
+      find.byKey(const ValueKey('aggregate-diff')).last,
+    );
+    final composer = tester.getRect(find.byKey(const Key('composer-surface')));
+    expect(footer.height, 24);
+    expect(footer.top - previous.bottom, closeTo(4, 0.1));
+    expect(composer.top - footer.bottom, closeTo(7, 0.1));
+    expect(
+      metrics.right - tester.getRect(find.text('350ms')).right,
+      closeTo(3, 0.1),
+    );
     debugPrint('REQUEST_USAGE_STRIP_SCREENSHOT_READY');
     await Future<void>.delayed(const Duration(seconds: 10));
     expect(tester.takeException(), isNull);
