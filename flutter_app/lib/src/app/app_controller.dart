@@ -29,6 +29,7 @@ import 'older_timeline_merge.dart';
 import 'profile_scoped_back_stack.dart';
 import 'request_usage_controller.dart';
 import '../persistence/profile_store.dart';
+import '../persistence/thread_list_cache_store.dart';
 import '../persistence/thread_snapshot_store.dart';
 import '../platform/background_connection_bridge.dart';
 import '../platform/diagnostic_logger.dart';
@@ -48,6 +49,10 @@ final profileStoreProvider = Provider<ProfileStore>((ref) {
 
 final threadSnapshotStoreProvider = Provider<ThreadSnapshotStore>(
   (ref) => EncryptedThreadSnapshotStore(),
+);
+
+final threadListCacheStoreProvider = Provider<ThreadListCacheStore>(
+  (ref) => SharedPreferencesThreadListCacheStore(),
 );
 
 final serverConnectionManagerProvider = Provider<ServerConnectionManager>((
@@ -93,6 +98,7 @@ final appControllerProvider = StateNotifierProvider<AppController, AppUiState>((
     null,
     null,
     ref.watch(requestUsageProvider.notifier),
+    ref.watch(threadListCacheStoreProvider),
   );
 });
 
@@ -120,6 +126,7 @@ class AppController extends StateNotifier<AppUiState> {
     OpenCodeVersionCatalog? openCodeVersionCatalog,
     ClaudeCodeVersionCatalog? claudeCodeVersionCatalog,
     RequestUsageController? requestUsageController,
+    ThreadListCacheStore? threadListCacheStore,
   ]) : _agents = agentConnections ?? AgentConnectionManager(_connections),
        _diagnostics = diagnosticLogger ?? DiagnosticLogger.instance,
        _reconnectDelays = List<Duration>.unmodifiable(
@@ -139,6 +146,8 @@ class AppController extends StateNotifier<AppUiState> {
        _threadSnapshotStore =
            threadSnapshotStore ?? const NoopThreadSnapshotStore(),
        _requestUsage = requestUsageController,
+       _threadListCacheStore =
+           threadListCacheStore ?? const NoopThreadListCacheStore(),
        super(const AppUiState(loading: true)) {
     _connectionSubscription = _connections.stateChanges.listen(
       _applyConnectionStates,
@@ -168,6 +177,7 @@ class AppController extends StateNotifier<AppUiState> {
   final bool _ownsAgentConnections;
   final ThreadSnapshotStore _threadSnapshotStore;
   final RequestUsageController? _requestUsage;
+  final ThreadListCacheStore _threadListCacheStore;
   final _usageModelsByTurn = <String, String>{};
   final LinkedHashMap<String, (int, int?, int, int?)> _liveThreadSnapshots =
       LinkedHashMap();
@@ -364,14 +374,14 @@ class AppController extends StateNotifier<AppUiState> {
           _retainedHostConnections,
         ),
         agentConnectionStates: _agents.states,
-        threads: activeKey == null
-            ? const <AgentThread>[]
-            : state.agentThreadLists[activeKey] ?? const <AgentThread>[],
         models: activeKey == null
             ? const <AgentModel>[]
             : state.agentModelLists[activeKey] ?? const <AgentModel>[],
         loading: false,
       );
+      // Do not hold the first frame on a secondary SharedPreferences read.
+      // The remote list refresh will merge into this state asynchronously.
+      unawaited(_restoreCachedThreadLists());
       if (_retainedHostConnections.isNotEmpty) {
         _diagnostics.info(
           'SSH',
@@ -385,6 +395,43 @@ class AppController extends StateNotifier<AppUiState> {
     } catch (error) {
       if (!mounted) return;
       state = state.copyWith(loading: false, error: _message(error, '读取配置失败'));
+    }
+  }
+
+  Future<void> _restoreCachedThreadLists() async {
+    try {
+      final cached = await _threadListCacheStore.readAll();
+      if (!mounted || cached.isEmpty) return;
+
+      final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
+        state.agentThreadLists,
+      );
+      var changed = false;
+      for (final entry in cached.entries) {
+        final current = lists[entry.key];
+        // An already-present empty list is a valid remote result. Never let
+        // an older cache resurrect deleted threads after that refresh.
+        if (current != null) continue;
+        lists[entry.key] = entry.value;
+        changed = true;
+      }
+      if (!mounted || !changed) return;
+
+      final activeKey = state.selectedProfileId == null
+          ? null
+          : AgentConnectionKey(
+              profileId: state.selectedProfileId!,
+              agent: state.activeAgent,
+            );
+      final activeThreads = activeKey == null || state.threads.isNotEmpty
+          ? state.threads
+          : lists[activeKey] ?? state.threads;
+      state = state.copyWith(
+        agentThreadLists: Map.unmodifiable(lists),
+        threads: activeThreads,
+      );
+    } catch (_) {
+      // A stale or malformed cache must never delay app startup.
     }
   }
 
@@ -620,6 +667,13 @@ class AppController extends StateNotifier<AppUiState> {
         _workspaceStateProfileId = null;
       }
       _threadCaches.removeWhere((key, _) => key.profileId == normalized.id);
+      for (final agent in AgentKind.values) {
+        unawaited(
+          _threadListCacheStore.remove(
+            AgentConnectionKey(profileId: normalized.id, agent: agent),
+          ),
+        );
+      }
       _invalidateThreadTitles((key) => key.profileId == normalized.id);
       _clearSubAgentHistory('${normalized.id}\u0000');
       _subAgentTurns.removeWhere(
@@ -742,6 +796,13 @@ class AppController extends StateNotifier<AppUiState> {
         : state.selectedProfileId;
     final agentData = _withoutAgentProfileData(state, profileId);
     _threadCaches.removeWhere((key, _) => key.profileId == profileId);
+    for (final agent in AgentKind.values) {
+      unawaited(
+        _threadListCacheStore.remove(
+          AgentConnectionKey(profileId: profileId, agent: agent),
+        ),
+      );
+    }
     _invalidateThreadTitles((key) => key.profileId == profileId);
     _clearSubAgentHistory('$profileId\u0000');
     _subAgentTurns.removeWhere((key, _) => key.startsWith('$profileId\u0000'));
@@ -1687,6 +1748,7 @@ class AppController extends StateNotifier<AppUiState> {
     )..remove(key);
     _clearAgentThreadPagination(key);
     _threadCaches.remove(key);
+    unawaited(_threadListCacheStore.remove(key));
     _invalidateThreadTitles((candidate) => candidate == key);
     unawaited(_threadSnapshotStore.removeScope(_snapshotScope(profile, agent)));
     _clearSubAgentHistory(threadPreferenceKey(key.profileId, key.agent, ''));
@@ -5242,6 +5304,16 @@ class AppController extends StateNotifier<AppUiState> {
         proof.$2 == _agents.remoteGeneration(key) &&
         proof.$3 == cache.invalidationRevision &&
         _agents.canReuseThread(key, thread.id, state.approvalMode);
+    final canUseCachedHistory =
+        cached != null &&
+        cached.timeline.isNotEmpty &&
+        !cached.thread.isExternallyOwned &&
+        targetScreen == AppScreen.work &&
+        !isSubAgentThreadSource(thread.source) &&
+        !_subAgentThreadRegistry.contains(key, thread.id) &&
+        (cached.thread.modelProvider.isEmpty ||
+            thread.modelProvider.isEmpty ||
+            cached.thread.modelProvider == thread.modelProvider);
     _diagnostics.info(
       'Thread',
       'open_requested profile=${key.profileId} agent=${key.agent.name} '
@@ -5303,6 +5375,7 @@ class AppController extends StateNotifier<AppUiState> {
           initialSnapshot: initialSnapshot,
           onResumed: onResumed,
           onResumeFailure: onResumeFailure,
+          useCachedHistory: canUseCachedHistory,
           reuseCachedHistory: canReuse,
         ).whenComplete(() {
           if (identical(_threadOpenRequests[effectiveRequestKey], request)) {
@@ -5326,13 +5399,16 @@ class AppController extends StateNotifier<AppUiState> {
     required _SessionSnapshot? initialSnapshot,
     void Function()? onResumed,
     bool Function(Object error)? onResumeFailure,
+    bool useCachedHistory = false,
     bool reuseCachedHistory = false,
   }) async {
     ResumeNotificationBuffer? resumeBuffer;
     final startedAt = Stopwatch()..start();
     try {
       final preparingLane = _agentLoadRequests[key];
-      if (!_isHostAndAgentConnected(key) && preparingLane != null) {
+      if (!_isHostAndAgentConnected(key) &&
+          preparingLane != null &&
+          !useCachedHistory) {
         await preparingLane;
       }
       if (!_isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
@@ -5360,7 +5436,11 @@ class AppController extends StateNotifier<AppUiState> {
           remoteGeneration,
         );
       }
-      final reusable = reuseCachedHistory ? cache.get(thread.id) : null;
+      final reusable = useCachedHistory
+          ? (reuseCachedHistory
+                ? cache.get(thread.id)
+                : cache.getStale(thread.id))
+          : null;
       final session = await _resumeExpectedThread(
         key,
         thread.id,
@@ -6174,6 +6254,11 @@ class AppController extends StateNotifier<AppUiState> {
           threadPage!.threads,
           const <TimelineEntry>[],
         );
+        final isDefaultThreadList =
+            !_isActiveKey(key) || state.threadSearch.isEmpty;
+        if (isDefaultThreadList) {
+          unawaited(_threadListCacheStore.write(key, threadLists[key]!));
+        }
       }
       final modelLists = Map<AgentConnectionKey, List<AgentModel>>.of(
         state.agentModelLists,

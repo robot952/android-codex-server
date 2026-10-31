@@ -834,9 +834,6 @@ class CodexAgentClient
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
   }) async {
     final threadId = snapshot.thread.id;
-    if (!canReuseThread(threadId, approvalMode)) {
-      return resumeThread(threadId, approvalMode: approvalMode);
-    }
     final scope = _requireScope();
     final revision = _reuseRevision;
     try {
@@ -855,10 +852,15 @@ class CodexAgentClient
         timeout: threadRequestTimeout,
       );
       final checked = _sessionFromResponse(response, itemsView: 'cached');
-      if (!scope.isCurrent ||
-          revision != _reuseRevision ||
+      final metadataChanged =
           checked.thread.id != threadId ||
-          checked.thread.modelProvider != snapshot.thread.modelProvider) {
+          (checked.thread.modelProvider.isNotEmpty &&
+              snapshot.thread.modelProvider.isNotEmpty &&
+              checked.thread.modelProvider != snapshot.thread.modelProvider) ||
+          (checked.thread.updatedAt > 0 &&
+              snapshot.thread.updatedAt > 0 &&
+              checked.thread.updatedAt != snapshot.thread.updatedAt);
+      if (!scope.isCurrent || revision != _reuseRevision || metadataChanged) {
         return resumeThread(threadId, approvalMode: approvalMode);
       }
       final active = const {
@@ -885,7 +887,9 @@ class CodexAgentClient
         responseSequence: -1,
       );
     } on CodexRpcException catch (error) {
-      if (!isCodexThreadOwnershipError(error, threadId: threadId)) rethrow;
+      if (!isCodexThreadOwnershipError(error, threadId: threadId)) {
+        return resumeThread(threadId, approvalMode: approvalMode);
+      }
       try {
         return await _readThread(threadId, externallyOwned: true);
       } catch (readError) {

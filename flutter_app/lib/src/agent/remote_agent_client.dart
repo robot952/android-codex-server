@@ -63,8 +63,9 @@ abstract interface class RemoteAgentGenerationClient {
   int? get currentGeneration;
 }
 
-/// Only a live subscription established by a successful writable resume can
-/// authorize reuse. A disk snapshot or read-only inspection cannot do so.
+/// Indicates whether this live connection has a writable subscription that can
+/// accept direct input. Disk snapshots may still be metadata-checked through
+/// [resumeCachedThread] before the app falls back to a full history restore.
 abstract interface class RemoteAgentThreadReuseClient {
   bool canReuseThread(String threadId, ApprovalMode approvalMode);
   Future<AgentSession> resumeCachedThread(
