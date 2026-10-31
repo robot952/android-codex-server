@@ -1553,7 +1553,7 @@ void main() {
   );
 
   test(
-    'occupied thread refreshes its read-only transcript while open',
+    'occupied thread waits for periodic refresh and stops reading after leaving',
     () async {
       final occupied = _threadAActive.copyWith(isExternallyOwned: true);
       final agent = _ResumeAgent(threads: [occupied, _threadB]);
@@ -1575,6 +1575,9 @@ void main() {
       );
       await _waitUntil(() => !harness.controller.state.loading);
       expect(harness.controller.state.isThreadReadOnly, isTrue);
+      await _drainAsyncWork();
+      expect(agent.readCalls, isEmpty);
+      expect(harness.controller.state.timeline.single.text, '旧进度');
 
       agent.readSessions[occupied.id] = AgentSession(
         thread: occupied.copyWith(updatedAt: 11),
@@ -1587,7 +1590,15 @@ void main() {
         ],
       );
       await Future<void>.delayed(const Duration(milliseconds: 2200));
+      expect(agent.readCalls, [occupied.id]);
       expect(harness.controller.state.timeline.single.text, '新进度');
+
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      expect(agent.readCalls, [occupied.id, occupied.id]);
+      harness.controller.backToThreadList();
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      expect(agent.readCalls, [occupied.id, occupied.id]);
+      expect(harness.controller.state.screen, AppScreen.threads);
     },
   );
 
@@ -2557,6 +2568,7 @@ class _ResumeAgent
   int listThreadsCount = 0;
   Completer<AgentThreadPage>? listGate;
   final List<String> resumeCalls = [];
+  final List<String> readCalls = [];
   final List<({String threadId, String cursor})> olderCalls = [];
   final StreamController<RemoteAgentEvent> _events =
       StreamController<RemoteAgentEvent>.broadcast(sync: true);
@@ -2633,6 +2645,7 @@ class _ResumeAgent
 
   @override
   Future<AgentSession> readThread(String threadId) async {
+    readCalls.add(threadId);
     final session = readSessions[threadId];
     if (session == null) throw UnsupportedError('test read not configured');
     return session;

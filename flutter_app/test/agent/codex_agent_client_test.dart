@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:codex_remote/src/agent/claude_code_agent_client.dart';
 import 'package:codex_remote/src/agent/codex_agent_client.dart';
 import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/agent/opencode_agent_client.dart';
@@ -121,6 +122,16 @@ class _FakeCodexHost
     connected = false;
     if (!closed.isCompleted) closed.completeError(error);
   }
+}
+
+class _ThreadListHost extends _FakeCodexHost
+    implements RemoteServerScriptClient {
+  @override
+  Future<String> runShellScript(
+    String script, {
+    Duration timeout = const Duration(seconds: 15),
+    int maxOutputBytes = 1024 * 1024,
+  }) async => '__CODEX_GLOBAL_MODEL_PROVIDER=test-provider';
 }
 
 class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
@@ -264,6 +275,84 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  for (final kind in AgentKind.values) {
+    test(
+      'thread pages remain bounded and preserve cursor/search ($kind)',
+      () async {
+        final requests = <Map<String, Object?>>[];
+        final session = _FakeCodexSession(
+          replyFor: (request) {
+            if (request['method'] != 'thread/list') {
+              return {'result': <String, Object?>{}};
+            }
+            final params = request['params'] as Map<String, Object?>;
+            requests.add(params);
+            final offset = params['cursor'] == null ? 0 : 20;
+            return {
+              'result': {
+                'data': List.generate(
+                  offset == 0 ? 20 : 5,
+                  (index) => {
+                    'id': 'thread-${offset + index}',
+                    'preview': 'search result ${offset + index}',
+                  },
+                ),
+                'nextCursor': offset == 0 ? 'page-2' : null,
+              },
+            };
+          },
+        );
+        final CodexAgentClient client = switch (kind) {
+          AgentKind.codex => CodexAgentClient(
+            sessionOpener: (_, _) async => session,
+          ),
+          AgentKind.openCode => OpenCodeAgentClient(
+            sessionOpener: (_, _) async => session,
+          ),
+          AgentKind.claudeCode => ClaudeCodeAgentClient(
+            sessionOpener: (_, _) async => session,
+          ),
+        };
+        addTearDown(client.close);
+        await client.connect(
+          const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+          _ThreadListHost(),
+        );
+        final first = await client.listThreads(searchTerm: ' search ');
+        expect(first.threads, hasLength(20));
+        expect(first.nextCursor, 'page-2');
+        // The initial request must not eagerly fetch all remaining pages.
+        expect(requests, hasLength(1));
+        final second = await client.listThreadsPage(
+          searchTerm: ' search ',
+          cursor: first.nextCursor,
+        );
+        expect(second.threads.map((thread) => thread.id), [
+          'thread-20',
+          'thread-21',
+          'thread-22',
+          'thread-23',
+          'thread-24',
+        ]);
+        expect(second.nextCursor?.isNotEmpty ?? false, isFalse);
+        expect(requests, hasLength(2));
+        expect(requests.first.containsKey('cursor'), isFalse);
+        expect(requests.last['cursor'], 'page-2');
+        for (final params in requests) {
+          expect(params['limit'], kind == AgentKind.codex ? 20 : 100);
+          expect(params['searchTerm'], 'search');
+          expect(params['sortKey'], 'recency_at');
+          expect(params['sortDirection'], 'desc');
+          expect(params['archived'], isFalse);
+          expect(
+            params['modelProviders'],
+            kind == AgentKind.codex ? ['test-provider'] : isNull,
+          );
+        }
+      },
+    );
+  }
+
   for (final metadataFails in [false, true]) {
     test(
       'cached resume times metadata and full fallback ($metadataFails)',

@@ -238,7 +238,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
                     ),
                   ),
                   child: _ThreadListBody(
-                    key: ValueKey(state.activeAgent),
+                    key: ValueKey(key),
                     agent: state.activeAgent,
                     hostConnected: hostConnected,
                     connectionState: agentState,
@@ -1341,26 +1341,53 @@ class _ThreadListBody extends StatefulWidget {
 
 class _ThreadListBodyState extends State<_ThreadListBody> {
   bool _loadingMore = false;
+  int _loadMoreRevision = 0;
+
+  bool get _canLoadMore =>
+      widget.hostConnected &&
+      widget.connectionState.phase == ConnectionPhase.connected &&
+      !widget.loading &&
+      widget.hasMoreThreads &&
+      !_loadingMore;
 
   @override
   void didUpdateWidget(covariant _ThreadListBody oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.agent != widget.agent ||
-        oldWidget.query != widget.query ||
-        oldWidget.threads.isEmpty && widget.threads.isEmpty) {
+    if (oldWidget.agent != widget.agent || oldWidget.query != widget.query) {
+      _loadMoreRevision++;
       _loadingMore = false;
     }
   }
 
   Future<void> _loadMore() async {
-    if (_loadingMore || !widget.hasMoreThreads || !mounted) return;
+    if (!mounted || !_canLoadMore) return;
+    final revision = ++_loadMoreRevision;
     setState(() => _loadingMore = true);
     try {
       await widget.onLoadMore();
     } finally {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted && revision == _loadMoreRevision) {
+        setState(() => _loadingMore = false);
+      }
     }
   }
+
+  Widget _buildLoadMore() => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: Center(
+      child: TextButton.icon(
+        key: const ValueKey('thread-list-load-more'),
+        onPressed: _canLoadMore ? _loadMore : null,
+        icon: _loadingMore
+            ? const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.expand_more, size: 18),
+        label: Text(_loadingMore ? '加载中…' : '加载更多'),
+      ),
+    ),
+  );
 
   bool _handleScroll(ScrollNotification notification) {
     final scrollingTowardEnd =
@@ -1368,8 +1395,7 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
         (notification.scrollDelta ?? 0) > 0;
     if (scrollingTowardEnd &&
         notification.metrics.extentAfter < 240 &&
-        widget.hasMoreThreads &&
-        !_loadingMore) {
+        _canLoadMore) {
       _loadMore();
     }
     return false;
@@ -1434,18 +1460,12 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
-                itemCount: threads.length + (_loadingMore ? 1 : 0),
+                itemCount:
+                    threads.length +
+                    (widget.hasMoreThreads || _loadingMore ? 1 : 0),
                 itemBuilder: (context, index) {
                   if (index == threads.length) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 14),
-                      child: Center(
-                        child: SizedBox.square(
-                          dimension: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    );
+                    return _buildLoadMore();
                   }
                   return _ThreadRow(
                     threads[index],
@@ -1509,6 +1529,8 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                       ),
                       const SizedBox(height: 9),
                       Text(message, textAlign: TextAlign.center),
+                      if (widget.hasMoreThreads || _loadingMore)
+                        _buildLoadMore(),
                       if ((!hostConnected && onReconnect != null) ||
                           (failed && hostConnected)) ...[
                         const SizedBox(height: 12),

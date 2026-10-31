@@ -771,6 +771,9 @@ class CodexAgentClient
     final scope = _requireScope();
     final response = await _request(
       scope.threadList(
+        // Native Codex prepares each thread before returning the page. Bound
+        // that work so a large history does not delay the first visible rows.
+        limit: kind == AgentKind.codex ? 20 : 100,
         searchTerm: searchTerm,
         cursor: cursor,
         modelProviders: _modelProvider == null

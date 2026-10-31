@@ -4600,11 +4600,12 @@ class AppController extends StateNotifier<AppUiState> {
     if (!mounted || !_isActiveThread(key, threadId)) return;
     _externallyOwnedRefreshKey = key;
     _externallyOwnedRefreshThreadId = threadId;
+    // Opening the thread already fetched its latest snapshot. Wait for the
+    // first refresh interval instead of immediately reading the same page again.
     _externallyOwnedRefreshTimer = Timer.periodic(
       const Duration(seconds: 2),
       (_) => unawaited(_refreshExternallyOwnedThread(key, threadId)),
     );
-    unawaited(_refreshExternallyOwnedThread(key, threadId));
   }
 
   void _stopExternallyOwnedRefresh() {

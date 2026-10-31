@@ -700,6 +700,11 @@ Flutter 依赖错误先检查 `PUB_CACHE` 和 7890 代理，APK 安装错误检�
 会话列表启动时优先显示本地持久化的有界快照，远端 `thread/list` 在后台刷新；会话打开时优先显示内存或
 加密磁盘快照，连接恢复和历史加载分离。Codex 有本地正文快照时只做不带历史正文的元数据校验即可复用
 历史，冷启动、Provider/更新时间变化或校验失败才完整恢复。列表刷新不会覆盖正在恢复的对话状态。
+原生 Codex 列表每页请求 20 条，滚动接近底部或点击“加载更多”才取下一页。定向检查
+`test/agent/codex_agent_client_test.dart` 与 `test/ui/thread_list_and_lifecycle_test.dart`，覆盖搜索/Provider/
+游标保留、短页及过滤空页仍可继续、在途去重、失败重试和终页按钮消失；不把当前加载数量当作全量总数。
+外部 writer 的快照读取完成后不立即重复请求，仍按 2 秒定时刷新；
+`test/app/resume_lifecycle_test.dart` 验证首轮等待、周期继续以及离开后取消。
 
 连接/列表/长会话耗时通过 Debug 日志中的 `Performance timing` 与 AgentTransport 的 `timing`
 定位。每阶段先记录 `status=started`，结束记录同一 `operation` 的状态与 `elapsedMs`；并发及嵌套

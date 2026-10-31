@@ -38,6 +38,9 @@ class _ThreadListController extends AppController {
   int refreshThreadsCount = 0;
   bool? lastRefreshSilent;
   Completer<void>? refreshGate;
+  bool hasMoreThreads = false;
+  int loadMoreThreadsCount = 0;
+  Completer<void>? loadMoreGate;
   AgentKind? selectedAgent;
   int resumedSetupCount = 0;
   bool fileManagerOpened = false;
@@ -45,6 +48,15 @@ class _ThreadListController extends AppController {
   (String, AgentKind, String)? versionChange;
 
   void showState(AppUiState value) => state = value;
+
+  @override
+  bool get activeThreadListHasMore => hasMoreThreads;
+
+  @override
+  Future<void> loadMoreThreads() async {
+    loadMoreThreadsCount++;
+    await loadMoreGate?.future;
+  }
 
   @override
   Future<void> refreshAgentVersions(String profileId, AgentKind agent) async {
@@ -95,7 +107,135 @@ class _ConnectedTerminalManager extends TerminalManager {
   );
 }
 
+AppUiState _pagedThreadListState(
+  List<AgentThread> threads, {
+  String query = '',
+  String? diagnostic,
+}) {
+  const profile = ServerProfile(
+    id: 'server',
+    name: '测试服务器',
+    host: 'example.test',
+    username: 'root',
+    authMode: AuthMode.password,
+  );
+  const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+  return AppUiState(
+    profiles: const [profile],
+    selectedProfileId: profile.id,
+    connectionStates: const {
+      'server': domain.ConnectionState(phase: ConnectionPhase.connected),
+    },
+    agentConnectionStates: {
+      key: const domain.ConnectionState(phase: ConnectionPhase.connected),
+    },
+    agentThreadLists: {key: threads},
+    threadSearch: query,
+    diagnostic: diagnostic,
+  );
+}
+
+Future<_ThreadListController> _pumpPagedThreadList(
+  WidgetTester tester,
+  AppUiState state,
+) async {
+  final manager = ServerConnectionManager();
+  final controller = _ThreadListController(_MemoryStore(), manager);
+  addTearDown(manager.close);
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [appControllerProvider.overrideWith((ref) => controller)],
+      child: MaterialApp(
+        theme: buildCodexTheme(),
+        home: const ThreadListScreen(),
+      ),
+    ),
+  );
+  await tester.pump();
+  controller.hasMoreThreads = true;
+  controller.showState(state);
+  await tester.pumpAndSettle();
+  return controller;
+}
+
 void main() {
+  for (final query in ['', 'matching']) {
+    testWidgets(
+      'a ${query.isEmpty ? 'short' : 'filtered empty'} page can load more and retry',
+      (tester) async {
+        const firstPage = [AgentThread(id: 'one', title: 'First thread')];
+        final initialState = _pagedThreadListState(firstPage, query: query);
+        final controller = await _pumpPagedThreadList(tester, initialState);
+        final loadMore = find.byKey(const ValueKey('thread-list-load-more'));
+        expect(loadMore, findsOneWidget);
+        expect(controller.loadMoreThreadsCount, 0);
+        if (query.isNotEmpty) expect(find.text('没有匹配任务'), findsOneWidget);
+
+        controller.loadMoreGate = Completer<void>();
+        await tester.tap(loadMore);
+        await tester.pump();
+        expect(controller.loadMoreThreadsCount, 1);
+        expect(tester.widget<TextButton>(loadMore).onPressed, isNull);
+
+        // The controller preserves the cursor and exposes an error on failure.
+        // Rebuilding an empty result must not unlock an in-flight page request.
+        controller.showState(initialState.copyWith(diagnostic: '读取更多会话失败'));
+        await tester.pump();
+        expect(tester.widget<TextButton>(loadMore).onPressed, isNull);
+        controller.loadMoreGate!.complete();
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextButton>(loadMore).onPressed, isNotNull);
+        expect(controller.loadMoreThreadsCount, 1);
+
+        controller.loadMoreGate = Completer<void>();
+        await tester.tap(loadMore);
+        await tester.pump();
+        expect(controller.loadMoreThreadsCount, 2);
+        controller.hasMoreThreads = false;
+        controller.showState(
+          _pagedThreadListState([
+            ...firstPage,
+            const AgentThread(id: 'two', title: 'matching next'),
+          ], query: query),
+        );
+        controller.loadMoreGate!.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('matching next'), findsOneWidget);
+        expect(loadMore, findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('scrolling a full page loads one page without eagerly draining', (
+    tester,
+  ) async {
+    final threads = List.generate(
+      20,
+      (index) => AgentThread(id: 'thread-$index', title: 'Thread $index'),
+    );
+    final initialState = _pagedThreadListState(threads);
+    final controller = await _pumpPagedThreadList(tester, initialState);
+    final scroll = find.byKey(const ValueKey('thread-list-scroll'));
+    expect(controller.loadMoreThreadsCount, 0);
+
+    controller.loadMoreGate = Completer<void>();
+    await tester.drag(scroll, const Offset(0, -2000));
+    await tester.pump();
+    expect(controller.loadMoreThreadsCount, 1);
+    await tester.drag(scroll, const Offset(0, -200));
+    await tester.pump();
+    expect(controller.loadMoreThreadsCount, 1);
+
+    controller.showState(initialState.copyWith(diagnostic: '读取更多会话失败'));
+    controller.loadMoreGate!.complete();
+    await tester.pumpAndSettle();
+    expect(controller.loadMoreThreadsCount, 1);
+    final loadMore = find.byKey(const ValueKey('thread-list-load-more'));
+    expect(tester.widget<TextButton>(loadMore).onPressed, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('usage statistics are accessible from settings while offline', (
     tester,
   ) async {
@@ -838,7 +978,7 @@ void main() {
         },
       ),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('thread-list-refresh')), findsOneWidget);
     expect(find.byType(RefreshIndicator), findsNothing);
