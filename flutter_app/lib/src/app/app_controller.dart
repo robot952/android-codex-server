@@ -33,6 +33,7 @@ import '../persistence/thread_list_cache_store.dart';
 import '../persistence/thread_snapshot_store.dart';
 import '../platform/background_connection_bridge.dart';
 import '../platform/diagnostic_logger.dart';
+import '../platform/diagnostic_timing.dart';
 import '../platform/local_linux_manager.dart';
 import '../platform/turn_completion_notifications.dart';
 import '../platform/windows_local_server_client.dart';
@@ -399,9 +400,20 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   Future<void> _restoreCachedThreadLists() async {
+    final timing = DiagnosticTiming.start(
+      stage: 'thread_list_disk_cache',
+      log: (message) => _diagnostics.info('Performance', message),
+    );
     try {
       final cached = await _threadListCacheStore.readAll();
-      if (!mounted || cached.isEmpty) return;
+      if (!mounted || cached.isEmpty) {
+        timing.finish(
+          status: mounted ? TimingStatus.success : TimingStatus.stale,
+          cacheHit: cached.isNotEmpty,
+          count: cached.length,
+        );
+        return;
+      }
 
       final lists = Map<AgentConnectionKey, List<AgentThread>>.of(
         state.agentThreadLists,
@@ -415,7 +427,10 @@ class AppController extends StateNotifier<AppUiState> {
         lists[entry.key] = entry.value;
         changed = true;
       }
-      if (!mounted || !changed) return;
+      if (!mounted || !changed) {
+        timing.finish(status: TimingStatus.stale, count: cached.length);
+        return;
+      }
 
       final activeKey = state.selectedProfileId == null
           ? null
@@ -430,7 +445,9 @@ class AppController extends StateNotifier<AppUiState> {
         agentThreadLists: Map.unmodifiable(lists),
         threads: activeThreads,
       );
-    } catch (_) {
+      timing.finish(cacheHit: true, count: cached.length);
+    } catch (error) {
+      timing.fail(error);
       // A stale or malformed cache must never delay app startup.
     }
   }
@@ -1528,6 +1545,10 @@ class AppController extends StateNotifier<AppUiState> {
     if (agentState?.phase == ConnectionPhase.connected &&
         state.agentThreadLists.containsKey(key) &&
         state.agentModelLists.containsKey(key)) {
+      _startTiming(
+        'agent_load_cache',
+        key,
+      ).finish(count: state.agentThreadLists[key]!.length, cacheHit: true);
       return;
     }
     await _loadAgentData(key, profile, includeModels: true);
@@ -5339,16 +5360,31 @@ class AppController extends StateNotifier<AppUiState> {
             tokenUsage: rememberedTokenUsage,
             activeTurnStartedAtMillis: canReuse ? proof.$4 : null,
           );
-    _showThreadSnapshot(
+    final previewTiming = _startTiming(
+      'thread_preview_apply',
       key,
-      displaySession,
-      loading: true,
-      activeGoal: _threadGoals[effectiveRequestKey],
-      targetScreen: targetScreen,
-      activeAgentName: agentName,
-      subAgentBackNavigation: subAgentBackNavigation,
-      initialSnapshot: initialSnapshot,
+      threadId: thread.id,
+      generation: navigationGeneration,
     );
+    try {
+      _showThreadSnapshot(
+        key,
+        displaySession,
+        loading: true,
+        activeGoal: _threadGoals[effectiveRequestKey],
+        targetScreen: targetScreen,
+        activeAgentName: agentName,
+        subAgentBackNavigation: subAgentBackNavigation,
+        initialSnapshot: initialSnapshot,
+      );
+      previewTiming.finish(
+        count: displaySession.timeline.length,
+        cacheHit: cached != null || initialSnapshot != null,
+      );
+    } catch (error) {
+      previewTiming.fail(error);
+      rethrow;
+    }
     // Pending verification must not refresh an old proof via navigation/cache
     // writes. Only its successfully applied result can establish a new one.
     _liveThreadSnapshots.remove(effectiveRequestKey);
@@ -5404,12 +5440,23 @@ class AppController extends StateNotifier<AppUiState> {
   }) async {
     ResumeNotificationBuffer? resumeBuffer;
     final startedAt = Stopwatch()..start();
+    final timing = _startTiming(
+      'thread_open',
+      key,
+      threadId: thread.id,
+      generation: navigationGeneration,
+    );
+    DiagnosticTiming? localTiming;
     try {
       final preparingLane = _agentLoadRequests[key];
       if (!_isHostAndAgentConnected(key) &&
           preparingLane != null &&
           !useCachedHistory) {
-        await preparingLane;
+        await _startTiming(
+          'thread_lane_wait',
+          key,
+          threadId: thread.id,
+        ).run(() => preparingLane);
       }
       if (!_isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
         return;
@@ -5422,7 +5469,11 @@ class AppController extends StateNotifier<AppUiState> {
           initialRemoteGeneration,
         );
       }
-      await _agents.connect(profile, key.agent);
+      await _startTiming(
+        'thread_connect_wait',
+        key,
+        threadId: thread.id,
+      ).run(() => _agents.connect(profile, key.agent));
       if (!_isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
         return;
       }
@@ -5456,6 +5507,12 @@ class AppController extends StateNotifier<AppUiState> {
                     ? state.turnTiming?.startedAtMillis
                     : null,
               ),
+      );
+      localTiming = _startTiming(
+        'thread_reconcile',
+        key,
+        threadId: thread.id,
+        generation: navigationGeneration,
       );
       final cachedSnapshot = cache.getStale(thread.id);
       final refreshedTimeline = _isolateSubAgentTimeline(
@@ -5501,6 +5558,7 @@ class AppController extends StateNotifier<AppUiState> {
         turnIds: session.turnIds,
         itemsView: session.itemsView,
       );
+      localTiming.finish(count: resolvedSession.timeline.length);
       if (mounted &&
           _isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
         _diagnostics.info(
@@ -5509,6 +5567,12 @@ class AppController extends StateNotifier<AppUiState> {
               'thread=${thread.id} elapsedMs=${startedAt.elapsedMilliseconds} '
               'source=${session.itemsView == 'cached' ? 'live_cache' : 'server'} '
               'entries=${resolvedSession.timeline.length}',
+        );
+        localTiming = _startTiming(
+          'thread_apply',
+          key,
+          threadId: thread.id,
+          generation: navigationGeneration,
         );
         _showThreadSnapshot(
           key,
@@ -5532,7 +5596,14 @@ class AppController extends StateNotifier<AppUiState> {
         if (session.itemsView == 'notLoaded') {
           state = state.copyWith(diagnostic: '最近一个回合内容过大，已跳过详情；会话仍可继续使用');
         }
+        localTiming.finish(count: resolvedSession.timeline.length);
         if (resumeBuffer != null) {
+          localTiming = _startTiming(
+            'thread_notifications_replay',
+            key,
+            threadId: thread.id,
+            generation: navigationGeneration,
+          );
           _releaseResumeNotifications(
             key,
             resumeBuffer,
@@ -5540,6 +5611,7 @@ class AppController extends StateNotifier<AppUiState> {
             replay: true,
             snapshotSequence: resolvedSession.responseSequence,
           );
+          localTiming.finish();
         }
         _cacheActiveThreadSession(key, expectedThreadId: thread.id);
         final snapshotKey = threadPreferenceKey(
@@ -5575,6 +5647,11 @@ class AppController extends StateNotifier<AppUiState> {
           // page in the background so this does not look like lost history.
           unawaited(_loadOlderTurns(automatic: true));
         }
+        timing.finish(
+          count: resolvedSession.timeline.length,
+          hasMore: resolvedSession.nextTurnsCursor?.isNotEmpty == true,
+          cacheHit: session.itemsView == 'cached',
+        );
       } else if (resumeBuffer != null) {
         _releaseResumeNotifications(
           key,
@@ -5587,6 +5664,12 @@ class AppController extends StateNotifier<AppUiState> {
         unawaited(_hydrateThreadGoal(key, thread.id));
       }
     } catch (error) {
+      localTiming?.fail(error);
+      if (_isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
+        timing.fail(error);
+      } else {
+        timing.finish(status: TimingStatus.stale);
+      }
       if (mounted &&
           _isCurrentSessionNavigation(key, navigationGeneration, thread.id)) {
         if (resumeBuffer != null) {
@@ -5629,6 +5712,7 @@ class AppController extends StateNotifier<AppUiState> {
         );
       }
     } finally {
+      timing.finish(status: TimingStatus.stale);
       if (resumeBuffer != null &&
           identical(_resumeNotificationBuffers[key], resumeBuffer)) {
         _resumeNotificationBuffers.remove(key);
@@ -5642,20 +5726,38 @@ class AppController extends StateNotifier<AppUiState> {
     AgentSession? cachedSession,
   }) async {
     final readOnly = _subAgentThreadRegistry.contains(key, threadId);
-    final first = await _agents.resumeThread(
-      key,
-      threadId,
-      approvalMode: state.approvalMode,
-      readOnly: readOnly,
-      cachedSession: readOnly ? null : cachedSession,
-    );
+    final first =
+        await _startTiming(
+          readOnly
+              ? 'thread_read'
+              : cachedSession == null
+              ? 'thread_resume'
+              : 'thread_cached_resume',
+          key,
+          threadId: threadId,
+        ).run(
+          () => _agents.resumeThread(
+            key,
+            threadId,
+            approvalMode: state.approvalMode,
+            readOnly: readOnly,
+            cachedSession: readOnly ? null : cachedSession,
+          ),
+        );
     if (first.thread.id == threadId) return first;
-    final retry = await _agents.resumeThread(
-      key,
-      threadId,
-      approvalMode: state.approvalMode,
-      readOnly: readOnly,
-    );
+    final retry =
+        await _startTiming(
+          'thread_resume_identity_retry',
+          key,
+          threadId: threadId,
+        ).run(
+          () => _agents.resumeThread(
+            key,
+            threadId,
+            approvalMode: state.approvalMode,
+            readOnly: readOnly,
+          ),
+        );
     if (retry.thread.id == threadId) return retry;
     throw StateError('服务器返回了其他会话，已阻止显示父会话内容');
   }
@@ -5815,42 +5917,63 @@ class AppController extends StateNotifier<AppUiState> {
     int generation,
   ) async {
     final watch = Stopwatch()..start();
-    final snapshot = await _threadSnapshotStore.read(
-      _snapshotScope(profile, key.agent),
-      thread.id,
-    );
-    if (snapshot == null ||
-        !mounted ||
-        !_isCurrentSessionNavigation(key, generation, thread.id) ||
-        !state.loading ||
-        state.timeline.isNotEmpty ||
-        snapshot.thread.id != thread.id ||
-        snapshot.thread.modelProvider != thread.modelProvider) {
-      return;
-    }
-    final timeline = _isolateSubAgentTimeline(
+    final timing = _startTiming(
+      'thread_disk_cache',
       key,
-      thread,
-      _markLegacyCompactionNotices(snapshot.timeline),
+      threadId: thread.id,
+      generation: generation,
     );
-    cache.put(
-      snapshot.thread,
-      timeline,
-      nextTurnsCursor: snapshot.nextTurnsCursor,
-      tokenUsage: snapshot.tokenUsage,
-    );
-    // Only paint cached content. Status, ownership, approvals and input remain
-    // governed by the live resume; a late disk read cannot replace its response.
-    state = state.copyWith(
-      timeline: timeline,
-      olderTurnsCursor: snapshot.nextTurnsCursor,
-      tokenUsage: snapshot.tokenUsage,
-    );
-    _diagnostics.info(
-      'Thread',
-      'cache_visible profile=${key.profileId} agent=${key.agent.name} '
-          'thread=${thread.id} source=disk elapsedMs=${watch.elapsedMilliseconds} entries=${timeline.length}',
-    );
+    try {
+      final snapshot = await _threadSnapshotStore.read(
+        _snapshotScope(profile, key.agent),
+        thread.id,
+      );
+      if (snapshot == null ||
+          !mounted ||
+          !_isCurrentSessionNavigation(key, generation, thread.id) ||
+          !state.loading ||
+          state.timeline.isNotEmpty ||
+          snapshot.thread.id != thread.id ||
+          snapshot.thread.modelProvider != thread.modelProvider) {
+        timing.finish(
+          status:
+              _isCurrentSessionNavigation(key, generation, thread.id) &&
+                  snapshot == null
+              ? TimingStatus.success
+              : TimingStatus.stale,
+          cacheHit: snapshot != null,
+          count: snapshot?.timeline.length ?? 0,
+        );
+        return;
+      }
+      final timeline = _isolateSubAgentTimeline(
+        key,
+        thread,
+        _markLegacyCompactionNotices(snapshot.timeline),
+      );
+      cache.put(
+        snapshot.thread,
+        timeline,
+        nextTurnsCursor: snapshot.nextTurnsCursor,
+        tokenUsage: snapshot.tokenUsage,
+      );
+      // Only paint cached content. Status, ownership, approvals and input remain
+      // governed by the live resume; a late disk read cannot replace its response.
+      state = state.copyWith(
+        timeline: timeline,
+        olderTurnsCursor: snapshot.nextTurnsCursor,
+        tokenUsage: snapshot.tokenUsage,
+      );
+      _diagnostics.info(
+        'Thread',
+        'cache_visible profile=${key.profileId} agent=${key.agent.name} '
+            'thread=${thread.id} source=disk elapsedMs=${watch.elapsedMilliseconds} entries=${timeline.length}',
+      );
+      timing.finish(cacheHit: true, count: timeline.length);
+    } catch (error) {
+      timing.fail(error);
+      rethrow;
+    }
   }
 
   List<TimelineEntry> _isolateSubAgentTimeline(
@@ -6189,7 +6312,11 @@ class AppController extends StateNotifier<AppUiState> {
     required bool preserveExistingThreads,
     required int loadRevision,
   }) async {
-    if (!_isAgentLoadCurrent(key, loadRevision)) return;
+    final timing = _startTiming('agent_load', key, generation: loadRevision);
+    if (!_isAgentLoadCurrent(key, loadRevision)) {
+      timing.finish(status: TimingStatus.stale);
+      return;
+    }
     _agentThreadCursorSearches[key] = '';
     _agentThreadNextCursors[key] = null;
     if (!silent) _setAgentLoading(key, true);
@@ -6200,9 +6327,17 @@ class AppController extends StateNotifier<AppUiState> {
           ? profile
           : await _prepareRemoteRuntime(key, profile, loadRevision);
       if (effectiveProfile == null || !_isAgentLoadCurrent(key, loadRevision)) {
+        timing.finish(
+          status: _isAgentLoadCurrent(key, loadRevision)
+              ? TimingStatus.skipped
+              : TimingStatus.stale,
+        );
         return;
       }
-      await _agents.connect(effectiveProfile, key.agent);
+      await _startTiming(
+        'agent_connect_wait',
+        key,
+      ).run(() => _agents.connect(effectiveProfile, key.agent));
       if (!_isAgentLoadCurrent(key, loadRevision)) return;
       _showInitialWorkspacePickerIfNeeded(key, effectiveProfile);
       final generation = _agents.generation(key);
@@ -6212,20 +6347,37 @@ class AppController extends StateNotifier<AppUiState> {
       Object? modelError;
       await Future.wait<void>([
         () async {
+          final listTiming = _startTiming(
+            'thread_list',
+            key,
+            generation: generation,
+          );
           try {
             threadPage = await _agents.listThreads(
               key,
               searchTerm: _isActiveKey(key) ? state.threadSearch : null,
             );
+            listTiming.finish(
+              count: threadPage!.threads.length,
+              hasMore: threadPage!.nextCursor?.isNotEmpty == true,
+            );
           } catch (error) {
+            listTiming.fail(error);
             threadError = error;
           }
         }(),
         if (includeModels || !state.agentModelLists.containsKey(key))
           () async {
+            final modelTiming = _startTiming(
+              'model_list',
+              key,
+              generation: generation,
+            );
             try {
               models = await _agents.listModels(key);
+              modelTiming.finish(count: models!.length);
             } catch (error) {
+              modelTiming.fail(error);
               modelError = error;
             }
           }(),
@@ -6235,74 +6387,93 @@ class AppController extends StateNotifier<AppUiState> {
         return;
       }
 
-      final threadLists = Map<AgentConnectionKey, List<AgentThread>>.of(
-        state.agentThreadLists,
-      );
-      if (threadPage != null) {
-        threadLists[key] = preserveExistingThreads
-            ? _mergeListedThreads(
-                threadLists[key] ?? const <AgentThread>[],
-                threadPage!.threads,
-              )
-            : threadPage!.threads;
-        _agentThreadNextCursors[key] = threadPage!.nextCursor;
-        _agentThreadCursorSearches[key] = _isActiveKey(key)
-            ? state.threadSearch
-            : '';
-        _rememberSubAgentReferences(
-          key,
-          threadPage!.threads,
-          const <TimelineEntry>[],
+      final applyTiming = _startTiming('agent_load_apply', key);
+      try {
+        final threadLists = Map<AgentConnectionKey, List<AgentThread>>.of(
+          state.agentThreadLists,
         );
-        final isDefaultThreadList =
-            !_isActiveKey(key) || state.threadSearch.isEmpty;
-        if (isDefaultThreadList) {
-          unawaited(_threadListCacheStore.write(key, threadLists[key]!));
+        if (threadPage != null) {
+          threadLists[key] = preserveExistingThreads
+              ? _mergeListedThreads(
+                  threadLists[key] ?? const <AgentThread>[],
+                  threadPage!.threads,
+                )
+              : threadPage!.threads;
+          _agentThreadNextCursors[key] = threadPage!.nextCursor;
+          _agentThreadCursorSearches[key] = _isActiveKey(key)
+              ? state.threadSearch
+              : '';
+          _rememberSubAgentReferences(
+            key,
+            threadPage!.threads,
+            const <TimelineEntry>[],
+          );
+          final isDefaultThreadList =
+              !_isActiveKey(key) || state.threadSearch.isEmpty;
+          if (isDefaultThreadList) {
+            unawaited(_threadListCacheStore.write(key, threadLists[key]!));
+          }
         }
-      }
-      final modelLists = Map<AgentConnectionKey, List<AgentModel>>.of(
-        state.agentModelLists,
-      );
-      if (models != null) {
-        final remoteModels = List<AgentModel>.unmodifiable(models!);
-        _remoteModelsByLane[key] = remoteModels;
-        final settings = profile.modelSettings(key.agent);
-        modelLists[key] = buildModelCatalog(
-          remoteModels,
-          settings.customModels,
-          <String>{
-            ...settings.hiddenModelIds,
-            if (key.agent == AgentKind.openCode)
-              ..._pendingManagedModelRemovals(settings),
-          },
-          customReasoningEfforts: _customModelReasoningEfforts(key.agent),
-          cataloglessEfforts: standardReasoningEfforts(key.agent),
+        final modelLists = Map<AgentConnectionKey, List<AgentModel>>.of(
+          state.agentModelLists,
         );
+        if (models != null) {
+          final remoteModels = List<AgentModel>.unmodifiable(models!);
+          _remoteModelsByLane[key] = remoteModels;
+          final settings = profile.modelSettings(key.agent);
+          modelLists[key] = buildModelCatalog(
+            remoteModels,
+            settings.customModels,
+            <String>{
+              ...settings.hiddenModelIds,
+              if (key.agent == AgentKind.openCode)
+                ..._pendingManagedModelRemovals(settings),
+            },
+            customReasoningEfforts: _customModelReasoningEfforts(key.agent),
+            cataloglessEfforts: standardReasoningEfforts(key.agent),
+          );
+        }
+        final active = _isActiveKey(key);
+        state = state.copyWith(
+          agentThreadLists: Map.unmodifiable(threadLists),
+          agentModelLists: Map.unmodifiable(modelLists),
+          threads: active
+              ? threadLists[key] ?? const <AgentThread>[]
+              : state.threads,
+          models: active
+              ? modelLists[key] ?? const <AgentModel>[]
+              : state.models,
+          activeAgentCapabilities: active
+              ? _agents.capabilities(key)
+              : state.activeAgentCapabilities,
+          diagnostic: active && state.screen == AppScreen.threads
+              ? _agentLoadDiagnostic(threadError, modelError)
+              : state.diagnostic,
+        );
+        if (!silent &&
+            active &&
+            state.screen == AppScreen.threads &&
+            threadError != null &&
+            threadPage == null) {
+          state = state.copyWith(error: _message(threadError!, '读取会话失败'));
+        }
+        _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
+        applyTiming.finish(count: threadPage?.threads.length);
+      } catch (error) {
+        applyTiming.fail(error);
+        rethrow;
       }
-      final active = _isActiveKey(key);
-      state = state.copyWith(
-        agentThreadLists: Map.unmodifiable(threadLists),
-        agentModelLists: Map.unmodifiable(modelLists),
-        threads: active
-            ? threadLists[key] ?? const <AgentThread>[]
-            : state.threads,
-        models: active ? modelLists[key] ?? const <AgentModel>[] : state.models,
-        activeAgentCapabilities: active
-            ? _agents.capabilities(key)
-            : state.activeAgentCapabilities,
-        diagnostic: active && state.screen == AppScreen.threads
-            ? _agentLoadDiagnostic(threadError, modelError)
-            : state.diagnostic,
-      );
-      if (!silent &&
-          active &&
-          state.screen == AppScreen.threads &&
-          threadError != null &&
-          threadPage == null) {
-        state = state.copyWith(error: _message(threadError!, '读取会话失败'));
+      if (threadError != null || modelError != null) {
+        timing.fail(threadError ?? modelError!);
+      } else {
+        timing.finish(count: threadPage?.threads.length);
       }
-      _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
     } catch (error) {
+      if (_isAgentLoadCurrent(key, loadRevision)) {
+        timing.fail(error);
+      } else {
+        timing.finish(status: TimingStatus.stale);
+      }
       if (_isAgentLoadCurrent(key, loadRevision) &&
           _isActiveKey(key) &&
           state.screen == AppScreen.threads) {
@@ -6312,6 +6483,8 @@ class AppController extends StateNotifier<AppUiState> {
             : state.copyWith(error: message);
       }
     } finally {
+      // Every early exit after an await is a superseded/invalidated load.
+      timing.finish(status: TimingStatus.stale);
       if (!silent && _isAgentLoadCurrent(key, loadRevision)) {
         _setAgentLoading(key, false);
       }
@@ -6383,6 +6556,20 @@ class AppController extends StateNotifier<AppUiState> {
       _agentLoadRevisions[key] == revision &&
       _connections.states[key.profileId]?.phase == ConnectionPhase.connected;
 
+  DiagnosticTiming _startTiming(
+    String stage,
+    AgentConnectionKey key, {
+    String? threadId,
+    int? generation,
+  }) => DiagnosticTiming.start(
+    stage: stage,
+    log: (message) => _diagnostics.info('Performance', message),
+    profileId: key.profileId,
+    agent: key.agent.name,
+    threadId: threadId,
+    generation: generation ?? _agents.generation(key),
+  );
+
   Future<ServerProfile?> _prepareRemoteRuntime(
     AgentConnectionKey key,
     ServerProfile profile,
@@ -6403,7 +6590,10 @@ class AppController extends StateNotifier<AppUiState> {
         return null;
       }
     }
-    final inspection = await _agents.inspectRuntime(profile, key.agent);
+    final inspection = await _startTiming(
+      'runtime_probe',
+      key,
+    ).run(() => _agents.inspectRuntime(profile, key.agent));
     if (!_isAgentLoadCurrent(key, loadRevision)) return null;
     final problem = inspection.installationProblem;
     if (problem != null) throw StateError(problem);

@@ -14,6 +14,41 @@ import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+List<String> _historyTimings(CodexAgentClient client) {
+  final logs = <String>[];
+  final subscription = client.events.listen((event) {
+    if (event is RemoteAgentDiagnostic &&
+        event.message.startsWith('timing ') &&
+        (event.message.contains('stage=agent_resume_') ||
+            event.message.contains('stage=agent_read_'))) {
+      logs.add(event.message);
+    }
+  });
+  addTearDown(subscription.cancel);
+  return logs;
+}
+
+void _expectHistoryTimings(List<String> logs, Map<String, String> stages) {
+  expect(logs, hasLength(stages.length * 2));
+  for (final entry in stages.entries) {
+    final pair = logs
+        .where((line) => line.contains('stage=${entry.key} '))
+        .toList();
+    expect(pair, hasLength(2));
+    expect(pair.first, contains('status=started'));
+    expect(pair.last, contains('status=${entry.value}'));
+    final operation = RegExp(
+      r'operation=\d+',
+    ).firstMatch(pair.first)!.group(0)!;
+    expect(pair.last, contains(operation));
+    for (final line in pair) {
+      expect(line, contains('agent=codex'));
+      expect(line, matches(RegExp(r'generation=\d+')));
+      expect(line, matches(RegExp(r'elapsedMs=\d+')));
+    }
+  }
+}
+
 class _FakeCodexHost
     implements RemoteServerClient, RemoteServerKeepAliveClient {
   _FakeCodexHost({this.connected = true, this.keepAliveGate});
@@ -229,6 +264,60 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  for (final metadataFails in [false, true]) {
+    test(
+      'cached resume times metadata and full fallback ($metadataFails)',
+      () async {
+        const profileId = '12345678-1234-1234-1234-123456789012';
+        const threadId = '87654321-4321-4321-4321-210987654321';
+        final session = _FakeCodexSession(
+          replyFor: (request) {
+            if (request['method'] != 'thread/resume') {
+              return {'result': <String, Object?>{}};
+            }
+            if (!(request['params'] as Map).containsKey('initialTurnsPage') &&
+                metadataFails) {
+              return {
+                'error': {'code': -32600, 'message': 'private-metadata-error'},
+              };
+            }
+            return {
+              'result': {
+                'thread': {'id': threadId, 'updatedAt': 2},
+              },
+            };
+          },
+        );
+        final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+        addTearDown(client.close);
+        final logs = _historyTimings(client);
+        await client.connect(
+          const ServerProfile(id: profileId, remoteCommand: 'codex app-server'),
+          _FakeCodexHost(),
+        );
+        await client.resumeThread(threadId);
+        logs.clear();
+        final result = await client.resumeCachedThread(
+          const AgentSession(
+            thread: AgentThread(id: threadId, updatedAt: 1),
+            timeline: [],
+          ),
+        );
+        expect(result.thread.updatedAt, 2);
+        _expectHistoryTimings(logs, {
+          'agent_resume_metadata': metadataFails ? 'failed' : 'success',
+          'agent_resume_full': 'success',
+        });
+        for (final line in logs) {
+          expect(line, contains('profile=$profileId'));
+          expect(line, contains('thread=$threadId'));
+          expect(line.length, lessThanOrEqualTo(240));
+        }
+        expect(logs.join('\n'), isNot(contains('private-metadata-error')));
+      },
+    );
+  }
+
   test(
     'warm resume checks writer without requesting history and retains progress',
     () async {
@@ -539,6 +628,7 @@ void main() {
         sessionOpener: (_, _) async => session,
         maxLineChars: 1024,
       );
+      final logs = _historyTimings(client);
       addTearDown(() async {
         await client.disconnect();
         client.close();
@@ -563,6 +653,11 @@ void main() {
         'summary',
         'notLoaded',
       ]);
+      _expectHistoryTimings(logs, {
+        'agent_resume_full': 'failed',
+        'agent_resume_summary': 'failed',
+        'agent_resume_not_loaded': 'success',
+      });
     },
   );
 
@@ -829,6 +924,7 @@ void main() {
         sessionOpener: (_, _) async => session,
         maxLineChars: 1024,
       );
+      final logs = _historyTimings(client);
       addTearDown(() async {
         await client.disconnect();
         client.close();
@@ -851,6 +947,12 @@ void main() {
         'summary',
         'notLoaded',
       ]);
+      _expectHistoryTimings(logs, {
+        'agent_read_metadata': 'success',
+        'agent_read_full': 'failed',
+        'agent_read_summary': 'failed',
+        'agent_read_not_loaded': 'success',
+      });
       expect(
         session.writes
             .map(jsonDecode)
@@ -927,6 +1029,7 @@ void main() {
       },
     );
     final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    final logs = _historyTimings(client);
     addTearDown(() async {
       await client.disconnect();
       client.close();
@@ -937,6 +1040,11 @@ void main() {
     );
     final result = await client.readThread('child');
     expect(result.timeline.map((item) => item.text), ['child']);
+    _expectHistoryTimings(logs, {
+      'agent_read_metadata': 'success',
+      'agent_read_full': 'failed',
+      'agent_read_legacy': 'success',
+    });
     expect(
       session.writes.map(jsonDecode).any((x) => x['method'] == 'thread/resume'),
       isFalse,

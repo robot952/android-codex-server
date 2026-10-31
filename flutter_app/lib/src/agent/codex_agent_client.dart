@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 
 import '../domain/models.dart';
+import '../platform/diagnostic_timing.dart';
 import '../ssh/ssh_server_client.dart';
 import 'codex_global_settings.dart';
 import 'codex_host_capabilities.dart';
@@ -583,7 +584,7 @@ class CodexAgentClient
   @override
   Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
     if (_closed) throw StateError('${kind.label} 通道已经关闭');
-    await disconnect();
+    await _startTiming('agent_previous_disconnect', profile).run(disconnect);
     _connectedHostIsLocal = host is LocalRemoteServerClient;
 
     var sessionHost = host;
@@ -592,7 +593,10 @@ class CodexAgentClient
     if (dedicatedHostFactory != null && host is! LocalRemoteServerClient) {
       dedicatedHost = dedicatedHostFactory();
       try {
-        await dedicatedHost.connect(profile);
+        await _startTiming(
+          'agent_ssh_connect',
+          profile,
+        ).run(() => dedicatedHost!.connect(profile));
       } catch (_) {
         dedicatedHost.close();
         rethrow;
@@ -608,16 +612,32 @@ class CodexAgentClient
         sessionHost is! LocalRemoteServerClient &&
         (_usesDefaultSessionOpener || metricsRelayLoader != null) &&
         supportsCodexMetricsRelay(profile.remoteCommand)) {
+      final timing = _startTiming(
+        'agent_metrics_asset',
+        profile,
+        generation: scope.value,
+      );
       try {
         final source = await (metricsRelayLoader ?? CodexMetricsAsset.load)();
         if (source.trim().isNotEmpty) {
           command = buildCodexAppServerCommand(profile, metricsSource: source);
         }
-      } catch (_) {
+        timing.finish(
+          status: source.trim().isEmpty
+              ? TimingStatus.skipped
+              : TimingStatus.success,
+        );
+      } catch (error) {
+        timing.fail(error);
         // Optional statistics must never prevent a normal Agent connection.
       }
     }
     late CodexSession session;
+    final sessionTiming = _startTiming(
+      'agent_session_open',
+      profile,
+      generation: scope.value,
+    );
     try {
       if (useDurableTransport &&
           _usesDefaultSessionOpener &&
@@ -651,7 +671,9 @@ class CodexAgentClient
         _durableStopCommand = null;
         session = await _sessionOpener(sessionHost, command);
       }
-    } catch (_) {
+      sessionTiming.finish();
+    } catch (error) {
+      sessionTiming.fail(error);
       _protocol.invalidateGeneration();
       await _disconnectDedicatedHost();
       rethrow;
@@ -672,12 +694,18 @@ class CodexAgentClient
     _listen(session, scope);
 
     try {
-      final initialize = await _request(
-        scope.initialize(clientVersion: clientVersion),
-        timeout: requestTimeout,
-      );
-      initialize.resultOrThrow();
-      await _write(scope.initialized().encodeLine());
+      await _startTiming(
+        'agent_initialize',
+        profile,
+        generation: scope.value,
+      ).run(() async {
+        final initialize = await _request(
+          scope.initialize(clientVersion: clientVersion),
+          timeout: requestTimeout,
+        );
+        initialize.resultOrThrow();
+        await _write(scope.initialized().encodeLine());
+      });
       _connected = true;
       // Settings and runtime operations remain on the host transport. The
       // dedicated connection is reserved for the long-lived Agent channel.
@@ -778,20 +806,30 @@ class CodexAgentClient
     for (var index = 0; index < attempts.length; index += 1) {
       final attempt = attempts[index];
       try {
-        final response = await _request(
-          scope.threadResume(
-            threadId: threadId,
-            approvalMode: approvalMode,
-            itemsView: attempt.itemsView,
-            limit: attempt.limit,
-            config: _questionConfig,
-          ),
-          timeout: threadRequestTimeout,
-        );
-        final session = _sessionFromResponse(
-          response,
-          itemsView: attempt.itemsView,
-        );
+        final session =
+            await _startTiming(
+              attempt.itemsView == 'notLoaded'
+                  ? 'agent_resume_not_loaded'
+                  : 'agent_resume_${attempt.itemsView}',
+              _connectedProfile,
+              threadId: threadId,
+              generation: scope.value,
+            ).run(() async {
+              final response = await _request(
+                scope.threadResume(
+                  threadId: threadId,
+                  approvalMode: approvalMode,
+                  itemsView: attempt.itemsView,
+                  limit: attempt.limit,
+                  config: _questionConfig,
+                ),
+                timeout: threadRequestTimeout,
+              );
+              return _sessionFromResponse(
+                response,
+                itemsView: attempt.itemsView,
+              );
+            });
         if (scope.isCurrent &&
             isConnected &&
             reuseRevision == _reuseRevision &&
@@ -839,19 +877,27 @@ class CodexAgentClient
     try {
       // Recheck the native writer every time, without downloading turn bodies
       // already maintained by this connection's live subscription.
-      final response = await _request(
-        scope.request(
-          'thread/resume',
-          params: {
-            'threadId': threadId,
-            'approvalPolicy': approvalMode.approvalPolicy,
-            'excludeTurns': true,
-            if (_questionConfig != null) 'config': _questionConfig,
-          },
-        ),
-        timeout: threadRequestTimeout,
-      );
-      final checked = _sessionFromResponse(response, itemsView: 'cached');
+      final checked =
+          await _startTiming(
+            'agent_resume_metadata',
+            _connectedProfile,
+            threadId: threadId,
+            generation: scope.value,
+          ).run(() async {
+            final response = await _request(
+              scope.request(
+                'thread/resume',
+                params: {
+                  'threadId': threadId,
+                  'approvalPolicy': approvalMode.approvalPolicy,
+                  'excludeTurns': true,
+                  if (_questionConfig != null) 'config': _questionConfig,
+                },
+              ),
+              timeout: threadRequestTimeout,
+            );
+            return _sessionFromResponse(response, itemsView: 'cached');
+          });
       final metadataChanged =
           checked.thread.id != threadId ||
           (checked.thread.modelProvider.isNotEmpty &&
@@ -912,19 +958,27 @@ class CodexAgentClient
     }
     // Read metadata and the latest bounded page. Loading a child must neither
     // resume its runtime nor download thousands of inherited parent turns.
-    final metadata = await _request(
-      scope.request(
-        'thread/read',
-        params: {'threadId': threadId, 'includeTurns': false},
-      ),
-      timeout: threadRequestTimeout,
-    );
-    final result = metadata.resultOrThrow();
-    if (result is! Map || result['thread'] is! Map) {
-      throw StateError('子会话元数据无效');
-    }
-    final thread = Map<String, Object?>.from(result['thread'] as Map)
-      ..remove('turns');
+    final thread =
+        await _startTiming(
+          'agent_read_metadata',
+          _connectedProfile,
+          threadId: threadId,
+          generation: scope.value,
+        ).run(() async {
+          final metadata = await _request(
+            scope.request(
+              'thread/read',
+              params: {'threadId': threadId, 'includeTurns': false},
+            ),
+            timeout: threadRequestTimeout,
+          );
+          final result = metadata.resultOrThrow();
+          if (result is! Map || result['thread'] is! Map) {
+            throw StateError('子会话元数据无效');
+          }
+          return Map<String, Object?>.from(result['thread'] as Map)
+            ..remove('turns');
+        });
     const attempts = [
       (view: 'full', limit: 1),
       (view: 'summary', limit: 1),
@@ -933,36 +987,55 @@ class CodexAgentClient
     for (var index = 0; index < attempts.length; index++) {
       final attempt = attempts[index];
       try {
-        final page = await _request(
-          scope.request(
-            'thread/turns/list',
-            params: {
-              'threadId': threadId,
-              'limit': attempt.limit,
-              'sortDirection': 'desc',
-              'itemsView': attempt.view,
+        return await _startTiming(
+          attempt.view == 'notLoaded'
+              ? 'agent_read_not_loaded'
+              : 'agent_read_${attempt.view}',
+          _connectedProfile,
+          threadId: threadId,
+          generation: scope.value,
+        ).run(() async {
+          final page = await _request(
+            scope.request(
+              'thread/turns/list',
+              params: {
+                'threadId': threadId,
+                'limit': attempt.limit,
+                'sortDirection': 'desc',
+                'itemsView': attempt.view,
+              },
+            ),
+            timeout: threadRequestTimeout,
+          );
+          return _sessionFromResponse(
+            page,
+            itemsView: attempt.view,
+            payload: {
+              'thread': thread,
+              'initialTurnsPage': page.resultOrThrow(),
             },
-          ),
-          timeout: threadRequestTimeout,
-        );
-        return _sessionFromResponse(
-          page,
-          itemsView: attempt.view,
-          payload: {'thread': thread, 'initialTurnsPage': page.resultOrThrow()},
-          externallyOwned: externallyOwned,
-        );
+            externallyOwned: externallyOwned,
+          );
+        });
       } on CodexResponseTooLargeException {
         if (index == attempts.length - 1) rethrow;
       } on CodexRpcException catch (error) {
         if (error.code != -32601) rethrow;
-        final legacy = await _request(
-          scope.request(
-            'thread/read',
-            params: {'threadId': threadId, 'includeTurns': true},
-          ),
-          timeout: threadRequestTimeout,
-        );
-        return _sessionFromResponse(legacy, externallyOwned: externallyOwned);
+        return _startTiming(
+          'agent_read_legacy',
+          _connectedProfile,
+          threadId: threadId,
+          generation: scope.value,
+        ).run(() async {
+          final legacy = await _request(
+            scope.request(
+              'thread/read',
+              params: {'threadId': threadId, 'includeTurns': true},
+            ),
+            timeout: threadRequestTimeout,
+          );
+          return _sessionFromResponse(legacy, externallyOwned: externallyOwned);
+        });
       }
     }
     throw StateError('无法读取子会话历史');
@@ -1366,13 +1439,16 @@ class CodexAgentClient
   }
 
   Future<void> _loadModelProviderBestEffort(ServerProfile profile) async {
+    final timing = _startTiming('agent_provider_settings', profile);
     try {
       final settings = await readGlobalSettings(
         profile,
       ).timeout(const Duration(seconds: 8));
       final provider = settings.modelProvider.trim();
       _modelProvider = provider.isEmpty ? 'openai' : provider;
+      timing.finish();
     } catch (error) {
+      timing.fail(error);
       // Older wrappers and lightweight test hosts may not expose the settings
       // script. Without a provider filter, the parser still retains the
       // server-provided identity and the list remains usable.
@@ -1983,6 +2059,20 @@ class CodexAgentClient
       ),
     );
   }
+
+  DiagnosticTiming _startTiming(
+    String stage,
+    ServerProfile? profile, {
+    String? threadId,
+    int? generation,
+  }) => DiagnosticTiming.start(
+    stage: stage,
+    profileId: profile?.id,
+    agent: kind.name,
+    threadId: threadId,
+    generation: generation ?? _protocol.currentGeneration,
+    log: (message) => _emitDiagnostic(message, isTransport: true),
+  );
 
   void _emitConnectionLost(String message) {
     _reuseRevision++;

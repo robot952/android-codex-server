@@ -701,6 +701,15 @@ Flutter 依赖错误先检查 `PUB_CACHE` 和 7890 代理，APK 安装错误检�
 加密磁盘快照，连接恢复和历史加载分离。Codex 有本地正文快照时只做不带历史正文的元数据校验即可复用
 历史，冷启动、Provider/更新时间变化或校验失败才完整恢复。列表刷新不会覆盖正在恢复的对话状态。
 
+连接/列表/长会话耗时通过 Debug 日志中的 `Performance timing` 与 AgentTransport 的 `timing`
+定位。每阶段先记录 `status=started`，结束记录同一 `operation` 的状态与 `elapsedMs`；并发及嵌套
+阶段不相加。保留 `profile/agent/thread/generation` 与数量，不记录命令、配置或响应正文。
+计时是客户端观察到的操作等待，不改变首字等服务端请求计时。定向回归包含
+`test/platform/diagnostic_timing_test.dart`、`test/agent/client_startup_timing_test.dart`、
+`test/agent/codex_agent_client_test.dart` 及
+`test/app/resume_lifecycle_test.dart`；
+使用受控异步对端验证卡点、失败/超时、过期和 Debug 关闭，不登录用户服务器。
+
 ## 10. 每次修改的收尾
 
 1. 确认最近的定向测试与 1.2 指定的单个主门禁都通过，不补跑低价值的重复门禁。

@@ -10,6 +10,7 @@ import 'package:codex_remote/src/app/request_usage_controller.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/persistence/thread_snapshot_store.dart';
+import 'package:codex_remote/src/platform/diagnostic_logger.dart';
 import 'package:codex_remote/src/platform/turn_completion_notifications.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
@@ -53,6 +54,267 @@ const _threadB = AgentThread(
 );
 
 void main() {
+  test(
+    'performance timings preserve parallel list loads and cached lanes',
+    () async {
+      final diagnostics = _TimingLogger();
+      final agent = _TimedLoadAgent(threads: const [_threadA, _threadB]);
+      agent.inspectGate = Completer<void>();
+      agent.listGate = Completer<AgentThreadPage>();
+      final harness = await _createHarness(
+        agent,
+        waitForAgent: false,
+        diagnostics: diagnostics,
+      );
+      await _waitUntil(() => agent.inspectCalls == 1);
+      expect(diagnostics.finished('runtime_probe'), isEmpty);
+      agent.inspectGate!.complete();
+      await _waitUntil(
+        () => agent.listThreadsCount == 1 && agent.modelCalls == 1,
+      );
+      expect(diagnostics.finished('thread_list'), isEmpty);
+      expect(diagnostics.finished('model_list'), isEmpty);
+      agent.models.complete(const []);
+      await _waitUntil(() => diagnostics.finished('model_list').isNotEmpty);
+      expect(diagnostics.finished('thread_list'), isEmpty);
+      expect(diagnostics.finished('agent_load'), isEmpty);
+      agent.listGate!.complete(AgentThreadPage(threads: agent.threads));
+      await _waitUntil(() => diagnostics.finished('agent_load').isNotEmpty);
+
+      for (final stage in [
+        'runtime_probe',
+        'agent_connect_wait',
+        'thread_list',
+        'model_list',
+        'agent_load_apply',
+        'agent_load',
+      ]) {
+        expect(diagnostics.finished(stage), hasLength(1));
+        expect(diagnostics.finished(stage).single, contains('status=success'));
+        expect(diagnostics.finished(stage).single, contains('profile=server'));
+        expect(diagnostics.finished(stage).single, contains('agent=codex'));
+        expect(diagnostics.finished(stage).single, matches(r'elapsedMs=\d+'));
+      }
+      expect(diagnostics.finished('thread_list').single, contains('count=2'));
+      expect(
+        diagnostics.finished('thread_list').single,
+        contains('hasMore=false'),
+      );
+      await harness.controller.ensureActiveAgent();
+      expect(
+        diagnostics.finished('agent_load_cache').single,
+        contains('cacheHit=true'),
+      );
+      expect(agent.listThreadsCount, 1);
+      expect(agent.modelCalls, 1);
+      expect(agent.inspectCalls, 1);
+    },
+  );
+
+  test(
+    'performance timings cover disk preview, resume, replay and cached history',
+    () async {
+      final diagnostics = _TimingLogger();
+      final snapshots = _SnapshotStore();
+      final agent = _ReusableResumeAgent(threads: const [_threadA]);
+      final harness = await _createHarness(
+        agent,
+        snapshots: snapshots,
+        diagnostics: diagnostics,
+      );
+      final pending = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(
+        () => snapshots.reads.isNotEmpty && agent.resumeCalls.isNotEmpty,
+      );
+      const timeline = [
+        TimelineEntry(
+          id: 'answer',
+          kind: TimelineKind.agentMessage,
+          text: 'private body never logged',
+        ),
+      ];
+      snapshots.reads.single.complete(
+        ThreadSessionSnapshot(
+          thread: _threadA,
+          timeline: timeline,
+          savedAtEpochMillis: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      await _waitUntil(
+        () => diagnostics.finished('thread_disk_cache').isNotEmpty,
+      );
+      expect(
+        harness.controller.state.timeline.single.text,
+        timeline.single.text,
+      );
+      expect(
+        diagnostics.finished('thread_disk_cache').single,
+        contains('cacheHit=true'),
+      );
+      expect(diagnostics.finished('thread_open'), isEmpty);
+      pending.complete(
+        const AgentSession(thread: _threadA, timeline: timeline),
+      );
+      await _waitUntil(() => diagnostics.finished('thread_open').isNotEmpty);
+      for (final stage in [
+        'thread_preview_apply',
+        'thread_connect_wait',
+        'thread_resume',
+        'thread_reconcile',
+        'thread_apply',
+        'thread_notifications_replay',
+        'thread_open',
+      ]) {
+        expect(diagnostics.finished(stage), hasLength(1));
+        expect(diagnostics.finished(stage).single, contains('status=success'));
+        expect(diagnostics.finished(stage).single, contains('thread=thread-a'));
+      }
+      harness.controller.backToThreadList();
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => diagnostics.finished('thread_open').length == 2);
+      expect(diagnostics.finished('thread_cached_resume'), hasLength(1));
+      expect(
+        diagnostics.finished('thread_open').last,
+        contains('cacheHit=true'),
+      );
+      expect(agent.resumeCalls, [_threadA.id]);
+      expect(diagnostics.records.join('\n'), isNot(contains('private body')));
+      expect(
+        diagnostics.records.join('\n'),
+        isNot(contains(_profile.password)),
+      );
+    },
+  );
+
+  test(
+    'performance timings mark superseded thread and late disk results stale',
+    () async {
+      final diagnostics = _TimingLogger();
+      final snapshots = _SnapshotStore();
+      final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(
+        agent,
+        snapshots: snapshots,
+        diagnostics: diagnostics,
+      );
+      final first = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(
+        () => agent.resumeCalls.length == 1 && snapshots.reads.length == 1,
+      );
+      harness.controller.backToThreadList();
+      harness.controller.openThread(_threadB);
+      await _waitUntil(
+        () => agent.resumeCalls.length == 2 && snapshots.reads.length == 2,
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      snapshots.reads.first.complete(null);
+      snapshots.reads.last.complete(null);
+      first.complete(const AgentSession(thread: _threadA, timeline: []));
+      await _waitUntil(
+        () =>
+            diagnostics.finished('thread_open').length == 2 &&
+            diagnostics.finished('thread_disk_cache').length == 2,
+      );
+      expect(harness.controller.state.activeThread?.id, _threadB.id);
+      expect(
+        diagnostics
+            .finished('thread_open')
+            .singleWhere((record) => record.contains('thread=thread-a ')),
+        contains('status=stale'),
+      );
+      expect(
+        diagnostics
+            .finished('thread_disk_cache')
+            .singleWhere((record) => record.contains('thread=thread-a ')),
+        contains('status=stale'),
+      );
+    },
+  );
+
+  test(
+    'performance timings report swallowed list timeout without error payload',
+    () async {
+      final diagnostics = _TimingLogger();
+      final agent = _ResumeAgent(threads: const [_threadA]);
+      final harness = await _createHarness(agent, diagnostics: diagnostics);
+      diagnostics.records.clear();
+      agent.listGate = Completer<AgentThreadPage>();
+      final refresh = harness.controller.refreshThreads();
+      await _waitUntil(() => agent.listThreadsCount == 2);
+      agent.listGate!.completeError(
+        TimeoutException('private transport details'),
+      );
+      await refresh;
+      expect(
+        diagnostics.finished('thread_list').single,
+        contains('status=timeout'),
+      );
+      expect(
+        diagnostics.finished('agent_load').single,
+        contains('status=timeout'),
+      );
+      expect(
+        harness.controller.state.error,
+        contains('private transport details'),
+      );
+      expect(
+        diagnostics.records.join('\n'),
+        isNot(contains('private transport details')),
+      );
+    },
+  );
+
+  test('performance timings mark canceled runtime load stale', () async {
+    final diagnostics = _TimingLogger();
+    final agent = _RuntimeResumeAgent(threads: const [_threadA]);
+    agent.inspectGate = Completer<void>();
+    final harness = await _createHarness(
+      agent,
+      waitForAgent: false,
+      diagnostics: diagnostics,
+    );
+    await _waitUntil(() => agent.inspectCalls == 1);
+    await harness.controller.disconnectProfile(_profile.id);
+    agent.inspectGate!.complete();
+    await _waitUntil(() => diagnostics.finished('agent_load').isNotEmpty);
+    expect(diagnostics.finished('agent_load').single, contains('status=stale'));
+    expect(agent.listThreadsCount, 0);
+    expect(diagnostics.finished('agent_load_apply'), isEmpty);
+  });
+
+  test(
+    'performance timings report resume timeout without changing error handling',
+    () async {
+      final diagnostics = _TimingLogger();
+      final agent = _ResumeAgent(threads: const [_threadA]);
+      final harness = await _createHarness(agent, diagnostics: diagnostics);
+      final pending = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+      pending.completeError(TimeoutException('private resume details'));
+      await _waitUntil(() => diagnostics.finished('thread_open').isNotEmpty);
+      expect(
+        diagnostics.finished('thread_resume').single,
+        contains('status=timeout'),
+      );
+      expect(
+        diagnostics.finished('thread_open').single,
+        contains('status=timeout'),
+      );
+      expect(harness.controller.state.loading, isFalse);
+      expect(
+        harness.controller.state.error,
+        contains('private resume details'),
+      );
+      expect(
+        diagnostics.records.join('\n'),
+        isNot(contains('private resume details')),
+      );
+    },
+  );
+
   test(
     'usage counts live notifications once during resume and in the background',
     () async {
@@ -1012,9 +1274,14 @@ void main() {
   test(
     'opening during initial runtime preparation waits without failing',
     () async {
+      final diagnostics = _TimingLogger();
       final agent = _RuntimeResumeAgent(threads: const [_threadA, _threadB]);
       agent.inspectGate = Completer<void>();
-      final harness = await _createHarness(agent, waitForAgent: false);
+      final harness = await _createHarness(
+        agent,
+        waitForAgent: false,
+        diagnostics: diagnostics,
+      );
       await _waitUntil(() => agent.inspectCalls == 1);
       harness.controller.openThread(_threadA);
       await _waitUntil(() => harness.controller.state.screen == AppScreen.work);
@@ -1027,6 +1294,10 @@ void main() {
       expect(harness.controller.state.activeThread?.id, _threadA.id);
       expect(harness.controller.state.error, isNull);
       expect(agent.resumeCalls, [_threadA.id]);
+      expect(
+        diagnostics.finished('thread_lane_wait').single,
+        contains('status=success'),
+      );
     },
   );
 
@@ -2097,6 +2368,7 @@ Future<_Harness> _createHarness(
   bool waitForAgent = true,
   ThreadSnapshotStore? snapshots,
   RequestUsageController? usage,
+  DiagnosticLogger? diagnostics,
 }) async {
   final store = _MemoryProfileStore(
     storedProfiles ??
@@ -2111,7 +2383,7 @@ Future<_Harness> _createHarness(
     store,
     connections,
     agents,
-    null,
+    diagnostics,
     null,
     null,
     null,
@@ -2134,6 +2406,38 @@ Future<_Harness> _createHarness(
     () => controller.state.threads.length == agent.threads.length,
   );
   return _Harness(controller);
+}
+
+class _TimingLogger extends DiagnosticLogger {
+  final records = <String>[];
+  List<String> finished(String stage) => records
+      .where(
+        (record) =>
+            record.contains('stage=$stage ') &&
+            !record.contains('status=started'),
+      )
+      .toList();
+
+  @override
+  Future<bool> initialize() async => true;
+  @override
+  void info(String tag, String message) {
+    if (tag == 'Performance') records.add(message);
+  }
+
+  @override
+  void warn(String tag, String message, [Object? error, StackTrace? stack]) {}
+}
+
+class _TimedLoadAgent extends _RuntimeResumeAgent {
+  _TimedLoadAgent({required super.threads});
+  final models = Completer<List<AgentModel>>();
+  int modelCalls = 0;
+  @override
+  Future<List<AgentModel>> listModels() {
+    modelCalls++;
+    return models.future;
+  }
 }
 
 class _SnapshotStore implements ThreadSnapshotStore {
@@ -2166,15 +2470,23 @@ class _ReusableResumeAgent extends _ResumeAgent
   Future<AgentSession> resumeCachedThread(
     AgentSession snapshot, {
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
-  }) async => AgentSession(
-    thread: snapshot.thread,
-    timeline: snapshot.timeline,
-    nextTurnsCursor: snapshot.nextTurnsCursor,
-    tokenUsage: snapshot.tokenUsage,
-    activeTurnStartedAtMillis: snapshot.activeTurnStartedAtMillis,
-    responseSequence: -1,
-    itemsView: 'cached',
-  );
+  }) async {
+    // The controller can also pass stale history for metadata validation. A
+    // scripted remote response models metadata requiring a fresh read; do not
+    // silently reuse the snapshot and leave that response unconsumed.
+    if (_resumeGates[snapshot.thread.id]?.isNotEmpty ?? false) {
+      return resumeThread(snapshot.thread.id, approvalMode: approvalMode);
+    }
+    return AgentSession(
+      thread: snapshot.thread,
+      timeline: snapshot.timeline,
+      nextTurnsCursor: snapshot.nextTurnsCursor,
+      tokenUsage: snapshot.tokenUsage,
+      activeTurnStartedAtMillis: snapshot.activeTurnStartedAtMillis,
+      responseSequence: -1,
+      itemsView: 'cached',
+    );
+  }
 }
 
 class _MemoryProfileStore implements ProfileStore {

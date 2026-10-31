@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.190+322，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.192+324，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1114,6 +1114,14 @@ Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR
 已经撤除；当前诊断日志不再记录滚动手势、滚动范围、分页布局或加载头动画。后台连接每 10 秒执行的正常
 心跳也保持静默，只记录超过 5 秒的慢心跳、超过 15 秒的投递延迟、调度跳过和连接失败。
 
+连接与加载另用低频 `DiagnosticTiming` 阶段日志定位等待：运行时探测、专用 SSH、Agent channel、
+initialize、Provider 配置、会话与模型目录、磁盘快照、历史恢复及合并分别记录开始与终态。
+`operation` 关联同一步的两条记录，`profile/agent/thread/generation` 区分并发服务器、会话和过期请求；
+`elapsedMs` 用单调 Stopwatch 测量，终态区分成功、失败、超时、过期和跳过，附带可选数量及缓存命中。
+记录沿用 Debug 开关、脱敏与轮转，不输出命令、配置、响应正文或异常正文，不增加网络探测、定时器
+或逐条消息日志。这里测量的是 App 观察到的整个操作等待，不是服务端纯执行时间，也不用于首字指标。
+开始后没有终态可帮助定位尚未返回的步骤；并发目录及嵌套阶段不能简单相加。
+
 `AppUpdateController` 从 `PackageInfo` 读取已安装版本，Android 启动时以 5 秒超时查询 Gitee Release API；
 只接受非 prerelease、合法 SemVer 且包含 `Agent-<version>.apk` 或历史兼容
 `CodexRemote-<version>.apk` 的 Release。响应、标签、资源名和更新日志都有大小/条数上限；Build metadata
@@ -1481,7 +1489,8 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ssh/server_connection_manager_test.dart | 指纹规范化、多服务器隔离、客户端复用、旧结果防护、资源请求去重/断线清理、目录 capability/排序/扫描上限，以及附件上传和远程下载的身份、generation、类型与大小边界 |
 | test/ssh/server_metrics_test.dart | 采样协议解析、兼容短格式、非法/哨兵值和大小边界 |
 | test/agent/codex_protocol_test.dart | JSONL 编解码、generation、模型/会话/时间线/回合/附件兼容解析和字段边界 |
-| test/agent/codex_agent_client_test.dart | app-server 命令的环境加载/workspace shell quoting，以及空 `remoteCommand` 拒绝 |
+| test/agent/codex_agent_client_test.dart | app-server 命令的环境加载/workspace shell quoting、空 `remoteCommand` 拒绝，以及缓存校验与完整/只读历史回退计时 |
+| test/agent/client_startup_timing_test.dart | 专用 SSH、channel、握手与配置耗时，失败/超时清理及可选计时资源失败降级 |
 | test/agent/user_input_flow_test.dart | 真实 JSONL adapter/controller 的提问解析、回答、跳过、撤销、请求编号类型与 thread 隔离 |
 | test/ui/user_input_dialog_test.dart | 提问弹窗、选项说明、自定义输入、多问题、队列、键盘/大字体、私密输入与失败重试 |
 | test/agent/codex_global_settings_test.dart | Shell 语法、临时 HOME 配置读写、Provider/Key/`supports_websockets` 保留与更新、权限、`/models` 解析/去重、0600 header 文件和密钥不泄漏、自动 Responses/Chat 回退、显式 API 协议严格不回退和 HTTP/网络错误映射 |
@@ -1493,12 +1502,13 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/agent/codex_event_reducer_test.dart | turn/delta 生命周期、后台 thread 隔离、TokenUsage 窗口保护、旧 turn 完成防护，以及空 started/完整 completed 的乐观用户消息与图片附件合并 |
 | test/agent/agent_connection_manager_test.dart | profile + Agent lane、host 断开、generation/旧请求防护、连接前不提前暴露 capability、steer 转发和自定义模型同步迟到结果隔离 |
 | test/agent/thread_session_cache_test.dart | 会话缓存 TTL、LRU、权重上限和上下文用量隔离 |
-| test/app/resume_lifecycle_test.dart | resume 通知缓冲/顺序、迟到响应保护、恢复期间统计只记一次，以及返回列表后后台 timeline/TokenUsage/请求统计隔离 |
+| test/app/resume_lifecycle_test.dart | resume 通知缓冲/顺序、迟到响应保护、恢复期间统计只记一次，以及返回列表后后台 timeline/TokenUsage/请求统计隔离；并发目录、磁盘预览、恢复/合并/重放与过期请求的阶段日志 |
 | test/ui/sub_agent_presentation_test.dart | 子 Agent 状态映射、同 turn 终态保护、跨 turn 重启、相邻活动分组和稳定身份色 |
 | test/ui/model_selection_presentation_test.dart | catalog id/wire model 匹配、模型/effort 标签和容量格式 |
 | test/platform/local_file_exporter_test.dart | Android 导出会话 begin/write/complete/abort、分块上限和关闭后拒绝写入 |
 | test/platform/turn_completion_notifications_test.dart | 完成通知 payload、稳定通知 id、bounded 去重、子 Agent 过滤和点击导航解析 |
 | test/platform/diagnostic_logger_test.dart | 十次点击计数、日志开关、100 文件/10 MiB 轮转、脱敏、崩溃记录、清空、附件、预览、导出和分享 |
+| test/platform/diagnostic_timing_test.dart | 阶段开始/终态配对、并发身份、单调耗时、超时/异常保留、日志失败隔离及 Debug 开关 |
 | test/ui/diagnostic_log_sheet_test.dart | 崩溃日志默认选择、多选确认和附件数量上限 |
 | test/platform/app_update_manager_test.dart | Gitee Release/资源筛选、SemVer 与 prerelease 排序、忽略提示、进度/容量辅助函数，以及下载到安装的状态机 |
 | test/ssh/terminal_manager_test.dart | 每 profile PTY session、generation/身份失效、输入/输出上限、历史恢复、断开和重试 |
@@ -1789,6 +1799,12 @@ model/list/thread/list -> thread/resume -> turn/start|turn/steer -> notification
 所选版本、bridge hash、`codex-remote-opencode-bridge`、loopback `serve` 日志、全局 Provider/认证和代理。
 重进异常先比较 cache、active key、threadId 和 generation，再看是否有 resume 响应覆盖实时 delta；stderr
 只进入诊断，不能把辅助错误误报成 SSH 断线。
+
+连接或列表慢时，开启 Debug 后重现并导出对应日志，按 `Performance timing` 和
+`AgentTransport ... timing` 的 `stage/operation` 对照开始与结束；先区分运行时探测、专用 SSH、
+握手及配置读取，再分别比较会话列表和模型列表。打开长会话时比较磁盘快照、Agent 等待、
+元数据校验/完整恢复和本地合并耗时。仅凭低网速占用或内网连接不能排除远端启动、磁盘、CPU
+或串行等待；这些日志定位阶段，不直接证明该阶段内部的根因。
 
 ### 16.5 模拟器、键盘和闪退
 
@@ -3185,6 +3201,30 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   均为 `2e43359a485aaa00ec9baa2830b255119a6a10ca57abdec0638e7d88d068974c`。
   稳定签名证书 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`，
   内网下载回验耗时 `123ms`；外网 FRP 未请求。
+
+### 17.95 连接与会话加载耗时诊断（2026-10-31）
+
+- 应用版本 `1.8.192+324`。Debug 日志增加运行时探测、Agent 专用 SSH、channel 打开、握手、配置读取、
+  会话/模型目录、磁盘缓存、恢复等待、元数据校验、完整/只读历史降级、合并和应用状态的分段耗时。
+  开始/终态通过 operation 配对，保留服务器、Agent、线程和代次；失败、超时、过期、跳过独立记录。
+  不记录正文、命令、配置或异常原文；不增加网络请求、不改变连接/缓存策略、并发及超时。
+  该版本用于定位慢加载阶段，不代表已消除用户服务器上的性能问题，也不改服务端首字计时。
+- 新增受控异步回归验证阶段配对、缓存、并行目录、切页过期、初始化/配置超时与清理、历史降级及
+  Debug 开关。旧缓存测试夹具的三项失败在独立 HEAD 基线同样复现，修正夹具的 metadata 刷新模拟，
+  保留原断言和生产缓存逻辑；控制器相邻 146 项及客户端定向 80 项通过。
+- 最终 analyze 无问题、Flutter 全量 981 项通过，另两项可选原生回环测试未启用；Claude bridge 48 场景
+  及真实 CLI 的隔离本地假 API 联调通过。Debug/Release 构建、稳定验签、原生库检查、Android 14
+  竖屏保留数据覆盖安装与启动截图通过，首页显示 v1.8.192。不登录用户服务器、不调用付费模型，
+  启动 smoke 不代替两台目标服务器的性能复测；验收后关闭模拟器释放资源。
+- 成功发布门禁耗时 `6m28.002s`：服务器 `0.048s`、OpenCode `0.144s` 命中缓存，Claude `28.392s`，
+  Android `5m01.452s`，释放 Gradle `0.591s`，Release 启动检查 `27.975s`，索引同步 `2.242s`，
+  发布及内网回验 `25.827s`，调度 `1.331s`。发布阶段复用已验证 Release；首轮门禁在构造函数 lint
+  提示处停止（`40.033s`），修正后全量通过。定向测试另有异步超时/历史回退夹具返工，完整任务耗时
+  见 `.workflow-cache/task-timings/connection-timing-20261031.tsv`，不与嵌套门禁重复相加。
+- `dist/Agent-1.8.192.apk` 为 `32,146,074` 字节，构建包、归档、本机两个别名及内网完整下载 SHA-256
+  均为 `1f7501e68284a57459408ca4b5b7d928d1dcd66d249f64d9ee5558df7fb37ad9`。
+  稳定签名证书 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+  内网下载回验 `121ms`；外网 FRP 按约定只发布地址、不回验。本轮不打标签、不触发云端出包。
 
 ## 18. 文档维护规则
 
