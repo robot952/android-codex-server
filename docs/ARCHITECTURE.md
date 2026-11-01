@@ -859,8 +859,11 @@ Claude bridge 使用真实 assistant message ID 聚合 start/delta/final usage�
 首字与总耗时只接受明确属于单次模型请求的 `requestMetrics.firstTokenMillis/durationMillis`，禁止使用
 手机接收时间计量。SSH Codex 的默认 stdio 启动在远端加载 `codex-request-metrics.cjs`：用原生 OTLP
 成功 HTTP/WS 请求事件的服务端时间减去请求阶段 duration 定位请求开始，用 response.completed 定位结束，
-再关联同 thread/turn 范围内服务端 `emittedAtMs` 的首个非空文本/推理增量计算首字。只有 response.created、
-工具输出或历史回放不能充当首字；工具间隔、失败重试前的时间和 WS 预热不加入成功请求耗时。
+再关联同 thread/turn 范围内服务端 `emittedAtMs` 的首个非空文本/推理增量计算首字。若一轮模型先发起
+工具调用而没有文字增量，则只接受 `item/started` 中的模型输出 item（使用其服务端 `startedAtMs`）作为
+首次模型输出；`commandExecution` 仅接受 `source` 缺省或 `agent`，用户 Shell、启动命令、工具输出、
+未知 item 和历史回放均排除。收集器只保存时间、turn 和 item ID，不保存命令、参数、路径或结果。
+只有 response.created、工具输出或历史回放不能充当首字；工具间隔、失败重试前的时间和 WS 预热不加入成功请求耗时。
 本机接收延迟、应用后台或遥测批量迟到不参与计算。独立 `thread/requestMetrics/updated` 只补统计，
 保留原 turn+累计量身份，不回退上下文圆环或修改时间线；服务端开始时间可修正首次接收时间，
 `hasServerTimestamp` 随记录持久化，避免跨日后台延迟改变请求归属。
@@ -871,7 +874,7 @@ Claude bridge 使用真实 assistant message ID 聚合 start/delta/final usage�
 仅记录本机实际收到的 Agent 用量，不补算离线期间请求、不抓取账单；独立标题/API 测试未上报用量时
 也不计入。不保证与供应商账单一致，不因缺指标新增付费请求或改写现有模型调用。
 
-`UsageHistoryScreen` 展示逐笔模型、Agent、时间、输入/输出/缓存、首字、总耗时和总 Token，以及范围汇总；
+`UsageHistoryScreen` 展示逐笔模型、Agent、时间、输入/输出/缓存、首字/首次模型输出、总耗时和总 Token，以及范围汇总；
 支持全部日期、今天、昨天、近 7 天、近 30 天，时间范围按本机自然日边界筛选，每分钟刷新日期；
 可同时选择全部模型、某个模型或模型未上报。筛选后的汇总含加权缓存命中率（有效配对记录的缓存合计
 除以输入合计），显示参与笔数，缺失数据或零分母不伪装为 0%。清空需二次确认，删除所有日期的
@@ -3250,6 +3253,22 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - `dist/Agent-1.8.193.apk` 为 `32,147,658` 字节，SHA-256
   `9c173cacbc50a84476c21ed067f425840f62dcedccb41800801c277f4ab67fc8`，内网完整下载回验 `123ms`。
   沿用稳定签名证书 SHA-256 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+
+### 17.97 首次模型输出计时与处理中统计隔离（2026-11-01）
+
+- 应用版本 `1.8.194+326`。远端 Codex 指标收集器继续以服务端 OTLP 请求边界和服务端 JSONL 时间为准；
+  首字仍优先取当前 turn 的首个非空文字/推理增量。模型先发起工具而没有文字增量时，使用受控
+  `item/started` 模型输出 item 的 `startedAtMs`，排除用户 Shell、启动命令、工具输出、未知 item 和历史回放，
+  且只保留时间、turn、item ID。
+- Work 页用 profile、Agent、Provider、thread 和当前 turn 精确选择统计记录；新 turn 尚未收到统计时显示未知值，
+  不再复用上一轮请求。历史统计保留 turn ID 以支持逐笔记录和重启恢复，旧记录缺少 turn ID 时不会污染处理中摘要。
+- 新增 Node 收集器的工具先行、用户 Shell 排除、服务端 `startedAtMs` 和未知 item 回归；Dart 控制器和 Work 布局
+  覆盖当前 turn 隔离及迟到统计更新。analyze、Flutter 全量 `988` 项、Node 14 场景、Android Debug/Release、
+  稳定验签和 Android 14 竖屏保留数据启动 smoke 通过（2 项需要本机 Codex 二进制的可选回环测试按门禁跳过）。
+  发布门禁耗时 `6m24.685s`；`dist/Agent-1.8.194.apk` 为 `32,149,222` 字节，SHA-256
+  `b8157468dca209afa4090bc1248bc65a9c3da650c5e272bd4b62f50fbe65aab3`，内网地址
+  `http://192.168.8.107/codex.apk` 完整下载回验 `120ms`。稳定签名证书 SHA-256
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`；本轮不打标签、不请求外网 FRP。
 
 ## 18. 文档维护规则
 

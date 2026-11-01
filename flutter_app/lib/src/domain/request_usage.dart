@@ -9,6 +9,7 @@ class RequestUsageRecord {
     required this.agent,
     required this.provider,
     required this.threadId,
+    this.turnId,
     required this.recordedAtMillis,
     this.model,
     this.inputTokens,
@@ -25,6 +26,7 @@ class RequestUsageRecord {
   final AgentKind agent;
   final String provider;
   final String threadId;
+  final String? turnId;
   final int recordedAtMillis;
   final String? model;
   // Input includes cache reads; cache hits are a subset, never added twice.
@@ -42,6 +44,7 @@ class RequestUsageRecord {
     agent: agent,
     provider: provider,
     threadId: threadId,
+    turnId: next.turnId ?? turnId,
     recordedAtMillis: next.hasServerTimestamp
         ? next.recordedAtMillis
         : recordedAtMillis,
@@ -67,6 +70,7 @@ class RequestUsageRecord {
     'agent': agent.name,
     'provider': provider,
     'threadId': threadId,
+    'turnId': turnId,
     'recordedAtMillis': recordedAtMillis,
     'model': model,
     'inputTokens': inputTokens,
@@ -102,6 +106,7 @@ class RequestUsageRecord {
       agent: agent,
       provider: usageIdentifier(value['provider']) ?? '',
       threadId: threadId,
+      turnId: usageIdentifier(value['turnId']),
       recordedAtMillis: at,
       model: usageIdentifier(value['model']),
       inputTokens: usageInteger(value['inputTokens']),

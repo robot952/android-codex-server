@@ -63,6 +63,42 @@ scenario("two requests exclude intervening tool execution and retain equal-count
   assert.deepEqual(messages.map(x => x.params.requestMetrics.durationMillis), [600, 600]);
   assert.deepEqual(messages.map(x => x.params.tokenUsage.total.totalTokens), [120, 240]);
 });
+scenario("model tool start is the first output but tool output is ignored", (collector, messages) => {
+  collector.notification({
+    method: "item/started", emittedAtMs: base + 250,
+    params: { threadId: "thread", turnId: "turn", startedAtMs: base + 200,
+      item: { id: "command-1", type: "commandExecution" } },
+  });
+  collector.notification({ ...text(3000, "command-output"), method: "item/commandExecution/outputDelta" });
+  collector.notification(counters(610));
+  collector.telemetry(envelope([start(0), end(600)]));
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].params.requestMetrics.firstTokenMillis, 200);
+});
+scenario("non-model item starts do not manufacture first output timing", (collector, messages) => {
+  for (const type of ["userMessage", "contextCompaction", "subAgentActivity", "enteredReviewMode", "unknown"]) {
+    collector.notification({
+      method: "item/started", emittedAtMs: base + 100,
+      params: { threadId: "thread", turnId: "turn", startedAtMs: base + 100,
+        item: { id: type, type } },
+    });
+  }
+  collector.notification(counters(610));
+  collector.telemetry(envelope([start(0), end(600)]));
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].params.requestMetrics.firstTokenMillis, null);
+});
+scenario("user shell item starts are not model output", (collector, messages) => {
+  collector.notification({
+    method: "item/started",
+    params: { threadId: "thread", turnId: "turn", startedAtMs: base + 100, item: {
+      id: "shell", type: "commandExecution", source: "userShell",
+    } },
+  });
+  collector.notification(counters(610));
+  collector.telemetry(envelope([start(0), end(600)]));
+  assert.equal(messages[0].params.requestMetrics.firstTokenMillis, null);
+});
 scenario("WS prewarm is not confused with actual equal-count request", (collector, messages) => {
   const ws = at => event("codex.websocket_request", at, { duration_ms: 0, success: true });
   collector.notification(text(1300)); collector.notification(counters(1610));

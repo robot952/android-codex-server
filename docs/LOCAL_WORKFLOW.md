@@ -473,7 +473,8 @@ Node bridge/settings 回归验证实际协议与活动 writer 改名；均使用
 `test/ui/thread_list_and_lifecycle_test.dart` 与 `test/agent/open_code_bootstrap_test.dart` 验证生产接线。
 均用合成用量/本地存储，不读取用户日志或调用付费模型。检查重复通知/历史重放不多计、后台隔离、
 处理中显示/完成隐藏、整块点击和离线设置入口；四种自然日筛选、确认清空与重启防重放必须覆盖。
-未知首字/单次耗时显示 `—`，不得把整轮计时填入。持久化/Agent 修改由最终 `publish --reuse`
+未知首字/单次耗时显示 `—`，不得把整轮计时填入；处理中指标必须精确绑定当前 turn，不得显示上一轮缓存。
+持久化/Agent 修改由最终 `publish --reuse`
 覆盖 `full` 风险门禁并发布新 APK；默认递增版本、更新固定下载包，不自动创建云端发布标签。
 服务端计时由 `scripts/test-codex-request-metrics.cjs` 随服务器脚本门禁验证，涵盖延迟遥测、
 多请求/工具间隔、WebSocket 预热、重试、重放和缺失时间戳；手机接收时钟不得作为计时来源。

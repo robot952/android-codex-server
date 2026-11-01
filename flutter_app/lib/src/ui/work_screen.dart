@@ -2614,6 +2614,7 @@ class _Transcript extends StatelessWidget {
           agent: state.activeAgent,
           provider: state.activeThread?.modelProvider ?? '',
           threadId: threadId ?? '',
+          turnId: state.activeTurnId ?? timing?.turnId ?? '',
         ),
       );
     }
@@ -3859,6 +3860,7 @@ class _TurnTimingFooter extends StatefulWidget {
     required this.agent,
     required this.provider,
     required this.threadId,
+    required this.turnId,
   });
 
   final bool running;
@@ -3867,6 +3869,7 @@ class _TurnTimingFooter extends StatefulWidget {
   final AgentKind agent;
   final String provider;
   final String threadId;
+  final String turnId;
 
   @override
   State<_TurnTimingFooter> createState() => _TurnTimingFooterState();
@@ -3948,6 +3951,7 @@ class _TurnTimingFooterState extends State<_TurnTimingFooter> {
                   agent: widget.agent,
                   provider: widget.provider,
                   threadId: widget.threadId,
+                  turnId: widget.turnId,
                 ),
               ),
             ],

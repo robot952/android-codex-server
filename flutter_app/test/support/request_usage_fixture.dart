@@ -27,6 +27,7 @@ class MemoryRequestUsageStore implements RequestUsageStore {
 
 RequestUsageRecord usageFixture({
   String id = 'a',
+  String? turnId = 'turn-1',
   int? at,
   String? model = 'fixture-model',
   int? input = 100,
@@ -38,6 +39,7 @@ RequestUsageRecord usageFixture({
   agent: AgentKind.codex,
   provider: 'fixture-provider',
   threadId: 'thread',
+  turnId: turnId,
   recordedAtMillis: at ?? DateTime(2026, 10, 28, 12).millisecondsSinceEpoch,
   model: model,
   inputTokens: input,
@@ -50,12 +52,13 @@ RequestUsageRecord usageFixture({
 
 Map<String, dynamic> usageParams({
   String? requestId = 'request-1',
+  String turnId = 'turn-1',
   int input = 100,
   int output = 20,
   int cumulative = 120,
   Map<String, dynamic> metrics = const {},
 }) => {
-  'turnId': 'turn-1',
+  'turnId': turnId,
   'tokenUsage': {
     'last': {
       'inputTokens': input,

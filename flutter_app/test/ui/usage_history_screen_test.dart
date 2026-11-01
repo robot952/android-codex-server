@@ -211,6 +211,7 @@ void main() {
                     agent: AgentKind.codex,
                     provider: 'fixture-provider',
                     threadId: 'thread',
+                    turnId: 'turn-1',
                   ),
                 ),
               ),

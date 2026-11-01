@@ -234,6 +234,7 @@ void main() {
             modelProvider: 'fixture-provider',
           ),
           running: true,
+          activeTurnId: 'turn-1',
           turnTiming: TurnTiming(
             threadId: 'thread',
             startedAtMillis: DateTime.now().millisecondsSinceEpoch - 363000,
@@ -300,7 +301,12 @@ void main() {
         agent: AgentKind.codex,
         provider: 'fixture-provider',
         threadId: 'thread',
-        params: usageParams(input: 12345, metrics: {'firstTokenMillis': 350}),
+        params: usageParams(
+          requestId: 'turn-old-request',
+          turnId: 'turn-old',
+          input: 12345,
+          metrics: {'firstTokenMillis': 350},
+        ),
       );
       await tester.pumpWidget(
         ProviderScope(
@@ -344,7 +350,11 @@ void main() {
       expect(summary, findsOneWidget);
       expect(
         find.descendant(of: summary, matching: find.text('12.3k')),
-        findsOneWidget,
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: summary, matching: find.text('—')),
+        findsNWidgets(4),
       );
       expect(tester.getSize(summary).height, inInclusiveRange(24, 40));
       // Even at 320 dp and 2x text the elapsed time stays beside the label.
@@ -353,6 +363,40 @@ void main() {
         closeTo(tester.getCenter(find.text('6m 3s')).dy, 1),
       );
       expect(tester.takeException(), isNull);
+
+      usage.observe(
+        profileId: 'server',
+        agent: AgentKind.codex,
+        provider: 'fixture-provider',
+        threadId: 'thread',
+        params: usageParams(
+          requestId: 'turn-current-request',
+          turnId: 'turn-1',
+          input: 6789,
+          metrics: {'firstTokenMillis': 450},
+        ),
+      );
+      expect(
+        usage.state
+            .latestForTurn(
+              profileId: 'server',
+              agent: AgentKind.codex,
+              provider: 'fixture-provider',
+              threadId: 'thread',
+              turnId: 'turn-1',
+            )
+            ?.inputTokens,
+        6789,
+      );
+      await tester.pump();
+      expect(
+        find.descendant(of: summary, matching: find.text('6.8k')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: summary, matching: find.text('12.3k')),
+        findsNothing,
+      );
 
       controller.showState(running.copyWith(selectedProfileId: 'other-server'));
       await tester.pump();

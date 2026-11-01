@@ -290,7 +290,7 @@ class _RequestUsageCard extends StatelessWidget {
       ('输入', usageTokenLabel(record.inputTokens)),
       ('输出', usageTokenLabel(record.outputTokens)),
       ('缓存命中', usageTokenLabel(record.cachedInputTokens)),
-      ('首字', usageDurationLabel(record.firstTokenMillis)),
+      ('首字 / 首次调用', usageDurationLabel(record.firstTokenMillis)),
       ('总耗时', usageDurationLabel(record.durationMillis)),
       ('总 Token', usageTokenLabel(record.totalTokens)),
     ];

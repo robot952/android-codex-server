@@ -85,6 +85,7 @@ void main() {
       feed(usageParams(output: 0));
       expect(controller.state.records, hasLength(1));
       final row = controller.state.records.single;
+      expect(row.turnId, 'turn-1');
       expect(row.model, 'actual-model');
       expect(row.inputTokens, 100);
       expect(row.outputTokens, 20);
@@ -329,6 +330,36 @@ void main() {
         now,
       ),
       isTrue,
+    );
+  });
+
+  test('latest request summary is isolated to the active turn', () {
+    feed(usageParams(requestId: 'old', turnId: 'turn-old', input: 12345));
+    feed(usageParams(requestId: 'new', turnId: 'turn-new', input: 6789));
+
+    expect(
+      controller.state
+          .latestForTurn(
+            profileId: 'server',
+            agent: AgentKind.codex,
+            provider: 'fixture-provider',
+            threadId: 'thread',
+            turnId: 'turn-old',
+          )
+          ?.inputTokens,
+      12345,
+    );
+    expect(
+      controller.state
+          .latestForTurn(
+            profileId: 'server',
+            agent: AgentKind.codex,
+            provider: 'fixture-provider',
+            threadId: 'thread',
+            turnId: 'turn-new',
+          )
+          ?.inputTokens,
+      6789,
     );
   });
 

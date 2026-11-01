@@ -2,10 +2,18 @@
 
 // Runs on the SSH host, alongside Codex. Never uses the phone's receive clock.
 // Native OTLP timestamps identify upstream request boundaries; native JSONL
-// timestamps identify the first nonempty model text/reasoning delta. Tool time,
-// warm-up requests, replayed history and unknown timings are not substituted.
+// timestamps identify the first nonempty text/reasoning delta or allowlisted
+// model-issued tool item. Tool execution output, warm-up requests, replayed
+// history and unknown timings are not substituted.
 const COUNT_KEYS = ["inputTokens", "outputTokens", "cachedInputTokens", "reasoningOutputTokens", "totalTokens"];
 const DELTAS = new Set(["item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta"]);
+// Only item kinds that represent a model response are eligible. Do not count
+// user messages, lifecycle items, compaction, or tool output.
+const MODEL_OUTPUT_ITEMS = new Set([
+  "agentMessage", "reasoning", "plan", "fileChange", "commandExecution",
+  "mcpToolCall", "dynamicToolCall", "webSearch", "web_search", "webSearchCall",
+  "web_search_call", "imageView", "imageGeneration", "collabAgentToolCall", "sleep",
+]);
 function integer(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -27,6 +35,16 @@ function boundedPush(list, value, limit) {
   list.push(value);
   if (list.length > limit) list.splice(0, list.length - limit);
 }
+function rememberPoint(state, turn, item, time) {
+  if (!identifier(item) || state.points.some(point => point.turn === turn && point.item === item)) return;
+  boundedPush(state.points, { time, turn, item }, 512);
+}
+function isModelOutputItem(item) {
+  if (!item || typeof item !== "object" || !MODEL_OUTPUT_ITEMS.has(item.type)) return false;
+  if (item.type !== "commandExecution") return true;
+  // Shell commands initiated by the user or by startup are not model output.
+  return item.source === undefined || item.source === "agent";
+}
 
 class RequestMetricsCollector {
   constructor(emit) {
@@ -46,18 +64,26 @@ class RequestMetricsCollector {
 
   notification(message) {
     const params = message && message.params;
-    const time = integer(message && message.emittedAtMs);
+    if (!params || !identifier(params.turnId)) return;
+    const modelItemStart = message.method === "item/started" &&
+      isModelOutputItem(params.item);
+    // ItemStartedNotification carries a service-side timestamp. Prefer it for
+    // model output starts; ordinary deltas use the relay's service-side
+    // emission timestamp. Neither path uses the phone's receive clock.
+    const time = integer(modelItemStart ? params.startedAtMs : message.emittedAtMs);
     // Old runtimes without emission timestamps remain usable, but cannot
     // acquire a trustworthy TTFT by timing buffered stdout on reconnect.
-    if (!params || !time || !identifier(params.turnId)) return;
-    if (message.method !== "thread/tokenUsage/updated" && !DELTAS.has(message.method)) return;
+    if (time === null) return;
+    if (message.method !== "thread/tokenUsage/updated" && !DELTAS.has(message.method) && !modelItemStart) return;
     const state = this.thread(params.threadId);
     if (!state) return;
     if (DELTAS.has(message.method)) {
-      if (typeof params.delta !== "string" || !params.delta.trim() || !identifier(params.itemId)) return;
-      if (!state.points.some(point => point.turn === params.turnId && point.item === params.itemId)) {
-        boundedPush(state.points, { time, turn: params.turnId, item: params.itemId }, 512);
-      }
+      if (typeof params.delta !== "string" || !params.delta.trim()) return;
+      rememberPoint(state, params.turnId, params.itemId, time);
+    } else if (modelItemStart) {
+      // Retain only the server timestamp and item ID; never copy item content,
+      // which may contain a command, query, tool arguments, or other user data.
+      rememberPoint(state, params.turnId, params.item?.id, time);
     } else {
       if (params.requestMetrics?.historical || params.requestMetrics?.requestId) return;
       const last = counts(params.tokenUsage?.last);

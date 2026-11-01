@@ -42,6 +42,23 @@ class UsageHistoryState {
             record.threadId == threadId,
       )
       .firstOrNull;
+
+  RequestUsageRecord? latestForTurn({
+    required String profileId,
+    required AgentKind agent,
+    required String provider,
+    required String threadId,
+    required String turnId,
+  }) => records
+      .where(
+        (record) =>
+            record.profileId == profileId &&
+            record.agent == agent &&
+            record.provider == provider &&
+            record.threadId == threadId &&
+            record.turnId == turnId,
+      )
+      .firstOrNull;
 }
 
 /// Observes usage notifications once, independently of navigation or transcript
@@ -182,6 +199,7 @@ class RequestUsageController extends StateNotifier<UsageHistoryState> {
       agent: agent,
       provider: normalizedProvider,
       threadId: threadId,
+      turnId: turnId,
       recordedAtMillis: validStart ? started : now,
       model:
           usageIdentifier(metrics?['model'] ?? params['model']) ??

@@ -13,22 +13,25 @@ class RequestUsageSummary extends ConsumerWidget {
     required this.agent,
     required this.provider,
     required this.threadId,
+    required this.turnId,
   });
 
   final String profileId;
   final AgentKind agent;
   final String provider;
   final String threadId;
+  final String turnId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final record = ref.watch(
       requestUsageProvider.select(
-        (state) => state.latestFor(
+        (state) => state.latestForTurn(
           profileId: profileId,
           agent: agent,
           provider: provider,
           threadId: threadId,
+          turnId: turnId,
         ),
       ),
     );
@@ -50,7 +53,7 @@ class RequestUsageSummary extends ConsumerWidget {
       ),
       (
         Icons.bolt_outlined,
-        '首字延迟',
+        '首字 / 首次调用延迟',
         usageDurationLabel(record?.firstTokenMillis),
       ),
     ];
