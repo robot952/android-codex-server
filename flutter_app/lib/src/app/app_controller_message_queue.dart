@@ -451,6 +451,21 @@ extension MessageQueueController on AppController {
       if (queue.completedTurns.contains(turnId)) return;
       queue.running = true;
       queue.turnId = turnId;
+    } else if (message.method == 'error' &&
+        message.params['willRetry'] == false &&
+        turnId.isNotEmpty &&
+        queue.turnId == turnId) {
+      if (queue.completedTurns.contains(turnId)) return;
+      // A terminal error can arrive before the start RPC reply, without a
+      // turn/completed event. Remember it so neither that reply nor delayed
+      // turn events revive the failed turn or drain the remaining queue.
+      queue.completedTurns.add(turnId);
+      while (queue.completedTurns.length > 32) {
+        queue.completedTurns.remove(queue.completedTurns.first);
+      }
+      queue.running = false;
+      queue.turnId = null;
+      _pauseMessageQueue(queue.key, threadId, '回合请求失败，请检查错误后点击“引导”继续发送');
     } else if (message.method == 'turn/completed' && turnId.isNotEmpty) {
       if (queue.completedTurns.contains(turnId) ||
           (queue.turnId != null && queue.turnId != turnId)) {

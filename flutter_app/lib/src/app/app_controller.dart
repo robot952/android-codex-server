@@ -179,7 +179,6 @@ class AppController extends StateNotifier<AppUiState> {
   final ThreadSnapshotStore _threadSnapshotStore;
   final RequestUsageController? _requestUsage;
   final ThreadListCacheStore _threadListCacheStore;
-  final _usageModelsByTurn = <String, String>{};
   final LinkedHashMap<String, (int, int?, int, int?)> _liveThreadSnapshots =
       LinkedHashMap();
   late final StreamSubscription<Map<String, ConnectionState>>
@@ -6503,11 +6502,6 @@ class AppController extends StateNotifier<AppUiState> {
         message.method != 'turn/started') {
       return;
     }
-    final turn = _notificationMap(message.params['turn']);
-    final turnId = _notificationString(message.params, const [
-      'turnId',
-      'turn_id',
-    ]).ifEmpty(() => _notificationString(turn, const ['id']));
     final visible = _isActiveThread(key, threadId);
     final thread = visible
         ? state.activeThread
@@ -6515,40 +6509,12 @@ class AppController extends StateNotifier<AppUiState> {
               state.agentThreadLists[key]?.firstWhereOrNull(
                 (t) => t.id == threadId,
               );
-    final preference =
-        _stored.threadModelPreferences[threadPreferenceKey(
-          key.profileId,
-          key.agent,
-          threadId,
-        )];
-    final profile = state.profiles.firstWhereOrNull(
-      (p) => p.id == key.profileId,
-    );
-    final selected = visible ? state.selectedModel : null;
-    final configured = selected?.trim().isNotEmpty == true
-        ? selected
-        : preference?.model.isNotEmpty == true
-        ? preference!.model
-        : profile?.modelSettings(key.agent).preferredModel;
-    final modelKey =
-        '${threadPreferenceKey(key.profileId, key.agent, threadId)}\u0000'
-        '${thread?.modelProvider ?? ''}\u0000$turnId';
-    if (message.method == 'turn/started') {
-      if (turnId.isNotEmpty && configured?.isNotEmpty == true) {
-        _usageModelsByTurn.putIfAbsent(modelKey, () => configured!);
-        while (_usageModelsByTurn.length > 256) {
-          _usageModelsByTurn.remove(_usageModelsByTurn.keys.first);
-        }
-      }
-      return;
-    }
     _requestUsage.observe(
       profileId: key.profileId,
       agent: key.agent,
       provider: thread?.modelProvider ?? '',
       threadId: threadId,
       params: message.params,
-      fallbackModel: _usageModelsByTurn[modelKey] ?? configured,
     );
   }
 

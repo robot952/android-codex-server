@@ -31,7 +31,15 @@ input_hash="$(workflow_repo_hash "$ROOT_DIR" \
     server/smoke-test.mjs \
     protocol/codex-version.txt \
     flutter_app/assets/codex-request-metrics.cjs \
+    flutter_app/assets/codex-history-compat.cjs \
+    flutter_app/assets/codex-history-proxy.cjs \
+    flutter_app/assets/codex-history-relay.cjs \
+    flutter_app/assets/opencode-bridge.cjs \
     scripts/test-codex-request-metrics.cjs \
+    scripts/test-codex-history-compat.cjs \
+    scripts/test-codex-history-proxy.cjs \
+    scripts/test-codex-history-relay.cjs \
+    scripts/test-opencode-usage-model.cjs \
     scripts/test-server.sh \
     scripts/workflow-lib.sh)"
 node_identity="$(node --version)"
@@ -55,6 +63,10 @@ bash -n \
     server/codex-app-server-ssh
 node --check server/smoke-test.mjs
 node scripts/test-codex-request-metrics.cjs
+node scripts/test-codex-history-compat.cjs
+node scripts/test-codex-history-proxy.cjs
+node scripts/test-codex-history-relay.cjs
+node scripts/test-opencode-usage-model.cjs
 
 workflow_write_stamp "$stamp_path" "$fingerprint"
 echo "Server script gate passed in $(workflow_elapsed "$started_seconds")"

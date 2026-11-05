@@ -106,6 +106,33 @@ function fakeClaudeMain() {
         "other-model": { contextWindow: 9999 },
         ...(scenario === "usage" ? { [model]: { contextWindow: 1000000, inputTokens: 999999 } } : {}),
       } });
+    } else if (scenario === "usage-model-attribution") {
+      const snapshot = (id, model) => send({ type: "assistant", message: {
+        id, model, usage: { input_tokens: 100, output_tokens: 20 }, content: [],
+      } });
+      snapshot("unknown-initial");
+      snapshot("request-a", " actual-model-a ");
+      send({ type: "stream_event", event: { type: "message_start", message: {
+        id: "request-b", usage: { input_tokens: 100, output_tokens: 0 },
+      } } });
+      send({ type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 20 } } });
+      snapshot("request-b");
+      snapshot("request-c", "actual-model-c");
+      snapshot("request-a"); // A delayed snapshot must not inherit C's model.
+      snapshot("request-b", "actual-model-b"); // Only this same request is enriched.
+      snapshot("request-d", " ");
+      // A model can arrive before usable token counts in the same message.
+      send({ type: "stream_event", event: { type: "message_start", message: {
+        id: "header-only", model: "actual-model-header",
+      } } });
+      send({ type: "stream_event", event: { type: "message_delta", usage: { input_tokens: 100, output_tokens: 20 } } });
+      snapshot("header-only");
+      result("MODEL_ATTRIBUTION_DONE");
+    } else if (scenario === "usage-model-missing") {
+      send({ type: "assistant", message: {
+        id: "unknown-next-turn", usage: { input_tokens: 100, output_tokens: 20 }, content: [],
+      } });
+      result("UNKNOWN_MODEL_DONE");
     } else if (scenario === "stream") {
       send({ type: "stream_event", event: { type: "message_start", message: { id: "message-one" } } });
       send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } });
@@ -695,6 +722,31 @@ test("current context includes cache tokens, deduplicates usage and survives res
   assert.equal(switched.tokenUsage.total.totalTokens, 1790);
   assert.equal(usageBreakdown({ output_tokens: 7 }), null, "output alone cannot establish context input size");
   assert.equal(usageBreakdown({ input_tokens: -1, output_tokens: 7 }), null);
+});
+
+test("request models come from the same message, never the configured or previous model", async ({ peer }) => {
+  const id = await peer.thread();
+  await peer.complete(await peer.turn(id, "usage-model-attribution", { model: "configured-never-used" }));
+  const requests = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" &&
+    message.params.threadId === id && !message.params.requestMetrics.historical);
+  assert.deepEqual(requests.map(message => [message.params.requestMetrics.requestId, message.params.requestMetrics.model]), [
+    ["unknown-initial", null],
+    ["request-a", "actual-model-a"],
+    ["request-b", null],
+    ["request-b", null],
+    ["request-b", null],
+    ["request-c", "actual-model-c"],
+    ["request-a", "actual-model-a"],
+    ["request-b", "actual-model-b"],
+    ["request-d", null],
+    ["header-only", "actual-model-header"],
+    ["header-only", "actual-model-header"],
+  ]);
+  await peer.complete(await peer.turn(id, "usage-model-missing", { model: "another-configured-model" }));
+  const nextTurnUsage = peer.messages.filter(message => message.method === "thread/tokenUsage/updated" &&
+    message.params.requestMetrics.requestId === "unknown-next-turn");
+  assert.equal(nextTurnUsage.length, 1);
+  assert.equal(nextTurnUsage[0].params.requestMetrics.model, null, "previous turn model cannot identify a new request");
 });
 
 test("the configured compaction window, not the model capacity, is the ring denominator", async ({ peer, root, fake, peers }) => {

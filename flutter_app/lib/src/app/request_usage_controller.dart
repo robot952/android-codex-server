@@ -121,7 +121,6 @@ class RequestUsageController extends StateNotifier<UsageHistoryState> {
     required String provider,
     required String threadId,
     required Map<String, dynamic> params,
-    String? fallbackModel,
   }) {
     if (!mounted ||
         usageIdentifier(profileId) == null ||
@@ -202,9 +201,9 @@ class RequestUsageController extends StateNotifier<UsageHistoryState> {
       turnId: turnId,
       recordedAtMillis: validStart ? started : now,
       model:
-          usageIdentifier(metrics?['model'] ?? params['model']) ??
-          _records[id]?.model ??
-          usageIdentifier(fallbackModel),
+          usageIdentifier(metrics?['model']) ??
+          usageIdentifier(params['model']) ??
+          _records[id]?.model,
       inputTokens: input,
       outputTokens: output,
       cachedInputTokens: cached,

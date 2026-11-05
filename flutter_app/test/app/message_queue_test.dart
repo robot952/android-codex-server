@@ -343,6 +343,130 @@ void main() {
     },
   );
 
+  for (final beforeReply in [false, true]) {
+    test(
+      'terminal request error ${beforeReply ? 'before' : 'after'} RPC reply pauses tail and preserves draft',
+      () async {
+        final h = QueueHarness();
+        addTearDown(h.close);
+        await h.open();
+        await h.send('first');
+        await h.controller.uploadAttachments([image('pending.png')]);
+        await h.send('pending');
+        final pending = h.controller.state.queuedMessages.last;
+        final reply = beforeReply
+            ? h.agent.replyGate = Completer<void>()
+            : null;
+        addTearDown(() {
+          if (reply != null && !reply.isCompleted) reply.complete();
+        });
+        h.agent.complete('turn-0');
+        await queueWait(() => h.agent.starts.length == 1);
+        if (!beforeReply) {
+          await queueWait(() => !h.controller.state.messageSending);
+        }
+        h.controller.setComposerDraft('new unsent draft');
+        h.agent.emit('error', {
+          'threadId': 'queue-thread',
+          if (beforeReply) 'turn': {'id': 'turn-1'} else 'turnId': 'turn-1',
+          'willRetry': false,
+          'error': {'message': 'HTTP 400: Upstream request failed'},
+        });
+        await queueWait(() => !h.controller.state.running);
+        reply?.complete();
+        await queueWait(
+          () =>
+              !h.controller.state.messageSending &&
+              h.controller.state.queuedMessages.length == 1,
+        );
+        expect(h.controller.state.activeTurnId, isNull);
+        expect(h.controller.state.error, contains('Upstream request failed'));
+        expect(h.controller.state.composerDraft, 'new unsent draft');
+        final remaining = h.controller.state.queuedMessages.single;
+        expect(remaining.id, pending.id);
+        expect(remaining.text, 'pending');
+        expect(remaining.attachments.single.name, 'pending.png');
+        expect(remaining.error, isNotNull);
+        expect(h.agent.starts, hasLength(1));
+        expect(h.agent.steers, isEmpty);
+
+        h.agent.emit('turn/started', {
+          'threadId': 'queue-thread',
+          'turn': {'id': 'turn-1', 'status': 'inProgress'},
+        });
+        h.agent.complete('turn-1');
+        await queuePump();
+        expect(h.controller.state.running, isFalse);
+        expect(h.agent.starts, hasLength(1));
+        expect(h.controller.state.queuedMessages.single.error, isNotNull);
+
+        await h.controller.steerQueuedMessage(remaining.id);
+        expect(h.agent.starts, hasLength(2));
+        expect(h.agent.starts.last.text, 'pending');
+        expect(h.agent.steers, isEmpty);
+        expect(h.controller.state.composerDraft, 'new unsent draft');
+      },
+    );
+  }
+
+  for (final scenario
+      in <({String name, String method, Map<String, Object?> params})>[
+        (
+          name: 'retryable error',
+          method: 'error',
+          params: {'turnId': 'turn-0', 'willRetry': true},
+        ),
+        (
+          name: 'unspecified retry status',
+          method: 'error',
+          params: {'turnId': 'turn-0'},
+        ),
+        (
+          name: 'string retry status',
+          method: 'error',
+          params: {'turnId': 'turn-0', 'willRetry': 'false'},
+        ),
+        (
+          name: 'warning',
+          method: 'warning',
+          params: {'turnId': 'turn-0', 'willRetry': false},
+        ),
+        (
+          name: 'old turn',
+          method: 'error',
+          params: {'turnId': 'old-turn', 'willRetry': false},
+        ),
+        (name: 'missing turn', method: 'error', params: {'willRetry': false}),
+        (
+          name: 'other thread',
+          method: 'error',
+          params: {
+            'threadId': 'other-thread',
+            'turnId': 'turn-0',
+            'willRetry': false,
+          },
+        ),
+      ]) {
+    test('${scenario.name} does not pause the current message queue', () async {
+      final h = QueueHarness();
+      addTearDown(h.close);
+      await h.open();
+      await h.send('pending');
+      h.agent.emit(scenario.method, {
+        'threadId': 'queue-thread',
+        'error': {'message': 'Upstream request failed'},
+        ...scenario.params,
+      });
+      await queuePump();
+      expect(h.controller.state.running, isTrue);
+      expect(h.controller.state.activeTurnId, 'turn-0');
+      expect(h.controller.state.queuedMessages.single.error, isNull);
+      h.agent.complete('turn-0');
+      await queueWait(() => h.agent.starts.length == 1);
+      expect(h.agent.starts.single.text, 'pending');
+    });
+  }
+
   test('stop pauses queue even after late successful completion', () async {
     final h = QueueHarness();
     addTearDown(h.close);

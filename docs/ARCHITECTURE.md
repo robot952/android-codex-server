@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.193+325，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.195+327，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -3269,6 +3269,55 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `b8157468dca209afa4090bc1248bc65a9c3da650c5e272bd4b62f50fbe65aab3`，内网地址
   `http://192.168.8.107/codex.apk` 完整下载回验 `120ms`。稳定签名证书 SHA-256
   `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`；本轮不打标签、不请求外网 FRP。
+
+### 17.98 旧版子代理历史兼容与失败发送恢复（2026-11-05）
+
+- 应用版本 `1.8.195+327`。远端指标启动脚本组合加载 history compat、HTTP proxy、RPC relay 和原指标
+  收集器。Relay 根据会话工作目录读取生效配置，在新建/恢复时仅将模型请求路由到同进程的随机令牌回环
+  地址；保留供应商标识、认证、请求头及下载代理配置，不持久保存 Key 或请求正文。内部配置 RPC 响应不进入
+  客户端聊天流；配置读取失败时保留原调用，不自动重复发送。
+- 仅转换 Responses `input[]` 中 `agent_message.content[]` 的 `encrypted_content`：必须带
+  `c2a-msg-v1:` 前缀，后缀为规范 URL-safe Base64 且能严格解码为 UTF-8，才转成 `input_text`。
+  原 `agent_message` 元信息、普通正文、合法不透明加密内容及 `c2c:v1` 摘要原样保留；不改写、不删除
+  磁盘历史。请求按原上游的路径、状态码和流式响应转发，取消时终止上游，HTTP 400 不重试。
+- 只读审计表明异常消息经过子代理转发写入并被后续压缩复制；编码生成端尚未确定，不能据此归因于
+  Android。当前兼容点在模型请求生成边界，覆盖恢复后的旧记录及新出现的同格式记录。
+- 当前 turn 的不可重试错误清理发送/运行状态并展示错误；排队消息暂停，迟到的接收确认或 turn 通知
+  不会复活失败任务，也不会自动反复提交无效历史。其他 turn 的旧错误不影响当前发送。
+- 新增格式转换、代理、RPC relay 和 Dart 状态回归。服务器脚本门禁纳入三个确定性 Node 回归；真实
+  Native 验收通过 `CODEX_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-history-relay-live.cjs`
+  单独运行，只使用临时 CODEX_HOME、合成历史及回环供应商。已在 Native `0.162.1` 验证：持久化旧
+  `agent_message` 后重启、恢复同会话，一次 HTTP 400 明确结束且不重试，随后连续两轮正常回复，
+  共三次模型请求，合法加密内容与原持久化记录保持完整。
+- 此兼容入口面向显式配置 `openai_base_url` 或自定义 `model_providers.*.base_url` 的 Responses
+  供应商。默认 ChatGPT/内建 OpenAI 无显式 URL、SOCKS 下载代理、非标准启动命令或命令行 `-c`
+  覆盖等无法安全还原的配置保留原生路径，不猜测或改写其认证、协议及配置。
+
+### 17.99 原生供应商配置与请求模型归属（2026-11-05）
+
+- Agent 设置新增原生供应商列表和编辑页，可新增、修改、删除、应用 URL、Key、代理、模型及相关
+  Agent 选项，不要求操作 Shell。配置以服务器、Agent、配置 ID 隔离，通过平台 Secure Storage
+  的 `agent_provider_profiles_v1` 保存，最多 256 项；不把 Key 写入普通偏好或诊断日志。
+  应用复用现有远端设置与重连流程，先核对当前服务器/Agent，加载代次丢弃过期结果，异步保存和
+  应用期间禁用重复操作。该实现采用供应商配置管理思路，不引入 cc-switch 的终端界面或运行时依赖。
+- 历史用量只使用实际消息上报的模型，不再用界面选中、线程偏好或服务器默认模型兜底。Claude
+  按同一 message ID 保留已上报模型，OpenCode 从该条 assistant 消息的 providerID/modelID 取值；
+  迟到快照不继承当前请求的模型。缺少模型时保持未知，同一请求后续有明确模型时补全。
+  已存储的旧记录没有足够证据自动重标模型，保持原数据，不根据当前配置倒推历史。
+- 新增安全存储隔离、供应商增删改/应用、窄屏/键盘和请求模型归属回归；OpenCode 模型快照回归纳入
+  服务器门禁，Claude 协议测试覆盖同消息缺字段及跨请求不得继承模型。
+- 本次合并交付通过 analyze、Flutter 全量 `1011` 项（2 项需要本机二进制的可选测试跳过）、服务器及
+  OpenCode/Claude 桥接门禁、Debug/Release 构建、稳定验签和保留数据的 Release 模拟器安装启动检查。
+  上述 Native 历史验收独立实跑通过，不属于跳过项，也未向真实供应商发送付费请求。
+- 发布主门禁 `6m50.901s`：服务器 `0.065s`、OpenCode `0.135s` 命中缓存，Claude `28.408s`，Android
+  `5m24.532s`（全量测试 `1m46.566s`、Debug `50.248s`、Release `2m39.958s`），释放 Gradle `0.579s`，
+  模拟器 `28.693s`，索引 `1.316s`，发布及内网回验 `26.102s`，调度 `1.071s`。首轮失败、验收和总任务
+  墙钟时间见 `.workflow-cache/task-timings/codex-history-compat.tsv`；中断阶段按中断状态记录，不计为通过。
+  完成后关闭本轮模拟器以释放资源，保留 AVD 和应用数据。
+- `dist/Agent-1.8.195.apk` 为 `32,293,153` 字节，构建归档与两个下载别名 SHA-256 均为
+  `1f0d4060d627019b485f9ef0e21a1d7dda29d912681b1e69bced9c021ae4dac5`，内网完整下载回验 `114ms`。
+  沿用稳定签名证书 SHA-256 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+  本轮不打标签、不请求外网 FRP；固定内网和外网下载地址继续使用原路径。
 
 ## 18. 文档维护规则
 

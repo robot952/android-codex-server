@@ -66,7 +66,6 @@ void main() {
     provider: provider,
     threadId: thread,
     params: params,
-    fallbackModel: 'selected-model',
   );
 
   test(
@@ -171,8 +170,25 @@ void main() {
               threadId: 'thread',
             )
             ?.model,
-        'selected-model',
+        isNull,
       );
+    },
+  );
+
+  test(
+    'uses only a request-reported model and leaves unknown models blank',
+    () {
+      feed(usageParams());
+      expect(controller.state.records.single.model, isNull);
+
+      final reported = usageParams();
+      reported['model'] = 'reported-model';
+      feed(reported);
+      expect(controller.state.records.single.model, 'reported-model');
+
+      feed(usageParams(metrics: {'model': 'actual-model'}));
+      expect(controller.state.records, hasLength(1));
+      expect(controller.state.records.single.model, 'actual-model');
     },
   );
 

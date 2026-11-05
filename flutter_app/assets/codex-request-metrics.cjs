@@ -225,8 +225,29 @@ async function runRelay(command) {
   const { spawn } = require("node:child_process");
   const { StringDecoder } = require("node:string_decoder");
   if (typeof command !== "string" || !command.trim()) throw new Error("Missing Codex command");
+  // Capture the upstream routing environment before adding loopback bypasses
+  // for the child. The compatibility proxy must retain the user's proxy rules.
+  const upstreamEnv = { ...process.env };
+  let historyProxy = null;
+  if (typeof createHistoryProxy === "function") {
+    try {
+      historyProxy = await createHistoryProxy({ env: upstreamEnv });
+    } catch (_) {
+      process.stderr.write("Codex history compatibility proxy unavailable; continuing normally.\n");
+    }
+  }
   const token = randomBytes(24).toString("hex");
   let child;
+  let historyBridge;
+  let historyClosed = false;
+  const closeHistory = () => {
+    if (historyClosed) return;
+    historyClosed = true;
+    try { historyBridge?.close(); } catch (_) {}
+    try {
+      if (historyProxy) Promise.resolve(historyProxy.close()).catch(() => {});
+    } catch (_) {}
+  };
   const write = value => {
     if (!process.stdout.write(value)) child?.stdout.pause();
   };
@@ -267,10 +288,12 @@ async function runRelay(command) {
   // app-server subcommand makes some Codex versions discard earlier -c values.
   const launch = command.replace(/(^|\s)(["']?)app-server\2(?=\s|$)/,
     (_, space, quote) => `${space}${telemetryArguments}${quote}app-server${quote}`);
-  const env = { ...process.env };
+  const env = { ...upstreamEnv };
   if (telemetryArguments) {
     env.OTEL_BLRP_SCHEDULE_DELAY = "1000";
-    // The local exporter must never send its payload through an HTTP proxy.
+  }
+  if (telemetryArguments || historyProxy) {
+    // Local telemetry and history routes must bypass the child's HTTP proxy.
     env.NO_PROXY = [env.NO_PROXY, env.no_proxy, "127.0.0.1", "localhost"].filter(Boolean).join(",");
     env.no_proxy = env.NO_PROXY;
   }
@@ -279,34 +302,57 @@ async function runRelay(command) {
   });
   const decoder = new StringDecoder("utf8");
   const observe = lineObserver(message => collector.notification(message));
-  child.stdout.on("data", chunk => {
+  const nativeOutputHandler = chunk => {
+    if (!Buffer.isBuffer(chunk)) chunk = Buffer.from(chunk);
     // Forward before inspection; an enriched notification is always a separate
     // complete JSONL record, even if a native line spans multiple pipe chunks.
     write(chunk);
     inLine = chunk[chunk.length - 1] !== 10;
     observe(decoder.write(chunk));
     if (!inLine) while (queued.length) write(queued.shift());
+  };
+  if (typeof createHistoryRpcBridge === "function") {
+    historyBridge = createHistoryRpcBridge({
+      send: chunk => {
+        if (!child.stdin.write(chunk)) process.stdin.pause();
+      },
+      output: nativeOutputHandler,
+      proxy: historyProxy,
+    });
+  }
+  child.stdout.on("data", chunk => {
+    if (historyBridge) historyBridge.writeOutput(chunk);
+    else nativeOutputHandler(chunk);
   });
   process.stdout.on("drain", () => child.stdout.resume());
-  process.stdin.pipe(child.stdin);
+  process.stdin.on("data", chunk => {
+    if (historyBridge) historyBridge.writeInput(chunk);
+    else if (!child.stdin.write(chunk)) process.stdin.pause();
+  });
+  child.stdin.on("drain", () => process.stdin.resume());
   child.stdin.on("error", () => {});
   let stopping = false;
   let killTimer;
   const stop = () => {
     if (stopping) return;
     stopping = true;
+    closeHistory();
     child.kill("SIGTERM");
     killTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
     killTimer.unref();
   };
-  process.stdin.on("end", stop);
+  process.stdin.on("end", async () => {
+    try { await historyBridge?.endInput(); } catch (_) {}
+    child.stdin.end();
+    stop();
+  });
   process.stdout.on("error", stop);
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, stop);
   child.on("error", stop);
   child.once("close", code => {
     clearTimeout(killTimer);
-    process.stdin.unpipe(child.stdin);
     process.stdin.pause();
+    closeHistory();
     server.closeAllConnections(); server.close();
     process.exitCode = code ?? 1;
   });

@@ -169,7 +169,7 @@ void main() {
       expect(source, contains('module.exports = {'));
       expect(
         OpenCodeBootstrap.bridgeSha256(source),
-        '96fb3fd7cdb29a8a3952d91dd5b4f85fee51c85fe43a7339ae269db0fdc8a4ba',
+        '16b309bf58993b5bdfb9a79b077c89d49f62cc630fb53c95777e78db787684a2',
       );
     });
 

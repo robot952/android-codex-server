@@ -209,10 +209,16 @@ function mapMessageTokenUsage(info, contextWindowTokens) {
   };
 }
 
-function modelReferenceFromInfo(info, sessionID) {
-  const providerID = String(info && info.providerID || "").trim();
-  const modelID = String(info && info.modelID || "").trim();
+function reportedModelReferenceFromInfo(info) {
+  const providerID = typeof (info && info.providerID) === "string" ? info.providerID.trim() : "";
+  const modelID = typeof (info && info.modelID) === "string" ? info.modelID.trim() : "";
   if (providerID && modelID) return providerID + "/" + modelID;
+  return "";
+}
+
+function modelReferenceFromInfo(info, sessionID) {
+  const reported = reportedModelReferenceFromInfo(info);
+  if (reported) return reported;
   const active = activeTurns.get(sessionID);
   return active && active.modelReference || "";
 }
@@ -278,7 +284,9 @@ async function publishTokenUsageForInfo(info, sessionID) {
   }
   publishTokenUsage(sessionID, usage, {
     requestId: typeof info.id === "string" ? info.id : null,
-    model: modelReferenceFromInfo(info, sessionID),
+    // The active turn may belong to a different request than this (possibly
+    // delayed) assistant snapshot. Only the message itself can identify it.
+    model: reportedModelReferenceFromInfo(info),
     startedAtMillis: Number.isSafeInteger(info.time && info.time.created) ? info.time.created : null,
   });
 }

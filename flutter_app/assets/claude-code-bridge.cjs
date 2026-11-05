@@ -910,17 +910,22 @@ class ClaudeBridge {
     }, 250);
   }
   usage(run, messageId, value, model) {
+    const reportedModel = typeof model === "string" ? model.trim() : "";
+    if (reportedModel) run.usageModelsByMessage.set(messageId, reportedModel);
+    // Stream deltas and final snapshots may omit the model. Preserve a model
+    // only for the same message, never from the current/previous request.
+    const requestModel = run.usageModelsByMessage.get(messageId) || null;
     const breakdown = usageBreakdown(value);
     if (!breakdown) return;
     const isLatest = !run.usageByMessage.has(messageId) || run.lastUsageId === messageId;
-    if (isLatest && model) {
+    if (isLatest && requestModel) {
       // 换了模型就不能再沿用旧容量：CLI 会重新上报，青黄不接时宁可显示未知。
-      if (run.usageModel && run.usageModel !== model) run.contextWindow = 0;
-      run.usageModel = model;
+      if (run.usageModel && run.usageModel !== requestModel) run.contextWindow = 0;
+      run.usageModel = requestModel;
     }
     run.usageByMessage.set(messageId, breakdown);
     if (isLatest) { run.lastUsage = breakdown; run.lastUsageId = messageId; }
-    this.publishUsage(run, { requestId: messageId, model: model || run.usageModel, usage: breakdown });
+    this.publishUsage(run, { requestId: messageId, model: requestModel, usage: breakdown });
   }
   publishUsage(run, requestMetrics = { historical: true }) {
     if (!run.lastUsage) return;
@@ -1211,7 +1216,7 @@ class ClaudeBridge {
       run.streamMessageIdProvided = false;
       run.messageId = null;
       run.messageUsage = null;
-      run.messageModel = run.actualModel;
+      run.messageModel = null;
       run.completedMessages = new Set();
       run.lastAssistantBlocks = [];
       run.toolAliases = new Map();
@@ -1219,6 +1224,7 @@ class ClaudeBridge {
       run.resultMessageId = null;
       run.truncated = new Set();
       run.usageByMessage = new Map();
+      run.usageModelsByMessage = new Map();
       run.baseUsage = { ...ZERO_USAGE, ...previousUsage?.total };
       run.usageModel = previousModel;
       run.lastUsage = null;
@@ -1490,7 +1496,7 @@ class ClaudeBridge {
         // the same assistant response before its tool_result arrives; resetting
         // here would recreate text/tool cards under fresh transport IDs.
         run.messageUsage = { ...event.message?.usage };
-        run.messageModel = event.message?.model || run.actualModel;
+        run.messageModel = event.message?.model;
         // Without a real message ID wait for the final assistant snapshot;
         // counting this temporary stream key would double-count its real ID.
         if (run.streamMessageIdProvided) this.usage(run, run.messageId, run.messageUsage, run.messageModel);
@@ -1531,7 +1537,7 @@ class ClaudeBridge {
       // Never let an old stream index swallow that independent response.
       const canReuseStreamItems = !run.streamMessageIdProvided
         || (finalMessageIdProvided && finalMessageId === run.messageId);
-      this.usage(run, messageId, value.message.usage, value.message.model || run.actualModel);
+      this.usage(run, messageId, value.message.usage, value.message.model);
       const nextAssistantBlocks = [];
       // The CLI snapshots each content block of one message separately, and a
       // replayed snapshot may drop or reorder a leading thinking block. The
@@ -1942,7 +1948,7 @@ class ClaudeBridge {
       }
       this.store.saveTurn(thread, turn); this.store.save(thread);
       const child = cp.spawn(this.claudeBin, args, { cwd: thread.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
-    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(thread.modelWindow) : 0, compactionWindow: configuredCompactionWindow(configuration), nativeModel: model || null, nativeEffort: effort || null };
+    run = { thread, turn, child, unlock, content: prepared.content, streamed: new Set(), streamedByIndex: new Map(), streamReplayByIndex: new Map(), streamDeltaHistoryByIndex: new Map(), messageSequence: 0, streamMessageKey: null, streamMessageIdProvided: false, completedMessages: new Set(), lastAssistantBlocks: [], toolAliases: new Map(), truncated: new Set(), children: new Map(), exiting: false, compactionId: options.compactionId || uuid(), compactionDone: false, compactOnly: !!options.compact, boundaryDone: false, boundaryTimer: null, boundaryResolve: null, boundaryReject: null, settlePass: null, fullAccess: params.approvalPolicy === "never" && params.sandboxPolicy?.type === "dangerFullAccess", initializeId: uuid(), usageByMessage: new Map(), usageModelsByMessage: new Map(), baseUsage: { ...ZERO_USAGE, ...previousUsage?.total }, usageModel: previousModel, contextWindow: model === previousModel ? tokenCount(thread.modelWindow) : 0, compactionWindow: configuredCompactionWindow(configuration), nativeModel: model || null, nativeEffort: effort || null };
       this.hydrateBackgroundChildren(run);
       this.active.set(thread.id, run);
       // A compaction pass answers its own request once the boundary is in, so it

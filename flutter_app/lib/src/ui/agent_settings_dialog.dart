@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 import '../agent/codex_global_settings.dart';
+import '../domain/agent_provider_profile.dart';
 import '../domain/model_catalog.dart'
     show
         claudeCodeAutoCompactWindowMax,
@@ -39,6 +41,15 @@ typedef AgentSettingsSaveCallback =
       required int contextLimit,
     });
 
+typedef AgentProviderProfilesLoadCallback =
+    Future<List<AgentProviderProfile>> Function();
+typedef AgentProviderProfileSaveCallback =
+    Future<void> Function(AgentProviderProfile profile);
+typedef AgentProviderProfileDeleteCallback =
+    Future<void> Function(String profileId);
+typedef AgentProviderProfileActivateCallback =
+    Future<void> Function(AgentProviderProfile profile);
+
 class AgentSettingsDialog extends StatefulWidget {
   const AgentSettingsDialog({
     required this.state,
@@ -46,6 +57,10 @@ class AgentSettingsDialog extends StatefulWidget {
     required this.onTest,
     required this.onSave,
     required this.onDismiss,
+    required this.onLoadProfiles,
+    required this.onSaveProfile,
+    required this.onDeleteProfile,
+    required this.onActivateProfile,
     super.key,
   });
 
@@ -54,6 +69,10 @@ class AgentSettingsDialog extends StatefulWidget {
   final AgentSettingsTestCallback onTest;
   final AgentSettingsSaveCallback onSave;
   final VoidCallback onDismiss;
+  final AgentProviderProfilesLoadCallback onLoadProfiles;
+  final AgentProviderProfileSaveCallback onSaveProfile;
+  final AgentProviderProfileDeleteCallback onDeleteProfile;
+  final AgentProviderProfileActivateCallback onActivateProfile;
 
   @override
   State<AgentSettingsDialog> createState() => _AgentSettingsDialogState();
@@ -74,6 +93,11 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
   bool _apiKeyVisible = false;
   bool _testResultStale = false;
   String? _modelFetchTarget;
+  List<AgentProviderProfile> _providerProfiles = const [];
+  bool _providerProfilesLoading = true;
+  bool _providerProfileBusy = false;
+  String? _providerProfileError;
+  int _providerProfilesLoadGeneration = 0;
 
   @override
   void initState() {
@@ -86,6 +110,7 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     _testModelController = TextEditingController();
     _contextLimitController = TextEditingController();
     _applyRemoteSettings();
+    _loadProviderProfiles();
     if (_testFeedback != null) _scrollToFeedback();
   }
 
@@ -96,6 +121,9 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     final oldSettings = oldWidget.state.agentSettings;
     final oldSavedTestModel = _savedTestModel(oldWidget.state);
     final oldFeedback = _feedbackFor(oldWidget.state, stale: _testResultStale);
+    final providerContextChanged =
+        oldWidget.state.selectedProfileId != widget.state.selectedProfileId ||
+        oldWidget.state.activeAgent != widget.state.activeAgent;
 
     if (oldAgent != widget.state.activeAgent ||
         oldSettings != widget.state.agentSettings) {
@@ -106,6 +134,8 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
       _testModelController.text = _initialTestModel(widget.state);
       _testResultStale = false;
     }
+
+    if (providerContextChanged) _loadProviderProfiles();
 
     final feedback = _testFeedback;
     if (feedback != null && feedback != oldFeedback) _scrollToFeedback();
@@ -128,12 +158,15 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     final state = widget.state;
     return state.agentSettingsLoading ||
         state.agentSettingsSaving ||
-        state.agentSettingsTesting;
+        state.agentSettingsTesting ||
+        _providerProfileBusy;
   }
 
   bool get _canDismiss {
     final state = widget.state;
-    return !state.agentSettingsSaving && !state.agentSettingsTesting;
+    return !state.agentSettingsSaving &&
+        !state.agentSettingsTesting &&
+        !_providerProfileBusy;
   }
 
   String? get _testFeedback =>
@@ -209,101 +242,122 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
                               ),
                               child: state.agentSettingsLoading
                                   ? const _LoadingSettings()
-                                  : _SettingsForm(
-                                      agent: agent,
-                                      settings: settings,
-                                      enabled: !_busy && settingsReady,
-                                      customProviderInUse: customProviderInUse,
-                                      preserveCurrentProvider:
-                                          preserveCurrentProvider,
-                                      defaultProviderId: defaultProviderId,
-                                      defaultModelController:
-                                          _defaultModelController,
-                                      baseUrlController: _baseUrlController,
-                                      apiKeyController: _apiKeyController,
-                                      proxyUrlController: _proxyUrlController,
-                                      testModelController: _testModelController,
-                                      contextLimitController: _contextLimitController,
-                                      defaultReasoningEffort:
-                                          _defaultReasoningEffort,
-                                      defaultSubagentModelController:
-                                          _defaultSubagentModelController,
-                                      onChangedDefaultSubagentModel:
-                                          _markTestResultStale,
-                                      onFetchDefaultSubagentModels:
-                                          (anchorContext) => _fetchModels(
-                                            anchorContext: anchorContext,
-                                            controller:
-                                                _defaultSubagentModelController,
-                                            target: 'default',
-                                          ),
-                                      reasoningOptions:
-                                          agent == AgentKind.claudeCode
-                                          ? <String>[
-                                              '',
-                                              ...effectiveReasoningEfforts(
-                                                selectedAgentModel(
-                                                  state.models,
-                                                  _defaultModelController.text,
-                                                ),
-                                                agent,
+                                  : Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        _providerProfilesSection(
+                                          enabled:
+                                              !_busy &&
+                                              state.selectedProfileId != null,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        _SettingsForm(
+                                          agent: agent,
+                                          settings: settings,
+                                          enabled: !_busy && settingsReady,
+                                          customProviderInUse:
+                                              customProviderInUse,
+                                          preserveCurrentProvider:
+                                              preserveCurrentProvider,
+                                          defaultProviderId: defaultProviderId,
+                                          defaultModelController:
+                                              _defaultModelController,
+                                          baseUrlController: _baseUrlController,
+                                          apiKeyController: _apiKeyController,
+                                          proxyUrlController:
+                                              _proxyUrlController,
+                                          testModelController:
+                                              _testModelController,
+                                          contextLimitController:
+                                              _contextLimitController,
+                                          defaultReasoningEffort:
+                                              _defaultReasoningEffort,
+                                          defaultSubagentModelController:
+                                              _defaultSubagentModelController,
+                                          onChangedDefaultSubagentModel:
+                                              _markTestResultStale,
+                                          onFetchDefaultSubagentModels:
+                                              (anchorContext) => _fetchModels(
+                                                anchorContext: anchorContext,
+                                                controller:
+                                                    _defaultSubagentModelController,
+                                                target: 'default',
                                               ),
-                                            ]
-                                          : reasoningEffortOptions,
-                                      websocketPolicy: _websocketPolicy,
-                                      apiKeyVisible: _apiKeyVisible,
-                                      testFeedback: _testFeedback,
-                                      testSuccessful:
-                                          !_testResultStale &&
-                                          state
-                                                  .agentSettingsTestResult
-                                                  ?.successful ==
-                                              true,
-                                      testing: state.agentSettingsTesting,
-                                      modelsLoading:
-                                          state.apiModelOptionsLoading,
-                                      reasoningSettingsAvailable: state
-                                          .activeAgentCapabilities
-                                          .reasoningEffort,
-                                      onDefaultReasoningEffortChanged: (value) {
-                                        setState(() {
-                                          _defaultReasoningEffort = value;
-                                        });
-                                      },
-                                      onWebSocketPolicyChanged: (value) {
-                                        setState(() {
-                                          _websocketPolicy = value;
-                                          _testResultStale = true;
-                                        });
-                                      },
-                                      onApiKeyVisibilityChanged: () {
-                                        setState(() {
-                                          _apiKeyVisible = !_apiKeyVisible;
-                                        });
-                                      },
-                                      onTestRelevantValueChanged:
-                                          _markTestResultStale,
-                                      onDefaultModelChanged: () {
-                                        _validateClaudeEffort();
-                                        _markTestResultStale();
-                                      },
-                                      onFetchDefaultModels: (anchorContext) =>
-                                          _fetchModels(
-                                            anchorContext: anchorContext,
-                                            controller: _defaultModelController,
-                                            target: 'default',
-                                          ),
-                                      onFetchTestModels: (anchorContext) =>
-                                          _fetchModels(
-                                            anchorContext: anchorContext,
-                                            controller: _testModelController,
-                                            target: 'test',
-                                          ),
-                                      defaultModelsLoading:
-                                          _modelFetchTarget == 'default',
-                                      testModelsLoading:
-                                          _modelFetchTarget == 'test',
-                                      onTest: _testSettings,
+                                          reasoningOptions:
+                                              agent == AgentKind.claudeCode
+                                              ? <String>[
+                                                  '',
+                                                  ...effectiveReasoningEfforts(
+                                                    selectedAgentModel(
+                                                      state.models,
+                                                      _defaultModelController
+                                                          .text,
+                                                    ),
+                                                    agent,
+                                                  ),
+                                                ]
+                                              : reasoningEffortOptions,
+                                          websocketPolicy: _websocketPolicy,
+                                          apiKeyVisible: _apiKeyVisible,
+                                          testFeedback: _testFeedback,
+                                          testSuccessful:
+                                              !_testResultStale &&
+                                              state
+                                                      .agentSettingsTestResult
+                                                      ?.successful ==
+                                                  true,
+                                          testing: state.agentSettingsTesting,
+                                          modelsLoading:
+                                              state.apiModelOptionsLoading,
+                                          reasoningSettingsAvailable: state
+                                              .activeAgentCapabilities
+                                              .reasoningEffort,
+                                          onDefaultReasoningEffortChanged:
+                                              (value) {
+                                                setState(() {
+                                                  _defaultReasoningEffort =
+                                                      value;
+                                                });
+                                              },
+                                          onWebSocketPolicyChanged: (value) {
+                                            setState(() {
+                                              _websocketPolicy = value;
+                                              _testResultStale = true;
+                                            });
+                                          },
+                                          onApiKeyVisibilityChanged: () {
+                                            setState(() {
+                                              _apiKeyVisible = !_apiKeyVisible;
+                                            });
+                                          },
+                                          onTestRelevantValueChanged:
+                                              _markTestResultStale,
+                                          onDefaultModelChanged: () {
+                                            _validateClaudeEffort();
+                                            _markTestResultStale();
+                                          },
+                                          onFetchDefaultModels:
+                                              (anchorContext) => _fetchModels(
+                                                anchorContext: anchorContext,
+                                                controller:
+                                                    _defaultModelController,
+                                                target: 'default',
+                                              ),
+                                          onFetchTestModels: (anchorContext) =>
+                                              _fetchModels(
+                                                anchorContext: anchorContext,
+                                                controller:
+                                                    _testModelController,
+                                                target: 'test',
+                                              ),
+                                          defaultModelsLoading:
+                                              _modelFetchTarget == 'default',
+                                          testModelsLoading:
+                                              _modelFetchTarget == 'test',
+                                          onTest: _testSettings,
+                                        ),
+                                      ],
                                     ),
                             ),
                           ),
@@ -349,6 +403,256 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     );
   }
 
+  Widget _providerProfilesSection({required bool enabled}) {
+    final serverId = widget.state.selectedProfileId;
+    final profiles = _providerProfiles
+        .where(
+          (profile) =>
+              profile.serverProfileId == serverId &&
+              profile.agent == widget.state.activeAgent,
+        )
+        .toList(growable: false);
+
+    return ExpansionTile(
+      key: const ValueKey('agent-settings-provider-profiles'),
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 8),
+      title: Text('供应商配置${profiles.isEmpty ? '' : ' (${profiles.length})'}'),
+      subtitle: const Text('保存常用的 API 地址、密钥和模型'),
+      children: [
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('provider-profile-add'),
+            onPressed: enabled ? () => _editProviderProfile() : null,
+            icon: const Icon(Icons.add),
+            label: const Text('新增配置'),
+          ),
+        ),
+        if (_providerProfilesLoading)
+          const LinearProgressIndicator(minHeight: 2)
+        else if (_providerProfileError != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              _providerProfileError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          )
+        else if (profiles.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('暂无已保存的供应商配置'),
+            ),
+          )
+        else
+          for (final profile in profiles)
+            ListTile(
+              key: ValueKey('provider-profile-${profile.id}'),
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                profile.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                profile.defaultModel.isEmpty
+                    ? profile.baseUrl
+                    : '${profile.defaultModel} · ${profile.baseUrl}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Wrap(
+                spacing: 0,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  IconButton(
+                    tooltip: '编辑 ${profile.name}',
+                    key: ValueKey('provider-profile-edit-${profile.id}'),
+                    onPressed: enabled
+                        ? () => _editProviderProfile(existing: profile)
+                        : null,
+                    icon: const Icon(Icons.edit_outlined),
+                  ),
+                  IconButton(
+                    tooltip: '删除 ${profile.name}',
+                    key: ValueKey('provider-profile-delete-${profile.id}'),
+                    onPressed: enabled
+                        ? () => _confirmDeleteProviderProfile(profile)
+                        : null,
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                  TextButton(
+                    key: ValueKey('provider-profile-activate-${profile.id}'),
+                    onPressed: enabled
+                        ? () => _runProviderProfileOperation(
+                            () => widget.onActivateProfile(profile),
+                          )
+                        : null,
+                    child: Text(_providerProfileBusy ? '处理中' : '应用'),
+                  ),
+                ],
+              ),
+            ),
+      ],
+    );
+  }
+
+  Future<void> _loadProviderProfiles() async {
+    final generation = ++_providerProfilesLoadGeneration;
+    final serverId = widget.state.selectedProfileId;
+    final agent = widget.state.activeAgent;
+    if (serverId == null) {
+      if (mounted) {
+        setState(() {
+          _providerProfiles = const [];
+          _providerProfilesLoading = false;
+          _providerProfileError = null;
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _providerProfilesLoading = true;
+        _providerProfileError = null;
+      });
+    }
+    try {
+      final profiles = await widget.onLoadProfiles();
+      if (!mounted || generation != _providerProfilesLoadGeneration) return;
+      setState(() {
+        _providerProfiles = profiles
+            .where(
+              (profile) =>
+                  profile.serverProfileId == serverId && profile.agent == agent,
+            )
+            .toList(growable: false);
+        _providerProfilesLoading = false;
+      });
+    } catch (error) {
+      if (!mounted || generation != _providerProfilesLoadGeneration) return;
+      setState(() {
+        _providerProfilesLoading = false;
+        _providerProfileError = '读取供应商配置失败：$error';
+      });
+    }
+  }
+
+  Future<void> _editProviderProfile({AgentProviderProfile? existing}) async {
+    final values = await showDialog<_ProviderProfileEditorValues>(
+      context: context,
+      builder: (_) => _ProviderProfileEditorDialog(
+        existing: existing,
+        defaultBaseUrl: _baseUrlController.text,
+        defaultApiKey: _apiKeyController.text,
+        defaultProxyUrl: _proxyUrlController.text,
+        defaultModel: _defaultModelController.text,
+        defaultSubagentModel: _defaultSubagentModelController.text,
+      ),
+    );
+    if (values == null || !mounted) return;
+
+    final state = widget.state;
+    final serverId = state.selectedProfileId;
+    if (serverId == null) return;
+    final contextLimit = int.tryParse(_contextLimitController.text.trim()) ?? 0;
+    final providerProfile =
+        existing?.copyWith(
+          name: values.name,
+          baseUrl: values.baseUrl,
+          apiKey: values.apiKey,
+          proxyUrl: values.proxyUrl,
+          defaultModel: values.defaultModel,
+          defaultSubagentModel: values.defaultSubagentModel,
+        ) ??
+        AgentProviderProfile(
+          id: const Uuid().v4(),
+          serverProfileId: serverId,
+          agent: state.activeAgent,
+          name: values.name,
+          baseUrl: values.baseUrl,
+          apiKey: values.apiKey,
+          proxyUrl: values.proxyUrl,
+          defaultModel: values.defaultModel,
+          defaultSubagentModel: values.defaultSubagentModel,
+          defaultReasoningEffort: _defaultReasoningEffort,
+          websocketPolicy: _websocketPolicy,
+          contextWindowTokens: contextLimit > 0 ? contextLimit : 0,
+          preserveCurrentProvider: _preserveCurrentProvider,
+        );
+    await _runProviderProfileOperation(
+      () => widget.onSaveProfile(providerProfile),
+    );
+  }
+
+  bool get _preserveCurrentProvider {
+    final state = widget.state;
+    final settings = state.agentSettings;
+    if (state.activeAgent != AgentKind.openCode) return settings != null;
+    if (settings == null) return false;
+    final defaultProviderId = switch (state.activeAgent) {
+      AgentKind.codex => 'openai',
+      AgentKind.claudeCode => 'anthropic',
+      _ => 'custom-api',
+    };
+    final configuredProvider = settings.modelProvider.trim();
+    return configuredProvider.isNotEmpty &&
+        configuredProvider != defaultProviderId &&
+        _normalizedUrl(_baseUrlController.text) ==
+            _normalizedUrl(settings.baseUrl);
+  }
+
+  Future<void> _confirmDeleteProviderProfile(
+    AgentProviderProfile profile,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除供应商配置？'),
+        content: Text('“${profile.name}”及其已保存的密钥将从本机删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('provider-profile-confirm-delete'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runProviderProfileOperation(
+      () => widget.onDeleteProfile(profile.id),
+    );
+  }
+
+  Future<void> _runProviderProfileOperation(
+    Future<void> Function() operation,
+  ) async {
+    if (_providerProfileBusy || !mounted) return;
+    setState(() {
+      _providerProfileBusy = true;
+      _providerProfileError = null;
+    });
+    try {
+      await operation();
+      await _loadProviderProfiles();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _providerProfileError = '操作供应商配置失败：$error');
+      }
+    } finally {
+      if (mounted) setState(() => _providerProfileBusy = false);
+    }
+  }
+
   void _applyRemoteSettings() {
     final settings = widget.state.agentSettings;
     _defaultModelController.text = settings?.model ?? '';
@@ -359,7 +663,9 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
     _defaultReasoningEffort = settings?.reasoningEffort ?? '';
     _websocketPolicy = settings?.websocketPolicy ?? codexWebSocketPolicyAuto;
     _testModelController.text = _initialTestModel(widget.state);
-    _contextLimitController.text = settings?.contextWindowTokens != null && settings!.contextWindowTokens > 0
+    _contextLimitController.text =
+        settings?.contextWindowTokens != null &&
+            settings!.contextWindowTokens > 0
         ? '${settings.contextWindowTokens}'
         : '';
   }
@@ -533,7 +839,9 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
             supportedClaudeEfforts?.contains(_defaultReasoningEffort) != true
         ? ''
         : _defaultReasoningEffort;
-    final contextLimit = contextLimitText.isEmpty ? 0 : int.tryParse(contextLimitText) ?? 0;
+    final contextLimit = contextLimitText.isEmpty
+        ? 0
+        : int.tryParse(contextLimitText) ?? 0;
     widget.onSave(
       baseUrl: _baseUrlController.text,
       apiKey: preserveCurrentProvider && enteredApiKey == remoteApiKey
@@ -560,6 +868,182 @@ class _AgentSettingsDialogState extends State<AgentSettingsDialog> {
       );
     });
   }
+}
+
+class _ProviderProfileEditorDialog extends StatefulWidget {
+  const _ProviderProfileEditorDialog({
+    this.existing,
+    required this.defaultBaseUrl,
+    required this.defaultApiKey,
+    required this.defaultProxyUrl,
+    required this.defaultModel,
+    required this.defaultSubagentModel,
+  });
+
+  final AgentProviderProfile? existing;
+  final String defaultBaseUrl;
+  final String defaultApiKey;
+  final String defaultProxyUrl;
+  final String defaultModel;
+  final String defaultSubagentModel;
+
+  @override
+  State<_ProviderProfileEditorDialog> createState() =>
+      _ProviderProfileEditorDialogState();
+}
+
+class _ProviderProfileEditorDialogState
+    extends State<_ProviderProfileEditorDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  late final TextEditingController _baseUrlController;
+  late final TextEditingController _apiKeyController;
+  late final TextEditingController _proxyUrlController;
+  late final TextEditingController _modelController;
+  late final TextEditingController _subagentModelController;
+  bool _apiKeyVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    _nameController = TextEditingController(text: existing?.name ?? '');
+    _baseUrlController = TextEditingController(
+      text: existing?.baseUrl ?? widget.defaultBaseUrl,
+    );
+    _apiKeyController = TextEditingController(
+      text: existing?.apiKey ?? widget.defaultApiKey,
+    );
+    _proxyUrlController = TextEditingController(
+      text: existing?.proxyUrl ?? widget.defaultProxyUrl,
+    );
+    _modelController = TextEditingController(
+      text: existing?.defaultModel ?? widget.defaultModel,
+    );
+    _subagentModelController = TextEditingController(
+      text: existing?.defaultSubagentModel ?? widget.defaultSubagentModel,
+    );
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _baseUrlController.dispose();
+    _apiKeyController.dispose();
+    _proxyUrlController.dispose();
+    _modelController.dispose();
+    _subagentModelController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.existing == null ? '新增供应商配置' : '编辑供应商配置'),
+      content: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                key: const ValueKey('provider-profile-name'),
+                controller: _nameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: '名称'),
+                validator: (value) =>
+                    value == null || value.trim().isEmpty ? '请输入配置名称' : null,
+              ),
+              TextFormField(
+                key: const ValueKey('provider-profile-base-url'),
+                controller: _baseUrlController,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(labelText: 'API 地址'),
+              ),
+              TextFormField(
+                key: const ValueKey('provider-profile-api-key'),
+                controller: _apiKeyController,
+                obscureText: !_apiKeyVisible,
+                decoration: InputDecoration(
+                  labelText: 'API Key',
+                  suffixIcon: IconButton(
+                    tooltip: _apiKeyVisible ? '隐藏密钥' : '显示密钥',
+                    onPressed: () =>
+                        setState(() => _apiKeyVisible = !_apiKeyVisible),
+                    icon: Icon(
+                      _apiKeyVisible
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                ),
+              ),
+              TextFormField(
+                key: const ValueKey('provider-profile-proxy-url'),
+                controller: _proxyUrlController,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(labelText: '下载/请求代理'),
+              ),
+              TextFormField(
+                key: const ValueKey('provider-profile-model'),
+                controller: _modelController,
+                decoration: const InputDecoration(labelText: '默认模型'),
+              ),
+              TextFormField(
+                key: const ValueKey('provider-profile-subagent-model'),
+                controller: _subagentModelController,
+                decoration: const InputDecoration(labelText: '子代理模型'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const ValueKey('provider-profile-editor-save'),
+          onPressed: _save,
+          child: const Text('保存配置'),
+        ),
+      ],
+    );
+  }
+
+  void _save() {
+    if (_formKey.currentState?.validate() != true) return;
+    Navigator.of(context).pop(
+      _ProviderProfileEditorValues(
+        name: _nameController.text.trim(),
+        baseUrl: _baseUrlController.text.trim(),
+        apiKey: _apiKeyController.text,
+        proxyUrl: _proxyUrlController.text.trim(),
+        defaultModel: _modelController.text.trim(),
+        defaultSubagentModel: _subagentModelController.text.trim(),
+      ),
+    );
+  }
+}
+
+@immutable
+class _ProviderProfileEditorValues {
+  const _ProviderProfileEditorValues({
+    required this.name,
+    required this.baseUrl,
+    required this.apiKey,
+    required this.proxyUrl,
+    required this.defaultModel,
+    required this.defaultSubagentModel,
+  });
+
+  final String name;
+  final String baseUrl;
+  final String apiKey;
+  final String proxyUrl;
+  final String defaultModel;
+  final String defaultSubagentModel;
 }
 
 class _DialogHeading extends StatelessWidget {

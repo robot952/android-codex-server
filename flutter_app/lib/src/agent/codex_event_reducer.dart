@@ -468,13 +468,22 @@ AppUiState reduceCodexNotification(
       ]).ifEmpty(() => _string(_map(params['error']), const ['message']));
       if (message.isEmpty || !appliesToActive) return state;
       if (isLateSettledEvent()) return state;
+      final terminalError = method == 'error' && params['willRetry'] == false;
+      final eventTurnId = _turnId(params).trim();
+      final currentTurnId = state.activeTurnId?.trim() ?? '';
+      if (terminalError &&
+          eventTurnId.isNotEmpty &&
+          currentTurnId.isNotEmpty &&
+          eventTurnId != currentTurnId) {
+        return state;
+      }
       if (method == 'warning' && isProviderWebSocketFallback(message)) {
         // This is an internal model-transport fallback. The Agent client
         // already records the raw detail in diagnostics; it is not useful
         // conversation content and must not look like a user-visible error.
         return state;
       }
-      return state.copyWith(
+      final next = state.copyWith(
         timeline: [
           ...state.timeline,
           TimelineEntry(
@@ -488,6 +497,21 @@ AppUiState reduceCodexNotification(
           ),
         ],
       );
+      if (!terminalError ||
+          currentTurnId.isEmpty ||
+          eventTurnId != currentTurnId) {
+        return next;
+      }
+      // A terminal upstream failure may arrive without turn/completed. Only
+      // settle the explicitly identified current turn; transient errors and
+      // unscoped notices must not stop a request that is still running.
+      return settleActiveTurnLocally(
+        next,
+        threadId: activeThreadId ?? threadId,
+        turnId: eventTurnId,
+        stopped: false,
+        nowMillis: now,
+      ).copyWith(error: message);
     default:
       return state;
   }

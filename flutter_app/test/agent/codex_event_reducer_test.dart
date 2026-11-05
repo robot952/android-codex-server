@@ -66,6 +66,200 @@ void main() {
     expect(state.timeline.single.text, 'Authentication failed');
   });
 
+  test(
+    'terminal upstream error settles the current turn without completion',
+    () {
+      const history = [
+        TimelineEntry(
+          id: 'user-1',
+          kind: TimelineKind.userMessage,
+          text: '保留原聊天记录',
+        ),
+        TimelineEntry(
+          id: 'agent-1',
+          kind: TimelineKind.agentMessage,
+          text: '已有回复',
+        ),
+      ];
+      var state = reduceCodexNotification(
+        _state().copyWith(
+          timeline: history,
+          submitting: true,
+          threads: const [
+            AgentThread(id: 'thread-1', title: '任务'),
+            AgentThread(
+              id: 'thread-2',
+              title: '后台任务',
+              status: 'active',
+              activeTurnId: 'background-turn',
+            ),
+          ],
+        ),
+        _notification('turn/started', {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-1', 'status': 'inProgress'},
+        }),
+        nowMillis: 100,
+      );
+      final failure = _notification('error', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'willRetry': false,
+        'error': {
+          'message': 'Upstream request failed: HTTP 400',
+          'codexErrorInfo': 'badRequest',
+        },
+      });
+      state = reduceCodexNotification(state, failure, nowMillis: 200);
+      expect(state.running, isFalse);
+      expect(state.submitting, isFalse);
+      expect(state.activeTurnId, isNull);
+      expect(state.activeThread?.status, 'idle');
+      expect(state.activeThread?.activeTurnId, isNull);
+      expect(state.threads.first.status, 'idle');
+      expect(state.threads.first.activeTurnId, isNull);
+      expect(state.threads.last.status, 'active');
+      expect(state.threads.last.activeTurnId, 'background-turn');
+      expect(state.turnTiming?.startedAtMillis, 100);
+      expect(state.turnTiming?.completedAtMillis, 200);
+      expect(state.turnTiming?.stopped, isFalse);
+      expect(state.error, 'Upstream request failed: HTTP 400');
+      expect(state.timeline.take(2), history);
+      expect(state.timeline.last.kind, TimelineKind.notice);
+      expect(state.timeline.last.text, 'Upstream request failed: HTTP 400');
+      expect(
+        reduceCodexNotification(state, failure, nowMillis: 300),
+        same(state),
+      );
+
+      state = reduceCodexNotification(
+        state,
+        _notification('turn/started', {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-2', 'status': 'inProgress'},
+        }),
+        nowMillis: 400,
+      );
+      expect(state.running, isTrue);
+      expect(state.activeTurnId, 'turn-2');
+      expect(state.turnTiming?.startedAtMillis, 400);
+      expect(state.turnTiming?.completedAtMillis, isNull);
+      state = reduceCodexNotification(
+        state,
+        _notification('item/agentMessage/delta', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-2',
+          'itemId': 'agent-2',
+          'delta': '继续回复',
+        }),
+      );
+      state = reduceCodexNotification(
+        state,
+        _notification('turn/completed', {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-2', 'status': 'completed'},
+        }),
+        nowMillis: 500,
+      );
+      expect(state.running, isFalse);
+      expect(state.timeline.take(2), history);
+      expect(state.timeline.last.text, '继续回复');
+      expect(state.turnTiming?.completedAtMillis, 500);
+    },
+  );
+
+  test('retrying errors and warnings keep the current turn running', () {
+    for (final params in <Map<String, Object?>>[
+      {'willRetry': true},
+      {},
+      {'willRetry': 'false'},
+    ]) {
+      final state = _state().copyWith(
+        running: true,
+        submitting: true,
+        activeTurnId: 'turn-1',
+      );
+      final next = reduceCodexNotification(
+        state,
+        _notification('error', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'message': 'Connection failed',
+          ...params,
+        }),
+      );
+      expect(next.running, isTrue);
+      expect(next.submitting, isTrue);
+      expect(next.activeTurnId, 'turn-1');
+      expect(next.error, isNull);
+      expect(next.timeline.single.text, 'Connection failed');
+    }
+    final warning = reduceCodexNotification(
+      _state().copyWith(running: true, activeTurnId: 'turn-1'),
+      _notification('warning', {
+        'threadId': 'thread-1',
+        'turnId': 'turn-1',
+        'willRetry': false,
+        'message': 'Configuration warning',
+      }),
+    );
+    expect(warning.running, isTrue);
+    expect(warning.activeTurnId, 'turn-1');
+    expect(warning.error, isNull);
+    expect(warning.timeline.single.text, 'Configuration warning');
+  });
+
+  test('terminal errors from older turns or other threads are ignored', () {
+    final state = _state().copyWith(
+      running: true,
+      submitting: true,
+      activeTurnId: 'turn-2',
+    );
+    for (final scope in [
+      {'threadId': 'thread-1', 'turnId': 'turn-1'},
+      {'threadId': 'thread-2', 'turnId': 'turn-2'},
+    ]) {
+      expect(
+        reduceCodexNotification(
+          state,
+          _notification('error', {
+            ...scope,
+            'willRetry': false,
+            'message': 'Upstream request failed',
+          }),
+        ),
+        same(state),
+      );
+    }
+  });
+
+  test(
+    'terminal errors require an explicit matching active turn to settle',
+    () {
+      for (final activeTurnId in <String?>['turn-1', null]) {
+        final state = _state().copyWith(
+          running: true,
+          submitting: true,
+          activeTurnId: activeTurnId,
+        );
+        final next = reduceCodexNotification(
+          state,
+          _notification('error', {
+            'threadId': 'thread-1',
+            if (activeTurnId == null) 'turnId': 'turn-1',
+            'willRetry': false,
+            'message': 'Upstream request failed',
+          }),
+        );
+        expect(next.running, isTrue);
+        expect(next.submitting, isTrue);
+        expect(next.activeTurnId, activeTurnId);
+        expect(next.error, isNull);
+        expect(next.timeline.single.text, 'Upstream request failed');
+      }
+    },
+  );
+
   test('reduces turn lifecycle and streamed agent text', () {
     var state = _state();
     state = reduceCodexNotification(

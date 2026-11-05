@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../agent/codex_global_settings.dart';
 import '../domain/models.dart';
 import '../domain/models.dart' as domain;
+import '../persistence/agent_provider_store.dart';
 import '../platform/app_update_manager.dart';
 import '../platform/background_connection_bridge.dart';
 import '../platform/turn_completion_notifications.dart';
@@ -19,6 +21,10 @@ import '../ui/terminal_screen.dart';
 import '../ui/work_screen.dart';
 import '../ui/workspace_picker_dialog.dart';
 import 'app_controller.dart';
+
+final _agentProviderStoreProvider = Provider<AgentProviderStore>(
+  (ref) => SecureAgentProviderStore(),
+);
 
 class CodexRemoteApp extends ConsumerWidget {
   const CodexRemoteApp({super.key});
@@ -299,6 +305,48 @@ class _AppRootState extends ConsumerState<_AppRoot>
               onSave: ref
                   .read(appControllerProvider.notifier)
                   .saveAgentSettings,
+              onLoadProfiles: () => ref
+                  .read(_agentProviderStoreProvider)
+                  .loadAll(
+                    serverProfileId: state.selectedProfileId,
+                    agent: state.activeAgent,
+                  ),
+              onSaveProfile: ref.read(_agentProviderStoreProvider).save,
+              onDeleteProfile: (id) async {
+                final serverProfileId = state.selectedProfileId;
+                if (serverProfileId == null) {
+                  throw StateError('未选择服务器');
+                }
+                await ref
+                    .read(_agentProviderStoreProvider)
+                    .delete(
+                      serverProfileId: serverProfileId,
+                      agent: state.activeAgent,
+                      id: id,
+                    );
+              },
+              onActivateProfile: (profile) async {
+                final currentState = ref.read(appControllerProvider);
+                if (currentState.selectedProfileId != profile.serverProfileId ||
+                    currentState.activeAgent != profile.agent) {
+                  throw StateError('服务器或 Agent 已切换，请重新选择供应商配置');
+                }
+                await ref
+                    .read(appControllerProvider.notifier)
+                    .saveAgentSettings(
+                      baseUrl: profile.baseUrl,
+                      apiKey: profile.apiKey,
+                      proxyUrl: profile.proxyUrl,
+                      defaultModel: profile.defaultModel,
+                      defaultSubagentModel: profile.defaultSubagentModel,
+                      defaultReasoningEffort: profile.defaultReasoningEffort,
+                      testModel: profile.defaultModel,
+                      websocketPolicy:
+                          profile.websocketPolicy ?? codexWebSocketPolicyAuto,
+                      preserveCurrentProvider: profile.preserveCurrentProvider,
+                      contextLimit: profile.contextWindowTokens,
+                    );
+              },
               onDismiss: ref
                   .read(appControllerProvider.notifier)
                   .dismissAgentSettings,

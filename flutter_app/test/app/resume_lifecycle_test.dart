@@ -322,31 +322,42 @@ void main() {
       addTearDown(usage.dispose);
       await usage.ready;
       final agent = _ResumeAgent(threads: const [_threadAActive, _threadB]);
-      final harness = await _createHarness(agent, usage: usage);
+      final harness = await _createHarness(
+        agent,
+        usage: usage,
+        storedProfiles: StoredProfiles(
+          profiles: [_profile.copyWith(preferredModel: 'gpt-6.1-sol')],
+          selectedProfileId: 'server',
+        ),
+      );
       final pending = agent.gateNextResume(_threadA.id);
       harness.controller.openThread(_threadAActive);
       await _waitUntil(() => agent.resumeCalls.length == 1);
-      Map<String, dynamic> params(String id) => {
-        ...usageParams(
-          requestId: id,
-          metrics: {'model': 'actual-fixture-model'},
-        ),
+      Map<String, dynamic> params(String id, {String? model}) => {
+        ...usageParams(requestId: id, metrics: {'model': ?model}),
         'threadId': _threadA.id,
         'turnId': 'turn-a',
       };
       agent.emit(
+        _notificationWithParams('turn/started', {
+          'threadId': _threadA.id,
+          'turnId': 'turn-a',
+          'turn': {'id': 'turn-a'},
+        }),
+      );
+      agent.emit(
         _notificationWithParams('thread/tokenUsage/updated', params('first')),
       );
       await _waitUntil(() => usage.state.records.length == 1);
+      expect(usage.state.records.single.model, isNull);
       pending.complete(
         const AgentSession(thread: _threadAActive, timeline: []),
       );
       await _waitUntil(() => !harness.controller.state.loading);
       expect(usage.state.records, hasLength(1));
-      expect(usage.state.records.single.model, 'actual-fixture-model');
 
       final beforeMetrics = harness.controller.state;
-      final late = params('first');
+      final late = params('first', model: 'actual-fixture-model');
       late['requestMetrics'] = {
         ...(late['requestMetrics'] as Map<String, dynamic>),
         'source': 'server',
@@ -363,6 +374,7 @@ void main() {
         () => usage.state.records.single.firstTokenMillis == 350,
       );
       expect(usage.state.records, hasLength(1));
+      expect(usage.state.records.single.model, 'actual-fixture-model');
       expect(harness.controller.state.timeline, beforeMetrics.timeline);
       expect(harness.controller.state.tokenUsage, beforeMetrics.tokenUsage);
       expect(harness.controller.state.running, beforeMetrics.running);

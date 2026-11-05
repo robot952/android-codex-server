@@ -1,4 +1,5 @@
 import 'package:codex_remote/src/domain/models.dart';
+import 'package:codex_remote/src/domain/agent_provider_profile.dart';
 import 'package:codex_remote/src/ui/agent_settings_dialog.dart';
 import 'package:codex_remote/src/ui/theme.dart';
 import 'package:flutter/material.dart';
@@ -190,88 +191,89 @@ void main() {
     expect(savedEffort, isEmpty);
   });
 
-  testWidgets(
-    'Claude default sub-agent model round-trips and trims input',
-    (tester) async {
-      AgentSettingsSaveValues? saved;
-      String? savedSubagentModel;
-      await tester.pumpWidget(
-        _DialogHarness(
-          state: claudeState.copyWith(
-            agentSettings: claudeState.agentSettings!.copyWith(
-              subagentModel: 'claude-haiku-4-5',
-            ),
+  testWidgets('Claude default sub-agent model round-trips and trims input', (
+    tester,
+  ) async {
+    AgentSettingsSaveValues? saved;
+    String? savedSubagentModel;
+    await tester.pumpWidget(
+      _DialogHarness(
+        state: claudeState.copyWith(
+          agentSettings: claudeState.agentSettings!.copyWith(
+            subagentModel: 'claude-haiku-4-5',
           ),
-          onSave:
-              ({
-                required baseUrl,
-                required apiKey,
-                required proxyUrl,
-                required defaultModel,
-                required defaultSubagentModel,
-                required defaultReasoningEffort,
-                required testModel,
-                required websocketPolicy,
-                required preserveCurrentProvider,
-                required contextLimit,
-              }) {
-                saved = AgentSettingsSaveValues(
-                  baseUrl: baseUrl,
-                  apiKey: apiKey,
-                  proxyUrl: proxyUrl,
-                  defaultModel: defaultModel,
-                  defaultReasoningEffort: defaultReasoningEffort,
-                  testModel: testModel,
-                  websocketPolicy: websocketPolicy,
-                  preserveCurrentProvider: preserveCurrentProvider,
-                );
-                savedSubagentModel = defaultSubagentModel;
-              },
         ),
-      );
-      await tester.pumpAndSettle();
+        onSave:
+            ({
+              required baseUrl,
+              required apiKey,
+              required proxyUrl,
+              required defaultModel,
+              required defaultSubagentModel,
+              required defaultReasoningEffort,
+              required testModel,
+              required websocketPolicy,
+              required preserveCurrentProvider,
+              required contextLimit,
+            }) {
+              saved = AgentSettingsSaveValues(
+                baseUrl: baseUrl,
+                apiKey: apiKey,
+                proxyUrl: proxyUrl,
+                defaultModel: defaultModel,
+                defaultReasoningEffort: defaultReasoningEffort,
+                testModel: testModel,
+                websocketPolicy: websocketPolicy,
+                preserveCurrentProvider: preserveCurrentProvider,
+              );
+              savedSubagentModel = defaultSubagentModel;
+            },
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      expect(
-        _text(tester, 'agent-settings-default-subagent-model'),
-        'claude-haiku-4-5',
-      );
-      expect(
-        find.text('子 Agent 默认使用的模型；留空则跟随主模型。子 Agent 的思考强度始终跟随主模型。'),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey('agent-settings-fetch-default-subagent-models')),
-        findsOneWidget,
-      );
-      // 子模型字段排在默认思考强度之后、Provider 分组之前。
-      expect(
+    expect(
+      _text(tester, 'agent-settings-default-subagent-model'),
+      'claude-haiku-4-5',
+    );
+    expect(
+      find.text('子 Agent 默认使用的模型；留空则跟随主模型。子 Agent 的思考强度始终跟随主模型。'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        const ValueKey('agent-settings-fetch-default-subagent-models'),
+      ),
+      findsOneWidget,
+    );
+    // 子模型字段排在默认思考强度之后、Provider 分组之前。
+    expect(
+      tester
+          .getTopLeft(
+            find.byKey(const ValueKey('agent-settings-default-subagent-model')),
+          )
+          .dy,
+      greaterThan(
         tester
             .getTopLeft(
-              find.byKey(const ValueKey('agent-settings-default-subagent-model')),
+              find.byKey(const ValueKey('agent-settings-reasoning-effort')),
             )
             .dy,
-        greaterThan(
-          tester
-              .getTopLeft(
-                find.byKey(const ValueKey('agent-settings-reasoning-effort')),
-              )
-              .dy,
-        ),
-      );
+      ),
+    );
 
-      await _enterText(
-        tester,
-        'agent-settings-default-subagent-model',
-        '  claude-sonnet-4-6  ',
-      );
-      await tester.tap(find.byKey(const ValueKey('agent-settings-save')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('agent-settings-confirm-save')));
-      await tester.pumpAndSettle();
-      expect(savedSubagentModel, '  claude-sonnet-4-6  ');
-      expect(saved?.defaultModel, 'claude-opus-5-5');
-    },
-  );
+    await _enterText(
+      tester,
+      'agent-settings-default-subagent-model',
+      '  claude-sonnet-4-6  ',
+    );
+    await tester.tap(find.byKey(const ValueKey('agent-settings-save')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('agent-settings-confirm-save')));
+    await tester.pumpAndSettle();
+    expect(savedSubagentModel, '  claude-sonnet-4-6  ');
+    expect(saved?.defaultModel, 'claude-opus-5-5');
+  });
 
   testWidgets('Claude sub-agent fetch fills only the sub-agent field', (
     tester,
@@ -301,13 +303,18 @@ void main() {
     await tester.tap(fetch);
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const ValueKey('agent-settings-model-option-claude-haiku-4-5')),
+      find.byKey(
+        const ValueKey('agent-settings-model-option-claude-haiku-4-5'),
+      ),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 120));
 
     expect(fetches, 1);
-    expect(_text(tester, 'agent-settings-default-subagent-model'), 'claude-haiku-4-5');
+    expect(
+      _text(tester, 'agent-settings-default-subagent-model'),
+      'claude-haiku-4-5',
+    );
     // 子模型选择不得顺带改写默认主模型。
     expect(_text(tester, 'agent-settings-default-model'), 'claude-opus-5-5');
   });
@@ -916,6 +923,147 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('provider profile editor saves URL, key, and model', (
+    tester,
+  ) async {
+    AgentProviderProfile? savedProfile;
+    await tester.pumpWidget(
+      _DialogHarness(
+        state: claudeState,
+        onLoadProfiles: () async => const <AgentProviderProfile>[],
+        onSaveProfile: (profile) async => savedProfile = profile,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('agent-settings-provider-profiles')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('provider-profile-add')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('provider-profile-name')),
+      'Team API',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('provider-profile-base-url')),
+      'https://provider.example.test/v1',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('provider-profile-api-key')),
+      'new-secret',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('provider-profile-model')),
+      'claude-custom',
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('provider-profile-editor-save')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(savedProfile, isNotNull);
+    expect(savedProfile!.serverProfileId, 'server-one');
+    expect(savedProfile!.agent, AgentKind.claudeCode);
+    expect(savedProfile!.name, 'Team API');
+    expect(savedProfile!.baseUrl, 'https://provider.example.test/v1');
+    expect(savedProfile!.apiKey, 'new-secret');
+    expect(savedProfile!.defaultModel, 'claude-custom');
+  });
+
+  testWidgets(
+    'provider profiles can be activated and deleted after confirmation',
+    (tester) async {
+      const profile = AgentProviderProfile(
+        id: 'provider-one',
+        serverProfileId: 'server-one',
+        agent: AgentKind.claudeCode,
+        name: 'Team API',
+        baseUrl: 'https://provider.example.test/v1',
+        apiKey: 'secret',
+        defaultModel: 'claude-custom',
+      );
+      AgentProviderProfile? activatedProfile;
+      String? deletedProfileId;
+      await tester.pumpWidget(
+        _DialogHarness(
+          state: claudeState,
+          onLoadProfiles: () async => const [profile],
+          onActivateProfile: (value) async => activatedProfile = value,
+          onDeleteProfile: (id) async => deletedProfileId = id,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey('agent-settings-provider-profiles')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Team API'), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const ValueKey('provider-profile-activate-provider-one')),
+      );
+      await tester.pumpAndSettle();
+      expect(activatedProfile, profile);
+
+      await tester.tap(
+        find.byKey(const ValueKey('provider-profile-delete-provider-one')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('删除供应商配置？'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('provider-profile-confirm-delete')),
+      );
+      await tester.pumpAndSettle();
+      expect(deletedProfileId, 'provider-one');
+    },
+  );
+
+  testWidgets('provider profiles remain usable on narrow screens', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 800);
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.view.reset);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    const profile = AgentProviderProfile(
+      id: 'provider-narrow',
+      serverProfileId: 'server-one',
+      agent: AgentKind.claudeCode,
+      name: 'A long provider profile name for narrow screens',
+      baseUrl: 'https://provider.example.test/a/long/api/path',
+      defaultModel: 'claude-custom-long-model-name',
+    );
+    await tester.pumpWidget(
+      _DialogHarness(
+        state: claudeState,
+        onLoadProfiles: () async => const [profile],
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('agent-settings-provider-profiles')),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    final editButton = find.byKey(
+      const ValueKey('provider-profile-edit-provider-narrow'),
+    );
+    await tester.ensureVisible(editButton);
+    await tester.tap(editButton);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('provider-profile-editor-save')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _DialogHarness extends StatelessWidget {
@@ -925,6 +1073,10 @@ class _DialogHarness extends StatelessWidget {
     this.onTest = _noopTest,
     this.onSave = _noopSave,
     this.onDismiss = _noop,
+    this.onLoadProfiles = _noopLoadProviderProfiles,
+    this.onSaveProfile = _noopSaveProviderProfile,
+    this.onDeleteProfile = _noopDeleteProviderProfile,
+    this.onActivateProfile = _noopActivateProviderProfile,
   });
 
   final AppUiState state;
@@ -932,6 +1084,10 @@ class _DialogHarness extends StatelessWidget {
   final AgentSettingsTestCallback onTest;
   final AgentSettingsSaveCallback onSave;
   final VoidCallback onDismiss;
+  final AgentProviderProfilesLoadCallback onLoadProfiles;
+  final AgentProviderProfileSaveCallback onSaveProfile;
+  final AgentProviderProfileDeleteCallback onDeleteProfile;
+  final AgentProviderProfileActivateCallback onActivateProfile;
 
   @override
   Widget build(BuildContext context) {
@@ -948,6 +1104,10 @@ class _DialogHarness extends StatelessWidget {
               onTest: onTest,
               onSave: onSave,
               onDismiss: onDismiss,
+              onLoadProfiles: onLoadProfiles,
+              onSaveProfile: onSaveProfile,
+              onDeleteProfile: onDeleteProfile,
+              onActivateProfile: onActivateProfile,
             ),
           ],
         ),
@@ -1035,6 +1195,15 @@ Future<List<ApiModelOption>> _noopFetchModels({
   required String apiKey,
   required String proxyUrl,
 }) async => const <ApiModelOption>[];
+
+Future<List<AgentProviderProfile>> _noopLoadProviderProfiles() async =>
+    const <AgentProviderProfile>[];
+
+Future<void> _noopSaveProviderProfile(AgentProviderProfile profile) async {}
+
+Future<void> _noopDeleteProviderProfile(String profileId) async {}
+
+Future<void> _noopActivateProviderProfile(AgentProviderProfile profile) async {}
 
 void _noopTest({
   required String baseUrl,

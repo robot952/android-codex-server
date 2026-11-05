@@ -42,11 +42,11 @@ void main() {
       agent: AgentKind.codex,
       provider: 'fixture-provider',
       threadId: 'thread',
-      fallbackModel: 'gpt-6-astra',
       params: usageParams(
         input: 130900,
         output: 293,
         metrics: {
+          'model': 'gpt-6-astra',
           'source': 'server',
           'firstTokenMillis': 350,
           'durationMillis': 650,
