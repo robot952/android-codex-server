@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.195+327，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.197+329，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -1109,14 +1109,16 @@ Agent 自己断线时才重建其专用 SSH 并恢复 lane。Codex Unix listener
 分块写入并清理失败半成品。终端和文件操作不共享 Codex JSONL stdout，也不拼接 shell 路径执行文件动作。
 
 Debug 模式由 Agent 图标连续十次点击开启。`DiagnosticLogger` 将普通运行事件按开关持久化到应用支持目录，
-单文件最多约 100 KiB、最多保留 100 个文件且总量最多约 10 MiB；超限按时间删除最旧文件。FlutterError、
+单文件最多约 100 KiB、最多保留最近 5 个文件且总量最多约 500 KiB；超限按时间删除最旧文件。Flutter 与
+Android 原生日志共用此上限，启动时即清理升级前超额文件，Debug 关闭时也执行。FlutterError、
 PlatformDispatcher 和 Zone 未捕获异常始终以 FATAL 级别记录。`DiagnosticLogBridge` 在 Android 侧捕获
 Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR 线索），并写入同一目录，所以下次启动可统一查看。
 写入前会移除 ANSI、私钥、URL 凭据、Bearer/API key、password/token/secret 等敏感值，分享和附件读取时再脱敏。
 诊断日志弹窗只读取当前进程正在写入的单个活动分段，不扫描或拼接历史 100 KiB 文件；历史日志仅在分享或作为附件时按需列出。
 日志 sheet 和选择器支持按文件多选、预览、复制、清空和系统分享；分享只生成临时副本，不删除原日志，清空
-同时删除本工具生成的临时分享文件。工作页菜单“添加崩溃 / Debug 日志”默认选中最新崩溃日志，确认后只加入
-输入框附件，不会自动发送。此前为定位会话滚动问题临时加入的 `TranscriptScroll` 高频事件及其几何采样
+同时删除本工具生成的临时分享文件。工作页菜单“添加崩溃 / Debug 日志”默认只选中列表第一份（最新日志），
+不优先选择崩溃日志；可手动改选或多选，遵守附件数量上限。确认后只加入输入框附件，不会自动发送。
+系统分享入口仍默认不勾选。此前为定位会话滚动问题临时加入的 `TranscriptScroll` 高频事件及其几何采样
 已经撤除；当前诊断日志不再记录滚动手势、滚动范围、分页布局或加载头动画。后台连接每 10 秒执行的正常
 心跳也保持静默，只记录超过 5 秒的慢心跳、超过 15 秒的投递延迟、调度跳过和连接失败。
 
@@ -1513,9 +1515,9 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/model_selection_presentation_test.dart | catalog id/wire model 匹配、模型/effort 标签和容量格式 |
 | test/platform/local_file_exporter_test.dart | Android 导出会话 begin/write/complete/abort、分块上限和关闭后拒绝写入 |
 | test/platform/turn_completion_notifications_test.dart | 完成通知 payload、稳定通知 id、bounded 去重、子 Agent 过滤和点击导航解析 |
-| test/platform/diagnostic_logger_test.dart | 十次点击计数、日志开关、100 文件/10 MiB 轮转、脱敏、崩溃记录、清空、附件、预览、导出和分享 |
+| test/platform/diagnostic_logger_test.dart | 十次点击计数、日志开关、5 文件/500 KiB 轮转、开关两种状态的升级清理及无关文件保护、脱敏、崩溃记录、清空、附件、预览、导出和分享 |
 | test/platform/diagnostic_timing_test.dart | 阶段开始/终态配对、并发身份、单调耗时、超时/异常保留、日志失败隔离及 Debug 开关 |
-| test/ui/diagnostic_log_sheet_test.dart | 崩溃日志默认选择、多选确认和附件数量上限 |
+| test/ui/diagnostic_log_sheet_test.dart | 最新日志默认选择且不优先崩溃、多选确认、附件数量上限、分享不预选及小屏滚动 |
 | test/platform/app_update_manager_test.dart | Gitee Release/资源筛选、SemVer 与 prerelease 排序、忽略提示、进度/容量辅助函数，以及下载到安装的状态机 |
 | test/ssh/terminal_manager_test.dart | 每 profile PTY session、generation/身份失效、输入/输出上限、历史恢复、断开和重试 |
 | test/ui/markdown_links_test.dart | HTTP Markdown/裸链接识别、label 后中文说明边界、目标 URL 不重复显示、远程路径安全编码/解码、非法路径和保存文件名清理 |
@@ -1634,7 +1636,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 子 Agent | 紧凑图标/名称/逐个状态、同 turn 终态保护、真实 child `thread/resume`、父快照栈、最多 8 层返回、失败重试和迟到回调过滤 | 真机长时导航、真实服务器连续协作事件和大历史回归 |
 | 后台 | Flutter bridge + Android foreground Service、partial wake lock；根 Back 移到后台；Activity 销毁/重建复用连接期 FlutterEngine，进程存活时 Dart stream 和 SSH 继续 | 真机权限/厂商后台限制、进程被杀后的恢复不保证 |
 | 完成通知 | 后台回合通知、稳定 id、bounded 去重、子 Agent 过滤、点击直达 | 真机通知权限、锁屏/厂商通知策略和完整端到端回归 |
-| Debug | 十次点击开启；100 KiB/100 文件/10 MiB 轮转、FATAL/Java/ANR 线索、二次脱敏、多选分享、清空临时副本、日志附件待发送 | 真机崩溃复现、Native 信号和分享目标兼容 |
+| Debug | 十次点击开启；100 KiB/5 文件/500 KiB 轮转、升级清理、FATAL/Java/ANR 线索、二次脱敏、多选分享、清空临时副本、附件默认最新日志且待发送 | 真机崩溃复现、Native 信号和分享目标兼容 |
 | 应用内更新 | Gitee 稳定 Release 自动/手动检查、两种 APK 资源名兼容、忽略版本、DownloadManager 进度、后台继续、任务持久化/重绑、未知来源授权、取消后重试、包名/版本/证书校验和系统安装 | 真机弱网/断网、权限拒绝、下载失败、覆盖升级、真实安装器行为和进程重建回归 |
 | 终端/文件 | 每 profile 独立 SSH PTY；SFTP 浏览/上传/下载/重命名/删除/复制移动；SAF 分块导出 | 真机键盘、超大文件、断线和厂商文件选择器回归 |
 | 全局配置 | Codex/OpenCode 远程用户全局 Provider、认证、代理读取/保存和真实 API 测试；Codex 自定义 Provider 的 WebSocket/HTTPS 传输策略；OpenCode 自定义模型同步/tombstone、Provider 前缀和显式协议已接入 | 真实服务器 Provider 差异、权限/登录/协议和模型缓存刷新回归；不得把 API key 放入命令参数或手机持久化 |
@@ -1661,8 +1663,10 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 9. 子 Agent 使用稳定身份色图标与名称，开始、完成、发送消息按原时序逐行显示；子页面只读且仅含自己的内容，标题为子 Agent 名字和图标，底部留空，没有输入、停止、审批或配置操作。父向消息为只读记录；允许浏览更下级和逐级返回。父页面 Composer 上方不再显示后台 Agent 数量面板，保留时间线活动和真实等待状态。
 10. 目标和操作菜单使用原生 app-server 能力，不依赖复杂斜杠解析（当前 Codex 已接入）。
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
-12. Agent 图标连续点击 10 次开启 Debug；最多 100 个日志文件/约 10 MiB，单文件约 100 KiB；日志可多选系统分享且脱敏，
-    工作页可多选并作为输入框文本附件（不会自动发送）；Java/Native/ANR 线索尽量在下次启动恢复。
+12. Agent 图标连续点击 10 次开启 Debug；只保留最近 5 个日志文件/约 500 KiB，单文件约 100 KiB；
+    Flutter/Android 共用上限，Debug 关闭时启动也清理超额旧日志。工作页“添加崩溃 / Debug 日志”默认
+    只勾选第一份最新日志，不优先选崩溃日志；仍可手动多选作为输入框文本附件，不自动发送。
+    系统分享默认不勾选，保持脱敏；Java/Native/ANR 线索尽量在下次启动恢复。
 13. 所有输入页面适配键盘、目标竖屏和大字体，不允许控件重叠；横屏不作为 UI 验收范围。
 14. Codex/OpenCode 自动安装有可见总体/下载进度，按服务器保存 HTTP/HTTPS 下载代理；安装中可最小化，失败可重试，卸载不得触碰系统 Codex、VS Code、~/.codex 或工作区（两种 Agent 当前均已接入，仍需真实服务器/真机长时验收）。
 15. 视觉接近 VS Code Codex：安静、紧凑、工作导向，不使用营销式大卡片、渐变或装饰背景。服务器列表
@@ -3349,6 +3353,30 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `0fd3409f947f3374f983c32a17798893c5dd371d7abaee686f33cc6dc18e2f0b`；内网回验 `123ms`。
   沿用稳定签名证书 SHA-256 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`，
   外网 FRP 仅提供下载地址、未请求回验。本轮不创建版本标签或云端 Release。
+
+### 17.101 Debug 日志保留与附件默认选择（2026-11-07）
+
+- 应用版本 `1.8.197+329`。Flutter 与 Android 原生日志统一只保留最近 5 个文件，单文件约 100 KiB，
+  合计约 500 KiB。每次写入继续按时间淘汰最旧文件，初始化也清理升级前的超额文件，Debug 关闭时
+  同样执行；只清理诊断日志，不删除进程标记或其他文件，清理失败不阻断启动和崩溃记录。
+- 工作页“添加崩溃 / Debug 日志”默认只勾选列表第一份最新日志，移除崩溃优先规则；保留手动多选、
+  附件数量上限及仅加入草稿的行为。系统分享仍默认不选。日志列表按标题、按钮的实际剩余空间收缩，
+  修复较矮屏幕上标题换行造成的底部溢出。
+- 定向回归覆盖 105 个历史文件在 Debug 开/关两种状态下清理到 5 份、持续写入轮转与导出、无关文件
+  保护、最新普通日志优先于较旧崩溃日志、多选、附件上限、分享不预选及 360×480 小屏滚动。
+- 验证通过：13 项定向测试、analyze、全量 1012 项 Flutter 测试（另有 2 项可选测试未启用）、桥接
+  门禁、Debug/Release 构建、保留数据的 Android 覆盖安装启动及稳定验签。首轮定向测试发现小屏溢出，
+  修复后重跑通过；轮转样本改用分词日志避免超长单词造成脱敏测试超时。既有 Claude 配置并发门禁首次
+  返回非预期拒绝码，单独复核和完整重跑均通过，该代码本轮未改。
+- 发布主门禁 `6m43.277s`：服务器 `0.075s`、OpenCode `0.142s` 命中缓存，Claude `28.427s`，
+  Android `5m21.678s`（analyze `8.103s`、全量测试 `1m46.991s`、Debug `48.513s`、Release
+  `2m35.420s`），释放 Gradle `0.583s`、模拟器 `23.985s`、索引 `1.590s`、发布 `25.571s`，
+  调度 `1.226s`。失败与返工保留在 `.workflow-cache/task-timings/debug-logs-20261107.tsv`，嵌套
+  阶段不重复累加。完成后关闭模拟器，保留 AVD 和应用数据。
+- `dist/Agent-1.8.197.apk` 为 `32,292,349` 字节，SHA-256 为
+  `992c04bd3c8ea144d195ba88b46d9921d72d3ddfd43943e898b10fede6b9d25b`，内网完整下载回验 `119ms`。
+  稳定签名证书 SHA-256 为 `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`；
+  外网 FRP 仅提供下载地址，未回验。不创建版本标签或云端 Release。
 
 ## 18. 文档维护规则
 

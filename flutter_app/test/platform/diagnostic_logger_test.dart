@@ -112,16 +112,18 @@ void main() {
         },
       );
       await logger.initialize();
-      for (var index = 0; index < 2_000; index++) {
-        logger.info('Test', 'entry-$index ${'x' * 100}');
+      for (var index = 0; index < 200; index++) {
+        logger.info('Test', 'entry-$index ${'log payload ' * 325}');
       }
       await logger.share();
 
       final snapshot = await logger.snapshot();
-      expect(snapshot.entries, isNotEmpty);
+      expect(snapshot.entries, hasLength(5));
+      expect(snapshot.entries.first.isActive, isTrue);
+      expect(snapshot.bytes, lessThanOrEqualTo(500 * 1024));
       expect(
-        snapshot.entries.length,
-        lessThanOrEqualTo(DiagnosticLogger.maxSegments),
+        snapshot.entries.every((entry) => entry.sizeBytes <= 100 * 1024),
+        isTrue,
       );
       expect(sharedFile, isNotNull);
       expect(await sharedFile!.exists(), isTrue);
@@ -129,25 +131,51 @@ void main() {
         await sharedFile!.readAsString(),
         contains('Agent diagnostic log'),
       );
+      expect(await sharedFile!.readAsString(), isNot(contains('entry-0 ')));
+      expect(snapshot.preview, contains('entry-199 '));
     },
   );
 
-  test('retains at most one hundred newest log files', () async {
-    for (var index = 0; index < 105; index++) {
-      final started = (1_800_000_000_000 + index).toString();
-      await File(
-        '${directory.path}/session-$started-000000.log',
-      ).writeAsString('2026-01-01T00:00:00Z INFO Test entry-$index\n');
-    }
-    final logger = createLogger(enabled: true);
-    await logger.initialize();
+  for (final enabled in [false, true]) {
+    test(
+      'startup retains only five newest files with Debug=$enabled',
+      () async {
+        for (var index = 0; index < 105; index++) {
+          final started = 1_800_000_000_000 + index;
+          await File(
+            '${directory.path}/session-$started-000000.log',
+          ).writeAsString('2026-01-01T00:00:00Z INFO Test entry-$index\n');
+        }
+        final marker = File('${directory.path}/.agent-process-marker');
+        await marker.writeAsString('keep');
+        final unrelated = File('${directory.path}/unrelated.txt');
+        await unrelated.writeAsString('keep');
+        final logger = createLogger(
+          enabled: enabled,
+          clock: () => DateTime.fromMillisecondsSinceEpoch(1_900_000_000_000),
+        );
+        expect(await logger.initialize(), enabled);
 
-    final snapshot = await logger.snapshot();
-    expect(snapshot.entries, hasLength(DiagnosticLogger.maxSegments));
-    expect(snapshot.bytes, lessThanOrEqualTo(DiagnosticLogger.maxTotalBytes));
-    expect(snapshot.preview, isNot(contains('entry-0\n')));
-    expect(snapshot.preview, contains('entry-104'));
-  });
+        final snapshot = await logger.snapshot();
+        final expectedIds = [
+          if (enabled) 'session-1900000000000-000000.log',
+          for (var index = 104; index >= (enabled ? 101 : 100); index--)
+            'session-${1_800_000_000_000 + index}-000000.log',
+        ];
+        expect(snapshot.entries, hasLength(5));
+        expect(snapshot.entries.map((entry) => entry.id), expectedIds);
+        expect(snapshot.bytes, lessThanOrEqualTo(500 * 1024));
+        expect(
+          directory.listSync().whereType<File>().where(
+            (file) => file.path.endsWith('.log'),
+          ),
+          hasLength(5),
+        );
+        expect(await marker.readAsString(), 'keep');
+        expect(await unrelated.readAsString(), 'keep');
+      },
+    );
+  }
 
   test('clear removes share copies but keeps Debug enabled', () async {
     final logger = createLogger(enabled: true);

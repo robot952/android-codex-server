@@ -23,8 +23,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object DiagnosticLogBridge {
     private const val MAX_FILE_BYTES = 100 * 1024L
-    private const val MAX_FILES = 100
-    private const val MAX_TOTAL_BYTES = 10 * 1024 * 1024L
+    private const val MAX_FILES = 5
+    private const val MAX_TOTAL_BYTES = MAX_FILES * MAX_FILE_BYTES
     private const val MAX_STACK_CHARS = 24_000
     private const val MAX_MESSAGE_CHARS = 4_000
     private const val ANR_THRESHOLD_MILLIS = 15_000L
@@ -62,6 +62,8 @@ object DiagnosticLogBridge {
                 currentFile = newSessionFileLocked()
                 appendLocked("INFO", "Android", "native_diagnostics_initialized")
             }
+            // Enforce the same limit as Dart, including upgrades with Debug off.
+            runCatching { pruneLocked(checkNotNull(directory)) }
             installCrashHandlerLocked()
         }
         startAnrWatchdog()

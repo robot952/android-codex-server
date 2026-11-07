@@ -119,7 +119,7 @@ void main() {
     expect(selected, hasLength(1));
   });
 
-  testWidgets('latest crash is preselected and several logs can be chosen', (
+  testWidgets('newest log is preselected ahead of an older crash', (
     tester,
   ) async {
     final logger = createLogger();
@@ -140,11 +140,7 @@ void main() {
           builder: (context) => Scaffold(
             body: TextButton(
               onPressed: () async {
-                selected = await pickDiagnosticLogIds(
-                  context,
-                  logger: logger,
-                  preferLatestCrash: true,
-                );
+                selected = await pickDiagnosticLogIds(context, logger: logger);
               },
               child: const Text('打开'),
             ),
@@ -156,13 +152,15 @@ void main() {
 
     final checkboxes = tester.widgetList<Checkbox>(find.byType(Checkbox));
     expect(checkboxes, hasLength(2));
+    expect(checkboxes.first.value, isTrue);
+    expect(checkboxes.last.value, isFalse);
     expect(
       checkboxes.where((checkbox) => checkbox.value == true),
       hasLength(1),
     );
     expect(find.text('崩溃'), findsOneWidget);
 
-    await tester.tap(find.byType(Checkbox).first);
+    await tester.tap(find.byType(Checkbox).last);
     await tester.pump();
     await tester.tap(find.text('确定'));
     await tester.pumpAndSettle();
@@ -212,50 +210,57 @@ void main() {
     );
   });
 
-  testWidgets(
-    'many logs remain scrollable without overflowing a narrow screen',
-    (tester) async {
-      tester.view.physicalSize = const Size(360, 640);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.runAsync(() async {
-        for (var index = 0; index < 14; index++) {
-          await writeLog(1_786_420_800_000 + index * 1_000, 100 + index);
-        }
-      });
-      final logger = createLogger();
-      await tester.runAsync(logger.initialize);
+  testWidgets('five retained logs remain scrollable in a small viewport', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 480);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.runAsync(() async {
+      for (var index = 0; index < 14; index++) {
+        await writeLog(1_786_420_800_000 + index * 1_000, 100 + index);
+      }
+    });
+    final logger = createLogger();
+    await tester.runAsync(logger.initialize);
 
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: buildCodexTheme(),
-          home: Builder(
-            builder: (context) => Scaffold(
-              body: TextButton(
-                onPressed: () => pickDiagnosticLogIds(
-                  context,
-                  logger: logger,
-                  preselectLatest: false,
-                  title: '选择要分享的诊断日志',
-                  confirmLabel: '分享',
-                ),
-                child: const Text('打开'),
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildCodexTheme(),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => pickDiagnosticLogIds(
+                context,
+                logger: logger,
+                preselectLatest: false,
+                title: '选择要分享的诊断日志',
+                confirmLabel: '分享',
               ),
+              child: const Text('打开'),
             ),
           ),
         ),
-      );
-      await openPicker(tester);
+      ),
+    );
+    await openPicker(tester);
 
-      expect(tester.takeException(), isNull);
-      expect(find.byKey(const Key('diagnostic-log-list')), findsOneWidget);
-      await tester.drag(
-        find.byKey(const Key('diagnostic-log-list')),
-        const Offset(0, -500),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-    },
-  );
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('diagnostic-log-list')), findsOneWidget);
+    final scrollable = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byKey(const Key('diagnostic-log-list')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    expect(scrollable.position.maxScrollExtent, greaterThan(0));
+    await tester.drag(
+      find.byKey(const Key('diagnostic-log-list')),
+      const Offset(0, -500),
+    );
+    await tester.pumpAndSettle();
+    expect(scrollable.position.pixels, greaterThan(0));
+    expect(tester.takeException(), isNull);
+  });
 }

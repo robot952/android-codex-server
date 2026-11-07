@@ -146,8 +146,8 @@ class DiagnosticLogger {
   /// One on-disk file is kept close to 100 KiB so sharing and attachment stay
   /// responsive on mobile networks.
   static const maxSegmentBytes = 100 * 1024;
-  static const maxSegments = 100;
-  static const maxTotalBytes = 10 * 1024 * 1024;
+  static const maxSegments = 5;
+  static const maxTotalBytes = maxSegments * maxSegmentBytes;
   static const maxMessageChars = 4_000;
   static const maxStackChars = 24_000;
   static const maxPreviewBytes = 64 * 1024;
@@ -201,6 +201,12 @@ class DiagnosticLogger {
       _enabled = false;
     }
     _initialized = true;
+    // Apply the retention limit to existing logs even when Debug is disabled.
+    try {
+      await _prune();
+    } catch (_) {
+      // Cleanup must not prevent startup or crash recording.
+    }
     if (_enabled) {
       try {
         await _startSession();

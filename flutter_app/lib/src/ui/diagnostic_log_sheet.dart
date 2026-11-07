@@ -50,12 +50,11 @@ Future<void> shareDiagnosticLogs(
 }
 
 /// Opens the bounded log selector used by both system sharing and work-page
-/// attachments. A crash session is selected first when requested; the user
-/// can add or remove any other retained session before confirming.
+/// attachments. Attachments default to the first (newest) log, regardless of
+/// crash status; the user can change the selection before confirming.
 Future<List<String>?> pickDiagnosticLogIds(
   BuildContext context, {
   required DiagnosticLogger logger,
-  bool preferLatestCrash = false,
   String title = '选择 Debug 日志',
   String confirmLabel = '确定',
   bool preselectLatest = true,
@@ -64,11 +63,8 @@ Future<List<String>?> pickDiagnosticLogIds(
   final entries = await logger.listLogs();
   if (!context.mounted) return null;
   final initial = <String>{};
-  if (entries.isNotEmpty && (preferLatestCrash || preselectLatest)) {
-    final preferred = preferLatestCrash
-        ? entries.where((entry) => entry.hasCrash).firstOrNull
-        : null;
-    initial.add((preferred ?? entries.first).id);
+  if (entries.isNotEmpty && preselectLatest) {
+    initial.add(entries.first.id);
   }
   return showDialog<List<String>>(
     context: context,
@@ -128,92 +124,85 @@ class _DiagnosticLogPickerState extends State<_DiagnosticLogPicker> {
           maxWidth: 520,
           maxHeight: availableHeight.clamp(280.0, 600.0).toDouble(),
         ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final maximumListHeight = constraints.maxHeight - 112;
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
-                  child: Text(
-                    widget.title,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+              child: Text(
+                widget.title,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            if (widget.entries.isEmpty)
+              const SizedBox(
+                height: 80,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(24, 20, 24, 28),
+                  child: Text('暂无可用日志'),
                 ),
-                if (widget.entries.isEmpty)
-                  const SizedBox(
-                    height: 80,
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(24, 20, 24, 28),
-                      child: Text('暂无可用日志'),
-                    ),
-                  )
-                else
-                  SizedBox(
-                    height: listHeight
-                        .clamp(72.0, maximumListHeight)
-                        .toDouble(),
-                    child: Scrollbar(
-                      child: ListView.separated(
-                        key: const Key('diagnostic-log-list'),
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: widget.entries.length,
-                        separatorBuilder: (context, index) => const Divider(
-                          height: 1,
-                          indent: 8,
-                          endIndent: 8,
-                          color: codexBorder,
-                        ),
-                        itemBuilder: (context, index) {
-                          final entry = widget.entries[index];
-                          final selected = _selected.contains(entry.id);
-                          final selectionFull =
-                              widget.maxSelection != null &&
-                              _selected.length >= widget.maxSelection!;
-                          final enabled = selected || !selectionFull;
-                          return _DiagnosticLogRow(
-                            key: Key('diagnostic-log-row-${entry.id}'),
-                            entry: entry,
-                            selected: selected,
-                            enabled: enabled,
-                            onChanged: (value) => _setSelected(entry, value),
-                          );
-                        },
+              )
+            else
+              Flexible(
+                child: SizedBox(
+                  height: listHeight,
+                  child: Scrollbar(
+                    child: ListView.separated(
+                      key: const Key('diagnostic-log-list'),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: widget.entries.length,
+                      separatorBuilder: (context, index) => const Divider(
+                        height: 1,
+                        indent: 8,
+                        endIndent: 8,
+                        color: codexBorder,
                       ),
+                      itemBuilder: (context, index) {
+                        final entry = widget.entries[index];
+                        final selected = _selected.contains(entry.id);
+                        final selectionFull =
+                            widget.maxSelection != null &&
+                            _selected.length >= widget.maxSelection!;
+                        final enabled = selected || !selectionFull;
+                        return _DiagnosticLogRow(
+                          key: Key('diagnostic-log-row-${entry.id}'),
+                          entry: entry,
+                          selected: selected,
+                          enabled: enabled,
+                          onChanged: (value) => _setSelected(entry, value),
+                        );
+                      },
                     ),
                   ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        child: const Text('取消'),
-                      ),
-                      const SizedBox(width: 8),
-                      TextButton(
-                        key: const Key('diagnostic-log-confirm'),
-                        onPressed: _selected.isEmpty
-                            ? null
-                            : () => Navigator.of(context).pop(
-                                widget.entries
-                                    .where(
-                                      (entry) => _selected.contains(entry.id),
-                                    )
-                                    .map((entry) => entry.id)
-                                    .toList(growable: false),
-                              ),
-                        child: Text(widget.confirmLabel),
-                      ),
-                    ],
-                  ),
                 ),
-              ],
-            );
-          },
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    key: const Key('diagnostic-log-confirm'),
+                    onPressed: _selected.isEmpty
+                        ? null
+                        : () => Navigator.of(context).pop(
+                            widget.entries
+                                .where((entry) => _selected.contains(entry.id))
+                                .map((entry) => entry.id)
+                                .toList(growable: false),
+                          ),
+                    child: Text(widget.confirmLabel),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

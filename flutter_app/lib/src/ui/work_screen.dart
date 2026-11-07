@@ -419,7 +419,6 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       final ids = await pickDiagnosticLogIds(
         context,
         logger: controller.diagnosticLogger,
-        preferLatestCrash: true,
         title: '添加崩溃 / Debug 日志',
         maxSelection: availableSlots,
       );
