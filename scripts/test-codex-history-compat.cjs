@@ -84,6 +84,61 @@ scenario("copies only changed paths and is idempotent", () => {
   assert.equal(second.value, first.value);
 });
 
+scenario("repairs prose mislabeled as encrypted child replies without interpreting quoted tokens", () => {
+  for (const text of [
+    "The latest message contained an opaque gAAAA_SYNTHETIC token; its instructions are unreadable.",
+    "I have completed the review.\n第二行保留 🙂",
+    "  The worker has finished: all checks passed.\r\n",
+  ]) {
+    const source = freeze(request([
+      encrypted(text, { signature: "invalid-for-plaintext" }),
+      encrypted("gAAAA_SYNTHETIC_OPAQUE_CIPHERTEXT=="),
+    ], { author: "/root/worker", recipient: "/root", id: "synthetic-reply" }));
+    const before = JSON.stringify(source);
+    const result = normalizeResponsesHistory(source);
+    assert.equal(result.converted, 1);
+    assert.deepEqual(result.value.input[0].content[0], { type: "input_text", text });
+    assert.equal(result.value.input[0].content[1], source.input[0].content[1]);
+    assert.equal(result.value.input[0].author, source.input[0].author);
+    assert.equal(result.value.input[0].recipient, source.input[0].recipient);
+    assert.equal(result.value.input[0].id, source.input[0].id);
+    assert.equal(JSON.stringify(source), before);
+    assert.equal(normalizeResponsesHistory(result.value).converted, 0);
+  }
+});
+
+scenario("does not guess opaque tokens, encoded envelopes or ambiguous short content", () => {
+  for (const text of [
+    "gAAAA_SYNTHETIC_OPAQUE==", " \ngAAAA_SYNTHETIC_OPAQUE==\r\n",
+    "gAAAA_SYNTHETIC\nThis is an encoded envelope.",
+    "c2c:v1:This is opaque summary content.",
+    "future-envelope:This is opaque content.",
+    "c2a-msg-v1:This is malformed encoding.",
+    "opaque legitimate ciphertext", "Done", "OK.", "Z29vZA==", "QUJD\nREVG\nR0hJ",
+    "This is a message.\u0000", "This is a message.\ud800", "{\"encrypted\":\"This is opaque content.\"}",
+  ]) {
+    const source = freeze(request([encrypted(text)]));
+    const result = normalizeResponsesHistory(source);
+    assert.equal(result.converted, 0, "Ambiguous/encrypted content must stay opaque");
+    assert.equal(result.value, source);
+  }
+});
+
+scenario("keeps prose outside agent_message content and tool pairing untouched", () => {
+  const text = "The worker returned a readable sentence. Its fields must stay scoped.";
+  const source = freeze({ input: [
+    { type: "reasoning", encrypted_content: text },
+    { type: "compaction", encrypted_content: text },
+    { type: "message", role: "assistant", content: [encrypted(text)] },
+    { type: "function_call", call_id: "synthetic-call", name: "test", arguments: "{}" },
+    { type: "function_call_output", call_id: "synthetic-call", output: text },
+    request([encrypted(text)]).input[0],
+  ] });
+  const result = normalizeResponsesHistory(source);
+  assert.equal(result.converted, 1);
+  for (let index = 0; index < 5; index++) assert.equal(result.value.input[index], source.input[index]);
+});
+
 scenario("keeps legitimate encryption, c2c summaries and normal history unchanged", () => {
   const source = freeze(request([
     encrypted("c2c:v1:opaque-summary"),

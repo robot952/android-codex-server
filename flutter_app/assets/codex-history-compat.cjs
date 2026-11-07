@@ -33,6 +33,21 @@ function normalizeResponsesHistory(value) {
     }
   }
 
+  function mislabelledAgentProse(encoded) {
+    if (typeof encoded !== "string") return null;
+    const candidate = encoded.trim();
+    // A token mentioned *within* prose is ordinary text. A token/envelope at
+    // the start remains opaque, including unknown versions and broken c2a data.
+    if (/^(?:gAAAA|[A-Za-z0-9_-]+:)/.test(candidate)) return null;
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(encoded) ||
+        Buffer.from(encoded, "utf8").toString("utf8") !== encoded) return null;
+    // Limit recovery to unmistakable English prose like the reported child
+    // reply. Do not guess short strings, wrapped base64 or structured payloads.
+    if (!/^[A-Za-z]+(?:[ \t]+[A-Za-z]+){2}(?=[ \t.,;:!?])/.test(candidate) ||
+        !/[.!?;:](?:\s|$)/.test(candidate)) return null;
+    return encoded;
+  }
+
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       !Array.isArray(value.input)) {
     return { value, converted: 0 };
@@ -50,7 +65,8 @@ function normalizeResponsesHistory(value) {
       const block = item.content[blockIndex];
       if (!block || typeof block !== "object" || Array.isArray(block) ||
           block.type !== "encrypted_content") continue;
-      const decoded = decodeKnownPlaintext(block.encrypted_content);
+      const decoded = decodeKnownPlaintext(block.encrypted_content) ??
+        mislabelledAgentProse(block.encrypted_content);
       if (decoded === null) continue;
 
       if (!content) content = item.content.slice();

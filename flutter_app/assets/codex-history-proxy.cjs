@@ -241,7 +241,7 @@ const codexHistoryProxyApi = (() => {
       headers.host = target.host;
       const isJson = /^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(
         String(request.headers["content-type"] || ""));
-      const shouldNormalize = request.method === "POST" && /\/responses\/?$/.test(target.pathname) && isJson;
+      const shouldNormalize = request.method === "POST" && /\/responses(?:\/compact)?\/?$/.test(target.pathname) && isJson;
       let body = null;
       try {
         const contentLength = Number(request.headers["content-length"]);

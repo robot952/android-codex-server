@@ -150,6 +150,32 @@ test("ordinary protocol traffic preserves exact bytes and order", async () => {
   assert.deepEqual(Buffer.concat(output), original);
 });
 
+test("child failures and parent notifications pass through during provider setup", async () => {
+  const f = fixture({ respond: () => undefined, timeoutMs: 2000 });
+  f.bridge.writeInput(JSON.stringify({ id: 20, method: "thread/start", params: { cwd: "/project" } }) + "\n");
+  await new Promise(resolve => setImmediate(resolve));
+  const configRead = f.sent.find(message => message.method === "config/read");
+  assert(configRead, "Provider setup must be pending during interleaved notifications");
+  const events = [
+    { method: "turn/started", params: { threadId: "parent", turn: { id: "parent-turn", status: "inProgress" } } },
+    { method: "error", params: { threadId: "child", turnId: "child-turn", willRetry: false,
+      error: { message: "Synthetic child request failed" } } },
+    { method: "turn/completed", params: { threadId: "child", turn: { id: "child-turn", status: "failed" } } },
+    { method: "item/agentMessage/delta", params: { threadId: "parent", turnId: "parent-turn", itemId: "parent-item", delta: "父任务继续 🙂" } },
+    { method: "turn/completed", params: { threadId: "parent", turn: { id: "parent-turn", status: "completed" } } },
+  ];
+  const original = Buffer.from(events.map(event => JSON.stringify(event) + "\r\n").join(""));
+  for (let index = 0; index < original.length; index += 7) {
+    f.bridge.writeOutput(original.subarray(index, index + 7));
+  }
+  f.bridge.writeOutput(JSON.stringify({ id: configRead.id, result: { config: {} } }) + "\n");
+  await f.bridge.endInput();
+  f.bridge.close();
+  assert.deepEqual(Buffer.concat(f.visible), original, "Relay must not reinterpret errors, reorder events or lose child/parent IDs");
+  assert.equal(f.sent.filter(message => message.id === 20).length, 1);
+  assert(!f.sent.some(message => message.method === "turn/interrupt" || message.method === "turn/start"));
+});
+
 test("unavailable internal config forwards original request once and hides late secrets", async () => {
   const f = fixture({ respond: () => undefined, timeoutMs: 10 });
   const original = { id: 2, method: "thread/start", params: { cwd: "/project" } };

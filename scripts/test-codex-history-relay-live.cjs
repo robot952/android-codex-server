@@ -22,6 +22,7 @@ const oldText = "Synthetic historical sub-agent result: compatibility fixture �
 const oldEncoded = prefix + Buffer.from(oldText).toString("base64url");
 const opaqueContent = "c2c:v1:synthetic-opaque-control";
 const plainText = "Synthetic ordinary history content, preserved verbatim.";
+const mislabelledText = "Your latest message arrived as an opaque gAAAA_SYNTHETIC token; I cannot read its instructions.";
 const oldItem = {
   type: "agent_message",
   author: "/root/history_fixture_worker",
@@ -30,8 +31,14 @@ const oldItem = {
     { type: "input_text", text: plainText },
     { type: "encrypted_content", encrypted_content: oldEncoded },
     { type: "encrypted_content", encrypted_content: opaqueContent },
+    { type: "encrypted_content", encrypted_content: mislabelledText },
   ],
 };
+const liveItem = {
+  type: "agent_message", author: "/root/live_fixture_worker", recipient: "/root",
+  content: [{ type: "encrypted_content", encrypted_content: "The worker has finished: the synthetic checks passed.\n保留原文。" }],
+};
+let liveItemInjected = false;
 const requests = [];
 const fixtureErrors = [];
 let upgrades = 0;
@@ -72,7 +79,14 @@ const api = http.createServer(async (request, response) => {
       { type: "input_text", text: plainText },
       { type: "input_text", text: oldText },
       { type: "encrypted_content", encrypted_content: opaqueContent },
+      { type: "input_text", text: mislabelledText },
     ], "Only the malformed historical content should be normalized upstream");
+    const liveMessages = body.input.filter(item => item?.type === "agent_message" && item.author === liveItem.author);
+    assert.equal(liveMessages.length, liveItemInjected ? 1 : 0, "New child replies must remain in subsequent requests");
+    if (liveItemInjected) {
+      assert.equal(liveMessages[0].recipient, liveItem.recipient);
+      assert.deepEqual(liveMessages[0].content, [{ type: "input_text", text: liveItem.content[0].encrypted_content }]);
+    }
     assert.equal(body.model, "gpt-6-astra", "Relay must retain the selected model");
     if (rejectNextResponse) {
       rejectNextResponse = false;
@@ -257,6 +271,10 @@ async function main() {
     await sleep(200);
     assert.equal(requests.length, 1, "HTTP 400 must not automatically retry the invalid request");
     for (let number = 1; number <= 2; number += 1) {
+      if (number === 2) {
+        await activeClient.rpc("thread/inject_items", { threadId, items: [liveItem] });
+        liveItemInjected = true;
+      }
       const result = await activeClient.rpc("turn/start", { threadId,
         input: [{ type: "text", text: `Synthetic continued request ${number}.` }] });
       const turn = await activeClient.completed(threadId, result.turn.id);
@@ -271,8 +289,14 @@ async function main() {
     assert.equal(upgrades, 0, "Compatibility route must use the supported Responses transport");
     await activeClient.stop();
     activeClient = null;
-    assert.deepEqual(persistedOldItems(threadId), persistedFixture, "Compatibility must leave the original history intact");
-    console.log("Real Codex history relay: old agent_message resumed; HTTP 400 terminated without retries; 2 consecutive replies after failure; c2a normalized; opaque content and persisted history preserved.");
+    const persistedAfter = persistedOldItems(threadId);
+    assert.deepEqual(persistedAfter.filter(item => item.author === oldItem.author), persistedFixture,
+      "Compatibility must leave the original history intact");
+    const persistedLive = persistedAfter.filter(item => item.author === liveItem.author);
+    assert.equal(persistedLive.length, 1, "The live child reply must be persisted once");
+    assert.equal(persistedLive[0].recipient, liveItem.recipient);
+    assert.deepEqual(persistedLive[0].content, liveItem.content, "Request normalization must leave new persisted replies intact");
+    console.log("Real Codex history relay: old and live child replies normalized; HTTP 400 terminated without retries; 2 consecutive replies after failure; opaque content and persisted history preserved.");
   } finally {
     if (activeClient) await activeClient.stop();
     api.closeAllConnections();

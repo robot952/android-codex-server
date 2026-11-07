@@ -87,6 +87,45 @@ function oldHistory() {
 }
 
 async function main() {
+  await scenario("repairs plain child replies on responses and compaction without retries or history mutation", async () => {
+    const text = "The child received an opaque gAAAA_SYNTHETIC token; the instructions cannot be read.";
+    const source = oldHistory();
+    source.input[0].content.unshift({ type: "encrypted_content", encrypted_content: text });
+    source.input.push({ type: "compaction", encrypted_content: "gAAAA_SYNTHETIC_SUMMARY==" });
+    const original = JSON.stringify(source);
+    const seen = [];
+    const upstream = await listen(http.createServer(async (req, res) => {
+      const body = JSON.parse((await bodyOf(req)).toString());
+      seen.push({ url: req.url, body });
+      const valid = body.input[0].content[0].type === "input_text";
+      res.writeHead(valid ? 200 : 400, { "content-type": "application/json" });
+      res.end(valid ? '{"ok":true}' : '{"error":"synthetic invalid encrypted content"}');
+    }));
+    const local = await proxy();
+    // Establish the actual regression: the same malformed input is rejected raw.
+    const direct = await request(`${upstream}/v1/responses`, {
+      body: Buffer.from(original), headers: { "content-type": "application/json" },
+    });
+    assert.equal(direct.status, 400);
+    const base = local.urlFor(`${upstream}/v1`);
+    for (const endpoint of ["responses", "responses/compact", "responses/compact/"]) {
+      for (const gzip of [false, true]) {
+        const response = await request(`${base}/${endpoint}`, {
+          body: gzip ? zlib.gzipSync(original) : Buffer.from(original),
+          headers: { "content-type": "application/json", ...(gzip ? { "content-encoding": "gzip" } : {}) },
+        });
+        assert.equal(response.status, 200, `${endpoint} must normalize malformed child history`);
+        assert.equal(seen.at(-1).url, `/v1/${endpoint}`);
+        const parsed = seen.at(-1).body;
+        assert.deepEqual(parsed.input[0].content[0], { type: "input_text", text });
+        assert.deepEqual(parsed.input[0].content[2], source.input[0].content[2]);
+        assert.deepEqual(parsed.input[1], source.input[1]);
+      }
+    }
+    assert.equal(seen.length, 7, "No automatic retries or duplicate submissions");
+    assert.equal(JSON.stringify(source), original);
+  });
+
   await scenario("normalizes exact old messages while preserving headers, metadata and legal encryption", async () => {
     let received;
     const upstream = await listen(http.createServer(async (req, res) => {
