@@ -30,6 +30,7 @@ typedef _OpenRemoteImage =
 typedef RemoteImageLoader =
     Future<Uint8List> Function(
       String path, {
+      bool forceReload,
       void Function(int receivedBytes, int totalBytes)? onProgress,
     });
 
@@ -957,7 +958,11 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     }
   }
 
-  Future<void> _openRemoteImage(String path, {String? fileName}) async {
+  Future<void> _openRemoteImage(
+    String path, {
+    String? fileName,
+    bool forceReload = false,
+  }) async {
     final normalized = path.trim();
     if (normalized.isEmpty || _imageLoadingPath != null) return;
     final loader = widget.onLoadRemoteImage;
@@ -965,6 +970,8 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       _showNotice(context, '图片预览需要已连接的 SSH 文件通道');
       return;
     }
+    final imageScope = _attachmentSelectionGeneration;
+    bool isCurrent() => mounted && imageScope == _attachmentSelectionGeneration;
     setState(() {
       _imageLoadingPath = normalized;
       _imageReceivedBytes = 0;
@@ -973,8 +980,9 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     try {
       final bytes = await loader(
         normalized,
+        forceReload: forceReload,
         onProgress: (receivedBytes, totalBytes) {
-          if (!mounted || _imageLoadingPath != normalized) return;
+          if (!isCurrent() || _imageLoadingPath != normalized) return;
           final normalizedTotal = totalBytes > 0 ? totalBytes : null;
           final received = receivedBytes < 0
               ? 0
@@ -991,15 +999,15 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
           });
         },
       );
-      if (!mounted) return;
+      if (!isCurrent()) return;
       setState(() {
         _imageReceivedBytes = bytes.length;
         _imageTotalBytes = bytes.length;
       });
       await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) return;
+      if (!mounted || !isCurrent()) return;
       setState(() => _imageLoadingPath = null);
-      await showDialog<void>(
+      final reload = await showDialog<bool>(
         context: context,
         barrierColor: Colors.black87,
         builder: (dialogContext) => _RemoteImageDialog(
@@ -1010,8 +1018,15 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
               _saveImage(dialogContext, bytes, fileName ?? normalized),
         ),
       );
+      if (mounted && reload == true && isCurrent()) {
+        await _openRemoteImage(
+          normalized,
+          fileName: fileName,
+          forceReload: true,
+        );
+      }
     } catch (error) {
-      if (mounted) {
+      if (mounted && isCurrent()) {
         _showNotice(context, _displayError(error, '无法加载图片'));
       }
     } finally {
@@ -4882,6 +4897,13 @@ class _RemoteImageDialogState extends State<_RemoteImageDialog> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: Colors.white),
                 ),
+              ),
+              IconButton(
+                tooltip: '重新加载图片',
+                onPressed: _saving
+                    ? null
+                    : () => Navigator.of(context).pop(true),
+                icon: const Icon(Icons.refresh, color: Colors.white),
               ),
               IconButton(
                 tooltip: '关闭图片',

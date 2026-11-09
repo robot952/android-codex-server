@@ -145,7 +145,8 @@ void main({bool device = false}) {
     await pumpSubAgentEvents(tester);
     expect(h.controller.state.loading, isFalse);
     expect(h.controller.state.olderTurnsLoading, isFalse);
-    expect(peer.pageReads, 1);
+    // One cold first-page preview, then the existing single older-page read.
+    expect(peer.pageReads, 2);
     expect(find.text('Earlier answer remains visible.'), findsOneWidget);
     expect(find.text('Latest question'), findsOneWidget);
 
@@ -166,7 +167,7 @@ void main({bool device = false}) {
       expect(find.text('Latest question'), findsOneWidget);
       expect(
         peer.pageReads,
-        1,
+        2,
         reason: 'cached context avoids another full history read',
       );
     }

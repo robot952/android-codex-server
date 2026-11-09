@@ -55,6 +55,119 @@ const _threadB = AgentThread(
 
 void main() {
   test(
+    'cold open paints a remote preview while native resume is pending',
+    () async {
+      final diagnostics = _TimingLogger();
+      final agent = _ResumeAgent(threads: const [_threadA]);
+      agent.readSessions[_threadA.id] = const AgentSession(
+        thread: _threadA,
+        timeline: [
+          TimelineEntry(
+            id: 'preview',
+            kind: TimelineKind.agentMessage,
+            text: 'Recent answer',
+          ),
+        ],
+        nextTurnsCursor: 'older',
+      );
+      final harness = await _createHarness(agent, diagnostics: diagnostics);
+      final pending = agent.gateNextResume(_threadA.id);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+      expect(harness.controller.state.timeline.single.text, 'Recent answer');
+      expect(harness.controller.state.loading, isTrue);
+      expect(harness.controller.state.olderTurnsCursor, 'older');
+      expect(
+        diagnostics.finished('thread_remote_preview').single,
+        contains('status=success'),
+      );
+      pending.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'fresh',
+              kind: TimelineKind.agentMessage,
+              text: 'Authoritative answer',
+            ),
+          ],
+        ),
+      );
+      await _waitUntil(() => !harness.controller.state.loading);
+      expect(
+        harness.controller.state.timeline.single.text,
+        'Authoritative answer',
+      );
+    },
+  );
+
+  test('preview cannot unlock an externally owned conversation', () async {
+    final agent = _ResumeAgent(threads: const [_threadA]);
+    agent.readSessions[_threadA.id] = const AgentSession(
+      thread: _threadA,
+      timeline: [
+        TimelineEntry(
+          id: 'preview',
+          kind: TimelineKind.agentMessage,
+          text: 'Recent answer',
+        ),
+      ],
+    );
+    final harness = await _createHarness(agent);
+    final pending = agent.gateNextResume(_threadA.id);
+    harness.controller.openThread(_threadA);
+    await _waitUntil(() => agent.resumeCalls.isNotEmpty);
+    expect(harness.controller.state.loading, isTrue);
+    pending.complete(
+      AgentSession(
+        thread: _threadA.copyWith(isExternallyOwned: true),
+        timeline: const [
+          TimelineEntry(
+            id: 'owned',
+            kind: TimelineKind.agentMessage,
+            text: 'Read only',
+          ),
+        ],
+      ),
+    );
+    await _waitUntil(() => !harness.controller.state.loading);
+    expect(harness.controller.state.isThreadReadOnly, isTrue);
+  });
+
+  test(
+    'late remote preview never overwrites a newer route',
+    () async {
+      final agent = _PreviewGateAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => agent.readCalls.contains(_threadA.id));
+      harness.controller.backToThreadList();
+      harness.controller.openThread(_threadB);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _threadB.id &&
+            !harness.controller.state.loading,
+      );
+      agent.preview.complete(
+        const AgentSession(
+          thread: _threadA,
+          timeline: [
+            TimelineEntry(
+              id: 'stale',
+              kind: TimelineKind.agentMessage,
+              text: 'Stale preview',
+            ),
+          ],
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(harness.controller.state.activeThread?.id, _threadB.id);
+      expect(harness.controller.state.timeline, isEmpty);
+      expect(agent.resumeCalls, isNot(contains(_threadA.id)));
+    },
+  );
+
+  test(
     'performance timings preserve parallel list loads and cached lanes',
     () async {
       final diagnostics = _TimingLogger();
@@ -1588,7 +1701,9 @@ void main() {
       await _waitUntil(() => !harness.controller.state.loading);
       expect(harness.controller.state.isThreadReadOnly, isTrue);
       await _drainAsyncWork();
-      expect(agent.readCalls, isEmpty);
+      // The cold preview runs once before resume. Periodic refresh still waits.
+      expect(agent.readCalls, [occupied.id]);
+      agent.readCalls.clear();
       expect(harness.controller.state.timeline.single.text, '旧进度');
 
       agent.readSessions[occupied.id] = AgentSession(
@@ -2566,6 +2681,17 @@ class _Host implements RemoteServerClient {
   void close() {
     connected = false;
     if (!_closed.isCompleted) _closed.complete();
+  }
+}
+
+class _PreviewGateAgent extends _ResumeAgent {
+  _PreviewGateAgent({required super.threads});
+  final preview = Completer<AgentSession>();
+  @override
+  Future<AgentSession> readThread(String threadId) {
+    if (threadId != _threadA.id) return super.readThread(threadId);
+    readCalls.add(threadId);
+    return preview.future;
   }
 }
 

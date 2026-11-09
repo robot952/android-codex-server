@@ -2263,6 +2263,7 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<Uint8List> loadImagePreview(
     String path, {
+    bool forceReload = false,
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     await _ensureInitialized();
@@ -2271,6 +2272,7 @@ class AppController extends StateNotifier<AppUiState> {
     return _connections.readRemoteImage(
       profileId,
       path,
+      forceReload: forceReload,
       onProgress: onProgress,
     );
   }
@@ -5492,6 +5494,27 @@ class AppController extends StateNotifier<AppUiState> {
                 ? cache.get(thread.id)
                 : cache.getStale(thread.id))
           : null;
+      if (key.agent == AgentKind.codex &&
+          targetScreen == AppScreen.work &&
+          state.timeline.isEmpty &&
+          !isSubAgentThreadSource(thread.source) &&
+          !_subAgentThreadRegistry.contains(key, thread.id)) {
+        // Reading the latest page does not reconstruct the native runtime.
+        // Paint it before a cold resume of a large rollout; it grants no input
+        // authority. Bound the extra wait when the peer cannot serve a preview.
+        await _hydrateRemoteThreadPreview(
+          key,
+          thread,
+          navigationGeneration,
+        ).timeout(const Duration(seconds: 2), onTimeout: () {});
+        if (!_isCurrentSessionNavigation(
+          key,
+          navigationGeneration,
+          thread.id,
+        )) {
+          return;
+        }
+      }
       final session = await _resumeExpectedThread(
         key,
         thread.id,
@@ -5907,6 +5930,56 @@ class AppController extends StateNotifier<AppUiState> {
     _liveThreadSnapshots.remove(
       threadPreferenceKey(key.profileId, key.agent, thread.id),
     );
+  }
+
+  Future<void> _hydrateRemoteThreadPreview(
+    AgentConnectionKey key,
+    AgentThread thread,
+    int generation,
+  ) async {
+    final timing = _startTiming(
+      'thread_remote_preview',
+      key,
+      threadId: thread.id,
+      generation: generation,
+    );
+    final connectionGeneration = _agents.generation(key);
+    final remoteGeneration = _agents.remoteGeneration(key);
+    try {
+      final preview = await _agents.readThread(
+        key,
+        thread.id,
+        externallyOwned: false,
+      );
+      if (!mounted ||
+          !_isCurrentSessionNavigation(key, generation, thread.id) ||
+          _agents.generation(key) != connectionGeneration ||
+          _agents.remoteGeneration(key) != remoteGeneration ||
+          !_isHostAndAgentConnected(key) ||
+          !state.loading ||
+          state.timeline.isNotEmpty ||
+          preview.thread.id != thread.id ||
+          preview.thread.modelProvider != thread.modelProvider) {
+        timing.finish(status: TimingStatus.stale);
+        return;
+      }
+      final timeline = _isolateSubAgentTimeline(
+        key,
+        preview.thread,
+        preview.timeline,
+      );
+      // Only content is provisional. The existing resume remains responsible
+      // for writer ownership, status, approvals, subscription and input.
+      state = state.copyWith(
+        timeline: timeline,
+        olderTurnsCursor: preview.nextTurnsCursor,
+        tokenUsage: preview.tokenUsage ?? state.tokenUsage,
+      );
+      timing.finish(count: timeline.length);
+    } catch (error) {
+      // A preview is optional; the normal resume provides the real error path.
+      timing.fail(error);
+    }
   }
 
   Future<void> _hydrateStoredThread(

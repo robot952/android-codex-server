@@ -89,7 +89,8 @@ class _HangingConnectClient extends _FakeClient {
 class _FakeImageClient extends _FakeClient implements RemoteServerImageClient {
   _FakeImageClient(this.imageResult);
 
-  final Future<Uint8List> imageResult;
+  Future<Uint8List> imageResult;
+  int imageReads = 0;
   String? requestedPath;
   int? requestedLimit;
   void Function(int receivedBytes, int totalBytes)? progressCallback;
@@ -101,6 +102,7 @@ class _FakeImageClient extends _FakeClient implements RemoteServerImageClient {
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) {
     requestedPath = path;
+    imageReads++;
     requestedLimit = maxBytes;
     progressCallback = onProgress;
     return imageResult;
@@ -328,6 +330,68 @@ void main() {
     expect(client.requestedPath, '/tmp/screen.png');
     expect(client.requestedLimit, maxRemoteImageBytes);
     expect(progress, <(int, int)>[(2, 3)]);
+    await manager.close();
+  });
+
+  test(
+    'reopens cached images, refreshes and invalidates after identity change',
+    () async {
+      final original = _FakeImageClient(Future.value(Uint8List.fromList([1])));
+      final replacement = _FakeImageClient(
+        Future.value(Uint8List.fromList([3])),
+      );
+      final clients = [original, replacement];
+      final manager = ServerConnectionManager(
+        clientFactory: () => clients.removeAt(0),
+      );
+      await manager.connect(first);
+      final bytes = await manager.readRemoteImage(first.id, '/tmp/image.png');
+      expect(
+        await manager.readRemoteImage(first.id, ' /tmp/image.png '),
+        same(bytes),
+      );
+      expect(original.imageReads, 1);
+      original.imageResult = Future.value(Uint8List.fromList([2]));
+      expect(
+        await manager.readRemoteImage(
+          first.id,
+          '/tmp/image.png',
+          forceReload: true,
+        ),
+        [2],
+      );
+      expect(original.imageReads, 2);
+      final changed = first.copyWith(host: 'replacement.example');
+      await manager.connect(changed);
+      expect(await manager.readRemoteImage(changed.id, '/tmp/image.png'), [3]);
+      expect(replacement.imageReads, 1);
+      await manager.disconnect(changed.id);
+      await expectLater(
+        manager.readRemoteImage(changed.id, '/tmp/image.png'),
+        throwsStateError,
+      );
+      await manager.close();
+    },
+  );
+
+  test('identical image paths on two servers never share bytes', () async {
+    final a = _FakeImageClient(Future.value(Uint8List.fromList([1])));
+    final b = _FakeImageClient(Future.value(Uint8List.fromList([2])));
+    final manager = ServerConnectionManager(
+      profiledClientFactory: (p) => p.id == first.id ? a : b,
+    );
+    await manager.connect(first);
+    await manager.connect(first.copyWith(id: 'other'));
+    expect(await manager.readRemoteImage(first.id, '/same.png'), [1]);
+    expect(await manager.readRemoteImage('other', '/same.png'), [2]);
+    expect(await manager.readRemoteImage(first.id, '/same.png'), [1]);
+    expect(a.imageReads, 1);
+    expect(b.imageReads, 1);
+    manager.remove(first.id);
+    await expectLater(
+      manager.readRemoteImage(first.id, '/same.png'),
+      throwsStateError,
+    );
     await manager.close();
   });
 

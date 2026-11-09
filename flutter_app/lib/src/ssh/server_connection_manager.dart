@@ -5,6 +5,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:synchronized/synchronized.dart';
 
 import '../domain/models.dart';
+import 'remote_image_cache.dart';
 import 'ssh_server_client.dart';
 
 typedef RemoteServerClientFactory = RemoteServerClient Function();
@@ -25,6 +26,7 @@ class ServerConnectionManager {
   final Map<String, _ServerEntry> _entries = {};
   final Map<String, ConnectionState> _states = {};
   final Map<String, ServerMetrics> _serverMetrics = {};
+  final RemoteImageCache _imageCache = RemoteImageCache();
   final StreamController<Map<String, ConnectionState>> _stateController =
       StreamController<Map<String, ConnectionState>>.broadcast(sync: true);
   final StreamController<Map<String, ServerMetrics>> _serverMetricsController =
@@ -329,9 +331,13 @@ class ServerConnectionManager {
     String profileId,
     String path, {
     int maxBytes = maxRemoteImageBytes,
+    bool forceReload = false,
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     _ensureOpen();
+    if (maxBytes < 1 || maxBytes > maxRemoteImageBytes) {
+      throw ArgumentError.value(maxBytes, 'maxBytes');
+    }
     final entry = _entries[profileId];
     if (entry == null || !_isConnected(profileId, entry)) {
       throw StateError('服务器尚未连接');
@@ -342,9 +348,25 @@ class ServerConnectionManager {
     }
     final imageClient = client as RemoteServerImageClient;
     final generation = entry.generation;
-    final bytes = await imageClient.readRemoteImage(
-      path,
-      maxBytes: maxBytes,
+    final bytes = await _imageCache.read(
+      (
+        profileId: profileId,
+        connection: (entry, generation),
+        path: path.trim(),
+        maxBytes: maxBytes,
+      ),
+      forceReload: forceReload,
+      load: (reportProgress) async {
+        final bytes = await imageClient.readRemoteImage(
+          path.trim(),
+          maxBytes: maxBytes,
+          onProgress: reportProgress,
+        );
+        if (!_isConnectedRequest(profileId, entry, client, generation)) {
+          throw StateError('图片读取请求已失效');
+        }
+        return bytes;
+      },
       onProgress: onProgress == null
           ? null
           : (receivedBytes, totalBytes) {
@@ -568,6 +590,7 @@ class ServerConnectionManager {
   }
 
   void remove(String profileId) {
+    _imageCache.clearProfile(profileId);
     final entry = _entries.remove(profileId);
     entry?.generation++;
     entry?.metricsRequest = null;
@@ -604,6 +627,7 @@ class ServerConnectionManager {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _imageCache.clear();
     final entries = _entries.values.toList();
     _entries.clear();
     _states.clear();
@@ -688,6 +712,7 @@ class ServerConnectionManager {
   void _setState(String profileId, ConnectionState state) {
     if (_closed) return;
     if (state.phase != ConnectionPhase.connected) {
+      _imageCache.clearProfile(profileId);
       _entries[profileId]?.metricsRequest = null;
     }
     _states[profileId] = state;

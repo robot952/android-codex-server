@@ -2170,6 +2170,7 @@ void main() {
     final controller = _LayoutController(_MemoryStore(), manager);
     final exporter = _TrackingFileExporter();
     String? loadedImagePath;
+    final imageReloads = <bool>[];
     addTearDown(() async {
       await manager.close();
     });
@@ -2181,8 +2182,9 @@ void main() {
           theme: buildCodexTheme(),
           home: WorkScreen(
             fileExporter: exporter,
-            onLoadRemoteImage: (path, {onProgress}) async {
+            onLoadRemoteImage: (path, {onProgress, forceReload = false}) async {
               loadedImagePath = path;
+              imageReloads.add(forceReload);
               return base64Decode(
                 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
                 'QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -2248,6 +2250,11 @@ void main() {
     expect(resizedImage.height, 2048);
     expect(resizedImage.policy, ResizeImagePolicy.fit);
     expect(exporter.beginCalls, 0);
+    await tester.tap(find.byTooltip('重新加载图片'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(imageReloads, [false, true]);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
     await tester.tap(find.byTooltip('关闭图片'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -2274,7 +2281,7 @@ void main() {
         child: MaterialApp(
           theme: buildCodexTheme(),
           home: WorkScreen(
-            onLoadRemoteImage: (path, {onProgress}) {
+            onLoadRemoteImage: (path, {onProgress, forceReload = false}) {
               expect(path, imagePath);
               reportProgress = onProgress;
               return pending.future;
@@ -2364,7 +2371,7 @@ void main() {
         child: MaterialApp(
           theme: buildCodexTheme(),
           home: WorkScreen(
-            onLoadRemoteImage: (path, {onProgress}) {
+            onLoadRemoteImage: (path, {onProgress, forceReload = false}) {
               loadedPaths.add(path);
               final pending = Completer<Uint8List>();
               pendingLoads.add(pending);
