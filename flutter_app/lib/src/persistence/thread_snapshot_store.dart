@@ -395,6 +395,7 @@ int _snapshotWeight(ThreadSessionSnapshot snapshot, int limit) {
         entry.cwd.length +
         entry.output.length +
         entry.turnId.length +
+        entry.detailsItemId.length +
         entry.subAgentPath.length +
         entry.subAgentThreadId.length +
         entry.subAgentActivity.length;
@@ -570,6 +571,7 @@ Map<String, Object?> _snapshotJson(ThreadSessionSnapshot snapshot) => {
           'cwd': entry.cwd,
           'output': entry.output,
           'turnId': entry.turnId,
+          'detailsItemId': entry.detailsItemId,
           'subAgentPath': entry.subAgentPath,
           'subAgentThreadId': entry.subAgentThreadId,
           'subAgentActivity': entry.subAgentActivity,
@@ -661,6 +663,7 @@ ThreadSessionSnapshot _snapshotFromJson(Map<String, dynamic> value) {
             cwd: v['cwd'] as String,
             output: v['output'] as String,
             turnId: v['turnId'] as String,
+            detailsItemId: v['detailsItemId'] as String? ?? '',
             subAgentPath: v['subAgentPath'] as String,
             subAgentThreadId: v['subAgentThreadId'] as String,
             subAgentActivity: v['subAgentActivity'] as String,

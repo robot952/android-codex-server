@@ -32,6 +32,27 @@ class _ToolCardController extends AppController {
       timeline: entries,
     );
   }
+
+  int detailReads = 0;
+  bool failDetailRead = false;
+  @override
+  Future<void> loadTimelineEntryDetails(TimelineEntry entry) async {
+    detailReads++;
+    if (failDetailRead) throw StateError('fixture read failed');
+    state = state.copyWith(
+      timeline: [
+        for (final row in state.timeline)
+          if (row.id == entry.id)
+            row.copyWith(
+              detailsItemId: '',
+              output: 'Full command result',
+              text: 'Full tool result',
+            )
+          else
+            row,
+      ],
+    );
+  }
 }
 
 const _entry = TimelineEntry(
@@ -81,6 +102,49 @@ Future<_ToolCardController> _mount(
 }
 
 void main() {
+  testWidgets(
+    'projected command fetches details only on expansion and reuses them',
+    (tester) async {
+      final controller = await _mount(
+        tester,
+        entries: const [
+          TimelineEntry(
+            id: 'cmd',
+            turnId: 'turn',
+            kind: TimelineKind.command,
+            status: 'completed',
+            detailsItemId: 'cmd',
+          ),
+        ],
+      );
+      expect(controller.detailReads, 0);
+      await tester.tap(find.text('运行了命令'));
+      await tester.pumpAndSettle();
+      expect(controller.detailReads, 1);
+      expect(find.text('Full command result'), findsOneWidget);
+      await tester.tap(find.text('运行了命令'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('运行了命令'));
+      await tester.pumpAndSettle();
+      expect(controller.detailReads, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets('failed history details remain retryable', (tester) async {
+    final controller = await _mount(
+      tester,
+      entries: [_entry.copyWith(detailsItemId: _entry.id)],
+    );
+    controller.failDetailRead = true;
+    await tester.tap(_header(_entry.id));
+    await tester.pumpAndSettle();
+    expect(find.text('详情读取失败，点击重试'), findsOneWidget);
+    controller.failDetailRead = false;
+    await tester.tap(find.text('详情读取失败，点击重试'));
+    await tester.pumpAndSettle();
+    expect(find.text('Full tool result'), findsOneWidget);
+    expect(controller.detailReads, 2);
+  });
   for (final (rawStatus, label) in [
     ('running', '运行中'),
     ('completed', '完成'),

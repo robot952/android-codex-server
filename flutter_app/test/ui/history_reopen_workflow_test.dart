@@ -145,8 +145,9 @@ void main({bool device = false}) {
     await pumpSubAgentEvents(tester);
     expect(h.controller.state.loading, isFalse);
     expect(h.controller.state.olderTurnsLoading, isFalse);
-    // One cold first-page preview, then the existing single older-page read.
-    expect(peer.pageReads, 2);
+    // Cold open no longer downloads a duplicate preview. The legacy runtime
+    // still makes its existing single older-page read for a user-only tail.
+    expect(peer.pageReads, 1);
     expect(find.text('Earlier answer remains visible.'), findsOneWidget);
     expect(find.text('Latest question'), findsOneWidget);
 
@@ -167,7 +168,7 @@ void main({bool device = false}) {
       expect(find.text('Latest question'), findsOneWidget);
       expect(
         peer.pageReads,
-        2,
+        1,
         reason: 'cached context avoids another full history read',
       );
     }

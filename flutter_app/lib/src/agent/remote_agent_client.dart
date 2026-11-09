@@ -57,6 +57,20 @@ abstract interface class RemoteAgentThreadInspectionClient {
   Future<AgentSession> readThread(String threadId);
 }
 
+abstract interface class RemoteAgentHistoryDetailsClient {
+  Future<AgentHistoryDetails> readHistoryItem({
+    required String threadId,
+    required String turnId,
+    required String itemId,
+  });
+}
+
+class AgentHistoryDetails {
+  const AgentHistoryDetails(this.timeline, {this.notifications = const []});
+  final List<TimelineEntry> timeline;
+  final List<CodexRpcNotification> notifications;
+}
+
 /// Optional capability used to bind resume-time buffering to the concrete
 /// app-server generation without source-breaking lightweight test adapters.
 abstract interface class RemoteAgentGenerationClient {

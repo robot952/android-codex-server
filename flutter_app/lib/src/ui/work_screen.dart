@@ -3292,6 +3292,17 @@ class _TimelineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (entry.detailsItemId.isNotEmpty &&
+        (entry.kind == TimelineKind.agentMessage ||
+            entry.kind == TimelineKind.userMessage)) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (entry.text.isNotEmpty) Text(entry.text),
+          _HistoryDetailsLoader(entry: entry, automatic: false),
+        ],
+      );
+    }
     if (entry.kind == TimelineKind.userMessage) {
       return _UserMessageTimelineCard(
         entry: entry,
@@ -3798,7 +3809,9 @@ class _ToolTimelineCardState extends State<_ToolTimelineCard> {
             child: _expanded
                 ? Padding(
                     padding: const EdgeInsets.fromLTRB(11, 0, 11, 10),
-                    child: entry.text.trim().isEmpty
+                    child: entry.detailsItemId.isNotEmpty
+                        ? _HistoryDetailsLoader(entry: entry)
+                        : entry.text.trim().isEmpty
                         ? const Text(
                             '暂无工具详情',
                             style: TextStyle(color: codexMuted),
@@ -4240,40 +4253,108 @@ class _CommandTimelineCardState extends State<_CommandTimelineCard> {
             curve: Curves.easeOutCubic,
             alignment: Alignment.topCenter,
             child: _expanded
-                ? Column(
-                    children: [
-                      if (entry.command.isNotEmpty)
-                        _CommandOutputBlock(
-                          entry.command,
-                          onSelectionChanged: widget.onTextSelectionChanged,
-                        ),
-                      if (entry.output.isNotEmpty) ...[
-                        if (entry.command.isNotEmpty)
-                          const Divider(height: 1, color: _workBorder),
-                        _CommandOutputBlock(
-                          entry.output,
-                          onSelectionChanged: widget.onTextSelectionChanged,
-                        ),
-                      ],
-                      if (entry.command.isEmpty && entry.output.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(11, 8, 11, 10),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              '未提供命令内容',
-                              style: TextStyle(color: codexMuted),
-                            ),
-                          ),
-                        ),
-                    ],
-                  )
+                ? entry.detailsItemId.isNotEmpty
+                      ? _HistoryDetailsLoader(entry: entry)
+                      : Column(
+                          children: [
+                            if (entry.command.isNotEmpty)
+                              _CommandOutputBlock(
+                                entry.command,
+                                onSelectionChanged:
+                                    widget.onTextSelectionChanged,
+                              ),
+                            if (entry.output.isNotEmpty) ...[
+                              if (entry.command.isNotEmpty)
+                                const Divider(height: 1, color: _workBorder),
+                              _CommandOutputBlock(
+                                entry.output,
+                                onSelectionChanged:
+                                    widget.onTextSelectionChanged,
+                              ),
+                            ],
+                            if (entry.command.isEmpty && entry.output.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.fromLTRB(11, 8, 11, 10),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    '未提供命令内容',
+                                    style: TextStyle(color: codexMuted),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        )
                 : const SizedBox(width: double.infinity),
           ),
         ],
       ),
     );
   }
+}
+
+class _HistoryDetailsLoader extends ConsumerStatefulWidget {
+  const _HistoryDetailsLoader({required this.entry, this.automatic = true});
+  final TimelineEntry entry;
+  final bool automatic;
+
+  @override
+  ConsumerState<_HistoryDetailsLoader> createState() =>
+      _HistoryDetailsLoaderState();
+}
+
+class _HistoryDetailsLoaderState extends ConsumerState<_HistoryDetailsLoader> {
+  late bool _loading = widget.automatic;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.automatic) unawaited(Future<void>.microtask(_load));
+  }
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await ref
+          .read(appControllerProvider.notifier)
+          .loadTimelineEntryDetails(widget.entry);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error = '详情读取失败，点击重试';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(12),
+    child: _loading
+        ? const Row(
+            children: [
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 10),
+              Text('正在读取详情…'),
+            ],
+          )
+        : TextButton(onPressed: _load, child: Text(_error ?? '读取完整内容')),
+  );
 }
 
 class _CommandOutputBlock extends StatelessWidget {

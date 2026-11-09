@@ -16,6 +16,7 @@ import 'codex_protocol.dart';
 import 'provider_transport_notice.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
+import 'resume_notification_buffer.dart';
 
 /// The small part of an SSH exec session used by the JSONL adapter.
 ///
@@ -385,6 +386,7 @@ class CodexAgentClient
         RemoteAgentClient,
         RemoteAgentThreadPaginationClient,
         RemoteAgentThreadInspectionClient,
+        RemoteAgentHistoryDetailsClient,
         RemoteAgentTurnClient,
         RemoteAgentSteerClient,
         RemoteAgentThreadCreateClient,
@@ -470,6 +472,120 @@ class CodexAgentClient
   String? _modelProvider;
   final Map<String, int> _subAgentCreatedAtByThread = <String, int>{};
   final Map<String, ApprovalMode> _reusableThreads = {};
+  bool? _itemHistorySupported;
+  final Set<String> _unsupportedItemHistoryThreads = {};
+
+  Future<AgentSession?> _openItemHistory(
+    String threadId, {
+    bool readOnly = false,
+    bool externallyOwned = false,
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async {
+    if (kind != AgentKind.codex ||
+        _itemHistorySupported == false ||
+        _unsupportedItemHistoryThreads.contains(threadId)) {
+      return null;
+    }
+    final scope = _requireScope();
+    try {
+      final response =
+          await _startTiming(
+            readOnly ? 'agent_read_items' : 'agent_resume_items',
+            _connectedProfile,
+            threadId: threadId,
+            generation: scope.value,
+          ).run(
+            () => _request(
+              scope.request(
+                'codexRemote/history/open',
+                params: {
+                  'threadId': threadId,
+                  'readOnly': readOnly,
+                  if (!readOnly) 'approvalPolicy': approvalMode.approvalPolicy,
+                  if (!readOnly && _questionConfig != null)
+                    'config': _questionConfig,
+                },
+              ),
+              timeout: threadRequestTimeout,
+            ),
+          );
+      if (!scope.isCurrent) throw StateError('历史请求已失效');
+      final result = _sessionFromResponse(
+        response,
+        itemsView: 'items',
+        externallyOwned: externallyOwned,
+      );
+      _itemHistorySupported = true;
+      return result;
+    } on CodexRpcException catch (error) {
+      // Custom/durable/older runtimes can lack the projection relay. Never
+      // hide ownership failures or silently treat arbitrary read errors as an
+      // empty successful page.
+      if (error.code == -32096) return null;
+      final message = error.message.toLowerCase();
+      if ((error.code == -32601 && message.contains('thread/items/list')) ||
+          message.contains('item pagination is not supported')) {
+        if (scope.isCurrent) {
+          if (_unsupportedItemHistoryThreads.length >= 32) {
+            _unsupportedItemHistoryThreads.remove(
+              _unsupportedItemHistoryThreads.first,
+            );
+          }
+          _unsupportedItemHistoryThreads.add(threadId);
+        }
+        return null;
+      }
+      if (error.code != -32601) {
+        rethrow;
+      }
+      if (scope.isCurrent) _itemHistorySupported = false;
+      return null;
+    }
+  }
+
+  @override
+  Future<AgentHistoryDetails> readHistoryItem({
+    required String threadId,
+    required String turnId,
+    required String itemId,
+  }) async {
+    final scope = _requireScope();
+    final buffer = ResumeNotificationBuffer(
+      threadId: threadId,
+      generation: scope.value,
+    );
+    final subscription = events.listen((event) {
+      if (event is! RemoteAgentNotification) return;
+      final params = event.message.params;
+      final item = params['item'];
+      if (params['itemId'] == itemId || (item is Map && item['id'] == itemId)) {
+        buffer.offer(event.message);
+      }
+    });
+    try {
+      final response = await _request(
+        scope.request(
+          'codexRemote/history/item',
+          params: {'threadId': threadId, 'turnId': turnId, 'itemId': itemId},
+        ),
+        timeout: threadRequestTimeout,
+      );
+      if (!scope.isCurrent || buffer.overflowed) throw StateError('详情已变化，请重试');
+      final timeline = CodexPayloadParser.parseTurnsPage(
+        response.resultOrThrow(),
+      ).timeline;
+      return AgentHistoryDetails(
+        timeline,
+        notifications: buffer.drain(
+          timeline,
+          snapshotSequence: response.sequence,
+        ),
+      );
+    } finally {
+      await subscription.cancel();
+    }
+  }
+
   int _reuseRevision = 0;
 
   @override
@@ -703,7 +819,11 @@ class CodexAgentClient
           scope.initialize(clientVersion: clientVersion),
           timeout: requestTimeout,
         );
-        initialize.resultOrThrow();
+        final initialized = initialize.resultOrThrow();
+        _itemHistorySupported =
+            kind == AgentKind.codex &&
+            initialized is Map &&
+            initialized['codexRemoteHistoryVersion'] == 1;
         await _write(scope.initialized().encodeLine());
       });
       _connected = true;
@@ -799,6 +919,36 @@ class CodexAgentClient
     final scope = _requireScope();
     _reusableThreads.remove(threadId);
     final reuseRevision = _reuseRevision;
+    try {
+      final projected = await _openItemHistory(
+        threadId,
+        approvalMode: approvalMode,
+      );
+      if (projected != null) {
+        if (scope.isCurrent &&
+            isConnected &&
+            reuseRevision == _reuseRevision &&
+            projected.thread.id == threadId &&
+            !projected.thread.isExternallyOwned) {
+          if (_reusableThreads.length >= 32) {
+            _reusableThreads.remove(_reusableThreads.keys.first);
+          }
+          _reusableThreads[threadId] = approvalMode;
+        }
+        return projected;
+      }
+    } on CodexRpcException catch (error) {
+      if (!isCodexThreadOwnershipError(error, threadId: threadId)) rethrow;
+      try {
+        return await _readThread(threadId, externallyOwned: true);
+      } catch (readError) {
+        throw CodexThreadOwnedException(
+          threadId: threadId,
+          ownershipError: error,
+          readError: readError,
+        );
+      }
+    }
     final attempts = <({String itemsView, int limit})>[
       // A turn can contain many tool calls. Fetch only the newest complete
       // turn for first paint; the returned cursor keeps older turns available.
@@ -959,6 +1109,12 @@ class CodexAgentClient
     if (threadId.trim().isEmpty) {
       throw ArgumentError.value(threadId, 'threadId');
     }
+    final projected = await _openItemHistory(
+      threadId,
+      readOnly: true,
+      externallyOwned: externallyOwned,
+    );
+    if (projected != null) return projected;
     // Read metadata and the latest bounded page. Loading a child must neither
     // resume its runtime nor download thousands of inherited parent turns.
     final thread =
@@ -1087,6 +1243,32 @@ class CodexAgentClient
     int? subAgentCreatedAt,
   }) async {
     final scope = _requireScope();
+    if (cursor.startsWith('mobile-items-v1:')) {
+      final response = await _request(
+        scope.request(
+          'codexRemote/history/page',
+          params: {'threadId': threadId, 'cursor': cursor},
+        ),
+        timeout: threadRequestTimeout,
+      );
+      if (!scope.isCurrent) throw StateError('历史请求已失效');
+      final page = CodexPayloadParser.parseTurnsPage(
+        response.resultOrThrow(),
+        subAgentCreatedAt:
+            subAgentCreatedAt ?? _subAgentCreatedAtByThread[threadId],
+        subAgentThreadId:
+            subAgentCreatedAt != null ||
+                _subAgentCreatedAtByThread.containsKey(threadId)
+            ? threadId
+            : null,
+      );
+      return AgentTurnsPage(
+        timeline: page.timeline,
+        nextCursor: _nonEmpty(page.nextCursor),
+        turnIds: page.turnIds,
+        itemsView: 'items',
+      );
+    }
     final attempts = <({String itemsView, int limit})>[
       (itemsView: 'full', limit: 4),
       (itemsView: 'full', limit: 1),
@@ -1424,6 +1606,8 @@ class CodexAgentClient
     _connectedProfile = null;
     _modelProvider = null;
     _subAgentCreatedAtByThread.clear();
+    _itemHistorySupported = null;
+    _unsupportedItemHistoryThreads.clear();
     _protocol.invalidateGeneration();
     _connected = false;
     _scope = null;

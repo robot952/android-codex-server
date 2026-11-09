@@ -522,6 +522,8 @@ abstract class TimelineEntry with _$TimelineEntry {
     @Default(<FileChange>[]) List<FileChange> changes,
     @Default(<MessageAttachment>[]) List<MessageAttachment> attachments,
     @Default('') String turnId,
+    // Native item identity for a server-projected, lazily loaded history row.
+    @Default('') String detailsItemId,
     @Default('') String subAgentPath,
     @Default('') String subAgentThreadId,
     @Default('') String subAgentActivity,

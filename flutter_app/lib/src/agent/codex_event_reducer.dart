@@ -106,6 +106,18 @@ AppUiState reduceCodexNotification(
     return next;
   }
 
+  if (appliesToActive &&
+      (method.endsWith('/delta') ||
+          method.endsWith('Delta') ||
+          method.endsWith('PartAdded')) &&
+      state.timeline.any(
+        (entry) =>
+            entry.detailsItemId.isNotEmpty &&
+            entry.detailsItemId == params['itemId'] &&
+            entry.turnId == _turnId(params),
+      )) {
+    return state;
+  }
   switch (method) {
     case 'turn/started':
       final turn = _map(params['turn']);
@@ -284,7 +296,17 @@ AppUiState reduceCodexNotification(
       }
       if (itemType == 'collabAgentToolCall') {
         final turnId = _turnId(params);
-        var timeline = _applySubAgentStates(state.timeline, item, turnId);
+        var timeline = _applySubAgentStates(
+          state.timeline
+              .where(
+                (entry) =>
+                    !(entry.detailsItemId == item['id'] &&
+                        entry.turnId == turnId),
+              )
+              .toList(),
+          item,
+          turnId,
+        );
         final entries = CodexPayloadParser.parseItems(item, turnId: turnId);
         // Once creation resolves, replace its unconfirmed placeholder.
         if (entries.any((entry) => entry.subAgentThreadId.isNotEmpty)) {
@@ -397,6 +419,9 @@ AppUiState reduceCodexNotification(
         kind: TimelineKind.command,
         turnId: turn,
       );
+      // Projected history has no output prefix. Appending a delta would make
+      // a partial body look complete; fetch it on expansion or item/completed.
+      if (existing?.detailsItemId.isNotEmpty == true) return state;
       final entry =
           (existing ??
                   TimelineEntry(
@@ -620,6 +645,14 @@ List<TimelineEntry> _upsertTimeline(
   );
   final result = List<TimelineEntry>.of(current);
   if (index == null) {
+    final projectedIndex = result.indexWhere(
+      (entry) =>
+          entry.detailsItemId == incoming.id && entry.turnId == incoming.turnId,
+    );
+    if (projectedIndex >= 0) {
+      result[projectedIndex] = incoming;
+      return List.unmodifiable(result);
+    }
     // sendMessage() adds a local user row before the app-server has assigned an
     // item id. The live `item/started`/`item/completed` echo is authoritative;
     // fold it into that row instead of rendering the same prompt twice.

@@ -445,6 +445,26 @@ class AgentConnectionManager {
     );
   }
 
+  Future<AgentHistoryDetails> readHistoryItem(
+    AgentConnectionKey key, {
+    required String threadId,
+    required String turnId,
+    required String itemId,
+  }) async {
+    final entry = _requireConnected(key);
+    final generation = entry.generation;
+    final client = entry.client;
+    if (client is! RemoteAgentHistoryDetailsClient) {
+      throw UnsupportedError('当前连接不支持读取详情');
+    }
+    final result = await (client as RemoteAgentHistoryDetailsClient)
+        .readHistoryItem(threadId: threadId, turnId: turnId, itemId: itemId);
+    if (!_isCurrent(key, entry) || entry.generation != generation) {
+      throw StateError('详情请求已失效');
+    }
+    return result;
+  }
+
   Future<AgentTurnsPage> loadOlderTurns(
     AgentConnectionKey key, {
     required String threadId,

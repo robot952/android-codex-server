@@ -155,6 +155,14 @@ class _FakeCodexSession implements CodexSession, RemoteServerProcessSession {
   int flushCount = 0;
   bool terminated = false;
 
+  void notify(String method, Map<String, Object?> params) {
+    _stdout.add(
+      Uint8List.fromList(
+        utf8.encode('${jsonEncode({'method': method, 'params': params})}\n'),
+      ),
+    );
+  }
+
   @override
   Stream<Uint8List> get stdout => _stdout.stream;
 
@@ -275,6 +283,292 @@ class _FakeSshSocket implements SSHSocket {
 }
 
 void main() {
+  test(
+    'item history capability uses one projected open and metadata-only warm verification',
+    () async {
+      final session = _FakeCodexSession(
+        results: {
+          'initialize': {'codexRemoteHistoryVersion': 1},
+          'codexRemote/history/open': {
+            'thread': {
+              'id': 'root',
+              'updatedAt': 7,
+              'status': {'type': 'idle'},
+            },
+            'initialTurnsPage': {
+              'data': [
+                {
+                  'id': 'turn',
+                  'status': 'completed',
+                  'items': [
+                    {
+                      'id': 'command',
+                      'type': 'commandExecution',
+                      'status': 'completed',
+                      'codexRemoteDetailsItemId': 'command',
+                    },
+                  ],
+                },
+              ],
+              'nextCursor': 'mobile-items-v1:fixture',
+            },
+          },
+          'thread/resume': {
+            'thread': {
+              'id': 'root',
+              'updatedAt': 7,
+              'status': {'type': 'idle'},
+            },
+          },
+          'codexRemote/history/page': {
+            'data': [
+              {
+                'id': 'turn',
+                'items': [
+                  {
+                    'id': 'before',
+                    'type': 'agentMessage',
+                    'text': 'older in same turn',
+                  },
+                ],
+              },
+            ],
+          },
+          'codexRemote/history/item': {
+            'data': [
+              {
+                'id': 'turn',
+                'items': [
+                  {
+                    'id': 'command',
+                    'type': 'commandExecution',
+                    'status': 'completed',
+                    'aggregatedOutput': 'complete body',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      final opened = await client.resumeThread('root');
+      expect(opened.itemsView, 'items');
+      expect(opened.timeline.single.detailsItemId, 'command');
+      expect(
+        client.canReuseThread('root', ApprovalMode.requestApproval),
+        isTrue,
+      );
+      final cached = await client.resumeCachedThread(opened);
+      expect(cached.timeline, opened.timeline);
+      expect(cached.nextTurnsCursor, opened.nextTurnsCursor);
+      final older = await client.loadOlderTurns(
+        threadId: 'root',
+        cursor: opened.nextTurnsCursor!,
+      );
+      expect(older.timeline.single.id, 'before');
+      final detail = await client.readHistoryItem(
+        threadId: 'root',
+        turnId: 'turn',
+        itemId: 'command',
+      );
+      expect(detail.timeline.single.output, 'complete body');
+      expect(detail.timeline.single.detailsItemId, isEmpty);
+      final methods = session.writes
+          .map(jsonDecode)
+          .map((r) => r['method'])
+          .toList();
+      expect(
+        methods.where((m) => m == 'codexRemote/history/open'),
+        hasLength(1),
+      );
+      expect(methods, isNot(contains('thread/read')));
+      expect(methods, isNot(contains('thread/turns/list')));
+      expect(
+        session.writes
+            .map(jsonDecode)
+            .singleWhere(
+              (r) => r['method'] == 'thread/resume',
+            )['params']['initialTurnsPage'],
+        isNull,
+      );
+    },
+  );
+
+  test('advertised item history falls back for unsupported methods', () async {
+    final session = _FakeCodexSession(
+      replyFor: (request) {
+        if (request['method'] == 'initialize') {
+          return {
+            'result': {'codexRemoteHistoryVersion': 1},
+          };
+        }
+        if (request['method'] == 'codexRemote/history/open') {
+          return {
+            'error': {'code': -32601, 'message': 'fixture error'},
+          };
+        }
+        return {
+          'result': {
+            'thread': {'id': 'root'},
+          },
+        };
+      },
+    );
+    final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    addTearDown(client.close);
+    await client.connect(
+      const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+      _FakeCodexHost(),
+    );
+    expect((await client.resumeThread('root')).itemsView, 'full');
+    await client.resumeThread('root');
+    expect(
+      session.writes
+          .map(jsonDecode)
+          .where((r) => r['method'] == 'codexRemote/history/open'),
+      hasLength(1),
+    );
+  });
+  test('legacy item fallback is limited to its own thread', () async {
+    final session = _FakeCodexSession(
+      replyFor: (request) {
+        if (request['method'] == 'initialize') {
+          return {
+            'result': {'codexRemoteHistoryVersion': 1},
+          };
+        }
+        final id = (request['params'] as Map?)?['threadId'];
+        if (request['method'] == 'codexRemote/history/open' && id == 'legacy') {
+          return {
+            'error': {
+              'code': -32601,
+              'message': 'thread/items/list is not supported yet',
+            },
+          };
+        }
+        return {
+          'result': {
+            'thread': {'id': id ?? 'root'},
+          },
+        };
+      },
+    );
+    final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+    addTearDown(client.close);
+    await client.connect(
+      const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+      _FakeCodexHost(),
+    );
+    expect((await client.resumeThread('legacy')).itemsView, 'full');
+    expect((await client.resumeThread('legacy')).itemsView, 'full');
+    expect((await client.resumeThread('paginated')).itemsView, 'items');
+    expect(
+      session.writes
+          .map(jsonDecode)
+          .where((r) => r['method'] == 'codexRemote/history/open'),
+      hasLength(2),
+    );
+  });
+
+  test(
+    'item history preserves genuine errors instead of issuing a full read',
+    () async {
+      final session = _FakeCodexSession(
+        replyFor: (request) => switch (request['method']) {
+          'initialize' => {
+            'result': {'codexRemoteHistoryVersion': 1},
+          },
+          'codexRemote/history/open' => {
+            'error': {'code': -32000, 'message': 'fixture unavailable'},
+          },
+          _ => {'result': <String, Object?>{}},
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await expectLater(
+        client.resumeThread('root'),
+        throwsA(isA<CodexRpcException>()),
+      );
+      expect(
+        session.writes.map(jsonDecode).map((r) => r['method']),
+        isNot(contains('thread/resume')),
+      );
+    },
+  );
+
+  for (final includedInSnapshot in [true, false]) {
+    test(
+      'detail read retains concurrent output without duplication (included=$includedInSnapshot)',
+      () async {
+        late _FakeCodexSession session;
+        session = _FakeCodexSession(
+          replyFor: (request) {
+            if (request['method'] != 'codexRemote/history/item') {
+              return {'result': <String, Object?>{}};
+            }
+            for (final thread in ['unrelated', 'root']) {
+              session.notify('item/commandExecution/outputDelta', {
+                'threadId': thread,
+                'turnId': 'turn',
+                'itemId': 'command',
+                'delta': 'new',
+              });
+            }
+            return {
+              'result': {
+                'data': [
+                  {
+                    'id': 'turn',
+                    'items': [
+                      {
+                        'id': 'command',
+                        'type': 'commandExecution',
+                        'status': 'inProgress',
+                        'aggregatedOutput': includedInSnapshot
+                            ? 'oldnew'
+                            : 'old',
+                      },
+                    ],
+                  },
+                ],
+              },
+            };
+          },
+        );
+        final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+        addTearDown(client.close);
+        await client.connect(
+          const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+          _FakeCodexHost(),
+        );
+        final result = await client.readHistoryItem(
+          threadId: 'root',
+          turnId: 'turn',
+          itemId: 'command',
+        );
+        final combined =
+            result.timeline.single.output +
+            result.notifications.map((n) => n.params['delta']).join();
+        expect(combined, 'oldnew');
+        expect(
+          result.notifications.every((n) => n.params['threadId'] == 'root'),
+          isTrue,
+        );
+      },
+    );
+  }
+
   for (final kind in AgentKind.values) {
     test(
       'thread pages remain bounded and preserve cursor/search ($kind)',

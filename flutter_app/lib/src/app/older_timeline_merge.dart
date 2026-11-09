@@ -6,7 +6,19 @@ List<TimelineEntry> mergeOlderTimelinePage({
   required List<TimelineEntry> current,
 }) {
   final currentRows = _uniqueRows(current);
-  final olderRows = _uniqueRows(older);
+  final currentItems = {
+    for (final row in currentRows) (row.turnId, row.id): row,
+  };
+  final olderRows = _uniqueRows(
+    older.map((entry) {
+      final current = currentItems[(entry.turnId, entry.id)];
+      return current != null &&
+              (entry.detailsItemId.isNotEmpty ||
+                  current.detailsItemId.isNotEmpty)
+          ? current
+          : entry;
+    }).toList(),
+  );
   final positions = <(String, TimelineKind, String), int>{};
   final turnBounds = <Object, ({int start, int end})>{};
   for (var index = 0; index < currentRows.length; index += 1) {

@@ -6,6 +6,83 @@ const { providerConfigOverrides } = require("../flutter_app/assets/codex-history
 const { createHistoryRpcBridge } = require("../flutter_app/assets/codex-history-relay.cjs");
 global.providerConfigOverrides = providerConfigOverrides;
 
+test("mobile item pages bound a single huge turn, retain every cursor, and hydrate exact items", async () => {
+  const records = Array.from({ length: 57 }, (_, index) => ({
+    turnId: index < 3 ? "older-turn" : "one-long-turn",
+    item: { type: "commandExecution", id: `cmd-${index}`, status: "completed",
+      command: `echo ${index}`, aggregatedOutput: "large output 中文\n".repeat(10000) },
+  }));
+  records.at(-1).item.aggregatedOutput = "x".repeat(9 * 1024 * 1024);
+  const original = JSON.stringify(records);
+  const visible = [];
+  const requests = [];
+  let bridge;
+  bridge = createHistoryRpcBridge({
+    proxy: null,
+    output: chunk => visible.push(JSON.parse(chunk)),
+    send(chunk) {
+      const request = JSON.parse(chunk);
+      requests.push(request);
+      let result;
+      if (request.method === "thread/read") result = { thread: { id: "fixture", status: { type: "idle" } } };
+      if (request.method === "thread/turns/list") result = { data: [{ id: "one-long-turn", status: "completed", items: [] }] };
+      if (request.method === "thread/items/list") {
+        const p = request.params;
+        const rows = records.filter(row => !p.turnId || row.turnId === p.turnId);
+        const desc = p.sortDirection === "desc";
+        let offset = p.cursor == null ? (desc ? rows.length - 1 : 0)
+          : typeof p.cursor === "string" ? Number(p.cursor)
+          : rows.findIndex(row => row.item.id === p.cursor.itemId) + (desc ? -1 : 1);
+        const data = [];
+        while (offset >= 0 && offset < rows.length && data.length < p.limit) {
+          data.push(rows[offset]); offset += desc ? -1 : 1;
+        }
+        result = { data, nextCursor: offset >= 0 && offset < rows.length ? String(offset) : null,
+          backwardsCursor: data.length ? String(rows.indexOf(data[0]) + (desc ? 1 : -1)) : null };
+      }
+      queueMicrotask(() => bridge.writeOutput(JSON.stringify({ id: request.id, result }) + "\n"));
+    },
+  });
+  let id = 0;
+  async function rpc(method, params) {
+    const requestId = ++id;
+    bridge.writeInput(JSON.stringify({ id: requestId, method, params }) + "\n");
+    for (let spin = 0; spin < 100; spin++) {
+      const message = visible.find(value => value.id === requestId);
+      if (message) { assert(!message.error, JSON.stringify(message.error)); return message.result; }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    throw new Error("fixture response missing");
+  }
+  try {
+    const first = await rpc("codexRemote/history/open", { threadId: "fixture", readOnly: true });
+    assert(Buffer.byteLength(JSON.stringify(first)) < 10 * 1024);
+    assert(requests.every(r => !["thread/resume", "turn/start", "thread/inject_items"].includes(r.method)));
+    const ids = [];
+    let page = first.initialTurnsPage;
+    do {
+      for (const turn of page.data) ids.push(...turn.items.toReversed().map(item => item.id));
+      if (!page.nextCursor) break;
+      page = await rpc("codexRemote/history/page", { threadId: "fixture", cursor: page.nextCursor });
+      assert(Buffer.byteLength(JSON.stringify(page)) < 96 * 1024);
+    } while (true);
+    assert.deepEqual(ids, records.toReversed().map(row => row.item.id));
+    for (const index of [0, 3, 24, 56]) {
+      const row = records[index];
+      const detail = await rpc("codexRemote/history/item", { threadId: "fixture", turnId: row.turnId, itemId: row.item.id });
+      if (index === 56) {
+        const item = detail.data[0].items[0];
+        assert.equal(item.id, row.item.id);
+        assert.equal(item.command, row.item.command);
+        assert.equal(item.aggregatedOutput.length, 512 * 1024);
+        assert(item.aggregatedOutput.endsWith("完整输出仍保存在服务器]"));
+        assert(Buffer.byteLength(JSON.stringify(detail)) < 1024 * 1024);
+      } else assert.deepEqual(detail.data[0].items[0], row.item);
+    }
+    assert.equal(JSON.stringify(records), original, "UI projection must not mutate native history");
+  } finally { bridge.close(); }
+});
+
 function fixture({ config, respond, timeoutMs } = {}) {
   const sent = [];
   const visible = [];

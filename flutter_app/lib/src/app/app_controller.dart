@@ -3588,6 +3588,53 @@ class AppController extends StateNotifier<AppUiState> {
 
   Future<void> loadOlderTurns() => _loadOlderTurns();
 
+  Future<void> loadTimelineEntryDetails(TimelineEntry entry) async {
+    final profileId = state.selectedProfileId;
+    final threadId = state.activeThread?.id;
+    if (profileId == null || threadId == null || entry.detailsItemId.isEmpty) {
+      return;
+    }
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    final navigation = _sessionNavigationGenerations[key] ?? 0;
+    final connection = _agents.generation(key);
+    final remote = _agents.remoteGeneration(key);
+    final details = await _agents.readHistoryItem(
+      key,
+      threadId: threadId,
+      turnId: entry.turnId,
+      itemId: entry.detailsItemId,
+    );
+    if (!mounted ||
+        !_isCurrentSessionNavigation(key, navigation, threadId) ||
+        _agents.generation(key) != connection ||
+        _agents.remoteGeneration(key) != remote) {
+      return;
+    }
+    final index = state.timeline.indexWhere(
+      (candidate) =>
+          candidate.id == entry.id &&
+          candidate.turnId == entry.turnId &&
+          candidate.detailsItemId == entry.detailsItemId,
+    );
+    // A live item/completed may have supplied newer details while reading.
+    if (index < 0) return;
+    if (details.timeline.isEmpty) throw StateError('未找到这条记录的详情，请重新进入对话');
+    state = state.copyWith(
+      timeline: List.unmodifiable([
+        ...state.timeline.take(index),
+        ...details.timeline,
+        ...state.timeline.skip(index + 1),
+      ]),
+    );
+    for (final notification in details.notifications) {
+      state = reduceCodexNotification(state, notification);
+    }
+    _cacheActiveThreadSession(key, expectedThreadId: threadId);
+  }
+
   Future<void> _loadOlderTurns({bool automatic = false}) async {
     final profileId = state.selectedProfileId;
     final thread = state.activeThread;
@@ -5494,27 +5541,8 @@ class AppController extends StateNotifier<AppUiState> {
                 ? cache.get(thread.id)
                 : cache.getStale(thread.id))
           : null;
-      if (key.agent == AgentKind.codex &&
-          targetScreen == AppScreen.work &&
-          state.timeline.isEmpty &&
-          !isSubAgentThreadSource(thread.source) &&
-          !_subAgentThreadRegistry.contains(key, thread.id)) {
-        // Reading the latest page does not reconstruct the native runtime.
-        // Paint it before a cold resume of a large rollout; it grants no input
-        // authority. Bound the extra wait when the peer cannot serve a preview.
-        await _hydrateRemoteThreadPreview(
-          key,
-          thread,
-          navigationGeneration,
-        ).timeout(const Duration(seconds: 2), onTimeout: () {});
-        if (!_isCurrentSessionNavigation(
-          key,
-          navigationGeneration,
-          thread.id,
-        )) {
-          return;
-        }
-      }
+      // Disk/live previews are already visible. Resume supplies a bounded tail
+      // directly; a separate remote preview would download the same page twice.
       final session = await _resumeExpectedThread(
         key,
         thread.id,
@@ -5644,7 +5672,9 @@ class AppController extends StateNotifier<AppUiState> {
         );
         _liveThreadSnapshots.remove(snapshotKey);
         if (!resolvedSession.thread.isExternallyOwned &&
-            (session.itemsView == 'full' || session.itemsView == 'cached') &&
+            (session.itemsView == 'full' ||
+                session.itemsView == 'items' ||
+                session.itemsView == 'cached') &&
             cache.getStale(thread.id) != null &&
             resumeBuffer?.overflowed != true) {
           _liveThreadSnapshots[snapshotKey] = (
@@ -5930,56 +5960,6 @@ class AppController extends StateNotifier<AppUiState> {
     _liveThreadSnapshots.remove(
       threadPreferenceKey(key.profileId, key.agent, thread.id),
     );
-  }
-
-  Future<void> _hydrateRemoteThreadPreview(
-    AgentConnectionKey key,
-    AgentThread thread,
-    int generation,
-  ) async {
-    final timing = _startTiming(
-      'thread_remote_preview',
-      key,
-      threadId: thread.id,
-      generation: generation,
-    );
-    final connectionGeneration = _agents.generation(key);
-    final remoteGeneration = _agents.remoteGeneration(key);
-    try {
-      final preview = await _agents.readThread(
-        key,
-        thread.id,
-        externallyOwned: false,
-      );
-      if (!mounted ||
-          !_isCurrentSessionNavigation(key, generation, thread.id) ||
-          _agents.generation(key) != connectionGeneration ||
-          _agents.remoteGeneration(key) != remoteGeneration ||
-          !_isHostAndAgentConnected(key) ||
-          !state.loading ||
-          state.timeline.isNotEmpty ||
-          preview.thread.id != thread.id ||
-          preview.thread.modelProvider != thread.modelProvider) {
-        timing.finish(status: TimingStatus.stale);
-        return;
-      }
-      final timeline = _isolateSubAgentTimeline(
-        key,
-        preview.thread,
-        preview.timeline,
-      );
-      // Only content is provisional. The existing resume remains responsible
-      // for writer ownership, status, approvals, subscription and input.
-      state = state.copyWith(
-        timeline: timeline,
-        olderTurnsCursor: preview.nextTurnsCursor,
-        tokenUsage: preview.tokenUsage ?? state.tokenUsage,
-      );
-      timing.finish(count: timeline.length);
-    } catch (error) {
-      // A preview is optional; the normal resume provides the real error path.
-      timing.fail(error);
-    }
   }
 
   Future<void> _hydrateStoredThread(
@@ -8961,6 +8941,49 @@ ResumedTimelineMerge reconcileResumedTimeline({
   final normalizedRefreshedTimeline = _normalizeResumedTimeline(
     refreshedTimeline,
   );
+  if (refreshedItemsView == 'items') {
+    // A page can begin halfway through a turn. Only an item overlap proves
+    // which cached prefix is contiguous; a shared turn ID is not enough.
+    final cached = normalizedCachedTimeline ?? const <TimelineEntry>[];
+    final first = normalizedRefreshedTimeline.firstOrNull;
+    final overlap = first == null
+        ? -1
+        : cached.indexWhere(
+            (entry) => entry.id == first.id && entry.turnId == first.turnId,
+          );
+    final preservePrefix =
+        overlap >= 0 &&
+        refreshedNextCursor != null &&
+        (cachedNextCursor == null ||
+            cachedNextCursor.startsWith('mobile-items-v1:'));
+    final details = normalizedRefreshedTimeline.map((entry) {
+      final previous = cached.firstWhereOrNull(
+        (candidate) =>
+            candidate.id == entry.id && candidate.turnId == entry.turnId,
+      );
+      if (entry.detailsItemId.isNotEmpty &&
+          previous != null &&
+          previous.detailsItemId.isEmpty &&
+          previous.status == entry.status &&
+          const {
+            'completed',
+            'failed',
+            'interrupted',
+            'cancelled',
+            'canceled',
+          }.contains(entry.status)) {
+        return previous;
+      }
+      return entry;
+    });
+    return ResumedTimelineMerge(
+      timeline: List.unmodifiable([
+        if (preservePrefix) ...cached.take(overlap),
+        ...details,
+      ]),
+      nextCursor: preservePrefix ? cachedNextCursor : refreshedNextCursor,
+    );
+  }
   final refreshedTurns =
       (refreshedTurnIds ??
               normalizedRefreshedTimeline
@@ -8988,8 +9011,14 @@ ResumedTimelineMerge reconcileResumedTimeline({
       cachedThreadUpdatedAt != null &&
       refreshedThreadUpdatedAt != null &&
       cachedThreadUpdatedAt == refreshedThreadUpdatedAt;
+  final cursorFamilyMatches =
+      cachedNextCursor == null ||
+      refreshedNextCursor == null ||
+      cachedNextCursor.startsWith('mobile-items-v1:') ==
+          refreshedNextCursor.startsWith('mobile-items-v1:');
   final cachedBoundaryUsable =
-      cachedNextCursor != null || refreshedNextCursor == null;
+      (cachedNextCursor != null || refreshedNextCursor == null) &&
+      cursorFamilyMatches;
   final hasVerifiedOverlap =
       overlapIndex >= 0 && revisionUnchanged && cachedBoundaryUsable;
   // updatedAt changes during ordinary progress, not just history mutations.
@@ -9029,7 +9058,7 @@ ResumedTimelineMerge reconcileResumedTimeline({
   }
   final retainCursor =
       hasVerifiedOverlap ||
-      (hasPagedOverlap && revisionUnchanged) ||
+      (hasPagedOverlap && revisionUnchanged && cursorFamilyMatches) ||
       unchangedSummary ||
       unchangedNotLoaded ||
       unchangedEmptyPage;

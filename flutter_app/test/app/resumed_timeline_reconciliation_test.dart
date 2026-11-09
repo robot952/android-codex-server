@@ -4,6 +4,50 @@ import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'item tail preserves same-turn prefix and detail cache but discards stale suffix',
+    () {
+      TimelineEntry row(String id, {bool deferred = false}) => TimelineEntry(
+        id: id,
+        turnId: 'long-turn',
+        kind: TimelineKind.command,
+        status: 'completed',
+        detailsItemId: deferred ? id : '',
+        output: deferred ? '' : 'body-$id',
+      );
+      final result = reconcileResumedTimeline(
+        cachedTimeline: [row('a'), row('b'), row('c'), row('rolled-back')],
+        cachedNextCursor: 'mobile-items-v1:older',
+        refreshedTimeline: [row('c', deferred: true), row('d', deferred: true)],
+        refreshedNextCursor: 'mobile-items-v1:before-c',
+        refreshedItemsView: 'items',
+        cachedThreadUpdatedAt: 1,
+        refreshedThreadUpdatedAt: 2,
+      );
+      expect(result.timeline.map((e) => e.id), ['a', 'b', 'c', 'd']);
+      expect(result.timeline[2].output, 'body-c');
+      expect(result.timeline[2].detailsItemId, isEmpty);
+      expect(result.nextCursor, 'mobile-items-v1:older');
+    },
+  );
+  test(
+    'same turn alone never bridges a gap after a disconnected background interval',
+    () {
+      final result = reconcileResumedTimeline(
+        cachedTimeline: const [
+          TimelineEntry(id: 'old', turnId: 'turn', kind: TimelineKind.command),
+        ],
+        cachedNextCursor: 'mobile-items-v1:older',
+        refreshedTimeline: const [
+          TimelineEntry(id: 'new', turnId: 'turn', kind: TimelineKind.command),
+        ],
+        refreshedNextCursor: 'mobile-items-v1:gap',
+        refreshedItemsView: 'items',
+      );
+      expect(result.timeline.single.id, 'new');
+      expect(result.nextCursor, 'mobile-items-v1:gap');
+    },
+  );
   group('reconcileResumedTimeline', () {
     test('restored user stays before cached work across repeated reopen', () {
       const user = TimelineEntry(

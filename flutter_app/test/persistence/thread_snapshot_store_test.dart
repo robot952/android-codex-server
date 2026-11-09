@@ -90,6 +90,7 @@ void main() {
                 cwd: '/work',
                 output: 'result',
                 turnId: 'turn',
+                detailsItemId: 'native-item-${kind.name}',
                 subAgentPath: '/root/child',
                 subAgentThreadId: 'nested',
                 subAgentActivity: 'spawn',

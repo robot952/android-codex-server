@@ -55,7 +55,7 @@ const _threadB = AgentThread(
 
 void main() {
   test(
-    'cold open paints a remote preview while native resume is pending',
+    'cold open requests history once without a duplicate remote preview',
     () async {
       final diagnostics = _TimingLogger();
       final agent = _ResumeAgent(threads: const [_threadA]);
@@ -74,13 +74,10 @@ void main() {
       final pending = agent.gateNextResume(_threadA.id);
       harness.controller.openThread(_threadA);
       await _waitUntil(() => agent.resumeCalls.isNotEmpty);
-      expect(harness.controller.state.timeline.single.text, 'Recent answer');
+      expect(harness.controller.state.timeline, isEmpty);
+      expect(agent.readCalls, isEmpty);
       expect(harness.controller.state.loading, isTrue);
-      expect(harness.controller.state.olderTurnsCursor, 'older');
-      expect(
-        diagnostics.finished('thread_remote_preview').single,
-        contains('status=success'),
-      );
+      expect(diagnostics.finished('thread_remote_preview'), isEmpty);
       pending.complete(
         const AgentSession(
           thread: _threadA,
@@ -134,38 +131,36 @@ void main() {
     expect(harness.controller.state.isThreadReadOnly, isTrue);
   });
 
-  test(
-    'late remote preview never overwrites a newer route',
-    () async {
-      final agent = _PreviewGateAgent(threads: const [_threadA, _threadB]);
-      final harness = await _createHarness(agent);
-      harness.controller.openThread(_threadA);
-      await _waitUntil(() => agent.readCalls.contains(_threadA.id));
-      harness.controller.backToThreadList();
-      harness.controller.openThread(_threadB);
-      await _waitUntil(
-        () =>
-            harness.controller.state.activeThread?.id == _threadB.id &&
-            !harness.controller.state.loading,
-      );
-      agent.preview.complete(
-        const AgentSession(
-          thread: _threadA,
-          timeline: [
-            TimelineEntry(
-              id: 'stale',
-              kind: TimelineKind.agentMessage,
-              text: 'Stale preview',
-            ),
-          ],
-        ),
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(harness.controller.state.activeThread?.id, _threadB.id);
-      expect(harness.controller.state.timeline, isEmpty);
-      expect(agent.resumeCalls, isNot(contains(_threadA.id)));
-    },
-  );
+  test('late cold resume never overwrites a newer route', () async {
+    final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
+    final harness = await _createHarness(agent);
+    final pending = agent.gateNextResume(_threadA.id);
+    harness.controller.openThread(_threadA);
+    await _waitUntil(() => agent.resumeCalls.contains(_threadA.id));
+    harness.controller.backToThreadList();
+    harness.controller.openThread(_threadB);
+    await _waitUntil(
+      () =>
+          harness.controller.state.activeThread?.id == _threadB.id &&
+          !harness.controller.state.loading,
+    );
+    pending.complete(
+      const AgentSession(
+        thread: _threadA,
+        timeline: [
+          TimelineEntry(
+            id: 'stale',
+            kind: TimelineKind.agentMessage,
+            text: 'Stale preview',
+          ),
+        ],
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(harness.controller.state.activeThread?.id, _threadB.id);
+    expect(harness.controller.state.timeline, isEmpty);
+    expect(agent.readCalls, isEmpty);
+  });
 
   test(
     'performance timings preserve parallel list loads and cached lanes',
@@ -1202,7 +1197,7 @@ void main() {
   );
 
   test(
-    'live warm cache avoids another fetch and includes background output',
+    'projected item cache avoids another fetch and includes background output',
     () async {
       final agent = _ReusableResumeAgent(threads: const [_threadAActive]);
       final harness = await _createHarness(agent);
@@ -1212,6 +1207,8 @@ void main() {
       resume.complete(
         const AgentSession(
           thread: _threadAActive,
+          itemsView: 'items',
+          nextTurnsCursor: 'mobile-items-v1:older',
           timeline: [
             TimelineEntry(
               id: 'answer',
@@ -1239,6 +1236,10 @@ void main() {
       expect(harness.controller.state.loading, isFalse);
       expect(agent.resumeCalls, [_threadA.id]);
       expect(harness.controller.state.timeline.single.text, 'hello world');
+      expect(
+        harness.controller.state.olderTurnsCursor,
+        'mobile-items-v1:older',
+      );
       expect(harness.controller.state.running, isTrue);
       // Loss of the actual subscription forces verification even with a snapshot.
       harness.controller.backToThreadList();
@@ -1701,8 +1702,8 @@ void main() {
       await _waitUntil(() => !harness.controller.state.loading);
       expect(harness.controller.state.isThreadReadOnly, isTrue);
       await _drainAsyncWork();
-      // The cold preview runs once before resume. Periodic refresh still waits.
-      expect(agent.readCalls, [occupied.id]);
+      // No duplicate cold preview. Periodic refresh still waits.
+      expect(agent.readCalls, isEmpty);
       agent.readCalls.clear();
       expect(harness.controller.state.timeline.single.text, '旧进度');
 
@@ -2681,17 +2682,6 @@ class _Host implements RemoteServerClient {
   void close() {
     connected = false;
     if (!_closed.isCompleted) _closed.complete();
-  }
-}
-
-class _PreviewGateAgent extends _ResumeAgent {
-  _PreviewGateAgent({required super.threads});
-  final preview = Completer<AgentSession>();
-  @override
-  Future<AgentSession> readThread(String threadId) {
-    if (threadId != _threadA.id) return super.readThread(threadId);
-    readCalls.add(threadId);
-    return preview.future;
   }
 }
 

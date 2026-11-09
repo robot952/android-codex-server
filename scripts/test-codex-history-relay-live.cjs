@@ -286,6 +286,45 @@ async function main() {
       `Continued turn ${number} must deliver its assistant response`);
     }
     assert.equal(requests.length, 3, "One failed and two continued turns must make exactly three provider requests");
+    // Exercise native cross-turn item cursors (not a mocked cursor codec),
+    // oversized message previews, and exclusive-anchor detail reads.
+    for (let index = 0; index < 10; index++) {
+      const turn = await activeClient.rpc("turn/start", { threadId,
+        input: [{ type: "text", text: `Synthetic large history input ${index}: ` + "x".repeat(6000) }] });
+      assert.equal((await activeClient.completed(threadId, turn.turn.id)).status, "completed");
+    }
+    const nativeItems = await activeClient.rpc("thread/items/list", { threadId, limit: 100, sortDirection: "desc" });
+    assert(nativeItems.data.length > 20);
+    const opened = await activeClient.rpc("codexRemote/history/open", { threadId, readOnly: true });
+    let page = opened.initialTurnsPage;
+    const projectedIds = [];
+    do {
+      assert(Buffer.byteLength(JSON.stringify(page)) <= 96 * 1024);
+      for (const turn of page.data) projectedIds.push(...turn.items.toReversed().map(item => item.id));
+      if (!page.nextCursor) break;
+      page = await activeClient.rpc("codexRemote/history/page", { threadId, cursor: page.nextCursor });
+    } while (true);
+    assert.deepEqual(projectedIds, nativeItems.data.map(record => record.item.id));
+    for (const record of [nativeItems.data[0], nativeItems.data[1], nativeItems.data.at(-1)]) {
+      const detail = await activeClient.rpc("codexRemote/history/item", { threadId, turnId: record.turnId, itemId: record.item.id });
+      assert.deepEqual(detail.data[0].items[0], record.item, "Native anchor must hydrate exactly this item");
+    }
+    const mobileResume = await activeClient.rpc("codexRemote/history/open", { threadId, approvalPolicy: "on-request" });
+    assert.equal(mobileResume.thread.id, threadId);
+    assert.equal(mobileResume.modelProvider, "history_fixture");
+    assert.equal(mobileResume.initialTurnsPage.data.flatMap(turn => turn.items).length, 20);
+    console.log(`Native item history: ${nativeItems.data.length} records paginated without gaps; tail response ${Buffer.byteLength(JSON.stringify(mobileResume))} bytes; exact detail anchors verified.`);
+    const legacy = await activeClient.rpc("thread/start", { cwd: home, approvalPolicy: "on-request", sandbox: "read-only", historyMode: "legacy" });
+    const legacyRead = await activeClient.rpc("codexRemote/history/open", { threadId: legacy.thread.id, readOnly: true });
+    assert.equal(legacyRead.thread.id, legacy.thread.id);
+    await activeClient.rpc("thread/inject_items", { threadId: legacy.thread.id, items: [oldItem, liveItem] });
+    const legacyTurn = await activeClient.rpc("turn/start", { threadId: legacy.thread.id,
+      input: [{ type: "text", text: "Synthetic legacy history request." }] });
+    assert.equal((await activeClient.completed(legacy.thread.id, legacyTurn.turn.id)).status, "completed");
+    await assert.rejects(activeClient.rpc("codexRemote/history/open", { threadId: legacy.thread.id, readOnly: true }),
+      /code=-32601; reason=thread\/items\/list is not supported yet/);
+    const populatedLegacy = await activeClient.rpc("thread/turns/list", { threadId: legacy.thread.id, limit: 1, sortDirection: "desc", itemsView: "full" });
+    assert(populatedLegacy.data.flatMap(turn => turn.items).length >= 2);
     assert.equal(upgrades, 0, "Compatibility route must use the supported Responses transport");
     await activeClient.stop();
     activeClient = null;

@@ -1472,6 +1472,23 @@ abstract final class CodexPayloadParser {
     final parsedId = _firstString(item, const <String>['id'], marker: '');
     final id = parsedId.isNotEmpty ? parsedId : 'item-${item.hashCode}';
     final boundedTurnId = _bounded(turnId, codexMaxThreadFieldChars, '');
+    if (type == 'codexRemoteDeferred') {
+      return TimelineEntry(
+        id: id,
+        kind: switch (item['previewKind']) {
+          'agentMessage' => TimelineKind.agentMessage,
+          'userMessage' => TimelineKind.userMessage,
+          _ => TimelineKind.tool,
+        },
+        title: _firstString(item, const ['title']),
+        text: _firstString(item, const ['text']),
+        status: _firstString(item, const ['status']),
+        turnId: boundedTurnId,
+        detailsItemId: _firstString(item, const [
+          'codexRemoteDetailsItemId',
+        ], marker: ''),
+      );
+    }
     return switch (type) {
       'userMessage' => _parseUserMessage(
         item: item,
@@ -1508,6 +1525,9 @@ abstract final class CodexPayloadParser {
         id: id,
         kind: TimelineKind.command,
         title: '终端',
+        detailsItemId: _firstString(item, const [
+          'codexRemoteDetailsItemId',
+        ], marker: ''),
         command: _firstString(item, const <String>[
           'command',
         ], maxChars: codexMaxTimelineTextChars),
