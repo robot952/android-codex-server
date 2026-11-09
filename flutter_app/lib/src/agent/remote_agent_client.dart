@@ -9,11 +9,13 @@ class AgentThreadPage {
     required this.threads,
     this.nextCursor,
     this.previousCursor,
+    this.totalCount,
   });
 
   final List<AgentThread> threads;
   final String? nextCursor;
   final String? previousCursor;
+  final int? totalCount;
 }
 
 class AgentSession {
@@ -184,6 +186,11 @@ abstract interface class RemoteAgentClient {
 /// base contract for lightweight read-only adapters and test fakes.
 abstract interface class RemoteAgentThreadPaginationClient {
   Future<AgentThreadPage> listThreadsPage({String? searchTerm, String? cursor});
+}
+
+/// Optional lightweight count, independent of fetching visible list pages.
+abstract interface class RemoteAgentThreadCountClient {
+  Future<int?> countThreads({String? searchTerm});
 }
 
 /// Optional capability implemented by agents that can execute turns. Keeping

@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const bridge = require(path.resolve(__dirname, "../app/src/main/assets/opencode-bridge.cjs"));
+const bridge = require(path.resolve(__dirname, "../flutter_app/assets/opencode-bridge.cjs"));
 
 function deferred() {
   let resolve;

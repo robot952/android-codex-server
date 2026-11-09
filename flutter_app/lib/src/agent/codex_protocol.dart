@@ -614,6 +614,7 @@ final class CodexProtocolGeneration {
     String? searchTerm,
     String? cursor,
     List<String>? modelProviders,
+    bool useStateDbOnly = false,
   }) {
     if (limit <= 0) {
       throw ArgumentError.value(limit, 'limit', 'must be greater than zero');
@@ -625,6 +626,7 @@ final class CodexProtocolGeneration {
         'archived': archived,
         'sortKey': sortKey,
         'sortDirection': sortDirection,
+        if (useStateDbOnly) 'useStateDbOnly': true,
         if (searchTerm?.trim().isNotEmpty ?? false)
           'searchTerm': searchTerm!.trim(),
         if (cursor?.isNotEmpty ?? false) 'cursor': cursor,
@@ -948,6 +950,10 @@ abstract final class CodexPayloadParser {
             .toList(growable: false);
     return CodexThreadListPage(
       threads: threads,
+      totalCount:
+          root?['totalCount'] is int && (root!['totalCount'] as int) >= 0
+          ? root['totalCount'] as int
+          : null,
       nextCursor: _firstString(
         root ?? const <String, Object?>{},
         const <String>['nextCursor', 'next_cursor'],
@@ -1876,11 +1882,13 @@ final class CodexThreadListPage {
     required this.threads,
     this.nextCursor,
     this.backwardsCursor,
+    this.totalCount,
   });
 
   final List<AgentThread> threads;
   final String? nextCursor;
   final String? backwardsCursor;
+  final int? totalCount;
 
   bool get hasNextPage => nextCursor?.isNotEmpty ?? false;
 }

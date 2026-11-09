@@ -29,7 +29,7 @@ open_code_bin="$($ROOT_DIR/scripts/ensure-opencode-runtime.sh)"
 open_code_version="$(workflow_opencode_version "$open_code_bin")"
 open_code_sha256="$(workflow_file_sha256_cached "$ROOT_DIR" "$open_code_bin")"
 input_hash="$(workflow_repo_hash "$ROOT_DIR" \
-    app/src/main/assets/opencode-bridge.cjs \
+    flutter_app/assets/opencode-bridge.cjs \
     scripts/test-opencode-bridge.cjs \
     scripts/test-opencode-bridge-scheduling.cjs \
     scripts/test-opencode-bridge-question.cjs \
@@ -53,7 +53,7 @@ fi
 
 started_seconds="$(date +%s)"
 export OPENCODE_BIN="$open_code_bin"
-node --check app/src/main/assets/opencode-bridge.cjs
+node --check flutter_app/assets/opencode-bridge.cjs
 node scripts/test-opencode-bridge.cjs
 node scripts/test-opencode-bridge-scheduling.cjs
 node scripts/test-opencode-bridge-question.cjs

@@ -9,7 +9,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 
 const repository = path.resolve(__dirname, "..");
-const bridgePath = path.join(repository, "app/src/main/assets/opencode-bridge.cjs");
+const bridgePath = path.join(repository, "flutter_app/assets/opencode-bridge.cjs");
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-bridge-question-"));
 const fakeBinary = path.join(temporaryRoot, "fake-opencode.cjs");
 const replyPath = path.join(temporaryRoot, "question-reply.json");

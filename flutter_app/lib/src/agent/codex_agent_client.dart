@@ -385,6 +385,7 @@ class CodexAgentClient
     implements
         RemoteAgentClient,
         RemoteAgentThreadPaginationClient,
+        RemoteAgentThreadCountClient,
         RemoteAgentThreadInspectionClient,
         RemoteAgentHistoryDetailsClient,
         RemoteAgentTurnClient,
@@ -473,6 +474,7 @@ class CodexAgentClient
   final Map<String, int> _subAgentCreatedAtByThread = <String, int>{};
   final Map<String, ApprovalMode> _reusableThreads = {};
   bool? _itemHistorySupported;
+  bool _indexedThreadListSupported = false;
   final Set<String> _unsupportedItemHistoryThreads = {};
 
   Future<AgentSession?> _openItemHistory(
@@ -820,6 +822,10 @@ class CodexAgentClient
           timeout: requestTimeout,
         );
         final initialized = initialize.resultOrThrow();
+        _indexedThreadListSupported =
+            kind == AgentKind.codex &&
+            initialized is Map &&
+            initialized['codexRemoteThreadListVersion'] == 1;
         _itemHistorySupported =
             kind == AgentKind.codex &&
             initialized is Map &&
@@ -893,7 +899,8 @@ class CodexAgentClient
       scope.threadList(
         // Native Codex prepares each thread before returning the page. Bound
         // that work so a large history does not delay the first visible rows.
-        limit: kind == AgentKind.codex ? 20 : 100,
+        limit: 10,
+        useStateDbOnly: _indexedThreadListSupported,
         searchTerm: searchTerm,
         cursor: cursor,
         modelProviders: _modelProvider == null
@@ -908,7 +915,29 @@ class CodexAgentClient
       threads: page.threads,
       nextCursor: page.nextCursor,
       previousCursor: page.backwardsCursor,
+      totalCount: page.totalCount,
     );
+  }
+
+  @override
+  Future<int?> countThreads({String? searchTerm}) async {
+    if (!_indexedThreadListSupported) return null;
+    final scope = _requireScope();
+    final response = await _request(
+      scope.request(
+        'codexRemote/threads/count',
+        params: <String, Object?>{
+          if (searchTerm?.trim().isNotEmpty ?? false)
+            'searchTerm': searchTerm!.trim(),
+          if (_modelProvider != null)
+            'modelProviders': <String>[_modelProvider!],
+        },
+      ),
+      timeout: const Duration(seconds: 30),
+    );
+    final result = response.resultOrThrow();
+    final total = result is Map ? result['totalCount'] : null;
+    return total is int && total >= 0 ? total : null;
   }
 
   @override
@@ -1607,6 +1636,7 @@ class CodexAgentClient
     _modelProvider = null;
     _subAgentCreatedAtByThread.clear();
     _itemHistorySupported = null;
+    _indexedThreadListSupported = false;
     _unsupportedItemHistoryThreads.clear();
     _protocol.invalidateGeneration();
     _connected = false;

@@ -218,8 +218,29 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
                 onSubmitted: (_) => controller.refreshThreads(),
               ),
             ),
+            Padding(
+              key: const ValueKey('thread-list-header'),
+              padding: const EdgeInsets.fromLTRB(18, 7, 18, 7),
+              child: Row(
+                children: [
+                  Text(
+                    state.threadSearch.trim().isEmpty ? '最近任务' : '搜索结果',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelLarge?.copyWith(color: codexMuted),
+                  ),
+                  const Spacer(),
+                  Text(
+                    controller.activeThreadListTotal?.toString() ?? '—',
+                    key: const ValueKey('thread-list-total'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
             Expanded(
               child: _ThreadListPullRefresh(
+                key: ValueKey((key, state.threadSearch)),
                 onRefresh: agentConnected
                     ? () => controller.refreshThreads(silent: true)
                     : null,
@@ -1143,7 +1164,11 @@ const double _threadRefreshHoldExtent = 52;
 const double _threadRefreshMaxExtent = 104;
 
 class _ThreadListPullRefresh extends StatefulWidget {
-  const _ThreadListPullRefresh({required this.onRefresh, required this.child});
+  const _ThreadListPullRefresh({
+    super.key,
+    required this.onRefresh,
+    required this.child,
+  });
 
   final Future<void> Function()? onRefresh;
   final Widget child;
@@ -1414,24 +1439,6 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
     final onRetry = widget.onRetry;
     final onReconnect = widget.onReconnect;
     final onOpen = widget.onOpen;
-    final header = Padding(
-      padding: const EdgeInsets.fromLTRB(18, 7, 18, 7),
-      child: Row(
-        children: [
-          Text(
-            query.trim().isEmpty ? '最近任务' : '搜索结果',
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge?.copyWith(color: codexMuted),
-          ),
-          const Spacer(),
-          Text(
-            '${threads.length}',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
-      ),
-    );
     if (threads.isNotEmpty) {
       return NotificationListener<ScrollNotification>(
         onNotification: _handleScroll,
@@ -1450,7 +1457,6 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                   ),
                 ),
               ),
-            header,
             Expanded(
               child: ListView.builder(
                 key: const ValueKey('thread-list-scroll'),
@@ -1484,7 +1490,6 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
         (loading || connectionState.phase == ConnectionPhase.connecting)) {
       return Column(
         children: [
-          header,
           Expanded(
             child: Center(
               child: Column(
@@ -1510,7 +1515,6 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
     };
     return Column(
       children: [
-        header,
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {

@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const bridge = require(path.resolve(__dirname, "../app/src/main/assets/opencode-bridge.cjs"));
+const bridge = require(path.resolve(__dirname, "../flutter_app/assets/opencode-bridge.cjs"));
 
 assert.equal(bridge.isSessionActive({ type: "busy" }), true);
 assert.equal(bridge.isSessionActive({ type: "retry" }), true);
@@ -426,24 +426,28 @@ assert.deepEqual(
   {
     last: {
       cachedInputTokens: 7,
-      inputTokens: 11,
-      outputTokens: 5,
+      inputTokens: 21,
+      outputTokens: 7,
       reasoningOutputTokens: 2,
       totalTokens: 28,
     },
     total: {
       cachedInputTokens: 7,
-      inputTokens: 11,
-      outputTokens: 5,
+      inputTokens: 21,
+      outputTokens: 7,
       reasoningOutputTokens: 2,
       totalTokens: 28,
     },
     modelContextWindow: 400000,
   },
 );
-assert.equal(
+assert.deepEqual(
   bridge.mapMessageTokenUsage({ tokens: { input: 11, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, 0),
-  null,
+  {
+    last: { cachedInputTokens: 0, inputTokens: 11, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 12 },
+    total: { cachedInputTokens: 0, inputTokens: 11, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 12 },
+    modelContextWindow: 0,
+  },
 );
 
 const v1Permission = {

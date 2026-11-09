@@ -55,6 +55,72 @@ const _threadB = AgentThread(
 
 void main() {
   test(
+    'total is independent of the loaded page and ignores stale searches',
+    () async {
+      final agent = _CountedResumeAgent(threads: const [_threadA]);
+      final controller = (await _createHarness(agent)).controller;
+      await _waitUntil(() => agent.counts.length == 1);
+      expect(controller.state.threads, hasLength(1));
+      expect(controller.activeThreadListTotal, isNull);
+      expect(controller.activeThreadListHasMore, isTrue);
+      agent.counts[0].complete(47);
+      await _waitUntil(() => controller.activeThreadListTotal == 47);
+      await controller.refreshThreads(silent: true);
+      await _waitUntil(() => agent.counts.length == 2);
+      controller.setThreadSearch(' Thread ');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await _waitUntil(() => agent.counts.length == 3);
+      agent.counts[2].complete(12);
+      await _waitUntil(() => controller.activeThreadListTotal == 12);
+      agent.counts[1].complete(99);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.activeThreadListTotal, 12);
+      expect(agent.searches.last, 'Thread');
+      expect(controller.activeThreadListHasMore, isTrue);
+      await controller.loadMoreThreads();
+      expect(agent.pageSearch, 'Thread');
+      expect(controller.state.threads, hasLength(2));
+      expect(controller.activeThreadListTotal, 12);
+    },
+  );
+
+  test('a delayed total cannot survive a disconnected lane', () async {
+    final agent = _CountedResumeAgent(threads: const [_threadA]);
+    final controller = (await _createHarness(agent)).controller;
+    await _waitUntil(() => agent.counts.isNotEmpty);
+    await controller.disconnectProfile(_profile.id);
+    agent.counts.single.complete(47);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.activeThreadListTotal, isNull);
+  });
+
+  test(
+    'a refreshed list rejects an old page even with the same cursor',
+    () async {
+      final agent = _CountedResumeAgent(threads: const [_threadA]);
+      final controller = (await _createHarness(agent)).controller;
+      await _waitUntil(() => agent.counts.length == 1);
+      agent.counts[0].complete(47);
+      agent.pageGate = Completer<AgentThreadPage>();
+      final pendingPage = controller.loadMoreThreads();
+      await _waitUntil(() => agent.pageSearch != null);
+      await controller.refreshThreads(silent: true);
+      await _waitUntil(() => agent.counts.length == 2);
+      agent.counts[1].complete(12);
+      await _waitUntil(() => controller.activeThreadListTotal == 12);
+      agent.pageGate!.complete(
+        const AgentThreadPage(threads: [_threadB], totalCount: 99),
+      );
+      await pendingPage;
+      expect(controller.state.threads.map((thread) => thread.id), [
+        _threadA.id,
+      ]);
+      expect(controller.activeThreadListTotal, 12);
+      expect(controller.activeThreadListHasMore, isTrue);
+    },
+  );
+
+  test(
     'cold open requests history once without a duplicate remote preview',
     () async {
       final diagnostics = _TimingLogger();
@@ -1756,6 +1822,31 @@ void main() {
     expect(controller.state.isThreadReadOnly, isFalse);
   });
 
+  test(
+    'list appears before slow models and repeated entry shares models',
+    () async {
+      final agent = _TimedLoadAgent(threads: const [_threadA, _threadB]);
+      final harness = await _createHarness(agent, waitForAgent: false);
+      await _waitUntil(
+        () =>
+            harness.controller.state.threads.length == 2 &&
+            !harness.controller.state.loading &&
+            agent.modelCalls == 1,
+      );
+      expect(agent.models.isCompleted, isFalse);
+      await harness.controller.ensureActiveAgent();
+      expect(agent.listThreadsCount, 1);
+      expect(agent.modelCalls, 1);
+      harness.controller.openThread(_threadA);
+      await _waitUntil(() => harness.controller.state.screen == AppScreen.work);
+      agent.models.complete(const []);
+      await _waitUntil(
+        () => harness.controller.state.agentModelLists.isNotEmpty,
+      );
+      expect(harness.controller.state.screen, AppScreen.work);
+    },
+  );
+
   test('returning to the list silently refreshes thread recency', () async {
     final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
     final harness = await _createHarness(agent);
@@ -1790,6 +1881,21 @@ void main() {
           harness.controller.state.threads.first.updatedAt == 30,
     );
     expect(harness.controller.state.threads.first.preview, 'Updated preview');
+    harness.controller.openThread(_threadA);
+    await _waitUntil(
+      () =>
+          harness.controller.state.screen == AppScreen.work &&
+          !harness.controller.state.loading,
+    );
+    harness.controller.backToThreadList();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(agent.listThreadsCount, 2);
+    await harness.controller.refreshThreads(silent: true);
+    expect(
+      agent.listThreadsCount,
+      3,
+      reason: 'manual refresh bypasses return throttle',
+    );
   });
 
   test('connection loss replays a buffered terminal event', () async {
@@ -2576,6 +2682,37 @@ class _TimedLoadAgent extends _RuntimeResumeAgent {
   Future<List<AgentModel>> listModels() {
     modelCalls++;
     return models.future;
+  }
+}
+
+class _CountedResumeAgent extends _ResumeAgent
+    implements RemoteAgentThreadPaginationClient, RemoteAgentThreadCountClient {
+  _CountedResumeAgent({required super.threads});
+  final counts = <Completer<int?>>[];
+  final searches = <String?>[];
+  String? pageSearch;
+  Completer<AgentThreadPage>? pageGate;
+
+  @override
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
+      AgentThreadPage(threads: threads, nextCursor: 'next');
+
+  @override
+  Future<int?> countThreads({String? searchTerm}) {
+    searches.add(searchTerm);
+    final result = Completer<int?>();
+    counts.add(result);
+    return result.future;
+  }
+
+  @override
+  Future<AgentThreadPage> listThreadsPage({
+    String? cursor,
+    String? searchTerm,
+  }) async {
+    pageSearch = searchTerm;
+    if (pageGate != null) return pageGate!.future;
+    return const AgentThreadPage(threads: [_threadB], nextCursor: 'third');
   }
 }
 

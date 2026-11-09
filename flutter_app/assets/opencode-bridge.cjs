@@ -1972,8 +1972,13 @@ async function handleRequest(method, params) {
       return !search || thread.name.toLowerCase().includes(search) ||
         thread.cwd.toLowerCase().includes(search);
     });
-    data.sort(function (left, right) { return right.updatedAt - left.updatedAt; });
-    return { data: data.slice(0, Number(params.limit || 100)) };
+    data.sort(function (left, right) { return right.updatedAt - left.updatedAt || left.id.localeCompare(right.id); });
+    const offset = params.cursor ? data.findIndex(thread => thread.id === params.cursor) + 1 : 0;
+    if (params.cursor && offset === 0) throw new Error("会话列表游标已失效");
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(params.limit) || 10)));
+    const page = data.slice(offset, offset + limit);
+    return { data: page, totalCount: data.length,
+      nextCursor: offset + page.length < data.length ? page.at(-1).id : null };
   }
   if (method === "thread/start") {
     const session = await request("/session", {

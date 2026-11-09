@@ -104,6 +104,59 @@ function fixture({ config, respond, timeoutMs } = {}) {
   return { bridge, sent, visible };
 }
 
+async function responseFor(f, id) {
+  for (let spin = 0; spin < 100; spin++) {
+    const messages = Buffer.concat(f.visible).toString().trim().split("\n").filter(Boolean).map(JSON.parse);
+    const message = messages.find(value => value.id === id);
+    if (message) return message;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  throw new Error("Fixture response missing");
+}
+
+test("thread count stays server-side, deduplicates pages, and never blocks ordinary RPCs", async () => {
+  const f = fixture({ respond: () => undefined });
+  try {
+    const params = { searchTerm: " fixture ", modelProviders: ["fixture-provider"] };
+    for (const id of [101, 102]) f.bridge.writeInput(JSON.stringify({ id, method: "codexRemote/threads/count", params }) + "\n");
+    f.bridge.writeInput('{"id":103,"method":"turn/interrupt","params":{"threadId":"fixture"}}\n');
+    await f.bridge.endInput();
+    const first = f.sent.filter(value => value.method === "thread/list");
+    assert.equal(first.length, 1, "Overlapping counts must share work");
+    assert(f.sent.some(value => value.id === 103), "Counting must not delay interrupt");
+    assert.equal(first[0].params.useStateDbOnly, true);
+    assert.equal(first[0].params.limit, 200);
+    assert.equal(first[0].params.archived, false);
+    assert.equal(first[0].params.searchTerm, "fixture");
+    assert.deepEqual(first[0].params.modelProviders, ["fixture-provider"]);
+    const reply = (request, data, nextCursor) => f.bridge.writeOutput(JSON.stringify({ id: request.id,
+      result: { data, nextCursor } }) + "\n");
+    reply(first[0], [{ id: "a", preview: "PRIVATE_THREAD_FIXTURE" }, { id: "b" }], "second");
+    await new Promise(resolve => setImmediate(resolve));
+    const second = f.sent.find(value => value.params?.cursor === "second");
+    assert(second);
+    assert.equal(second.params.useStateDbOnly, true);
+    reply(second, [{ id: "b" }, { id: "c" }], null);
+    for (const id of [101, 102]) assert.deepEqual(await responseFor(f, id), { id, result: { totalCount: 3 } });
+    assert(!Buffer.concat(f.visible).toString().includes("PRIVATE_THREAD_FIXTURE"));
+    assert(!f.sent.some(value => ["thread/read", "thread/resume", "thread/turns/list"].includes(value.method)));
+  } finally { f.bridge.close(); }
+});
+
+for (const invalid of ["repeated-cursor", "invalid-data"]) {
+  test(`thread count refuses a partial total on ${invalid}`, async () => {
+    const f = fixture({ respond: () => invalid === "repeated-cursor"
+      ? { data: [{ id: "a" }], nextCursor: "same" } : { data: [{ preview: "private" }] } });
+    try {
+      f.bridge.writeInput('{"id":104,"method":"codexRemote/threads/count","params":{}}\n');
+      const result = await responseFor(f, 104);
+      assert.equal(result.result, undefined);
+      assert.equal(result.error.message, "Thread count unavailable");
+      assert(f.sent.length <= 2);
+    } finally { f.bridge.close(); }
+  });
+}
+
 test("resume uses project provider settings without exposing private internal RPCs", async () => {
   const f = fixture({ config: {
     model_provider: "vendor.name", secret: "PRIVATE_CONFIG_FIXTURE",

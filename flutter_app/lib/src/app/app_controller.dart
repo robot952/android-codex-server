@@ -204,6 +204,9 @@ class AppController extends StateNotifier<AppUiState> {
       LinkedHashMap();
   final LinkedHashMap<String, String> _subAgentParents = LinkedHashMap();
   final Map<AgentConnectionKey, Future<void>> _agentLoadRequests = {};
+  final Map<AgentConnectionKey, (int, Future<void>)> _modelLoadRequests = {};
+  final Map<AgentConnectionKey, (String, int)> _threadTotals = {};
+  final Map<AgentConnectionKey, DateTime> _lastReturnRefresh = {};
   final Map<AgentConnectionKey, int> _agentLoadRevisions = {};
   final Set<String> _retainedHostConnections = <String>{};
   final Set<String> _cancelledConnectionProfiles = <String>{};
@@ -940,7 +943,6 @@ class AppController extends StateNotifier<AppUiState> {
     await _persist((stored) => stored.copyWith(selectedProfileId: profileId));
     if (connection.phase == ConnectionPhase.connected) {
       unawaited(ensureActiveAgent());
-      unawaited(refreshAgentVersions(profile.id, profile.activeAgent));
     }
   }
 
@@ -1542,8 +1544,10 @@ class AppController extends StateNotifier<AppUiState> {
     // snapshot. Explicit refresh/search paths still call _loadAgentData.
     final agentState = _agents.states[key];
     if (agentState?.phase == ConnectionPhase.connected &&
-        state.agentThreadLists.containsKey(key) &&
-        state.agentModelLists.containsKey(key)) {
+        state.agentThreadLists.containsKey(key)) {
+      if (!state.agentModelLists.containsKey(key)) {
+        unawaited(_loadLaneModels(key));
+      }
       _startTiming(
         'agent_load_cache',
         key,
@@ -1816,9 +1820,22 @@ class AppController extends StateNotifier<AppUiState> {
       profileId: profileId,
       agent: state.activeAgent,
     );
-    if (_agentThreadCursorSearches[key] != state.threadSearch) return false;
+    if (_agentThreadCursorSearches[key] != state.threadSearch.trim()) {
+      return false;
+    }
     final cursor = _agentThreadNextCursors[key];
     return cursor?.trim().isNotEmpty ?? false;
+  }
+
+  int? get activeThreadListTotal {
+    final profileId = state.selectedProfileId;
+    if (profileId == null) return null;
+    final total =
+        _threadTotals[AgentConnectionKey(
+          profileId: profileId,
+          agent: state.activeAgent,
+        )];
+    return total?.$1 == state.threadSearch.trim() ? total?.$2 : null;
   }
 
   /// Loads the next server-provided thread-list page for the active lane.
@@ -1843,12 +1860,12 @@ class AppController extends StateNotifier<AppUiState> {
     final cursor = _agentThreadNextCursors[key]?.trim();
     if (cursor == null ||
         cursor.isEmpty ||
-        _agentThreadCursorSearches[key] != state.threadSearch) {
+        _agentThreadCursorSearches[key] != state.threadSearch.trim()) {
       return;
     }
     final pending = _agentThreadPageRequests[key];
     if (pending != null) return pending;
-    final search = state.threadSearch;
+    final search = state.threadSearch.trim();
     late final Future<void> request;
     request = _loadMoreThreadsPage(key, cursor: cursor, searchTerm: search)
         .whenComplete(() {
@@ -1865,6 +1882,8 @@ class AppController extends StateNotifier<AppUiState> {
     required String cursor,
     required String searchTerm,
   }) async {
+    final revision = _agentLoadRevisions[key];
+    final generation = _agents.generation(key);
     try {
       final page = await _agents.listMoreThreads(
         key,
@@ -1873,7 +1892,9 @@ class AppController extends StateNotifier<AppUiState> {
       );
       if (!mounted ||
           !_isActiveKey(key) ||
-          state.threadSearch != searchTerm ||
+          _agentLoadRevisions[key] != revision ||
+          !_agents.isCurrentGeneration(key, generation) ||
+          state.threadSearch.trim() != searchTerm ||
           _agentThreadCursorSearches[key] != searchTerm ||
           _agentThreadNextCursors[key] != cursor) {
         return;
@@ -1884,6 +1905,11 @@ class AppController extends StateNotifier<AppUiState> {
         state.agentThreadLists,
       )..[key] = merged;
       _agentThreadNextCursors[key] = page.nextCursor;
+      if (page.totalCount != null) {
+        _threadTotals[key] = (searchTerm.trim(), page.totalCount!);
+      } else if (page.nextCursor?.isNotEmpty != true) {
+        _threadTotals[key] = (searchTerm.trim(), merged.length);
+      }
       _rememberSubAgentReferences(key, page.threads, const <TimelineEntry>[]);
       state = state.copyWith(
         agentThreadLists: Map.unmodifiable(lists),
@@ -1893,7 +1919,9 @@ class AppController extends StateNotifier<AppUiState> {
     } catch (error) {
       if (mounted &&
           _isActiveKey(key) &&
-          state.threadSearch == searchTerm &&
+          _agentLoadRevisions[key] == revision &&
+          _agents.isCurrentGeneration(key, generation) &&
+          state.threadSearch.trim() == searchTerm &&
           _agentThreadCursorSearches[key] == searchTerm &&
           _agentThreadNextCursors[key] == cursor) {
         state = state.copyWith(
@@ -3001,6 +3029,8 @@ class AppController extends StateNotifier<AppUiState> {
         sandbox: profile.approvalMode.sandbox,
       );
       if (!mounted || !_isActiveKey(key)) return;
+      _threadTotals.remove(key);
+      _lastReturnRefresh.remove(key);
       final threads = <AgentThread>[
         session.thread,
         ...state.threads.where((thread) => thread.id != session.thread.id),
@@ -3567,7 +3597,18 @@ class AppController extends StateNotifier<AppUiState> {
     );
     // Match the original Android behavior: show the retained list immediately,
     // then reconcile recency, preview, status, and ordering in the background.
-    unawaited(refreshThreads(silent: true));
+    if (profileId != null) {
+      final key = AgentConnectionKey(
+        profileId: profileId,
+        agent: state.activeAgent,
+      );
+      final now = DateTime.now();
+      final last = _lastReturnRefresh[key];
+      if (last == null || now.difference(last) >= const Duration(seconds: 10)) {
+        _lastReturnRefresh[key] = now;
+        unawaited(refreshThreads(silent: true));
+      }
+    }
   }
 
   /// Shows the interactive SSH terminal for the selected server. The PTY is
@@ -4397,6 +4438,8 @@ class AppController extends StateNotifier<AppUiState> {
         threadId: thread.id,
       );
       _threadCaches[key]?.remove(thread.id);
+      _threadTotals.remove(key);
+      _lastReturnRefresh.remove(key);
       _removeStoredThread(key, thread);
       if (!mounted || !_isActiveThread(key, thread.id)) return;
       final storageKey = threadPreferenceKey(
@@ -6394,49 +6437,30 @@ class AppController extends StateNotifier<AppUiState> {
       if (!_isAgentLoadCurrent(key, loadRevision)) return;
       _showInitialWorkspacePickerIfNeeded(key, effectiveProfile);
       final generation = _agents.generation(key);
+      final search = _isActiveKey(key) ? state.threadSearch.trim() : '';
+      if (includeModels || !state.agentModelLists.containsKey(key)) {
+        unawaited(_loadLaneModels(key));
+      }
       AgentThreadPage? threadPage;
-      List<AgentModel>? models;
       Object? threadError;
-      Object? modelError;
-      await Future.wait<void>([
-        () async {
-          final listTiming = _startTiming(
-            'thread_list',
-            key,
-            generation: generation,
-          );
-          try {
-            threadPage = await _agents.listThreads(
-              key,
-              searchTerm: _isActiveKey(key) ? state.threadSearch : null,
-            );
-            listTiming.finish(
-              count: threadPage!.threads.length,
-              hasMore: threadPage!.nextCursor?.isNotEmpty == true,
-            );
-          } catch (error) {
-            listTiming.fail(error);
-            threadError = error;
-          }
-        }(),
-        if (includeModels || !state.agentModelLists.containsKey(key))
-          () async {
-            final modelTiming = _startTiming(
-              'model_list',
-              key,
-              generation: generation,
-            );
-            try {
-              models = await _agents.listModels(key);
-              modelTiming.finish(count: models!.length);
-            } catch (error) {
-              modelTiming.fail(error);
-              modelError = error;
-            }
-          }(),
-      ]);
+      final listTiming = _startTiming(
+        'thread_list',
+        key,
+        generation: generation,
+      );
+      try {
+        threadPage = await _agents.listThreads(key, searchTerm: search);
+        listTiming.finish(
+          count: threadPage.threads.length,
+          hasMore: threadPage.nextCursor?.isNotEmpty == true,
+        );
+      } catch (error) {
+        listTiming.fail(error);
+        threadError = error;
+      }
       if (!_isAgentLoadCurrent(key, loadRevision) ||
-          !_agents.isCurrentGeneration(key, generation)) {
+          !_agents.isCurrentGeneration(key, generation) ||
+          (_isActiveKey(key) && state.threadSearch.trim() != search)) {
         return;
       }
 
@@ -6449,16 +6473,27 @@ class AppController extends StateNotifier<AppUiState> {
           threadLists[key] = preserveExistingThreads
               ? _mergeListedThreads(
                   threadLists[key] ?? const <AgentThread>[],
-                  threadPage!.threads,
+                  threadPage.threads,
                 )
-              : threadPage!.threads;
-          _agentThreadNextCursors[key] = threadPage!.nextCursor;
-          _agentThreadCursorSearches[key] = _isActiveKey(key)
-              ? state.threadSearch
-              : '';
+              : threadPage.threads;
+          _agentThreadNextCursors[key] = threadPage.nextCursor;
+          _agentThreadCursorSearches[key] = search;
+          final total =
+              threadPage.totalCount ??
+              (threadPage.nextCursor?.isNotEmpty != true
+                  ? threadPage.threads.length
+                  : null);
+          if (total != null) {
+            _threadTotals[key] = (search, total);
+          } else {
+            _threadTotals.remove(key);
+            unawaited(
+              _refreshThreadTotal(key, search, loadRevision, generation),
+            );
+          }
           _rememberSubAgentReferences(
             key,
-            threadPage!.threads,
+            threadPage.threads,
             const <TimelineEntry>[],
           );
           final isDefaultThreadList =
@@ -6467,40 +6502,17 @@ class AppController extends StateNotifier<AppUiState> {
             unawaited(_threadListCacheStore.write(key, threadLists[key]!));
           }
         }
-        final modelLists = Map<AgentConnectionKey, List<AgentModel>>.of(
-          state.agentModelLists,
-        );
-        if (models != null) {
-          final remoteModels = List<AgentModel>.unmodifiable(models!);
-          _remoteModelsByLane[key] = remoteModels;
-          final settings = profile.modelSettings(key.agent);
-          modelLists[key] = buildModelCatalog(
-            remoteModels,
-            settings.customModels,
-            <String>{
-              ...settings.hiddenModelIds,
-              if (key.agent == AgentKind.openCode)
-                ..._pendingManagedModelRemovals(settings),
-            },
-            customReasoningEfforts: _customModelReasoningEfforts(key.agent),
-            cataloglessEfforts: standardReasoningEfforts(key.agent),
-          );
-        }
         final active = _isActiveKey(key);
         state = state.copyWith(
           agentThreadLists: Map.unmodifiable(threadLists),
-          agentModelLists: Map.unmodifiable(modelLists),
           threads: active
               ? threadLists[key] ?? const <AgentThread>[]
               : state.threads,
-          models: active
-              ? modelLists[key] ?? const <AgentModel>[]
-              : state.models,
           activeAgentCapabilities: active
               ? _agents.capabilities(key)
               : state.activeAgentCapabilities,
           diagnostic: active && state.screen == AppScreen.threads
-              ? _agentLoadDiagnostic(threadError, modelError)
+              ? _agentLoadDiagnostic(threadError, null)
               : state.diagnostic,
         );
         if (!silent &&
@@ -6508,16 +6520,15 @@ class AppController extends StateNotifier<AppUiState> {
             state.screen == AppScreen.threads &&
             threadError != null &&
             threadPage == null) {
-          state = state.copyWith(error: _message(threadError!, '读取会话失败'));
+          state = state.copyWith(error: _message(threadError, '读取会话失败'));
         }
-        _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
         applyTiming.finish(count: threadPage?.threads.length);
       } catch (error) {
         applyTiming.fail(error);
         rethrow;
       }
-      if (threadError != null || modelError != null) {
-        timing.fail(threadError ?? modelError!);
+      if (threadError != null) {
+        timing.fail(threadError);
       } else {
         timing.finish(count: threadPage?.threads.length);
       }
@@ -6541,6 +6552,102 @@ class AppController extends StateNotifier<AppUiState> {
       if (!silent && _isAgentLoadCurrent(key, loadRevision)) {
         _setAgentLoading(key, false);
       }
+    }
+  }
+
+  Future<void> _loadLaneModels(AgentConnectionKey key) {
+    final generation = _agents.generation(key);
+    final pending = _modelLoadRequests[key];
+    if (pending?.$1 == generation) return pending!.$2;
+    late final Future<void> request;
+    request =
+        () async {
+          final timing = _startTiming(
+            'model_list',
+            key,
+            generation: generation,
+          );
+          try {
+            final remoteModels = await _agents.listModels(key);
+            if (!mounted || !_agents.isCurrentGeneration(key, generation)) {
+              timing.finish(status: TimingStatus.stale);
+              return;
+            }
+            final currentProfile = state.profiles.firstWhereOrNull(
+              (p) => p.id == key.profileId,
+            );
+            if (currentProfile == null) {
+              timing.finish(status: TimingStatus.stale);
+              return;
+            }
+            final settings = currentProfile.modelSettings(key.agent);
+            _remoteModelsByLane[key] = List.unmodifiable(remoteModels);
+            final models = buildModelCatalog(
+              remoteModels,
+              settings.customModels,
+              <String>{
+                ...settings.hiddenModelIds,
+                if (key.agent == AgentKind.openCode)
+                  ..._pendingManagedModelRemovals(settings),
+              },
+              customReasoningEfforts: _customModelReasoningEfforts(key.agent),
+              cataloglessEfforts: standardReasoningEfforts(key.agent),
+            );
+            state = state.copyWith(
+              agentModelLists: Map.unmodifiable({
+                ...state.agentModelLists,
+                key: models,
+              }),
+              models: _isActiveKey(key) ? models : state.models,
+            );
+            _scheduleCustomModelSync(key.profileId, key.agent, immediate: true);
+            timing.finish(count: models.length);
+          } catch (error) {
+            timing.fail(error);
+            // A model catalog failure cannot hide a successfully loaded list or
+            // overwrite a conversation's writer/loading/error state.
+            if (mounted &&
+                _agents.isCurrentGeneration(key, generation) &&
+                _isActiveKey(key) &&
+                state.screen == AppScreen.threads &&
+                state.diagnostic == null) {
+              state = state.copyWith(diagnostic: _message(error, '读取模型失败'));
+            }
+          }
+        }().whenComplete(() {
+          if (identical(_modelLoadRequests[key]?.$2, request)) {
+            _modelLoadRequests.remove(key);
+          }
+        });
+    _modelLoadRequests[key] = (generation, request);
+    return request;
+  }
+
+  Future<void> _refreshThreadTotal(
+    AgentConnectionKey key,
+    String search,
+    int revision,
+    int generation,
+  ) async {
+    final timing = _startTiming('thread_count', key, generation: generation);
+    try {
+      final total = await _agents.countThreads(key, searchTerm: search);
+      if (!_isAgentLoadCurrent(key, revision) ||
+          !_agents.isCurrentGeneration(key, generation) ||
+          (_isActiveKey(key) && state.threadSearch.trim() != search)) {
+        timing.finish(status: TimingStatus.stale);
+        return;
+      }
+      if (total != null) {
+        _threadTotals[key] = (search, total);
+        state = state.copyWith();
+      }
+      timing.finish(
+        status: total == null ? TimingStatus.skipped : TimingStatus.success,
+        count: total,
+      );
+    } catch (error) {
+      timing.fail(error);
     }
   }
 
@@ -6659,12 +6766,16 @@ class AppController extends StateNotifier<AppUiState> {
   }
 
   void _clearAgentThreadPagination(AgentConnectionKey key) {
+    _threadTotals.remove(key);
+    _lastReturnRefresh.remove(key);
     _agentThreadNextCursors.remove(key);
     _agentThreadCursorSearches.remove(key);
     _agentThreadPageRequests.remove(key);
   }
 
   void _clearAgentThreadPaginationForProfile(String profileId) {
+    _threadTotals.removeWhere((key, _) => key.profileId == profileId);
+    _lastReturnRefresh.removeWhere((key, _) => key.profileId == profileId);
     _agentThreadNextCursors.removeWhere((key, _) => key.profileId == profileId);
     _agentThreadCursorSearches.removeWhere(
       (key, _) => key.profileId == profileId,
@@ -8314,6 +8425,9 @@ class AppController extends StateNotifier<AppUiState> {
     _agentThreadCursorSearches.clear();
     _agentThreadPageRequests.clear();
     _agentLoadRevisions.clear();
+    _modelLoadRequests.clear();
+    _threadTotals.clear();
+    _lastReturnRefresh.clear();
     for (final timer in _customModelSyncTimers.values) {
       timer.cancel();
     }

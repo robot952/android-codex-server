@@ -356,6 +356,23 @@ class AgentConnectionManager {
     return result;
   }
 
+  Future<int?> countThreads(
+    AgentConnectionKey key, {
+    String? searchTerm,
+  }) async {
+    final entry = _requireConnected(key);
+    final client = entry.client;
+    if (client is! RemoteAgentThreadCountClient) return null;
+    final generation = entry.generation;
+    final result = await (client as RemoteAgentThreadCountClient).countThreads(
+      searchTerm: searchTerm,
+    );
+    if (!_isCurrent(key, entry) || entry.generation != generation) {
+      throw StateError('Agent 会话数量请求已失效');
+    }
+    return result;
+  }
+
   Future<AgentSession> resumeThread(
     AgentConnectionKey key,
     String threadId, {

@@ -569,6 +569,64 @@ void main() {
     );
   }
 
+  for (final supportsIndex in [false, true]) {
+    test(
+      'thread count uses negotiated index capability: $supportsIndex',
+      () async {
+        final requests = <Map<String, Object?>>[];
+        final session = _FakeCodexSession(
+          replyFor: (request) {
+            requests.add(request);
+            return {
+              'result': switch (request['method']) {
+                'initialize' => <String, Object?>{
+                  if (supportsIndex) 'codexRemoteThreadListVersion': 1,
+                },
+                'thread/list' => <String, Object?>{
+                  'data': [],
+                  'nextCursor': null,
+                  'totalCount': 47,
+                },
+                'codexRemote/threads/count' => <String, Object?>{
+                  'totalCount': 47,
+                },
+                _ => <String, Object?>{},
+              },
+            };
+          },
+        );
+        final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+        addTearDown(client.close);
+        await client.connect(
+          const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+          _ThreadListHost(),
+        );
+        expect((await client.listThreads()).totalCount, 47);
+        expect(
+          await client.countThreads(searchTerm: ' fixture '),
+          supportsIndex ? 47 : null,
+        );
+        final list =
+            requests.singleWhere(
+                  (request) => request['method'] == 'thread/list',
+                )['params']
+                as Map;
+        expect(list['limit'], 10);
+        expect(list['useStateDbOnly'], supportsIndex ? true : null);
+        final counts = requests.where(
+          (request) => request['method'] == 'codexRemote/threads/count',
+        );
+        expect(counts.length, supportsIndex ? 1 : 0);
+        if (supportsIndex) {
+          expect(counts.single['params'], {
+            'searchTerm': 'fixture',
+            'modelProviders': ['test-provider'],
+          });
+        }
+      },
+    );
+  }
+
   for (final kind in AgentKind.values) {
     test(
       'thread pages remain bounded and preserve cursor/search ($kind)',
@@ -633,7 +691,7 @@ void main() {
         expect(requests.first.containsKey('cursor'), isFalse);
         expect(requests.last['cursor'], 'page-2');
         for (final params in requests) {
-          expect(params['limit'], kind == AgentKind.codex ? 20 : 100);
+          expect(params['limit'], 10);
           expect(params['searchTerm'], 'search');
           expect(params['sortKey'], 'recency_at');
           expect(params['sortDirection'], 'desc');

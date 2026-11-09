@@ -11,6 +11,42 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
   let inputEnded = false;
   let inputWork = Promise.resolve();
   let initializeId;
+  const countRequests = new Map();
+
+  function countThreads(params) {
+    const searchTerm = typeof params.searchTerm === "string" ? params.searchTerm.trim() : "";
+    const modelProviders = Array.isArray(params.modelProviders)
+      ? params.modelProviders.filter(value => typeof value === "string") : undefined;
+    const key = JSON.stringify([searchTerm, modelProviders]);
+    if (countRequests.has(key)) return countRequests.get(key);
+    const request = (async () => {
+      const ids = new Set();
+      const cursors = new Set();
+      const started = Date.now();
+      let cursor;
+      for (let pageNumber = 0; pageNumber < 500 && Date.now() - started < 25000; pageNumber++) {
+        const page = await internalRequest("thread/list", {
+          limit: 200, archived: false, sortKey: "recency_at", sortDirection: "desc",
+          useStateDbOnly: true,
+          ...(searchTerm ? { searchTerm } : {}),
+          ...(modelProviders?.length ? { modelProviders } : {}),
+          ...(cursor ? { cursor } : {}),
+        });
+        if (!Array.isArray(page.data)) throw historyError("Invalid thread count page");
+        for (const thread of page.data) {
+          if (typeof thread?.id !== "string" || !thread.id) throw historyError("Invalid thread identity");
+          ids.add(thread.id);
+        }
+        cursor = page.nextCursor;
+        if (!cursor) return { totalCount: ids.size };
+        if (typeof cursor !== "string" || cursors.has(cursor)) throw historyError("Invalid thread count cursor");
+        cursors.add(cursor);
+      }
+      throw historyError("Thread count temporarily unavailable");
+    })().finally(() => countRequests.delete(key));
+    countRequests.set(key, request);
+    return request;
+  }
 
   function internalRequest(method, params, { configured = false, history = false } = {}) {
     if (closed) return Promise.reject(new Error("Compatibility relay closed"));
@@ -275,6 +311,14 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     catch (_) { send(line); return; }
     if (!message) { send(line); return; }
     if (message.method === "initialize") initializeId = message.id;
+    if (message.method === "codexRemote/threads/count") {
+      void countThreads(message.params || {}).then(
+        result => { if (!closed) output(Buffer.from(JSON.stringify({ id: message.id, result }) + "\n")); },
+        () => { if (!closed) output(Buffer.from(JSON.stringify({ id: message.id,
+          error: { code: -32000, message: "Thread count unavailable" } }) + "\n")); },
+      );
+      return;
+    }
     if (["codexRemote/history/open", "codexRemote/history/page", "codexRemote/history/item"].includes(message.method)) {
       // Do not block inputWork: interrupt/approval requests must remain usable
       // while a large native history page is being read.
@@ -332,7 +376,8 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     catch (_) { output(line); return; }
     if (initializeId != null && message?.id === initializeId && message.result) {
       initializeId = undefined;
-      output(Buffer.from(JSON.stringify({ ...message, result: { ...message.result, codexRemoteHistoryVersion: 1 } }) + "\n"));
+      output(Buffer.from(JSON.stringify({ ...message, result: { ...message.result,
+        codexRemoteHistoryVersion: 1, codexRemoteThreadListVersion: 1 } }) + "\n"));
       return;
     }
     if (message && typeof message.id === "string" && message.id.startsWith(prefix)) {

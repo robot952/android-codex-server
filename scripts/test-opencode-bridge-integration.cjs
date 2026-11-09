@@ -9,7 +9,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 
 const repository = path.resolve(__dirname, "..");
-const bridgePath = path.join(repository, "app/src/main/assets/opencode-bridge.cjs");
+const bridgePath = path.join(repository, "flutter_app/assets/opencode-bridge.cjs");
 const openCodeBin = process.env.OPENCODE_BIN;
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-bridge-integration-"));
 const expectedKey = "integration-secret-not-real";
@@ -421,6 +421,23 @@ async function main() {
     const started = await sendRpc("thread/start");
     const threadID = started.thread.id;
     assert(threadID);
+    const listIds = new Set([threadID]);
+    for (let index = 0; index < 12; index++) {
+      listIds.add((await sendRpc("thread/start")).thread.id);
+    }
+    const firstList = await sendRpc("thread/list", { limit: 10 });
+    assert.equal(firstList.data.length, 10);
+    assert.equal(firstList.totalCount, 13);
+    assert(firstList.nextCursor);
+    const secondList = await sendRpc("thread/list", { limit: 10, cursor: firstList.nextCursor });
+    assert.equal(secondList.data.length, 3);
+    assert.equal(secondList.totalCount, 13);
+    assert.equal(secondList.nextCursor, null);
+    assert.deepEqual(new Set([...firstList.data, ...secondList.data].map(thread => thread.id)), listIds);
+    await sendRpc("thread/name/set", { threadId: threadID, name: "Unique pagination fixture" });
+    const searched = await sendRpc("thread/list", { limit: 10, searchTerm: "Unique pagination fixture" });
+    assert.equal(searched.totalCount, 1);
+    assert.deepEqual(searched.data.map(thread => thread.id), [threadID]);
     await sendRpc("turn/start", {
       threadId: threadID,
       model: "custom-api/gpt-5-integration-extra",

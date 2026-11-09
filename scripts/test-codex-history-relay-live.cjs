@@ -247,6 +247,7 @@ async function main() {
     assert.equal(persistedFixture[0].author, oldItem.author);
     assert.equal(persistedFixture[0].recipient, oldItem.recipient);
     assert.deepEqual(persistedFixture[0].content, oldItem.content, "Native must preserve injected historical content");
+    await activeClient.rpc("thread/name/set", { threadId, name: "List fixture initial" });
     await activeClient.stop();
     activeClient = null;
     assert.equal(requests.length, 0, "Fixture creation must not call a provider");
@@ -270,6 +271,19 @@ async function main() {
     "HTTP 400 must report a terminal error instead of retrying indefinitely");
     await sleep(200);
     assert.equal(requests.length, 1, "HTTP 400 must not automatically retry the invalid request");
+    // Native list excludes empty threads until their first user turn. Compare
+    // the index path to the ordinary path after the fixture has that turn.
+    const listParams = { limit: 10, modelProviders: ["history_fixture"],
+      archived: false, sortKey: "recency_at", sortDirection: "desc" };
+    const listed = await activeClient.rpc("thread/list", { ...listParams, useStateDbOnly: true });
+    assert.deepEqual(listed.data.map(thread => thread.id), [threadId]);
+    assert.equal(listed.nextCursor, null);
+    const ordinary = await activeClient.rpc("thread/list", listParams);
+    assert.deepEqual(listed.data.map(thread => thread.id), ordinary.data.map(thread => thread.id));
+    assert.deepEqual(await activeClient.rpc("codexRemote/threads/count", listParams), { totalCount: 1 });
+    assert.deepEqual(await activeClient.rpc("codexRemote/threads/count", { ...listParams, searchTerm: "missing fixture" }), { totalCount: 0 });
+    assert.deepEqual(await activeClient.rpc("codexRemote/threads/count", { ...listParams, modelProviders: ["unrelated"] }), { totalCount: 0 });
+    assert.equal(requests.length, 1, "Listing and counting cannot call the provider");
     for (let number = 1; number <= 2; number += 1) {
       if (number === 2) {
         await activeClient.rpc("thread/inject_items", { threadId, items: [liveItem] });

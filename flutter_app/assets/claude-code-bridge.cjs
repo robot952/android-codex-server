@@ -2008,7 +2008,7 @@ class ClaudeBridge {
         if (params.cursor && offset === 0) throw new Error("会话列表游标已失效");
         const limit = integer(params.limit, 100, 100);
         const data = threads.slice(offset, offset + limit).map(thread => this.view(thread));
-        return this.response(id, { data, nextCursor: offset + data.length < threads.length ? data.at(-1).id : null });
+        return this.response(id, { data, totalCount: threads.length, nextCursor: offset + data.length < threads.length ? data.at(-1).id : null });
       }
       if (method === "thread/start") return this.response(id, this.snapshot(this.store.create(params.cwd || this.directory, params.model)));
       const thread = this.store.get(String(params.threadId || ""));

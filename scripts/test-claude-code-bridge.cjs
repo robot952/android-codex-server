@@ -1105,12 +1105,15 @@ test("history pagination, compact views, list search and workspace isolation", a
   await peer.ok("thread/name/set", { threadId: secondId, name: "Second fixture" });
   const listed = await peer.ok("thread/list", { limit: 1 });
   assert.equal(listed.data.length, 1);
+  assert.equal(listed.totalCount, 2);
   assert.ok(listed.nextCursor);
   const remainder = await peer.ok("thread/list", { limit: 1, cursor: listed.nextCursor });
   assert.equal(remainder.data.length, 1);
+  assert.equal(remainder.totalCount, 2);
   assert.equal(remainder.nextCursor, null);
   assert.notEqual(remainder.data[0].id, listed.data[0].id);
   assert.deepEqual((await peer.ok("thread/list", { searchTerm: "SEARCHABLE" })).data.map(thread => thread.id), [record.id]);
+  assert.equal((await peer.ok("thread/list", { searchTerm: "SEARCHABLE" })).totalCount, 1);
   assert.deepEqual((await peer.ok("thread/list", { archived: true })).data, []);
   assert.ok((await peer.request("thread/list", { cursor: "missing" })).error);
 });

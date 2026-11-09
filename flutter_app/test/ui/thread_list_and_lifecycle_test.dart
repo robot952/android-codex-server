@@ -39,6 +39,9 @@ class _ThreadListController extends AppController {
   bool? lastRefreshSilent;
   Completer<void>? refreshGate;
   bool hasMoreThreads = false;
+  int? totalCount;
+  @override
+  int? get activeThreadListTotal => totalCount;
   int loadMoreThreadsCount = 0;
   Completer<void>? loadMoreGate;
   AgentKind? selectedAgent;
@@ -984,6 +987,13 @@ void main() {
     expect(find.byType(RefreshIndicator), findsNothing);
     final searchTop = tester.getTopLeft(find.byType(TextField)).dy;
     final headerTop = tester.getTopLeft(find.text('最近任务')).dy;
+    final totalTop = tester
+        .getTopLeft(find.byKey(const ValueKey('thread-list-total')))
+        .dy;
+    controller.totalCount = 47;
+    controller.showState(controller.state.copyWith());
+    await tester.pump();
+    expect(find.text('47'), findsOneWidget);
     final gesture = await tester.startGesture(
       tester.getCenter(find.byKey(const ValueKey('thread-list-scroll'))),
     );
@@ -992,10 +1002,7 @@ void main() {
 
     expect(find.text('松开刷新'), findsOneWidget);
     expect(tester.getTopLeft(find.byType(TextField)).dy, searchTop);
-    expect(
-      tester.getTopLeft(find.text('最近任务')).dy,
-      greaterThan(headerTop + 70),
-    );
+    expect(tester.getTopLeft(find.text('最近任务')).dy, closeTo(headerTop, 0.1));
 
     controller.refreshGate = Completer<void>();
     await gesture.up();
@@ -1005,7 +1012,11 @@ void main() {
     expect(controller.refreshThreadsCount, 1);
     expect(controller.lastRefreshSilent, isTrue);
     expect(tester.getTopLeft(find.byType(TextField)).dy, searchTop);
-    expect(tester.getTopLeft(find.text('最近任务')).dy, greaterThan(headerTop));
+    expect(tester.getTopLeft(find.text('最近任务')).dy, closeTo(headerTop, 0.1));
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('thread-list-total'))).dy,
+      closeTo(totalTop, 0.1),
+    );
 
     controller.refreshGate!.complete();
     await tester.pumpAndSettle();
