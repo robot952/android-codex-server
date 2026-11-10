@@ -28,7 +28,7 @@ lines.on("line", (line) => {
   if (message.id === 1 && message.result) {
     initialized = true;
     send({ method: "initialized", params: {} });
-    send({ method: "thread/list", id: 2, params: { limit: 10, sortKey: "recency_at", sortDirection: "desc" } });
+    send({ method: "thread/list", id: 2, params: { limit: 10, sortKey: "updated_at", sortDirection: "desc" } });
     send({ method: "model/list", id: 3, params: { limit: 50 } });
   } else if (message.id === 2 && message.result) {
     sawThreads = Array.isArray(message.result.data);

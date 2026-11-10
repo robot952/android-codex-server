@@ -162,6 +162,73 @@ Future<_ThreadListController> _pumpPagedThreadList(
 }
 
 void main() {
+  testWidgets('recent updates stay above older cached and refreshed rows', (
+    tester,
+  ) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final older = AgentThread(
+      id: 'older',
+      title: 'Older conversation',
+      updatedAt: (now - const Duration(hours: 1).inMilliseconds) ~/ 1000,
+    );
+    final recent = AgentThread(
+      id: 'recent',
+      title: 'Recent conversation',
+      updatedAt: now ~/ 1000,
+    );
+    final source = [older, recent];
+    final controller = await _pumpPagedThreadList(
+      tester,
+      _pagedThreadListState(source),
+    );
+    expect(find.text('刚刚'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text(recent.title)).dy,
+      lessThan(tester.getTopLeft(find.text(older.title)).dy),
+    );
+    expect(source.first.id, older.id, reason: 'Do not mutate the cache');
+
+    // A refreshed timestamp must move an existing row rather than retaining
+    // its cached position; ties keep the original order.
+    controller.showState(
+      _pagedThreadListState([recent, older.copyWith(updatedAt: now + 1000)]),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text(older.title)).dy,
+      lessThan(tester.getTopLeft(find.text(recent.title)).dy),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  test('cached and searched lists share timestamp units and stable ties', () {
+    const threads = [
+      AgentThread(id: 'unknown', title: 'Match', updatedAt: 0),
+      AgentThread(id: 'old-millis', title: 'Match', updatedAt: 1999996400000),
+      AgentThread(id: 'tie-seconds', title: 'Match', updatedAt: 2000000000),
+      AgentThread(id: 'tie-millis', title: 'Match', updatedAt: 2000000000000),
+      AgentThread(id: 'new-seconds', title: 'Other', updatedAt: 2000000030),
+    ];
+    for (final connected in [false, true]) {
+      expect(
+        visibleAgentThreads(
+          threads,
+          '',
+          agentConnected: connected,
+        ).map((thread) => thread.id),
+        ['new-seconds', 'tie-seconds', 'tie-millis', 'old-millis', 'unknown'],
+      );
+      expect(
+        visibleAgentThreads(
+          threads,
+          'match',
+          agentConnected: connected,
+        ).map((thread) => thread.id),
+        ['tie-seconds', 'tie-millis', 'old-millis', 'unknown'],
+      );
+    }
+  });
+
   for (final query in ['', 'matching']) {
     testWidgets(
       'a ${query.isEmpty ? 'short' : 'filtered empty'} page can load more and retry',

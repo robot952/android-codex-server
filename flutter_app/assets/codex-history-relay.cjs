@@ -26,7 +26,7 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       let cursor;
       for (let pageNumber = 0; pageNumber < 500 && Date.now() - started < 25000; pageNumber++) {
         const page = await internalRequest("thread/list", {
-          limit: 200, archived: false, sortKey: "recency_at", sortDirection: "desc",
+          limit: 200, archived: false, sortKey: "updated_at", sortDirection: "desc",
           useStateDbOnly: true,
           ...(searchTerm ? { searchTerm } : {}),
           ...(modelProviders?.length ? { modelProviders } : {}),

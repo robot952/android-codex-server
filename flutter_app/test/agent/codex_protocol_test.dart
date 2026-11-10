@@ -80,14 +80,14 @@ void main() {
       expect(jsonDecode(list.encode())['params'], <String, Object?>{
         'limit': 100,
         'archived': false,
-        'sortKey': 'recency_at',
+        'sortKey': 'updated_at',
         'sortDirection': 'desc',
         'searchTerm': 'migration',
       });
       expect(jsonDecode(page.encode())['params'], <String, Object?>{
         'limit': 100,
         'archived': false,
-        'sortKey': 'recency_at',
+        'sortKey': 'updated_at',
         'sortDirection': 'desc',
         'searchTerm': 'migration',
         'cursor': 'next-page-token',

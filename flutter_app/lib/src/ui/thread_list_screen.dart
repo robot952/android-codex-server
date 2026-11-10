@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/app_controller.dart';
 import '../domain/models.dart';
+import '../domain/thread_ordering.dart';
 import '../platform/windows_local_server_client.dart';
 import '../ssh/terminal_manager.dart';
 import 'server_metrics_strip.dart';
@@ -1712,15 +1713,15 @@ List<AgentThread> visibleAgentThreads(
   // "0 tasks" view.
   final _ = agentConnected;
   final normalized = query.trim().toLowerCase();
-  if (normalized.isEmpty) return threads;
-  return threads
-      .where(
-        (thread) =>
-            thread.title.toLowerCase().contains(normalized) ||
-            thread.preview.toLowerCase().contains(normalized) ||
-            thread.cwd.toLowerCase().contains(normalized),
-      )
-      .toList(growable: false);
+  return threadsByUpdatedAt(
+    threads.where(
+      (thread) =>
+          normalized.isEmpty ||
+          thread.title.toLowerCase().contains(normalized) ||
+          thread.preview.toLowerCase().contains(normalized) ||
+          thread.cwd.toLowerCase().contains(normalized),
+    ),
+  );
 }
 
 bool isAgentThreadRunning(AgentThread thread) {
@@ -1733,7 +1734,7 @@ bool isAgentThreadRunning(AgentThread thread) {
 
 String? threadUpdatedAtLabel(int value, {DateTime? now}) {
   if (value <= 0) return null;
-  final millis = value < 100000000000 ? value * 1000 : value;
+  final millis = threadTimestampMillis(value);
   final current = now ?? DateTime.now();
   final deltaSeconds = current
       .difference(DateTime.fromMillisecondsSinceEpoch(millis))

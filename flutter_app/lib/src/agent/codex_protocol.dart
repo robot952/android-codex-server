@@ -609,7 +609,7 @@ final class CodexProtocolGeneration {
   CodexRpcRequest threadList({
     int limit = 100,
     bool archived = false,
-    String sortKey = 'recency_at',
+    String sortKey = 'updated_at',
     String sortDirection = 'desc',
     String? searchTerm,
     String? cursor,

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.200+332，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.201+333，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -112,6 +112,7 @@ Debug 日志已经有 Flutter/Android 实现，
 | flutter_app/lib/src/app/request_usage_controller.dart、flutter_app/lib/src/domain/request_usage.dart | 独立用量状态、单次请求身份/指标归一化、去重、日期筛选及有界保留 | 当前运行；消费实时用量，非回合计时或账单 |
 | flutter_app/lib/src/persistence/request_usage_store.dart | 本机请求统计元数据、独立 isolate 编解码、串行原子落盘和读取失败保护 | 当前运行；不保存正文、地址或凭据 |
 | flutter_app/lib/src/domain/models.dart | Freezed/JSON 领域模型、Agent/线程/时间线/审批/上下文，以及安装/工作区/全局设置状态 | 当前与预留并存 |
+| flutter_app/lib/src/domain/thread_ordering.dart | 会话更新时间单位归一化、稳定降序排列；页面时间标签与排序共用 | 当前运行 |
 | flutter_app/lib/src/domain/model_catalog.dart | 自定义模型 ID/名称/token 上限归一化、远端/自定义目录合并、隐藏、编辑恢复与 API 模型选项映射 | 当前运行；供控制器和展示层共用 |
 | flutter_app/lib/src/persistence/profile_store.dart | 加密 Profile 存储、边界归一化、旧原生数据迁移 | 当前运行 |
 | flutter_app/lib/src/ssh/server_connection_manager.dart | 每个 profileId 一个主机客户端、锁和 generation | 当前运行 |
@@ -442,7 +443,8 @@ SSH 已连接后页面按需启动当前 Agent；当前 Agent 完成握手后显
 顶部操作顺序与原版一致：终端、刷新、新建会话、设置、切换服务器；设置和切换服务器分别使用独立
 弹窗，服务器弹窗显示连接状态、用户名/地址、当前选中标记和“管理服务器”入口。Agent 选择器使用
 状态圆点和绿色选中边框，任务列表标题显示“最近任务/搜索结果”和当前筛选的总数量；会话行显示终端图标、
-相对时间、预览、工作目录和来源。
+相对时间、预览、工作目录和来源。列表与右侧时间统一依据 `updatedAt` 降序排列，Codex 原生分页使用
+`updated_at`；缓存展示、搜索及刷新/分页合并也按同一规则稳定排序。
 如果远程 Agent 运行时或连接组件正在安装，最小化安装弹窗不会停止任务；对应 Agent 分段按钮显示独立
 总体进度条和百分比，点击当前进度会恢复该 lane 的安装弹窗，不会重复启动下载。
 点击 CPU、内存、磁盘或网络指标会显示同一个持久 Tooltip，包含 CPU 核心数和占比、内存/磁盘已用与
@@ -1742,6 +1744,8 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 
 39. 会话列表每页请求 10 条，标题旁显示当前筛选的总数，未知时显示 `—`，不得冒充为已加载数量。
     “最近任务/搜索结果”和数量不随下拉刷新移动；模型目录和总数统计不能阻塞首屏。恢复对话的原有转圈保留。
+40. 会话列表按右侧显示的 `updatedAt` 从新到旧排序；服务端分页、刷新合并、旧缓存和搜索使用同一依据。
+    秒/毫秒时间戳统一比较，同时间保留既有顺序，未知时间放后；不得为排序改写历史修订时间或自动拉取全量会话。
 
 ## 15. 修改影响图和顺序
 
@@ -3491,6 +3495,27 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
   三种 bridge 的 APK 资源逐一与源码比对一致；模拟器竖屏显示 `v1.8.200`，检查后关闭并保留数据。
   内网完整下载回验 `120ms`；外网 FRP 只提供地址，不回验。不创建标签或云端 Release。
+
+### 17.105 会话列表排序与显示时间一致（2026-11-10）
+
+- 应用版本 `1.8.201+333`。Codex `thread/list` 改按 `updated_at` 降序，避免服务器的 `recency_at`
+  顺序与页面 `updatedAt` 标签不一致；首屏仍只请求 10 条，后续页使用同一排序及原生游标。
+- 首屏、分页重复项更新和保留旧页的刷新合并均按更新时间重排；页面也为旧磁盘缓存和实时快照统一排序。
+  公共比较器与时间标签使用相同的秒/毫秒转换，相同时间保留既有顺序；不修改原始时间或缓存修订语义。
+- 定向回归覆盖“刚刚”位于“一小时前”之上、缓存输入不变、刷新后换位、搜索/断线和混合时间单位，
+  以及分页重复项去重重排、返回列表后台刷新。原生 Codex 隔离实例检查两条会话按更新时间分页的游标及顺序。
+- 验证：定向 Flutter `261 passed / 2 optional skipped`；全量 `1043 passed / 2 optional skipped`，
+  analyze、服务端兼容脚本、Claude 49 场景和真实 CLI mock API 检查通过，OpenCode 完整门禁命中缓存。
+  原生 Codex `0.162.1` 在隔离数据和本地 mock 下通过更新时间分页、既有历史分页及错误恢复检查。
+- 单次发布门禁 `6m41.388s`：服务端 `2.723s`、OpenCode `0.138s`、Claude `28.379s`、
+  Android `5m14.626s`（全量测试 `1m44.928s`、Debug `46.011s`、Release `2m32.405s`），
+  释放 Gradle `0.756s`、模拟器 `24.239s`、索引同步 `3.403s`、发布 `25.821s`、调度 `1.303s`。
+  本轮无失败返工；任务计时 ID 为 `thread-list-sort-20261110`。嵌套阶段不重复相加。
+- `dist/Agent-1.8.201.apk` 为 `32,360,921` 字节，SHA-256 为
+  `067c825a26ac5c68710455aea79a149e0c31140cb618078a143c7cca25018279`，签名证书继续使用
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+  已核对 APK 内 relay 与源码一致；模拟器竖屏显示 `v1.8.201`，检查后关闭并保留数据。
+  内网完整下载回验 `117ms`；外网 FRP 只提供地址，不回验。不创建标签或云端 Release。
 
 ## 18. 文档维护规则
 

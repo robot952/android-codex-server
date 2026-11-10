@@ -24,6 +24,7 @@ import '../agent/thread_session_cache.dart';
 import '../agent/thread_title.dart';
 import '../domain/model_catalog.dart';
 import '../domain/models.dart';
+import '../domain/thread_ordering.dart';
 import '../domain/async_question_reply.dart';
 import 'older_timeline_merge.dart';
 import 'profile_scoped_back_stack.dart';
@@ -6475,7 +6476,7 @@ class AppController extends StateNotifier<AppUiState> {
                   threadLists[key] ?? const <AgentThread>[],
                   threadPage.threads,
                 )
-              : threadPage.threads;
+              : threadsByUpdatedAt(threadPage.threads);
           _agentThreadNextCursors[key] = threadPage.nextCursor;
           _agentThreadCursorSearches[key] = search;
           final total =
@@ -8671,11 +8672,11 @@ List<AgentThread> _mergeListedThreads(
       indexes[identity] = merged.length;
       merged.add(thread);
     } else {
-      // Keep the existing page's position while preferring fresh metadata.
+      // Fresh timestamps can move a thread ahead of the previously loaded page.
       merged[existingIndex] = thread;
     }
   }
-  return List<AgentThread>.unmodifiable(merged);
+  return threadsByUpdatedAt(merged);
 }
 
 String _defaultAgentProvider(AgentKind agent) => switch (agent) {

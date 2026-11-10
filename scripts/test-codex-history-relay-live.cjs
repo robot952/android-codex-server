@@ -274,7 +274,7 @@ async function main() {
     // Native list excludes empty threads until their first user turn. Compare
     // the index path to the ordinary path after the fixture has that turn.
     const listParams = { limit: 10, modelProviders: ["history_fixture"],
-      archived: false, sortKey: "recency_at", sortDirection: "desc" };
+      archived: false, sortKey: "updated_at", sortDirection: "desc" };
     const listed = await activeClient.rpc("thread/list", { ...listParams, useStateDbOnly: true });
     assert.deepEqual(listed.data.map(thread => thread.id), [threadId]);
     assert.equal(listed.nextCursor, null);
@@ -339,6 +339,20 @@ async function main() {
       /code=-32601; reason=thread\/items\/list is not supported yet/);
     const populatedLegacy = await activeClient.rpc("thread/turns/list", { threadId: legacy.thread.id, limit: 1, sortDirection: "desc", itemsView: "full" });
     assert(populatedLegacy.data.flatMap(turn => turn.items).length >= 2);
+    // Exercise the UI's actual updated_at sort and opaque pagination cursor
+    // against two persisted threads, without downloading their histories.
+    const firstThreadPage = await activeClient.rpc("thread/list", { ...listParams, limit: 1, useStateDbOnly: true });
+    assert.equal(firstThreadPage.data.length, 1);
+    assert(firstThreadPage.nextCursor);
+    const secondThreadPage = await activeClient.rpc("thread/list", {
+      ...listParams, limit: 1, useStateDbOnly: true, cursor: firstThreadPage.nextCursor,
+    });
+    assert.equal(secondThreadPage.data.length, 1);
+    assert.equal(secondThreadPage.nextCursor, null);
+    const paginatedThreads = [...firstThreadPage.data, ...secondThreadPage.data];
+    assert.deepEqual(new Set(paginatedThreads.map(thread => thread.id)), new Set([threadId, legacy.thread.id]));
+    assert(paginatedThreads[0].updatedAt >= paginatedThreads[1].updatedAt,
+      "Native updated_at pagination must match the displayed update time");
     assert.equal(upgrades, 0, "Compatibility route must use the supported Responses transport");
     await activeClient.stop();
     activeClient = null;

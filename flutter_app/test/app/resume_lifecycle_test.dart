@@ -1851,6 +1851,10 @@ void main() {
     final agent = _ResumeAgent(threads: const [_threadA, _threadB]);
     final harness = await _createHarness(agent);
     expect(agent.listThreadsCount, 1);
+    expect(harness.controller.state.threads.map((thread) => thread.id), [
+      'thread-b',
+      'thread-a',
+    ]);
 
     harness.controller.openThread(_threadA);
     await _waitUntil(

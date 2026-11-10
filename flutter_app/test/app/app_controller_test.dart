@@ -902,12 +902,21 @@ class _SubAgentEventAgent extends _SubAgentNavigationAgent {
 
 class _PaginatedThreadAgent extends _SubAgentNavigationAgent
     implements RemoteAgentThreadPaginationClient {
+  _PaginatedThreadAgent({
+    this.firstPage = const AgentThreadPage(
+      threads: <AgentThread>[_SubAgentNavigationAgent.rootThread],
+      nextCursor: 'page-2',
+    ),
+    this.secondPage = const AgentThreadPage(
+      threads: <AgentThread>[_SubAgentNavigationAgent.childThread],
+    ),
+  });
+
+  final AgentThreadPage firstPage;
+  final AgentThreadPage secondPage;
+
   @override
-  Future<AgentThreadPage> listThreads({String? searchTerm}) async =>
-      const AgentThreadPage(
-        threads: <AgentThread>[_SubAgentNavigationAgent.rootThread],
-        nextCursor: 'page-2',
-      );
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async => firstPage;
 
   @override
   Future<AgentThreadPage> listThreadsPage({
@@ -915,9 +924,7 @@ class _PaginatedThreadAgent extends _SubAgentNavigationAgent
     String? cursor,
   }) async {
     if (cursor != 'page-2') throw StateError('分页游标错误');
-    return const AgentThreadPage(
-      threads: <AgentThread>[_SubAgentNavigationAgent.childThread],
-    );
+    return secondPage;
   }
 }
 
@@ -2086,6 +2093,38 @@ void main() {
         ),
         <String>['root-thread', 'child-thread'],
       );
+      expect(harness.controller.activeThreadListHasMore, isFalse);
+    },
+  );
+
+  test(
+    'fresh duplicate timestamps reorder merged pages without duplicates',
+    () async {
+      final agent = _PaginatedThreadAgent(
+        firstPage: const AgentThreadPage(
+          threads: [
+            AgentThread(id: 'root-thread', updatedAt: 2000000000),
+            AgentThread(id: 'recent-thread', updatedAt: 2000003600),
+          ],
+          nextCursor: 'page-2',
+        ),
+        secondPage: const AgentThreadPage(
+          threads: [
+            AgentThread(id: 'root-thread', updatedAt: 2000007200000),
+            AgentThread(id: 'older-thread', updatedAt: 1999996400),
+          ],
+        ),
+      );
+      final harness = await _createSubAgentHarness(agent: agent);
+      harness.controller.backToThreadList();
+      await harness.controller.loadMoreThreads();
+      expect(
+        harness.controller.state.agentThreadLists.values.single.map(
+          (thread) => thread.id,
+        ),
+        ['root-thread', 'recent-thread', 'older-thread'],
+      );
+      expect(harness.controller.state.threads.first.updatedAt, 2000007200000);
       expect(harness.controller.activeThreadListHasMore, isFalse);
     },
   );

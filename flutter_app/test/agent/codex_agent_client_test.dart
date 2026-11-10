@@ -693,7 +693,7 @@ void main() {
         for (final params in requests) {
           expect(params['limit'], 10);
           expect(params['searchTerm'], 'search');
-          expect(params['sortKey'], 'recency_at');
+          expect(params['sortKey'], 'updated_at');
           expect(params['sortDirection'], 'desc');
           expect(params['archived'], isFalse);
           expect(
