@@ -19,6 +19,7 @@ import 'async_question_dialog.dart';
 import 'diagnostic_log_sheet.dart';
 import 'markdown_links.dart';
 import 'model_selection_presentation.dart';
+import 'reading_anchor_sliver.dart';
 import 'request_usage_summary.dart';
 import 'sub_agent_presentation.dart';
 import 'theme.dart';
@@ -2651,8 +2652,17 @@ class _Transcript extends StatelessWidget {
       };
       return SliverPadding(
         key: transcriptItemsSliverKey,
-        padding: const EdgeInsets.symmetric(horizontal: 9),
-        sliver: SliverList(
+        padding: const EdgeInsets.only(
+          left: 9,
+          right: 9,
+          top: _transcriptVerticalPadding,
+        ),
+        sliver: ReadingAnchorSliverList(
+          key: ValueKey(state.activeThread?.id),
+          preserveReadingPosition: () =>
+              !initialBottomPending &&
+              controller.hasClients &&
+              controller.position.pixels < -0.5,
           delegate: SliverChildBuilderDelegate(
             (context, index) {
               final sourceIndex = itemCount - index - 1;
@@ -2663,7 +2673,6 @@ class _Transcript extends StatelessWidget {
               return Padding(
                 key: itemKeys[sourceIndex],
                 padding: EdgeInsets.only(
-                  top: index == itemCount - 1 ? _transcriptVerticalPadding : 0,
                   bottom: index == 0 || isProcessing
                       ? 0
                       : beforeProcessing

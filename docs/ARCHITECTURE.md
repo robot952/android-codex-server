@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.201+333，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.202+334，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -3516,6 +3516,35 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
   已核对 APK 内 relay 与源码一致；模拟器竖屏显示 `v1.8.201`，检查后关闭并保留数据。
   内网完整下载回验 `117ms`；外网 FRP 只提供地址，不回验。不创建标签或云端 Release。
+
+### 17.106 流式输出时保持历史阅读位置（2026-11-13）
+
+- 应用版本 `1.8.202+334`。用户向上翻看消息后，下方流式文字、命令或新消息增长时，必须保持正在阅读
+  的内容在屏幕上的位置；回到底部才继续跟随最新输出。不能只断言滚动数值不变，反向布局中相同数值
+  不代表相同内容位置。
+- `ReadingAnchorSliverList` 记录可见行的稳定渲染对象和顶部位置，在布局阶段通过
+  `scrollOffsetCorrection` 同帧校正内容增长和视口高度变化，不在绘制后 `jumpTo`，不打断用户拖动。
+  大段文字增减时暂留并测量既有锚点；批量追加条目按稳定 key 保留已知坐标，回到底部时按需重建原点。
+  只处理已构建的可见/缓存窗口，不下载或构建全部历史，不依赖懒列表估算的总高度。
+- 消息区顶部留白放到列表外层，避免补入更早历史时原首条消息移除留白导致阅读位置偏移。
+  切换会话通过 thread key 重置锚点；短会话顶部对齐、长会话首次直接到底部及历史加载覆盖层保持可用。
+- 回归逐帧检查文字坐标，覆盖连续文本、单条长消息、大块增减、批量新行、拖动中更新、视口变高/变矮、
+  输出结束、回到底部和切换会话；复用连续历史分页、文本选择和懒构建回归。
+- 验证：定向 `44` 项通过，Flutter 全量 `1047 passed / 2 optional skipped`、analyze、Claude bridge
+  与 CLI mock 检查通过；服务器脚本与 OpenCode 门禁复用有效缓存。复现用例在修复前首帧偏移 `42px`，
+  修复后逐帧位置误差不超过 `0.5px`。模拟器验证正常 Release 启动与 `v1.8.202` 版本显示；
+  这是受控 Widget 回归和模拟器启动检查，不代替用户真机长时间运行验收。
+- 开发阶段先保留失败复现，再修复历史顶部留白、超大输出的锚点回收和批量追加后的底部原点边界；
+  定向回归及 lint 均已复验。发布过程中补充批量追加 WorkScreen 回归，导致发布校验指纹改变，
+  自动重跑一次全量验证和增量 Release 构建；未清理缓存、应用数据或修改签名。
+- 发布门禁 `9m57.346s`：服务器/OpenCode 缓存 `0.072s/0.140s`、Claude `28.830s`、Android
+  `5m28.851s`（全量测试 `1m59.265s`、Debug `49.615s`、Release `2m32.060s`）、模拟器
+  `32.404s`、索引 `2.323s`、发布 `3m22.662s`（复验测试 `1m49.418s`、增量 Release `58.631s`）。
+  嵌套阶段不重复相加；任务计时 ID `transcript-reading-anchor`。
+- `dist/Agent-1.8.202.apk` 大小 `32,369,845` 字节，SHA-256 为
+  `5bf5189e7323d6c1aa6ac97d569149e65b0c55d098a97833ee34b95f9486bee9`，证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。内网完整下载回验通过，
+  外网 FRP 按要求只提供地址；模拟器检查后关闭并保存数据，不创建版本标签或云端 Release。
 
 ## 18. 文档维护规则
 

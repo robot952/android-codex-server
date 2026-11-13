@@ -705,6 +705,99 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('keeps reading text still on every streaming frame', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 840);
+    addTearDown(tester.view.reset);
+
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager)
+      ..showState(timelineState(timeline: entries(0, 60)));
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final view = find.byType(CustomScrollView);
+    final position = tester.widget<CustomScrollView>(view).controller!.position;
+    position.jumpTo(-180);
+    await tester.pumpAndSettle();
+    final reading = find.text('消息 52');
+    final readingTop = tester.getTopLeft(reading).dy;
+    expect(readingTop, greaterThan(tester.getTopLeft(view).dy));
+    expect(readingTop, lessThan(tester.getBottomLeft(view).dy));
+
+    for (var chunk = 1; chunk <= 8; chunk += 1) {
+      controller.showState(
+        controller.state.copyWith(
+          running: true,
+          timeline: [
+            ...entries(0, 60),
+            TimelineEntry(
+              id: 'streaming-entry',
+              kind: TimelineKind.agentMessage,
+              text: List.filled(chunk, '正在逐行输出的新内容').join('\n'),
+            ),
+          ],
+        ),
+      );
+      for (var frame = 0; frame < 3; frame += 1) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(
+          tester.getTopLeft(reading).dy,
+          closeTo(readingTop, 0.5),
+          reason: 'chunk $chunk frame $frame',
+        );
+      }
+    }
+    expect(find.byTooltip('回到底部'), findsOneWidget);
+    controller.showState(
+      controller.state.copyWith(
+        timeline: [...controller.state.timeline, ...entries(300, 80)],
+      ),
+    );
+    for (var frame = 0; frame < 3; frame += 1) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(reading, findsOneWidget);
+      expect(tester.getTopLeft(reading).dy, closeTo(readingTop, 0.5));
+    }
+    controller.showState(controller.state.copyWith(running: false));
+    for (var frame = 0; frame < 3; frame += 1) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.getTopLeft(reading).dy, closeTo(readingTop, 0.5));
+    }
+    await tester.tap(find.byTooltip('回到底部'));
+    for (var frame = 0; frame < 20; frame += 1) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(position.pixels, closeTo(0, 0.01));
+    controller.showState(
+      controller.state.copyWith(
+        timeline: [...controller.state.timeline, ...entries(100, 5)],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(position.pixels, closeTo(0, 0.01));
+    expect(find.text('消息 104'), findsOneWidget);
+    position.jumpTo(-200);
+    await tester.pumpAndSettle();
+    controller.showState(
+      timelineState(timeline: entries(200, 50)).copyWith(
+        activeThread: const AgentThread(id: 'different-thread', title: '另一个会话'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(position.pixels, closeTo(0, 0.01));
+    expect(find.text('消息 249'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'does not re-anchor a manually positioned transcript while running',
     (tester) async {
@@ -736,7 +829,15 @@ void main() {
         (position.minScrollExtent + position.maxScrollExtent) / 2,
       );
       await tester.pump();
-      final before = position.pixels;
+      final viewport = tester.getRect(find.byType(CustomScrollView));
+      final reading = entries(0, 60)
+          .map((entry) => find.text(entry.text))
+          .firstWhere(
+            (finder) =>
+                finder.evaluate().isNotEmpty &&
+                viewport.contains(tester.getCenter(finder)),
+          );
+      final before = tester.getTopLeft(reading).dy;
 
       controller.showState(
         controller.state.copyWith(
@@ -753,7 +854,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(position.pixels, closeTo(before, 1));
+      expect(tester.getTopLeft(reading).dy, closeTo(before, 0.5));
+      expect(position.pixels, lessThan(-1));
       expect(find.byTooltip('回到底部'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
