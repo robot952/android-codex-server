@@ -4543,7 +4543,10 @@ class _MarkdownMessage extends StatelessWidget {
           code: theme.textTheme.bodySmall?.copyWith(
             fontFamily: 'monospace',
             color: codexText,
-            backgroundColor: codexBackground,
+            // TextSpan backgrounds paint over SelectionArea's highlight. Keep
+            // this transparent (also overrides Markdown's default code fill)
+            // and paint the fenced block background in its decoration below.
+            backgroundColor: Colors.transparent,
             letterSpacing: 0,
           ),
           codeblockPadding: const EdgeInsets.all(9),

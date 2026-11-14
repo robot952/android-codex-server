@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.202+334，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.203+335，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -3545,6 +3545,30 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
   `5bf5189e7323d6c1aa6ac97d569149e65b0c55d098a97833ee34b95f9486bee9`，证书 SHA-256 为
   `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。内网完整下载回验通过，
   外网 FRP 按要求只提供地址；模拟器检查后关闭并保存数据，不创建版本标签或云端 Release。
+
+### 17.107 Markdown 代码选区可见性（2026-11-14）
+
+- 应用版本 `1.8.203+335`。代码长按后不仅要显示菜单和手柄，所选文字范围也必须有可见高亮；
+  复制应保留代码文字、换行与标点，不能把 Markdown 围栏带入剪贴板。
+- `WorkScreen._MarkdownMessage` 将代码 TextStyle 的背景显式设为透明，避免 Flutter 先画选区后画
+  字符背景时遮住高亮；显式透明也覆盖 Markdown 默认样式合并带来的代码底色。代码块的深色底、
+  边框、内边距及横向滚动仍由外层装饰和原组件负责，行内代码保留等宽字体。
+- `markdown_code_selection_test.dart` 通过实际绘制像素检查围栏代码、缩进代码和行内代码的选区，
+  同时验证长按复制单词、全选复制多行、取消选区后高亮消失。测试不能只检查 selectionColor 属性，
+  因为属性正确仍可能被文字背景遮挡。旧实现三类像素断言均失败，透明背景修复后通过。
+- Android 专项入口 `integration_test/markdown_code_selection_test.dart` 复用相同生产界面，使用设备
+  字体和系统剪贴板；普通 Widget 测试使用 420×840 竖屏。发布后仍需用户真机确认厂商菜单表现。
+- 验证：44 项定向 Widget 测试与 3 项 Android 专项通过；已检查 1220×2712 竖屏代码全选截图，
+  高亮与手柄可见，剪贴板保留两行 C 代码。开发中修正测试字体为实心字形、设备抗锯齿产生少量同色
+  像素的采样假设，保留失败记录并复验；没有为测试放宽产品行为。
+- 最终 analyze、全量 Flutter `1050 passed / 2 optional skipped`、Claude bridge/CLI mock、
+  Debug/Release 构建与正式 APK 启动检查通过；服务器脚本和 OpenCode 门禁复用缓存。发布门禁
+  `6m42.402s`：服务器/OpenCode `0.068s/0.156s`，Claude `29.382s`，Android `4m59.807s`，
+  模拟器 `29.881s`，索引 `1.570s`，部署及下载回验 `26.306s`；任务计时 ID `markdown-code-selection`。
+- `dist/Agent-1.8.203.apk` 为 `32,369,837` 字节；SHA-256 为
+  `cf54d102bb1f46d721fa6dfdf8748367db0e8378e299cfc2f3c5c95fd9571184`，稳定证书 SHA-256 为
+  `72722218709a6d7fd0e80b944903ae2961b4cfa8abe03586f602acdc1ea0f52a`。
+  内网完整下载回验通过，外网 FRP 只提供地址；模拟器覆盖安装正常 Release 后保存数据关闭。
 
 ## 18. 文档维护规则
 

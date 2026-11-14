@@ -732,6 +732,11 @@ Codex 使用索引列表，服务端后台按相同筛选统计总数；失败�
 `test/ui/work_screen_layout_test.dart`。向上阅读时逐帧核对可见文字的屏幕坐标，不能用滚动数值不变代替；
 覆盖大块输出、追加条目、拖动、完成态、视口高度变化、返回底部和切换会话，同时保持历史分页与懒加载。
 
+代码选择回归见 `test/ui/markdown_code_selection_test.dart`：通过绘制像素验证选区底色未被代码背景
+遮住，并验证单词与多行复制。Android 专项 `integration_test/markdown_code_selection_test.dart`
+使用相同生产界面、设备字体和系统剪贴板，不连接服务器；打印 `CODE_SELECTION_SCREENSHOT_READY`
+后保留 8 秒截图窗口。完成后覆盖安装正常 Release，保留模拟器数据，不能交付测试包。
+
 ## 10. 每次修改的收尾
 
 1. 确认最近的定向测试与 1.2 指定的单个主门禁都通过，不补跑低价值的重复门禁。
