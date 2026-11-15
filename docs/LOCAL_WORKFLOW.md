@@ -462,6 +462,11 @@ Gitee 的 `run-gitee-release.sh` 默认只构建 Release APK，保留 analyze、
 该优化不会消除首次 Release 的依赖下载/Gradle 冷启动成本，不能把旧日志整段 Debug 耗时当作确定节省量。
 设备测试入口同样保留默认 Pub 步骤，以在 Release 后重新生成含测试插件的 Debug 注册表。
 
+日志压缩设备回归运行 `./scripts/flutter-tool.sh --no-version-check test
+integration_test/diagnostic_logging_test.dart -d emulator-5554`。使用临时 Dart 目录与空 Profile，验证
+生产生命周期观察者、任务移除回调和真实 Android gzip 通道；原生 Debug 开关测试后恢复，不清空应用数据。
+测试结束以正常 `publish --reuse` 覆盖安装正式入口，避免设备停留在 integration-test 入口。
+
 智能标题定向回归使用 `test/app/thread_title_test.dart`、`test/agent/thread_title_test.dart` 及
 `codex_global_settings_test.dart`、`opencode_agent_client_test.dart`、`claude_code_agent_client_test.dart`。
 Node bridge/settings 回归验证实际协议与活动 writer 改名；均使用假凭据、临时 HOME 或 loopback，
@@ -676,7 +681,7 @@ fixture 随 `scripts/test-workflow.sh` 检查中断、超时、坏段、错误�
 | 场景 | 预期 |
 | --- | --- |
 | 空配置冷启动 | 进入服务器列表，无异常白框或崩溃 |
-| Debug 日志保留与附件 | Flutter/Android 合计只保留最近 5 份、单份约 100 KiB、总量约 500 KiB；升级后启动即清理超额旧日志，Debug 关闭时也生效。添加崩溃 / Debug 日志默认只勾选第一份最新日志，不优先选崩溃；可改选/多选且遵守附件上限，确认只加入草稿。系统分享默认不选 |
+| Debug 日志保留与附件 | 普通事件先写有界内存；后台/退出/异常/日志按钮触发 gzip 保存。Flutter/Android 磁盘合计最近 5 份，每份原文 100 KiB、压缩包上限 101 KiB；列表显示压缩大小，旧文件自动迁移。添加崩溃 / Debug 日志默认只勾选最新一份，确认只加入压缩文件草稿、发送时上传原字节；系统分享默认不选。强杀无回调时内存尾部可能丢失 |
 | 首页推广入口 | 紧凑框显示 ai2api.vip 并由系统浏览器打开；窄屏或大字体改为图标，Agent 标题完整；版本长短、检查中和有更新状态切换不改变按钮位置，无溢出 |
 | 更新弹窗布局与手动下载 | 提醒和下载分成紧凑两行双列，不因窄屏变成四行按钮；长日志独立滚动，大字体操作完整可点。弹窗打开、下载中和失败时均可经浏览器手动下载对应版本 APK；不创建或取消应用内任务，浏览器失败可重试 |
 | 多消息队列 | Codex/OpenCode/Claude Code 运行中可连续发送文字或图片/文件，按序等待明确回合完成；可删除、三点编辑、引导立即发送；编辑不覆盖主草稿，切换服务器/Agent/会话不串队列 |

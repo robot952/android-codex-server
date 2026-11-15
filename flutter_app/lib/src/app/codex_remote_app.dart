@@ -134,7 +134,14 @@ class _AppRootState extends ConsumerState<_AppRoot>
       },
       onShutdown: () async {
         _backgroundShutdownRequested = true;
-        await controller.shutdownForTaskRemoval();
+        // Save first even if closing a transport exceeds Android's exit budget.
+        await controller.diagnosticLogger.flushSafely();
+        try {
+          await controller.shutdownForTaskRemoval();
+        } finally {
+          // Native destroys this engine when the shutdown callback completes.
+          await controller.diagnosticLogger.flushSafely();
+        }
       },
     );
     unawaited(turnCompletionNotifier.initialize());
@@ -149,6 +156,12 @@ class _AppRootState extends ConsumerState<_AppRoot>
       'Lifecycle',
       'state from=${previous.name} to=${state.name}',
     );
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(controller.diagnosticLogger.flushSafely());
+    }
     final current = ref.read(appControllerProvider);
     _syncMetricsPolling(current);
     // Synchronize the foreground service at the lifecycle boundary as well as

@@ -65,6 +65,7 @@ class MainActivity : FlutterActivity() {
         DiagnosticLogBridge.ensureCrashHandler()
         FlutterEngineCache.getInstance().put(RETAINED_ENGINE_ID, flutterEngine)
         LocalLinuxManager.register(applicationContext, flutterEngine)
+        DiagnosticLogBridge.register(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LEGACY_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -191,7 +192,13 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onStop() {
+        runCatching { DiagnosticLogBridge.flush() }
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        runCatching { DiagnosticLogBridge.flush() }
         exportDestroyed = true
         appUpdateDestroyed = true
         val updateOperations = pendingAppUpdateOperations.toList()

@@ -2938,7 +2938,7 @@ class AppController extends StateNotifier<AppUiState> {
     return List.unmodifiable(resolved);
   }
 
-  /// Stages selected local diagnostic sessions as ordinary text attachments.
+  /// Stages selected local diagnostic sessions as compressed file attachments.
   /// Nothing is sent here; the existing composer send action remains the only
   /// operation that submits them to the active conversation.
   Future<void> addDebugLogAttachments(Iterable<String> logIds) async {
@@ -2971,16 +2971,15 @@ class AppController extends StateNotifier<AppUiState> {
     Object? firstError;
     for (final id in ids.take(availableSlots)) {
       try {
-        final text = await _diagnostics.attachmentText(id);
-        if (text == null || text.trim().isEmpty) {
+        final bytes = await _diagnostics.attachmentBytes(id);
+        if (bytes == null || bytes.isEmpty) {
           throw StateError('所选 Debug 日志已不可用');
         }
         uploads.add(
           LocalAttachmentUpload(
-            name: 'agent-diagnostic-$id.txt',
-            bytes: Uint8List.fromList(utf8.encode(text)),
-            mimeType: 'text/plain',
-            textContent: text,
+            name: 'agent-diagnostic-${id.endsWith('.gz') ? id : '$id.gz'}',
+            bytes: bytes,
+            mimeType: 'application/gzip',
           ),
         );
       } catch (error) {

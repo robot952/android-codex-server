@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/agent_connection_manager.dart';
@@ -53,6 +55,15 @@ class _RecordingDiagnosticLogger extends DiagnosticLogger {
   void warn(String tag, String message, [Object? error, StackTrace? stack]) {
     records.add('WARN $tag $message');
   }
+}
+
+class _CompressedDiagnosticLogger extends _RecordingDiagnosticLogger {
+  final bytes = Uint8List.fromList(
+    gzip.encode(utf8.encode('diagnostic test log\n')),
+  );
+
+  @override
+  Future<Uint8List?> attachmentBytes(String id) async => bytes;
 }
 
 class _GatedLoadProfileStore extends _MemoryProfileStore {
@@ -2819,6 +2830,61 @@ void main() {
     expect(host.uploadCalls, 0);
     expect(controller.state.attachments, isEmpty);
   });
+
+  test(
+    'diagnostic attachments upload gzip bytes without inline text',
+    () async {
+      final store = _MemoryProfileStore(
+        const StoredProfiles(
+          profiles: [_firstProfile],
+          selectedProfileId: 'first',
+        ),
+      );
+      final host = _AttachmentHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agent = _FailingTurnAgent();
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (_) => agent,
+      );
+      final logger = _CompressedDiagnosticLogger();
+      final controller = AppController(store, connections, agents, logger);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(_firstProfile);
+      await controller.ensureActiveAgent();
+      controller.openThread(_FailingTurnAgent.thread);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id == _FailingTurnAgent.thread.id &&
+            !controller.state.loading,
+      );
+
+      await controller.addDebugLogAttachments([
+        'session-1800000000000-000000.log.gz',
+      ]);
+      expect(host.uploadCalls, 0);
+      final attachment = controller.state.attachments.single;
+      expect(
+        attachment.name,
+        'agent-diagnostic-session-1800000000000-000000.log.gz',
+      );
+      expect(attachment.mimeType, 'application/gzip');
+      expect(attachment.textContent, isNull);
+      expect(attachment.localUpload?.bytes, logger.bytes);
+      controller.setComposerDraft('检查压缩日志');
+      await controller.sendMessage();
+      expect(host.uploadCalls, 1);
+      expect(host.uploadedBytes, logger.bytes);
+      expect(agent.startedAttachments?.single.textContent, isNull);
+      expect(agent.startedAttachments?.single.mimeType, 'application/gzip');
+      expect(agent.startedText, '检查压缩日志');
+    },
+  );
 
   test(
     'stages attachments locally and reuses uploads after a failed send',

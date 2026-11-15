@@ -7,7 +7,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.io.FileOutputStream
+import java.util.zip.GZIPOutputStream
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -24,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong
 object DiagnosticLogBridge {
     private const val MAX_FILE_BYTES = 100 * 1024L
     private const val MAX_FILES = 5
-    private const val MAX_TOTAL_BYTES = MAX_FILES * MAX_FILE_BYTES
+    private const val MAX_TOTAL_BYTES = MAX_FILES * (MAX_FILE_BYTES + 1024)
     private const val MAX_STACK_CHARS = 24_000
     private const val MAX_MESSAGE_CHARS = 4_000
     private const val ANR_THRESHOLD_MILLIS = 15_000L
@@ -38,7 +43,12 @@ object DiagnosticLogBridge {
     private val lastHeartbeat = AtomicLong(System.currentTimeMillis())
     private val anrRecorded = AtomicBoolean(false)
     private var directory: File? = null
-    private var currentFile: File? = null
+    private class LogBuffer(val file: File) {
+        val bytes = ByteArrayOutputStream()
+        var dirty = true
+    }
+    private val buffers = ArrayList<LogBuffer>()
+    private var lastStarted = 0L
     private var processToken = ""
     private var crashHandler: Thread.UncaughtExceptionHandler? = null
     private var ordinaryLoggingEnabled = false
@@ -57,9 +67,8 @@ object DiagnosticLogBridge {
             ordinaryLoggingEnabled = context.getSharedPreferences(
                 "FlutterSharedPreferences",
                 Context.MODE_PRIVATE,
-            ).getBoolean("diagnostic_logging_enabled", false)
+            ).getBoolean("flutter.diagnostic_logging_enabled", false)
             if (ordinaryLoggingEnabled) {
-                currentFile = newSessionFileLocked()
                 appendLocked("INFO", "Android", "native_diagnostics_initialized")
             }
             // Enforce the same limit as Dart, including upgrades with Debug off.
@@ -70,6 +79,7 @@ object DiagnosticLogBridge {
         Runtime.getRuntime().addShutdownHook(
             Thread {
                 synchronized(lock) {
+                    runCatching { flushLocked() }
                     if (processToken.isNotEmpty()) {
                         runCatching { markerFileLocked(CLEAN_MARKER).writeText(processToken) }
                     }
@@ -82,6 +92,22 @@ object DiagnosticLogBridge {
     fun ensureCrashHandler() {
         if (!initialized.get()) return
         synchronized(lock) { installCrashHandlerLocked() }
+    }
+
+    // Also registered for a service-restored engine without an Activity.
+    fun register(engine: FlutterEngine) {
+        MethodChannel(engine.dartExecutor.binaryMessenger, "top.asdb.agent/diagnostics")
+            .setMethodCallHandler { call, result ->
+                runCatching {
+                    when (call.method) {
+                        "flush" -> flush()
+                        "clear" -> clear()
+                        "setEnabled" -> setEnabled(call.argument<Boolean>("enabled") == true)
+                        else -> { result.notImplemented(); return@setMethodCallHandler }
+                    }
+                }.onSuccess { result.success(null) }
+                    .onFailure { result.error("diagnostic_save_failed", "无法保存诊断日志", null) }
+            }
     }
 
     private fun installCrashHandlerLocked() {
@@ -220,7 +246,21 @@ object DiagnosticLogBridge {
     }.getOrNull()
 
     fun append(level: String, tag: String, message: String, throwable: Throwable? = null) {
-        synchronized(lock) { appendLocked(level, tag, message, throwable) }
+        synchronized(lock) { runCatching { appendLocked(level, tag, message, throwable) } }
+    }
+
+    fun flush() = synchronized(lock) { flushLocked() }
+
+    fun setEnabled(enabled: Boolean) = synchronized(lock) {
+        ordinaryLoggingEnabled = enabled
+        if (enabled) appendLocked("INFO", "Debug", "native_diagnostic_logging_enabled")
+        flushLocked()
+    }
+
+    fun clear() = synchronized(lock) {
+        buffers.clear()
+        val dir = directory ?: return@synchronized
+        sessionFilesLocked(dir).forEach { it.delete() }
     }
 
     private fun appendLocked(
@@ -230,9 +270,8 @@ object DiagnosticLogBridge {
         throwable: Throwable? = null,
         stackText: String? = null,
     ) {
-        val dir = directory ?: return
-        dir.mkdirs()
-        var file = currentFile ?: newSessionFileLocked().also { currentFile = it }
+        if (directory == null) return
+        if (!ordinaryLoggingEnabled && level != "FATAL" && tag != "Process") return
         val body = buildString {
             append(timestamp())
             append(' ')
@@ -252,30 +291,61 @@ object DiagnosticLogBridge {
                 append('\n')
             }
         }.let(::sanitize)
-        val bytes = body.toByteArray(StandardCharsets.UTF_8)
-        if (file.length() + bytes.size > MAX_FILE_BYTES) {
-            file = newSessionFileLocked()
-            currentFile = file
+        val raw = body.toByteArray(StandardCharsets.UTF_8)
+        var length = minOf(raw.size, MAX_FILE_BYTES.toInt())
+        // Never split a UTF-8 codepoint when bounding a large crash trace.
+        while (length < raw.size && length > 0 && (raw[length].toInt() and 0xC0) == 0x80) length--
+        if (buffers.isEmpty() || buffers.last().bytes.size() + length > MAX_FILE_BYTES) {
+            buffers.add(LogBuffer(newSessionFileLocked()))
+            while (buffers.size > MAX_FILES) buffers.removeAt(0)
         }
-        runCatching { file.appendBytes(bytes) }
+        buffers.last().bytes.write(raw, 0, length)
+        buffers.last().dirty = true
+        if (level == "FATAL") runCatching { flushLocked() }
+    }
+
+    private fun flushLocked() {
+        val dir = directory ?: return
+        dir.mkdirs()
+        for (buffer in buffers) {
+            if (!buffer.dirty) continue
+            val temporary = File("${buffer.file.path}.tmp")
+            try {
+                FileOutputStream(temporary).use { stream ->
+                    GZIPOutputStream(stream).use { gzip ->
+                        gzip.write(buffer.bytes.toByteArray())
+                        gzip.finish()
+                        stream.fd.sync()
+                    }
+                }
+                check(temporary.renameTo(buffer.file)) { "Unable to save diagnostic archive" }
+                buffer.dirty = false
+            } finally {
+                temporary.delete()
+            }
+        }
         pruneLocked(dir)
     }
 
     private fun newSessionFileLocked(): File {
         val dir = checkNotNull(directory)
-        var started = System.currentTimeMillis()
+        var started = maxOf(System.currentTimeMillis(), lastStarted + 1)
         while (dir.listFiles()?.any { it.name.startsWith("session-${started.toString().padStart(13, '0')}-") } == true) {
             started++
         }
-        return File(dir, "session-${started.toString().padStart(13, '0')}-000000.log")
-            .apply { parentFile?.mkdirs(); createNewFile() }
+        lastStarted = started
+        // Odd suffix distinguishes native from Dart buffers reserved in memory
+        // in the same millisecond. Do not create a file until a flush boundary.
+        return File(dir, "session-${started.toString().padStart(13, '0')}-000001.log.gz")
     }
 
-    private fun pruneLocked(dir: File) {
-        val files = dir.listFiles()
-            ?.filter { it.isFile && it.name.matches(Regex("^session-\\d+-\\d+\\.log$")) }
+    private fun sessionFilesLocked(dir: File): List<File> = dir.listFiles()
+            ?.filter { it.isFile && it.name.matches(Regex("^session-\\d+-\\d+\\.log(?:\\.gz)?$")) }
             ?.sortedBy { it.name }
-            ?: return
+            .orEmpty()
+
+    private fun pruneLocked(dir: File) {
+        val files = sessionFilesLocked(dir)
         var total = files.sumOf { it.length() }
         var count = files.size
         for (file in files) {

@@ -185,6 +185,7 @@ class ConnectionForegroundService : Service() {
         skippedHeartbeats = 0
         heartbeatStartedAt = 0L
         DiagnosticLogBridge.append("INFO", "Background", "service_destroy")
+        runCatching { DiagnosticLogBridge.flush() }
         handler.removeCallbacks(renewWakeLock)
         handler.removeCallbacks(sendHeartbeat)
         wakeLock?.let { lock ->
@@ -300,6 +301,7 @@ class ConnectionForegroundService : Service() {
     private fun ensureFlutterEngine(connectionIntent: BackgroundConnectionIntent) {
         FlutterEngineCache.getInstance().get(RETAINED_ENGINE_ID)?.let { engine ->
             LocalLinuxManager.register(applicationContext, engine)
+            DiagnosticLogBridge.register(engine)
             DiagnosticLogBridge.ensureCrashHandler()
             flutterEngine = engine
             heartbeatChannel = MethodChannel(
@@ -313,6 +315,7 @@ class ConnectionForegroundService : Service() {
             val engine = FlutterEngine(applicationContext)
             FlutterEngineCache.getInstance().put(RETAINED_ENGINE_ID, engine)
             LocalLinuxManager.register(applicationContext, engine)
+            DiagnosticLogBridge.register(engine)
             flutterEngine = engine
             heartbeatChannel = MethodChannel(
                 engine.dartExecutor.binaryMessenger,
@@ -347,6 +350,7 @@ class ConnectionForegroundService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        runCatching { DiagnosticLogBridge.flush() }
         // Removing the app from the recent-task list is an explicit exit. Ask
         // Dart to close SSH/Agent lanes first so durable remote sessions get
         // their normal cleanup command, then stop the sticky service.

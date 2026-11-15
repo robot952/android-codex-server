@@ -99,8 +99,11 @@ void main() {
     await openPicker(tester);
 
     expect(find.text('选择要分享的诊断日志'), findsOneWidget);
-    expect(find.text('484 B'), findsOneWidget);
-    expect(find.text('5.5 KB'), findsOneWidget);
+    final entries = await tester.runAsync(logger.listLogs);
+    for (final entry in entries!) {
+      expect(find.text('${entry.sizeBytes} B'), findsWidgets);
+    }
+    expect(find.text('5.5 KB'), findsNothing);
     expect(find.text('当前记录中'), findsOneWidget);
     expect(find.textContaining('session-'), findsNothing);
     expect(find.text('全选'), findsNothing);

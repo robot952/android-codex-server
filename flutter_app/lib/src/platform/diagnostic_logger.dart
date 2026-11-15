@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -49,6 +51,8 @@ class MemoryDiagnosticSettingsStore implements DiagnosticSettingsStore {
 typedef DiagnosticDirectoryProvider = Future<Directory> Function();
 typedef DiagnosticSettingsProvider = Future<DiagnosticSettingsStore> Function();
 typedef DiagnosticShareHandler = Future<void> Function(File file);
+typedef DiagnosticNativeControl =
+    Future<void> Function(String method, bool? enabled);
 
 class DiagnosticLogEntry {
   const DiagnosticLogEntry({
@@ -133,21 +137,23 @@ class DiagnosticLogger {
     DiagnosticDirectoryProvider? exportDirectoryProvider,
     DiagnosticSettingsProvider? settingsProvider,
     DiagnosticShareHandler? shareHandler,
+    DiagnosticNativeControl? nativeControl,
     DateTime Function()? clock,
   }) : _directoryProvider = directoryProvider ?? _defaultDirectory,
        _exportDirectoryProvider =
            exportDirectoryProvider ?? _defaultExportDirectory,
        _settingsProvider = settingsProvider ?? _defaultSettings,
        _shareHandler = shareHandler ?? _defaultShare,
+       _nativeControl = nativeControl ?? _defaultNativeControl,
        _clock = clock ?? DateTime.now;
 
   static final DiagnosticLogger instance = DiagnosticLogger();
 
-  /// One on-disk file is kept close to 100 KiB so sharing and attachment stay
-  /// responsive on mobile networks.
+  /// Limit the original UTF-8 bytes, independently of the compression ratio.
   static const maxSegmentBytes = 100 * 1024;
   static const maxSegments = 5;
-  static const maxTotalBytes = maxSegments * maxSegmentBytes;
+  static const maxArchiveBytes = maxSegmentBytes + 1024;
+  static const maxTotalBytes = maxSegments * maxArchiveBytes;
   static const maxMessageChars = 4_000;
   static const maxStackChars = 24_000;
   static const maxPreviewBytes = 64 * 1024;
@@ -156,10 +162,12 @@ class DiagnosticLogger {
   final DiagnosticDirectoryProvider _exportDirectoryProvider;
   final DiagnosticSettingsProvider _settingsProvider;
   final DiagnosticShareHandler _shareHandler;
+  final DiagnosticNativeControl _nativeControl;
   final DateTime Function() _clock;
 
   Future<void>? _initialization;
-  Future<void>? _writeTail;
+  final List<_LogBuffer> _buffers = [];
+  Future<void>? _flushInFlight;
   DiagnosticSettingsStore? _settings;
   Directory? _directory;
   bool _enabled = false;
@@ -203,13 +211,14 @@ class DiagnosticLogger {
     _initialized = true;
     // Apply the retention limit to existing logs even when Debug is disabled.
     try {
-      await _prune();
+      _prune();
+      _migrateLegacyLogs();
     } catch (_) {
       // Cleanup must not prevent startup or crash recording.
     }
     if (_enabled) {
       try {
-        await _startSession();
+        _startSession();
       } catch (_) {
         // The app can still run without a writable diagnostics directory.
         _enabled = false;
@@ -220,17 +229,20 @@ class DiagnosticLogger {
   Future<void> setEnabled(bool value) async {
     await initialize();
     if (_enabled == value) return;
+    try {
+      await _nativeControl('setEnabled', value);
+    } catch (_) {}
     if (value) {
       _enabled = true;
       try {
-        await _startSession();
+        _startSession();
       } catch (_) {
         _enabled = false;
         return;
       }
     } else {
       try {
-        await _append(
+        _append(
           'INFO',
           'Debug',
           'diagnostic_logging_disabled',
@@ -242,6 +254,7 @@ class DiagnosticLogger {
       }
       _enabled = false;
     }
+    await flushSafely();
     try {
       await _settings?.writeEnabled(value);
     } catch (_) {
@@ -251,15 +264,15 @@ class DiagnosticLogger {
   }
 
   void info(String tag, String message) {
-    unawaited(_append('INFO', tag, message, null));
+    _append('INFO', tag, message, null);
   }
 
   void warn(String tag, String message, [Object? error, StackTrace? stack]) {
-    unawaited(_append('WARN', tag, message, error, stack: stack));
+    _append('WARN', tag, message, error, stack: stack);
   }
 
   void error(String tag, String message, [Object? error, StackTrace? stack]) {
-    unawaited(_append('ERROR', tag, message, error, stack: stack));
+    _append('ERROR', tag, message, error, stack: stack);
   }
 
   /// Records an error regardless of whether Debug mode was enabled. This is
@@ -270,7 +283,7 @@ class DiagnosticLogger {
     String tag = 'Crash',
     String message = 'uncaught_exception',
   }) {
-    unawaited(_append('FATAL', tag, message, error, stack: stack, force: true));
+    _append('FATAL', tag, message, error, stack: stack, force: true);
   }
 
   void recordFlutterError(Object error, StackTrace? stack, {String? context}) {
@@ -281,16 +294,14 @@ class DiagnosticLogger {
   }
 
   Future<List<DiagnosticLogEntry>> listLogs() async {
-    await initialize();
-    await _drainWrites();
+    await flush();
     return _listLogsSync();
   }
 
   Future<DiagnosticLogSnapshot> snapshot({
     int previewByteLimit = maxPreviewBytes,
   }) async {
-    await initialize();
-    await _drainWrites();
+    await flush();
     final entries = _listLogsSync();
     final files = entries.reversed
         .map(
@@ -316,8 +327,7 @@ class DiagnosticLogger {
   Future<DiagnosticLogSnapshot> currentSnapshot({
     int previewByteLimit = maxPreviewBytes,
   }) async {
-    await initialize();
-    await _drainWrites();
+    await flush();
     final directory = _directory;
     if (directory == null || _sessionStartedAt == 0) {
       return DiagnosticLogSnapshot(
@@ -361,8 +371,7 @@ class DiagnosticLogger {
   }
 
   Future<String?> readLog(String id) async {
-    await initialize();
-    await _drainWrites();
+    await flush();
     final file = _resolveFile(id);
     return file == null ? null : _readFileSafely(file);
   }
@@ -377,8 +386,7 @@ class DiagnosticLogger {
   }
 
   Future<File> exportLog({Iterable<String>? ids}) async {
-    await initialize();
-    await _drainWrites();
+    await flush();
     final entries = _listLogsSync();
     final selected = ids == null
         ? entries
@@ -405,8 +413,14 @@ class DiagnosticLogger {
     final outputDirectory = await _exportDirectoryProvider();
     await outputDirectory.create(recursive: true);
     final file = File(
-      '${outputDirectory.path}${Platform.pathSeparator}agent-diagnostic-${_timestampForFile(_clock())}.txt',
+      '${outputDirectory.path}${Platform.pathSeparator}agent-diagnostic-${_timestampForFile(_clock())}.log.gz',
     );
+    // A single selection is already a sanitized gzip archive. Share that exact
+    // payload; never expand it into a plaintext temporary file.
+    if (files.length == 1) {
+      _decodeArchive(_archiveBytes(files.single));
+      return files.single.copy(file.path);
+    }
     final buffer = StringBuffer()
       ..writeln('Agent diagnostic log')
       ..writeln('Exported: ${_clock().toIso8601String()}')
@@ -419,23 +433,27 @@ class DiagnosticLogger {
       for (final entryFile in files) {
         buffer
           ..writeln('----- ${entryFile.basename} -----')
-          ..write(_readFileSafely(entryFile));
+          ..write(_readLogFile(entryFile));
         if (!buffer.toString().endsWith('\n')) buffer.writeln();
       }
     }
-    await file.writeAsString(sanitizeDiagnosticText(buffer.toString()));
+    await file.writeAsBytes(
+      gzip.encode(utf8.encode(sanitizeDiagnosticText(buffer.toString()))),
+      flush: true,
+    );
     return file;
   }
 
   Future<void> share({Iterable<String>? ids}) async {
+    info('Debug', 'diagnostic_log_share_requested');
     final file = await exportLog(ids: ids);
     await _shareHandler(file);
-    info('Debug', 'diagnostic_log_share_requested');
   }
 
   Future<void> clear() async {
-    await initialize();
-    await _drainWrites();
+    await flush();
+    await _nativeControl('clear', null);
+    _buffers.clear();
     for (final entry in _listLogsSync()) {
       try {
         await File(
@@ -460,64 +478,145 @@ class DiagnosticLogger {
         }
       }
     } catch (_) {}
-    _sessionStartedAt = 0;
-    _segment = 0;
+    // Keep the monotonic name reservation. New events can arrive while the
+    // asynchronous export cleanup runs; do not reset their active segment.
   }
 
-  Future<void> _append(
+  /// Attach the compressed bytes as a file, without injecting log text into a
+  /// model prompt. Validate the archive before returning an immutable snapshot.
+  Future<Uint8List?> attachmentBytes(String id) async {
+    await flush();
+    final file = _resolveFile(id);
+    if (file == null) return null;
+    final bytes = _archiveBytes(file);
+    _decodeArchive(bytes);
+    return bytes;
+  }
+
+  /// User actions await this; lifecycle/error hooks use [flushSafely]. Ordinary
+  /// records never enqueue file writes or compression jobs.
+  Future<void> flush() {
+    return _flushInFlight ??= _flush().whenComplete(
+      () => _flushInFlight = null,
+    );
+  }
+
+  Future<void> _flush() async {
+    await initialize();
+    await _nativeControl('flush', null);
+    _flushSync();
+  }
+
+  Future<void> flushSafely() async {
+    try {
+      await flush();
+    } catch (_) {
+      // A failed snapshot remains dirty for retry; never recurse into logging.
+      try {
+        _flushSync();
+      } catch (_) {}
+    }
+  }
+
+  void _append(
     String level,
     String tag,
     String message,
     Object? error, {
     StackTrace? stack,
     bool force = false,
-  }) async {
-    await initialize();
+  }) {
+    if (!_initialized) {
+      unawaited(
+        initialize()
+            .then((_) {
+              _append(level, tag, message, error, stack: stack, force: force);
+            })
+            .catchError((_) {}),
+      );
+      return;
+    }
     if (!_enabled && !force) return;
-    final entry = _formatEntry(level, tag, message, error, stack);
-    final previous = _writeTail ?? Future<void>.value();
-    final next = previous.then<void>(
-      (_) => _writeEntry(entry),
-      onError: (_, _) => _writeEntry(entry),
-    );
-    _writeTail = next;
-    await next;
-  }
-
-  Future<void> _writeEntry(String entry) async {
-    if (_sessionStartedAt == 0) await _startSession();
-    final directory = _directory;
-    if (directory == null) return;
-    var file = _currentFile(directory);
-    final bytes = utf8.encode(entry);
-    if (file.existsSync() &&
-        file.lengthSync() + bytes.length > maxSegmentBytes) {
-      _segment++;
-      file = _currentFile(directory);
-      await file.create(recursive: true);
+    try {
+      final bytes = utf8.encode(
+        _formatEntry(level, tag, message, error, stack),
+      );
+      if (_buffers.isEmpty ||
+          _buffers.last.bytes.length + bytes.length > maxSegmentBytes) {
+        _startSession();
+      }
+      _buffers.last.bytes.add(bytes);
+      _buffers.last.dirty = true;
+      if (level == 'FATAL') {
+        // Flush synchronously before returning to the process's fatal handler.
+        _flushSync();
+        unawaited(flushSafely());
+      }
+    } catch (_) {
+      // Diagnostics must never turn an IO/formatting failure into another crash.
     }
-    await file.writeAsString(entry, mode: FileMode.append, flush: true);
-    await _prune();
   }
 
-  Future<void> _startSession() async {
+  void _startSession() {
     final directory = _directory;
     if (directory == null) return;
-    await directory.create(recursive: true);
     var started = _clock().millisecondsSinceEpoch;
-    // Avoid collisions when several logger instances/processes start in one
-    // millisecond.
+    // Reserve names only in memory; no empty files are written per record or
+    // rotation. Monotonic segment times keep Dart/native retention comparable.
     final existing = _sessionFiles(directory);
-    while (existing.any((file) => file.path.contains('session-$started-'))) {
-      started++;
+    for (final file in existing) {
+      final timestamp = _parseFileName(file.basename)!.$1;
+      if (timestamp >= started) started = timestamp + 1;
     }
+    if (started <= _sessionStartedAt) started = _sessionStartedAt + 1;
     _sessionStartedAt = started;
     _segment = 0;
-    await _currentFile(directory).create(recursive: true);
-    await _prune();
+    _buffers.add(_LogBuffer(_currentFile(directory)));
+    while (_buffers.length > maxSegments) {
+      _buffers.removeAt(0);
+    }
   }
 
-  Future<void> _prune() async {
+  void _flushSync() {
+    final directory = _directory;
+    if (directory == null) return;
+    directory.createSync(recursive: true);
+    for (final buffer in _buffers) {
+      if (!buffer.dirty) continue;
+      _writeArchive(buffer.file, buffer.bytes.toBytes());
+      buffer.dirty = false;
+    }
+    _prune();
+  }
+
+  void _writeArchive(File file, List<int> bytes) {
+    final temporary = File('${file.path}.tmp');
+    try {
+      temporary.writeAsBytesSync(gzip.encode(bytes), flush: true);
+      temporary.renameSync(file.path);
+    } finally {
+      if (temporary.existsSync()) temporary.deleteSync();
+    }
+  }
+
+  void _migrateLegacyLogs() {
+    for (final file in _sessionFiles(_directory!)) {
+      if (!file.path.endsWith('.log')) continue;
+      try {
+        final modified = file.lastModifiedSync();
+        final text = _readLogFile(file);
+        final archive = File('${file.path}.gz');
+        _writeArchive(archive, utf8.encode(text));
+        archive.setLastModifiedSync(modified);
+        file.deleteSync();
+      } catch (_) {
+        // Preserve the original if migration could not safely finish.
+      }
+    }
+    _prune();
+  }
+
+  void _prune() {
     final directory = _directory;
     if (directory == null) return;
     final files = _sessionFiles(directory);
@@ -527,7 +626,7 @@ class DiagnosticLogger {
       if (remainingCount <= maxSegments && totalBytes <= maxTotalBytes) break;
       try {
         final size = file.lengthSync();
-        await file.delete();
+        file.deleteSync();
         totalBytes -= size;
         remainingCount--;
       } catch (_) {
@@ -568,7 +667,7 @@ class DiagnosticLogger {
 
   List<File> _sessionFiles(Directory directory) =>
       directory
-          .listSync()
+          .listSync(followLinks: false)
           .whereType<File>()
           .where((file) => _parseFileName(file.basename) != null)
           .toList()
@@ -576,14 +675,15 @@ class DiagnosticLogger {
 
   File? _resolveFile(String id) {
     if (_parseFileName(id) == null || _directory == null) return null;
-    final file = File('${_directory!.path}${Platform.pathSeparator}$id');
+    final name = id.endsWith('.log') ? '$id.gz' : id;
+    final file = File('${_directory!.path}${Platform.pathSeparator}$name');
     return file.existsSync() ? file : null;
   }
 
   File _currentFile(Directory directory) => File(
     '${directory.path}${Platform.pathSeparator}session-'
     '${_sessionStartedAt.toString().padLeft(13, '0')}-'
-    '${_segment.toString().padLeft(6, '0')}.log',
+    '${_segment.toString().padLeft(6, '0')}.log.gz',
   );
 
   String _formatEntry(
@@ -623,15 +723,63 @@ class DiagnosticLogger {
 
   String _readFileSafely(File file) {
     try {
-      return sanitizeDiagnosticText(file.readAsStringSync());
+      return _readLogFile(file);
     } catch (_) {
       return '';
     }
   }
 
-  Future<void> _drainWrites() async {
-    final tail = _writeTail;
-    if (tail != null) await tail.catchError((_) {});
+  String _readLogFile(File file) {
+    if (file.path.endsWith('.gz')) {
+      return sanitizeDiagnosticText(
+        utf8.decode(_decodeArchive(_archiveBytes(file)), allowMalformed: true),
+      );
+    }
+    final handle = file.openSync();
+    try {
+      return _boundUtf8(
+        sanitizeDiagnosticText(
+          utf8.decode(handle.readSync(maxSegmentBytes), allowMalformed: true),
+        ),
+        maxSegmentBytes,
+      );
+    } finally {
+      handle.closeSync();
+    }
+  }
+
+  static Uint8List _archiveBytes(File file) {
+    final handle = file.openSync();
+    try {
+      final bytes = handle.readSync(maxArchiveBytes + 1);
+      if (bytes.length > maxArchiveBytes) {
+        throw const FormatException('诊断日志超出大小限制');
+      }
+      return bytes;
+    } finally {
+      handle.closeSync();
+    }
+  }
+
+  static Uint8List _decodeArchive(List<int> bytes) {
+    if (bytes.length > maxArchiveBytes) {
+      throw const FormatException('诊断日志超出大小限制');
+    }
+    final sink = _BoundedLogSink(maxSegmentBytes);
+    final decoder = gzip.decoder.startChunkedConversion(sink);
+    decoder.add(bytes);
+    decoder.close();
+    return sink.bytes.takeBytes();
+  }
+
+  static Future<void> _defaultNativeControl(
+    String method,
+    bool? enabled,
+  ) async {
+    if (!Platform.isAndroid) return;
+    await const MethodChannel(
+      'top.asdb.agent/diagnostics',
+    ).invokeMethod<void>(method, enabled == null ? null : {'enabled': enabled});
   }
 
   static Future<Directory> _defaultDirectory() async {
@@ -650,7 +798,7 @@ class DiagnosticLogger {
   static Future<void> _defaultShare(File file) async {
     final result = await SharePlus.instance.share(
       ShareParams(
-        files: <XFile>[XFile(file.path, mimeType: 'text/plain')],
+        files: <XFile>[XFile(file.path, mimeType: 'application/gzip')],
         subject: 'Agent Debug 日志',
       ),
     );
@@ -658,6 +806,29 @@ class DiagnosticLogger {
       throw StateError('系统没有可用的分享目标');
     }
   }
+}
+
+class _LogBuffer {
+  _LogBuffer(this.file);
+  final File file;
+  final BytesBuilder bytes = BytesBuilder(copy: false);
+  bool dirty = true;
+}
+
+class _BoundedLogSink implements Sink<List<int>> {
+  _BoundedLogSink(this.limit);
+  final int limit;
+  final BytesBuilder bytes = BytesBuilder(copy: false);
+  @override
+  void add(List<int> data) {
+    if (bytes.length + data.length > limit) {
+      throw const FormatException('诊断日志解压超出大小限制');
+    }
+    bytes.add(data);
+  }
+
+  @override
+  void close() {}
 }
 
 extension on FileSystemEntity {
@@ -716,21 +887,19 @@ String _boundUtf8(String value, int maxBytes) {
   if (bytes.length <= maxBytes) return value;
   final suffix = '\n[diagnostic entry truncated]\n';
   final suffixBytes = utf8.encode(suffix);
-  if (suffixBytes.length >= maxBytes) {
-    return utf8.decode(bytes.take(maxBytes).toList(), allowMalformed: true);
+  final withSuffix = suffixBytes.length < maxBytes;
+  var end = maxBytes - (withSuffix ? suffixBytes.length : 0);
+  while (end > 0 && (bytes[end] & 0xC0) == 0x80) {
+    end--;
   }
-  return utf8.decode(
-        bytes.take(maxBytes - suffixBytes.length).toList(),
-        allowMalformed: true,
-      ) +
-      suffix;
+  return utf8.decode(bytes.sublist(0, end)) + (withSuffix ? suffix : '');
 }
 
 String _timestampForFile(DateTime value) =>
     value.millisecondsSinceEpoch.toString();
 
 (int, int)? _parseFileName(String name) {
-  final match = RegExp(r'^session-(\d+)-(\d+)\.log$').firstMatch(name);
+  final match = RegExp(r'^session-(\d+)-(\d+)\.log(?:\.gz)?$').firstMatch(name);
   if (match == null) return null;
   final started = int.tryParse(match.group(1)!);
   final segment = int.tryParse(match.group(2)!);

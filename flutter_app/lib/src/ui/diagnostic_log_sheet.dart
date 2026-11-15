@@ -321,13 +321,23 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
     setState(() => _snapshot = widget.logger.currentSnapshot());
   }
 
-  Future<void> _copy(DiagnosticLogSnapshot snapshot) async {
-    if (snapshot.preview.trim().isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: snapshot.preview));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('日志已复制')));
+  Future<void> _copy() async {
+    try {
+      final latest = await widget.logger.currentSnapshot();
+      if (latest.preview.trim().isEmpty) return;
+      await Clipboard.setData(ClipboardData(text: latest.preview));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('日志已复制')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text('无法复制日志：${_displayError(error)}')),
+        );
+    }
   }
 
   Future<void> _share() async {
@@ -362,6 +372,8 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
   }
 
   Future<void> _clear() async {
+    await widget.logger.flushSafely();
+    if (!mounted) return;
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -472,7 +484,7 @@ class _DiagnosticLogSheetState extends State<DiagnosticLogSheet> {
                       child: OutlinedButton.icon(
                         onPressed: value == null || value.preview.isEmpty
                             ? null
-                            : () => _copy(value),
+                            : _copy,
                         icon: const Icon(Icons.copy_outlined, size: 18),
                         label: const Text('复制'),
                       ),

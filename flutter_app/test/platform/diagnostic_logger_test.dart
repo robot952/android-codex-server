@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:codex_remote/src/platform/diagnostic_logger.dart';
@@ -25,6 +27,7 @@ void main() {
     bool enabled = false,
     DiagnosticShareHandler? shareHandler,
     DateTime Function()? clock,
+    DiagnosticNativeControl? nativeControl,
   }) {
     final settings = MemoryDiagnosticSettingsStore(enabled: enabled);
     return DiagnosticLogger(
@@ -33,6 +36,7 @@ void main() {
       settingsProvider: () async => settings,
       shareHandler: shareHandler,
       clock: clock,
+      nativeControl: nativeControl,
     );
   }
 
@@ -128,10 +132,13 @@ void main() {
       expect(sharedFile, isNotNull);
       expect(await sharedFile!.exists(), isTrue);
       expect(
-        await sharedFile!.readAsString(),
+        utf8.decode(gzip.decode(await sharedFile!.readAsBytes())),
         contains('Agent diagnostic log'),
       );
-      expect(await sharedFile!.readAsString(), isNot(contains('entry-0 ')));
+      expect(
+        utf8.decode(gzip.decode(await sharedFile!.readAsBytes())),
+        isNot(contains('entry-0 ')),
+      );
       expect(snapshot.preview, contains('entry-199 '));
     },
   );
@@ -158,16 +165,16 @@ void main() {
 
         final snapshot = await logger.snapshot();
         final expectedIds = [
-          if (enabled) 'session-1900000000000-000000.log',
+          if (enabled) 'session-1900000000000-000000.log.gz',
           for (var index = 104; index >= (enabled ? 101 : 100); index--)
-            'session-${1_800_000_000_000 + index}-000000.log',
+            'session-${1_800_000_000_000 + index}-000000.log.gz',
         ];
         expect(snapshot.entries, hasLength(5));
         expect(snapshot.entries.map((entry) => entry.id), expectedIds);
         expect(snapshot.bytes, lessThanOrEqualTo(500 * 1024));
         expect(
           directory.listSync().whereType<File>().where(
-            (file) => file.path.endsWith('.log'),
+            (file) => file.path.endsWith('.log.gz'),
           ),
           hasLength(5),
         );
@@ -209,7 +216,7 @@ void main() {
 
     final newest = entries.first;
     final exported = await logger.exportLog(ids: [newest.id]);
-    final exportText = await exported.readAsString();
+    final exportText = utf8.decode(gzip.decode(await exported.readAsBytes()));
     expect(exportText, contains('second-session'));
     expect(exportText, isNot(contains('first-session')));
     expect(exportText, isNot(contains('top-secret')));
@@ -219,6 +226,231 @@ void main() {
     expect(attachment, isNot(contains('top-secret')));
     expect(attachment!.length, lessThanOrEqualTo(256));
   });
+
+  test(
+    'ordinary records stay in memory until flush and share exact gzip bytes',
+    () async {
+      final logger = createLogger(enabled: true);
+      await logger.initialize();
+      logger.info('Test', '中文日志 password=hidden-value');
+      await Future<void>.delayed(Duration.zero);
+      expect(directory.listSync(), isEmpty);
+      await logger.flush();
+      final file = directory.listSync().whereType<File>().single;
+      expect(file.path, endsWith('.log.gz'));
+      final before = file.readAsBytesSync();
+      expect(
+        utf8.decode(gzip.decode(before)),
+        contains('中文日志 password=[REDACTED]'),
+      );
+      final modified = file.lastModifiedSync();
+      await logger.flush();
+      expect(file.lastModifiedSync(), modified);
+      logger.info('Test', 'second-record');
+      expect(file.readAsBytesSync(), before);
+      final entry = (await logger.listLogs()).single;
+      expect(
+        utf8.decode(gzip.decode(file.readAsBytesSync())),
+        contains('second-record'),
+      );
+      expect(await logger.attachmentBytes(entry.id), file.readAsBytesSync());
+      final exported = await logger.exportLog(ids: [entry.id]);
+      expect(exported.path, endsWith('.log.gz'));
+      expect(exported.readAsBytesSync(), file.readAsBytesSync());
+      expect(directory.listSync().any((f) => f.path.endsWith('.tmp')), isFalse);
+    },
+  );
+
+  test(
+    'a long foreground session rotates only in memory and keeps five recent segments',
+    () async {
+      final logger = createLogger(enabled: true);
+      await logger.initialize();
+      for (var i = 0; i < 400; i++) {
+        logger.info('Test', 'record-$i ${'正文😀' * 800}');
+      }
+      expect(directory.listSync(), isEmpty);
+      final entries = await logger.listLogs();
+      expect(entries, hasLength(5));
+      final contents = <String>[];
+      for (final file in directory.listSync().whereType<File>()) {
+        final original = gzip.decode(file.readAsBytesSync());
+        expect(original.length, lessThanOrEqualTo(100 * 1024));
+        contents.add(utf8.decode(original));
+      }
+      expect(contents.join(), isNot(contains('record-0 ')));
+      expect(contents.join(), contains('record-399 '));
+    },
+  );
+
+  test(
+    'fatal capture persists immediately even without awaiting any logger action',
+    () async {
+      final logger = createLogger();
+      await logger.initialize();
+      logger.recordError(
+        StateError('fatal secret=hidden'),
+        StackTrace.fromString('crash-stack'),
+      );
+      final file = directory.listSync().whereType<File>().single;
+      final contents = utf8.decode(gzip.decode(file.readAsBytesSync()));
+      expect(contents, contains('FATAL'));
+      expect(contents, contains('crash-stack'));
+      expect(contents, isNot(contains('hidden')));
+      await logger.flush();
+    },
+  );
+
+  test(
+    'disable flushes final records and clear cannot resurrect buffered history',
+    () async {
+      final logger = createLogger(enabled: true);
+      await logger.initialize();
+      logger.info('Test', 'last-before-disable');
+      await logger.setEnabled(false);
+      final file = directory.listSync().whereType<File>().single;
+      final text = utf8.decode(gzip.decode(file.readAsBytesSync()));
+      expect(text, contains('last-before-disable'));
+      expect(text, contains('diagnostic_logging_disabled'));
+      logger.info('Test', 'must-not-record');
+      await logger.flush();
+      expect(utf8.decode(gzip.decode(file.readAsBytesSync())), text);
+      await logger.clear();
+      await logger.flush();
+      expect(directory.listSync(), isEmpty);
+    },
+  );
+
+  test(
+    'failed atomic save retains both old gzip and dirty memory for retry',
+    () async {
+      final logger = createLogger(enabled: true);
+      await logger.initialize();
+      logger.info('Test', 'before');
+      final entry = (await logger.listLogs()).single;
+      final file = File('${directory.path}/${entry.id}');
+      final original = file.readAsBytesSync();
+      final blocker = Directory('${file.path}.tmp')..createSync();
+      logger.info('Test', 'retry-me');
+      await expectLater(logger.flush(), throwsA(isA<FileSystemException>()));
+      expect(file.readAsBytesSync(), original);
+      blocker.deleteSync();
+      await logger.flush();
+      expect(
+        utf8.decode(gzip.decode(file.readAsBytesSync())),
+        contains('retry-me'),
+      );
+    },
+  );
+
+  test('events arriving during clear keep their active segment', () async {
+    final cleanupStarted = Completer<void>();
+    final finishCleanup = Completer<void>();
+    final logger = DiagnosticLogger(
+      directoryProvider: () async => directory,
+      exportDirectoryProvider: () async {
+        cleanupStarted.complete();
+        await finishCleanup.future;
+        return exportDirectory;
+      },
+      settingsProvider: () async =>
+          MemoryDiagnosticSettingsStore(enabled: true),
+      clock: () => DateTime.fromMillisecondsSinceEpoch(1_900_000_000_000),
+    );
+    await logger.initialize();
+    logger.info('Test', 'old-record');
+    final oldId = (await logger.listLogs()).single.id;
+    final clearing = logger.clear();
+    await cleanupStarted.future;
+    logger.info('Test', 'after-clear-record');
+    finishCleanup.complete();
+    await clearing;
+    final current = await logger.currentSnapshot();
+    expect(current.entries.single.id, isNot(oldId));
+    expect(current.entries.single.isActive, isTrue);
+    expect(current.preview, contains('after-clear-record'));
+    expect(current.preview, isNot(contains('old-record')));
+    expect(await logger.attachmentBytes(oldId), isNull);
+  });
+
+  test(
+    'flush waits for native logs and includes records appended during the wait',
+    () async {
+      final nativeReady = Completer<void>();
+      var calls = 0;
+      final logger = createLogger(
+        enabled: true,
+        nativeControl: (method, _) async {
+          if (method == 'flush') {
+            calls++;
+            await nativeReady.future;
+          }
+        },
+      );
+      await logger.initialize();
+      logger.info('Test', 'before');
+      final first = logger.flush();
+      final second = logger.flush();
+      await Future<void>.delayed(Duration.zero);
+      logger.info('Test', 'during');
+      expect(directory.listSync(), isEmpty);
+      nativeReady.complete();
+      await Future.wait([first, second]);
+      expect(calls, 1);
+      expect(
+        utf8.decode(
+          gzip.decode(
+            directory.listSync().whereType<File>().single.readAsBytesSync(),
+          ),
+        ),
+        contains('during'),
+      );
+    },
+  );
+
+  test('legacy files migrate with timestamps and redaction intact', () async {
+    final legacy = File('${directory.path}/session-1800000000000-000000.log');
+    legacy.writeAsStringSync(
+      '2026-01-01T00:00:00Z FATAL Crash password=private-value\n原始正文\n',
+    );
+    final modified = DateTime(2026, 1, 1);
+    legacy.setLastModifiedSync(modified);
+    final logger = createLogger();
+    await logger.initialize();
+    expect(legacy.existsSync(), isFalse);
+    final archive = File('${legacy.path}.gz');
+    expect(archive.lastModifiedSync(), modified);
+    final entry = (await logger.listLogs()).single;
+    expect(entry.hasCrash, isTrue);
+    expect(entry.sizeBytes, archive.lengthSync());
+    final text = utf8.decode(
+      gzip.decode((await logger.attachmentBytes(entry.id))!),
+    );
+    expect(text, contains('原始正文'));
+    expect(text, isNot(contains('private-value')));
+  });
+
+  test(
+    'corrupt and oversized archives fail attachment export within bounds',
+    () async {
+      final logger = createLogger();
+      await logger.initialize();
+      final file = File(
+        '${directory.path}/session-1800000000000-000000.log.gz',
+      );
+      file.writeAsBytesSync([1, 2, 3]);
+      await expectLater(
+        logger.attachmentBytes('session-1800000000000-000000.log.gz'),
+        throwsA(isA<FormatException>()),
+      );
+      file.writeAsBytesSync(gzip.encode(List.filled(100 * 1024 + 1, 65)));
+      await expectLater(
+        logger.attachmentBytes('session-1800000000000-000000.log.gz'),
+        throwsA(isA<FormatException>()),
+      );
+      expect(await logger.attachmentBytes('../not-a-log.gz'), isNull);
+    },
+  );
 
   test('rapid tap counter enables exactly on the tenth tap', () {
     final counter = DebugTapCounter();
