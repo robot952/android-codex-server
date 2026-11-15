@@ -44,6 +44,8 @@ const fixtureErrors = [];
 let upgrades = 0;
 let activeClient;
 let rejectNextResponse = false;
+let holdNextResponse = false;
+const heldResponses = [];
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -93,6 +95,14 @@ const api = http.createServer(async (request, response) => {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "Upstream request failed", type: "invalid_request_error" } }));
       return;
+    }
+    if (holdNextResponse) {
+      holdNextResponse = false;
+      await new Promise(resolve => {
+        heldResponses.push({ release: resolve, response });
+        response.once("close", resolve);
+      });
+      if (response.destroyed) return;
     }
     const number = requests.length;
     const id = `resp-history-fixture-${number}`;
@@ -353,6 +363,63 @@ async function main() {
     assert.deepEqual(new Set(paginatedThreads.map(thread => thread.id)), new Set([threadId, legacy.thread.id]));
     assert(paginatedThreads[0].updatedAt >= paginatedThreads[1].updatedAt,
       "Native updated_at pagination must match the displayed update time");
+
+    // The default runtime's provider-aware catalogue and fork cursors are
+    // validated against native storage, without a real account/model request.
+    const modelList = await activeClient.rpc("model/list", {
+      limit: 100, includeHidden: true, modelProvider: "history_fixture",
+    });
+    assert(Array.isArray(modelList.data));
+    const fork = await activeClient.rpc("thread/fork", { threadId, excludeTurns: true });
+    const forkNative = await activeClient.rpc("thread/items/list", {
+      threadId: fork.thread.id, limit: 100, sortDirection: "desc",
+    });
+    let forkPage = (await activeClient.rpc("codexRemote/history/open", {
+      threadId: fork.thread.id, readOnly: true,
+    })).initialTurnsPage;
+    const forkIds = [];
+    const seenCursors = new Set();
+    for (let index = 0; ; index++) {
+      assert(index < 10, "Fork pagination must terminate");
+      for (const turn of forkPage.data) forkIds.push(...turn.items.toReversed().map(item => item.id));
+      if (!forkPage.nextCursor) break;
+      assert(!seenCursors.has(forkPage.nextCursor), "Fork cursor cannot repeat");
+      seenCursors.add(forkPage.nextCursor);
+      forkPage = await activeClient.rpc("codexRemote/history/page", {
+        threadId: fork.thread.id, cursor: forkPage.nextCursor,
+      });
+    }
+    assert.deepEqual(forkIds, forkNative.data.map(record => record.item.id));
+    assert.equal(new Set(forkIds).size, forkIds.length);
+    assert(forkIds.length > 20, "Fork fixture must span multiple mobile pages");
+
+    async function startHeldTurn(text) {
+      const before = heldResponses.length;
+      holdNextResponse = true;
+      const result = await activeClient.rpc("turn/start", { threadId,
+        input: [{ type: "text", text }] });
+      const deadline = Date.now() + 5000;
+      while (heldResponses.length === before && Date.now() < deadline) await sleep(20);
+      assert.equal(heldResponses.length, before + 1, "Native turn must reach the loopback provider");
+      return { id: result.turn.id, held: heldResponses.at(-1) };
+    }
+    const stopped = await startHeldTurn("Synthetic interrupted turn.");
+    await activeClient.rpc("turn/interrupt", { threadId, turnId: stopped.id });
+    assert.equal((await activeClient.completed(threadId, stopped.id)).status, "interrupted");
+    const continued = await startHeldTurn("Synthetic new turn after interruption.");
+    try {
+      await activeClient.rpc("turn/interrupt", { threadId, turnId: stopped.id });
+    } catch (error) {
+      assert.match(error.message, /code=-32600/, "Only a stale-turn rejection is expected");
+    }
+    const running = await activeClient.rpc("codexRemote/history/open", { threadId, readOnly: true });
+    assert.equal(running.initialTurnsPage.data.find(turn => turn.id === continued.id)?.status, "inProgress");
+    assert(!activeClient.events.some(event => event.method === "turn/completed" &&
+      event.params?.turn?.id === continued.id), "Old interrupt must not finish the new turn");
+    continued.held.release();
+    assert.equal((await activeClient.completed(threadId, continued.id)).status, "completed");
+    assert.equal(fixtureErrors.length, 0);
+    console.log("Native default compatibility: provider catalogue, fork paging, interrupted completion and stale-interrupt isolation passed.");
     assert.equal(upgrades, 0, "Compatibility route must use the supported Responses transport");
     await activeClient.stop();
     activeClient = null;

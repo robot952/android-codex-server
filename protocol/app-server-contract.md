@@ -1,6 +1,6 @@
 # Pinned Codex app-server contract
 
-The Android client targets `codex-cli 0.153.3` by default and the pinned app-server API. Each server profile
+The Android client targets `codex-cli 0.169.0` by default and the pinned app-server API. Each server profile
 can select another official stable Codex CLI release. Its optional remote
 bootstrap also pins the private Node.js runtime in `node-version.txt`.
 The client performs the following JSON-RPC flow over newline-delimited JSON:
@@ -28,7 +28,7 @@ transport generation. See https://learn.chatgpt.com/docs/app-server#toolrequestu
 Generate the authoritative schema whenever the pinned CLI changes:
 
 ```bash
-codex app-server generate-json-schema --out server/generated-schema
+codex app-server generate-json-schema --experimental --out server/generated-schema
 ```
 
 The client opts into `experimentalApi` because the VS Code-style approval/input surface uses the
@@ -44,3 +44,32 @@ server-initiated requests receive a JSON-RPC `-32601` response so a turn cannot 
 different CLI version is reported in the connection status and must be validated before release.
 Turn timestamps such as `startedAt` are Unix seconds and must be normalized to milliseconds before
 Android uses them for elapsed-time calculations.
+
+## Codex 0.169.0 compatibility
+
+The default is shared by Flutter profiles, runtime setup and `protocol/codex-version.txt`.
+New profiles and stored profiles with no version field receive it; explicitly stored versions and
+custom commands remain unchanged. Changing an existing server's selected version uses the normal
+managed installation flow, without replacing system Codex or rewriting its sessions/configuration.
+
+`model/list` uses the native process's effective default provider, `includeHidden: true`, and opaque
+continuation cursors. Global-file provider settings must not override workspace/launch configuration.
+Pages are deduplicated by model ID while preserving wire model IDs and efforts.
+The entire catalogue shares one timeout budget and at most 20 pages. Invalid/repeated cursors,
+provider rejection or a changed connection generation fail the fetch rather than publishing a
+partial catalogue or silently switching providers. The client does not inject `modelProvider`.
+
+An old `turn/completed` (including `interrupted` or `failed`) cannot clear a newer known active
+turn in either the foreground or background thread list. Native interrupt requests retain both
+thread and turn IDs. The existing item-based history relay remains bounded to 20 records per
+page, with read-only child inspection and writer ownership checks intact.
+
+Native 0.169 can emit an empty `item/started` before text arrives. The metrics relay excludes empty
+message, reasoning and plan placeholders from TTFT; the first actual delta (or model-issued tool)
+still uses server timestamps. Both SSE and WebSocket loopback probes assert the original first-text
+threshold with a paused phone reader, rather than relaxing the threshold for the new lifecycle.
+
+The native loopback fixture `scripts/test-codex-history-relay-live.cjs` validates this version's
+provider catalogue, fork pagination, active-turn resume, interruption followed by a new turn,
+and delayed interruption of the previous turn, alongside malformed child-message compatibility
+and HTTP 400 recovery. It uses isolated synthetic sessions without credentials or paid model calls.

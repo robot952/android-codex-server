@@ -875,6 +875,38 @@ void main() {
     expect(next.threads.single.status, 'active');
   });
 
+  for (final status in ['completed', 'interrupted', 'failed']) {
+    test('late $status keeps a newer background turn running', () {
+      final state = _state().copyWith(
+        threads: const [
+          AgentThread(
+            id: 'background',
+            title: '后台任务',
+            status: 'active',
+            activeTurnId: 'new-turn',
+          ),
+        ],
+      );
+      final late = reduceCodexNotification(
+        state,
+        _notification('turn/completed', {
+          'threadId': 'background',
+          'turn': {'id': 'old-turn', 'status': status},
+        }),
+      );
+      expect(identical(late, state), isTrue);
+      final completed = reduceCodexNotification(
+        late,
+        _notification('turn/completed', {
+          'threadId': 'background',
+          'turn': {'id': 'new-turn', 'status': status},
+        }),
+      );
+      expect(completed.threads.single.status, 'idle');
+      expect(completed.threads.single.activeTurnId, isNull);
+    });
+  }
+
   test('reconciles an optimistic user row with the server item id', () {
     final state = _state().copyWith(
       timeline: const <TimelineEntry>[

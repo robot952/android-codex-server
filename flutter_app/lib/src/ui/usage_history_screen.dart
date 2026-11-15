@@ -234,7 +234,7 @@ class _UsageHistoryScreenState extends ConsumerState<UsageHistoryScreen> {
                               runSpacing: 6,
                               children: [
                                 Text(
-                                  '输入 ${usageTokenLabel(totals.inputTokens)}',
+                                  '输入 ${usageTokenLabel(totals.nonCachedInputTokens)}',
                                 ),
                                 Text(
                                   '输出 ${usageTokenLabel(totals.outputTokens)}',
@@ -253,8 +253,9 @@ class _UsageHistoryScreenState extends ConsumerState<UsageHistoryScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              '缓存已计入输入。命中率 = 缓存合计 ÷ 输入合计'
-                              '（有效 ${totals.cacheRateRequests}/${totals.requests} 笔）。'
+                              '输入已扣除缓存命中，总 Token 包含缓存。'
+                              '命中率 = 缓存合计 ÷ 原始输入合计'
+                              '（输入及命中率有效 ${totals.cacheRateRequests}/${totals.requests} 笔）。'
                               '未知值显示 —。仅统计本机收到的用量，非账单；最多保留 90 天、10000 笔。',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
@@ -287,7 +288,7 @@ class _RequestUsageCard extends StatelessWidget {
     ).toLocal();
     String two(int n) => n.toString().padLeft(2, '0');
     final fields = [
-      ('输入', usageTokenLabel(record.inputTokens)),
+      ('输入', usageTokenLabel(record.nonCachedInputTokens)),
       ('输出', usageTokenLabel(record.outputTokens)),
       ('缓存命中', usageTokenLabel(record.cachedInputTokens)),
       ('首字 / 首次调用', usageDurationLabel(record.firstTokenMillis)),

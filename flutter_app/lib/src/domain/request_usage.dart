@@ -38,6 +38,17 @@ class RequestUsageRecord {
   final int? durationMillis;
   final bool hasServerTimestamp;
 
+  /// Display-only count. Keep native input (including cache) in storage so
+  /// replay/merge, totals and cache-hit rates retain their original meaning.
+  int? get nonCachedInputTokens {
+    final input = inputTokens;
+    final cached = cachedInputTokens;
+    if (input == null || cached == null || cached < 0 || input < cached) {
+      return null;
+    }
+    return input - cached;
+  }
+
   RequestUsageRecord merge(RequestUsageRecord next) => RequestUsageRecord(
     id: id,
     profileId: profileId,
@@ -182,13 +193,11 @@ class UsageTotals {
       }
       final input = record.inputTokens;
       final cached = record.cachedInputTokens;
+      final nonCached = record.nonCachedInputTokens;
       // Only comparable pairs contribute to the weighted rate. Missing cache
       // usage is unknown, not a cache miss; malformed counts must not exceed 100%.
-      if (input != null &&
-          cached != null &&
-          input >= 0 &&
-          cached >= 0 &&
-          cached <= input) {
+      if (input != null && cached != null && nonCached != null) {
+        nonCachedInputTokens = (nonCachedInputTokens ?? 0) + nonCached;
         cacheRateRequests++;
         _cacheRateInput += input;
         _cacheRateHits += cached;
@@ -198,6 +207,7 @@ class UsageTotals {
 
   int requests = 0;
   int? inputTokens;
+  int? nonCachedInputTokens;
   int? outputTokens;
   int? cachedInputTokens;
   int? totalTokens;

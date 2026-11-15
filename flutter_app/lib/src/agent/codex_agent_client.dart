@@ -874,14 +874,44 @@ class CodexAgentClient
   @override
   Future<List<AgentModel>> listModels() async {
     final scope = _requireScope();
-    final response = await _request(
-      scope.request(
-        'model/list',
-        params: const <String, Object?>{'limit': 100, 'includeHidden': true},
-      ),
-      timeout: requestTimeout,
-    );
-    return CodexPayloadParser.parseModels(response.resultOrThrow());
+    final models = <String, AgentModel>{};
+    final cursors = <String>{};
+    final elapsed = Stopwatch()..start();
+    String? cursor;
+    for (var page = 0; page < 20; page++) {
+      if (!scope.isCurrent) throw StateError('模型目录请求已失效');
+      final remaining = requestTimeout - elapsed.elapsed;
+      if (remaining <= Duration.zero) {
+        throw TimeoutException('模型目录加载超时', requestTimeout);
+      }
+      final response = await _request(
+        scope.request(
+          'model/list',
+          params: <String, Object?>{
+            'limit': 100,
+            'includeHidden': true,
+            // Native 0.169 uses its effective provider by default. A provider
+            // read from global settings may differ from workspace/-c overrides.
+            'cursor': ?cursor,
+          },
+        ),
+        timeout: remaining,
+      );
+      if (!scope.isCurrent) throw StateError('模型目录请求已失效');
+      final result = response.resultOrThrow();
+      for (final model in CodexPayloadParser.parseModels(result)) {
+        models[model.id] = model;
+      }
+      final next = result is Map ? result['nextCursor'] : null;
+      if (next == null || next == '') {
+        return models.values.toList(growable: false);
+      }
+      if (next is! String || !cursors.add(next)) {
+        throw StateError('模型目录分页游标无效');
+      }
+      cursor = next;
+    }
+    throw StateError('模型目录超过分页上限');
   }
 
   @override

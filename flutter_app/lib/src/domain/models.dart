@@ -6,7 +6,7 @@ import 'package:uuid/uuid.dart';
 part 'models.freezed.dart';
 part 'models.g.dart';
 
-const defaultCodexVersion = '0.153.3';
+const defaultCodexVersion = '0.169.0';
 const defaultOpenCodeVersion = '1.18.11';
 // Version selection accepts stable Claude Code 2.1.x and newer 2.x releases;
 // 2.1.293 is the tested default.

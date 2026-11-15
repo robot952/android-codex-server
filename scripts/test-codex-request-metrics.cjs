@@ -88,6 +88,26 @@ scenario("non-model item starts do not manufacture first output timing", (collec
   assert.equal(messages.length, 1);
   assert.equal(messages[0].params.requestMetrics.firstTokenMillis, null);
 });
+scenario("empty native message starts wait for actual text or reasoning", (collector, messages) => {
+  for (const type of ["agentMessage", "reasoning", "plan"]) {
+    collector.notification({ method: "item/started", emittedAtMs: base + 100,
+      params: { threadId: "thread", turnId: "turn", startedAtMs: base + 100,
+        item: { id: type, type, text: " ", summary: [], content: [""] } } });
+  }
+  collector.notification(text(350, "agentMessage"));
+  collector.notification(counters(610));
+  collector.telemetry(envelope([start(0), end(600)]));
+  assert.equal(messages[0].params.requestMetrics.firstTokenMillis, 350);
+});
+scenario("nonempty native message starts retain their server timestamp", (collector, messages) => {
+  collector.notification({ method: "item/started", emittedAtMs: base + 300,
+    params: { threadId: "thread", turnId: "turn", startedAtMs: base + 250,
+      item: { id: "reasoning", type: "reasoning", summary: ["Synthetic reasoning"], content: [] } } });
+  collector.notification(text(350));
+  collector.notification(counters(610));
+  collector.telemetry(envelope([start(0), end(600)]));
+  assert.equal(messages[0].params.requestMetrics.firstTokenMillis, 250);
+});
 scenario("user shell item starts are not model output", (collector, messages) => {
   collector.notification({
     method: "item/started",

@@ -167,12 +167,14 @@ AppUiState reduceCodexNotification(
     case 'turn/completed':
       final turn = _map(params['turn']);
       final completedId = _string(turn, const ['id', 'turnId', 'turn_id']);
-      if (appliesToActive &&
-          completedId.isNotEmpty &&
-          state.activeTurnId?.isNotEmpty == true &&
-          state.activeTurnId != completedId) {
+      final currentTurnId = appliesToActive
+          ? state.activeTurnId
+          : _listedTurnId(state, threadId);
+      if (completedId.isNotEmpty &&
+          currentTurnId?.isNotEmpty == true &&
+          currentTurnId != completedId) {
         // A completion from an older turn can arrive after a new turn starts.
-        // It must not stop the active turn or clear its list spinner.
+        // Protect background threads too, including a late interrupted turn.
         return state;
       }
       final resolvedTurnId = completedId.isNotEmpty

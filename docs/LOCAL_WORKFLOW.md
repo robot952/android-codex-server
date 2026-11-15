@@ -560,6 +560,13 @@ node scripts/test-codex-provider-transport.cjs
 
 ## 6. SSH 测试主机
 
+Codex 默认版本升级时先将匹配版本安装到仓库忽略的独立测试目录，生成包含 `--experimental` 的
+app-server schema；不要升级正在使用的系统 Codex 或操作用户会话。使用该二进制运行
+`CODEX_TEST_BIN=/absolute/path/to/codex node scripts/test-codex-history-relay-live.cjs`，覆盖历史兼容、
+分支分页、供应商模型目录、停止后继续及迟到停止；提问与 writer 占用另用本节相关原生入口验证。
+Flutter 模型分页回归覆盖隐藏模型、供应商、游标异常、分页上限、断线和失败不发布部分结果；
+事件 reducer 回归同时覆盖前台及后台旧回合通知隔离。默认版本变更保留已有 Profile 的明确版本选择。
+
 历史恢复专项：`test/app/resumed_timeline_reconciliation_test.dart`、
 `test/app/older_timeline_merge_test.dart` 和 `test/app/resume_lifecycle_test.dart` 覆盖有界页重叠、
 回退、重复分页顺序、自动补读一页、失败重试及快速重进的迟到结果；

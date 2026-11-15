@@ -3,7 +3,7 @@
 // Runs on the SSH host, alongside Codex. Never uses the phone's receive clock.
 // Native OTLP timestamps identify upstream request boundaries; native JSONL
 // timestamps identify the first nonempty text/reasoning delta or allowlisted
-// model-issued tool item. Tool execution output, warm-up requests, replayed
+// model-issued tool item. Empty message starts, tool output, warm-up requests, replayed
 // history and unknown timings are not substituted.
 const COUNT_KEYS = ["inputTokens", "outputTokens", "cachedInputTokens", "reasoningOutputTokens", "totalTokens"];
 const DELTAS = new Set(["item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta"]);
@@ -41,6 +41,16 @@ function rememberPoint(state, turn, item, time) {
 }
 function isModelOutputItem(item) {
   if (!item || typeof item !== "object" || !MODEL_OUTPUT_ITEMS.has(item.type)) return false;
+  // Since 0.169 native message lifecycle starts can precede the first text.
+  // Do not reserve this item ID until it actually contains model output;
+  // otherwise the later delta is deduplicated against an empty placeholder.
+  if (item.type === "agentMessage" || item.type === "plan") {
+    return typeof item.text === "string" && item.text.trim().length > 0;
+  }
+  if (item.type === "reasoning") {
+    return [item.summary, item.content].some(parts => Array.isArray(parts) &&
+      parts.some(part => typeof part === "string" && part.trim().length > 0));
+  }
   if (item.type !== "commandExecution") return true;
   // Shell commands initiated by the user or by startup are not model output.
   return item.source === undefined || item.source === "agent";

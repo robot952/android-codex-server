@@ -390,7 +390,7 @@ void main() {
       );
       await tester.pump();
       expect(
-        find.descendant(of: summary, matching: find.text('6.8k')),
+        find.descendant(of: summary, matching: find.text('6.7k')),
         findsOneWidget,
       );
       expect(

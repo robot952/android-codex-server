@@ -92,7 +92,7 @@ void main() {
     final now = DateTime(2026, 10, 28, 12);
     final store = MemoryRequestUsageStore()
       ..snapshot = UsageHistorySnapshot(
-        records: [usageFixture(input: 12345, output: 2345)],
+        records: [usageFixture(input: 12345, output: 2345, cached: 2345)],
       );
     final controller = RequestUsageController(
       store,
@@ -106,9 +106,44 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.textContaining('12.3k'), findsWidgets);
+    expect(find.text('输入 10.0k'), findsOneWidget);
+    expect(find.text('输入  10.0k'), findsOneWidget);
+    expect(find.text('总 Token 14.7k'), findsOneWidget);
     expect(find.textContaining('2.3k'), findsWidgets);
     expect(find.textContaining('12345'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('cached-heavy request shows only uncached input in both places', (
+    tester,
+  ) async {
+    final now = DateTime(2026, 10, 28, 12);
+    final store = MemoryRequestUsageStore()
+      ..snapshot = UsageHistorySnapshot(
+        records: [usageFixture(input: 138400, cached: 138100, output: 662)],
+      );
+    final controller = RequestUsageController(
+      store,
+      nowMillis: () => now.millisecondsSinceEpoch,
+    );
+    await controller.ready;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [requestUsageProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(home: UsageHistoryScreen(now: () => now)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('输入 300'), findsOneWidget);
+    expect(find.text('输入  300'), findsOneWidget);
+    expect(find.text('总 Token 139.1k'), findsOneWidget);
+    expect(find.text('总 Token  139.1k'), findsOneWidget);
+    expect(find.text('缓存命中率 99.8%'), findsOneWidget);
+    expect(find.textContaining('输入已扣除缓存命中'), findsOneWidget);
+    expect(find.textContaining('138.4k'), findsNothing);
+    expect(store.snapshot.records.single.inputTokens, 138400);
+    expect(store.writes, 0);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -158,17 +193,23 @@ void main() {
     }
 
     expect(find.text('缓存命中率 86.0%'), findsOneWidget);
+    expect(find.text('输入 140'), findsOneWidget);
     await select('usage-model', 'model-A');
     expect(find.text('1 笔请求'), findsOneWidget);
     expect(find.text('缓存命中率 50.0%'), findsOneWidget);
+    expect(find.text('输入 50'), findsOneWidget);
     await select('usage-period', '全部日期');
     expect(find.text('2 笔请求'), findsOneWidget);
     expect(find.text('缓存命中率 30.0%'), findsOneWidget);
+    expect(find.text('输入 350'), findsOneWidget);
     await select('usage-model', '全部模型');
     expect(find.text('4 笔请求'), findsOneWidget);
     expect(find.text('缓存命中率 68.6%'), findsOneWidget);
+    expect(find.text('输入 440'), findsOneWidget);
     await select('usage-model', '模型未上报');
     expect(find.text('缓存命中率 —'), findsOneWidget);
+    expect(find.text('输入 —'), findsOneWidget);
+    expect(find.text('输入  —'), findsOneWidget);
     await select('usage-period', '昨天');
     expect(find.text('0 笔请求'), findsOneWidget);
     expect(find.text('缓存命中率 —'), findsOneWidget);
@@ -184,7 +225,7 @@ void main() {
       addTearDown(tester.view.reset);
       final store = MemoryRequestUsageStore()
         ..snapshot = UsageHistorySnapshot(
-          records: [usageFixture(input: 12345)],
+          records: [usageFixture(input: 12345, cached: 2345)],
         );
       final controller = RequestUsageController(
         store,
@@ -220,7 +261,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('12.3k'), findsOneWidget);
+      expect(find.text('10.0k'), findsOneWidget);
+      expect(find.byTooltip('输入 Token（不含缓存命中）：10.0k'), findsOneWidget);
       final target = find.byKey(const ValueKey('request-usage-summary'));
       expect(tester.getSize(target).height, inInclusiveRange(24, 40));
       expect(

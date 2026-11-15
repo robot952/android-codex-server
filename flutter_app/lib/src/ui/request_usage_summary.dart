@@ -38,8 +38,8 @@ class RequestUsageSummary extends ConsumerWidget {
     final values = [
       (
         Icons.arrow_upward,
-        '输入 Token',
-        usageTokenLabel(record?.inputTokens, compact: true),
+        '输入 Token（不含缓存命中）',
+        usageTokenLabel(record?.nonCachedInputTokens, compact: true),
       ),
       (
         Icons.arrow_downward,

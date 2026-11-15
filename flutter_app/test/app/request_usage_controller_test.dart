@@ -10,6 +10,50 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/request_usage_fixture.dart';
 
 void main() {
+  test('display input subtracts cache without changing persisted counters', () {
+    for (final (input, cached, expected) in <(int?, int?, int?)>[
+      (138400, 138100, 300),
+      (100, 0, 100),
+      (100, 100, 0),
+      (0, 0, 0),
+      (100, null, null),
+      (null, 50, null),
+      (100, 101, null),
+      (-1, 0, null),
+      (100, -1, null),
+    ]) {
+      final record = usageFixture(input: input, cached: cached);
+      expect(record.nonCachedInputTokens, expected);
+      expect(record.toJson()['inputTokens'], input);
+      expect(record.toJson()['cachedInputTokens'], cached);
+      expect(
+        RequestUsageRecord.fromJson(record.toJson())?.nonCachedInputTokens,
+        expected,
+      );
+    }
+  });
+  test('display input totals subtract only within comparable records', () {
+    final totals = UsageTotals([
+      usageFixture(input: 200, cached: 150),
+      usageFixture(input: 100, cached: null),
+      usageFixture(input: null, cached: 90),
+      usageFixture(input: 5, cached: 10),
+    ]);
+    expect(totals.nonCachedInputTokens, 50);
+    expect(totals.inputTokens, 305);
+    expect(totals.totalTokens, 365);
+    expect(totals.cacheHitRate, .75);
+    expect(totals.cacheRateRequests, 1);
+    expect(UsageTotals([]).nonCachedInputTokens, isNull);
+    expect(
+      UsageTotals([usageFixture(cached: null)]).nonCachedInputTokens,
+      isNull,
+    );
+    expect(
+      UsageTotals([usageFixture(input: 100, cached: 100)]).nonCachedInputTokens,
+      0,
+    );
+  });
   test(
     'cache rate weights comparable token counts and leaves missing data unknown',
     () {

@@ -1550,6 +1550,140 @@ void main() {
   );
 
   test(
+    'model pages retain native provider, hidden models and opaque cursors',
+    () async {
+      final requests = <Map<String, Object?>>[];
+      final session = _FakeCodexSession(
+        replyFor: (request) {
+          if (request['method'] != 'model/list') return {'result': {}};
+          final params = request['params'] as Map<String, Object?>;
+          requests.add(params);
+          return {
+            'result': requests.length == 1
+                ? {
+                    'data': [
+                      {'id': 'first', 'model': 'wire-first'},
+                    ],
+                    'nextCursor': 'provider:page/2=',
+                  }
+                : {
+                    'data': [
+                      {
+                        'id': 'first',
+                        'model': 'wire-first',
+                        'displayName': 'updated',
+                      },
+                      {
+                        'id': 'hidden',
+                        'model': 'wire-hidden',
+                        'hidden': true,
+                        'defaultReasoningEffort': 'high',
+                      },
+                    ],
+                    'nextCursor': null,
+                  },
+          };
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _ThreadListHost(),
+      );
+      final models = await client.listModels();
+      expect(models.map((model) => model.model), ['wire-first', 'wire-hidden']);
+      expect(models.first.displayName, 'updated');
+      expect(models.last.defaultEffort, 'high');
+      expect(requests, [
+        {'limit': 100, 'includeHidden': true},
+        {'limit': 100, 'includeHidden': true, 'cursor': 'provider:page/2='},
+      ]);
+    },
+  );
+
+  for (final failure in ['provider', 'endless', 'disconnect']) {
+    test(
+      'model paging fails safely on $failure without a partial catalogue',
+      () async {
+        var pages = 0;
+        late CodexAgentClient client;
+        final session = _FakeCodexSession(
+          replyFor: (request) {
+            if (request['method'] != 'model/list') return {'result': {}};
+            pages++;
+            if (pages == 2 && failure == 'provider') {
+              return {
+                'error': {
+                  'code': -32600,
+                  'message': 'Restart required for provider',
+                },
+              };
+            }
+            if (pages == 2 && failure == 'disconnect') {
+              unawaited(client.disconnect());
+            }
+            return {
+              'result': {
+                // An empty page with a continuation is not the end of the catalogue.
+                'data': pages == 1
+                    ? []
+                    : [
+                        {'id': 'partial'},
+                      ],
+                'nextCursor': 'cursor-$pages',
+              },
+            };
+          },
+        );
+        client = CodexAgentClient(sessionOpener: (_, _) async => session);
+        addTearDown(client.close);
+        await client.connect(
+          const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+          _ThreadListHost(),
+        );
+        await expectLater(
+          client.listModels(),
+          throwsA(
+            failure == 'provider'
+                ? isA<CodexRpcException>()
+                : isA<StateError>(),
+          ),
+        );
+        expect(pages, failure == 'endless' ? 20 : 2);
+      },
+    );
+  }
+
+  for (final invalidCursor in [17, 'repeated']) {
+    test('model pagination rejects invalid cursor $invalidCursor', () async {
+      var pages = 0;
+      final session = _FakeCodexSession(
+        replyFor: (request) {
+          if (request['method'] != 'model/list') return {'result': {}};
+          pages++;
+          return {
+            'result': {
+              'data': [
+                {'id': 'partial'},
+              ],
+              'nextCursor': invalidCursor,
+            },
+          };
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 'server', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      await expectLater(client.listModels(), throwsStateError);
+      expect(pages, invalidCursor is String ? 2 : 1);
+    });
+  }
+
+  test(
     'lists all server-hidden models and preserves custom model efforts',
     () async {
       final session = _FakeCodexSession(

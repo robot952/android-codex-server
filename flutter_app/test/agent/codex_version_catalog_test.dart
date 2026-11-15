@@ -36,7 +36,11 @@ void main() {
         ),
       );
 
-      expect(await catalog.fetch(), <String>['0.154.0', pinnedCodexVersion]);
+      expect(await catalog.fetch(), <String>[
+        pinnedCodexVersion,
+        '0.154.0',
+        '0.153.3',
+      ]);
     },
   );
 
