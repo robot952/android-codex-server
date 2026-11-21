@@ -25,7 +25,12 @@ class _PendingStore implements ProfileStore {
 }
 
 class _TestController extends AppController {
-  _TestController(super.store, super.connections);
+  _TestController(super.store, super.connections) {
+    state = state.copyWith(
+      screen: AppScreen.terminal,
+      selectedProfileId: 'server',
+    );
+  }
 }
 
 class _ConnectedTerminalManager extends TerminalManager {
@@ -33,6 +38,7 @@ class _ConnectedTerminalManager extends TerminalManager {
 
   final String history;
   final List<Uint8List> sent = [];
+  final List<String> closedProfiles = [];
   TerminalPhase phase = TerminalPhase.connected;
   int generation = 1;
 
@@ -65,6 +71,9 @@ class _ConnectedTerminalManager extends TerminalManager {
 
   @override
   void open(profile) {}
+
+  @override
+  void closeProfile(String profileId) => closedProfiles.add(profileId);
 }
 
 void main() {
@@ -454,7 +463,11 @@ void main() {
     expect(find.byIcon(Icons.content_copy), findsOneWidget);
     expect(find.byIcon(Icons.content_paste), findsOneWidget);
     expect(find.byIcon(Icons.keyboard_arrow_down), findsOneWidget);
-    expect(find.byIcon(Icons.close), findsOneWidget);
+    final powerIcon = find.descendant(
+      of: find.byTooltip('关闭终端'),
+      matching: find.byIcon(Icons.power_settings_new),
+    );
+    expect(tester.widget<Icon>(powerIcon).color, codexRed);
     expect(find.text('ESC'), findsOneWidget);
     expect(find.text('TAB'), findsOneWidget);
     expect(find.text('HOME'), findsOneWidget);
@@ -538,6 +551,58 @@ void main() {
     await fourthFinger.up();
     await tester.pump();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('power action closes the current shell only after confirmation', (
+    tester,
+  ) async {
+    final manager = await _pumpTerminal(tester, 'session output');
+    final scope = ProviderScope.containerOf(
+      tester.element(find.byType(TerminalScreen)),
+    );
+
+    for (final dismissWithBack in [true, false]) {
+      await tester.tap(find.byTooltip('关闭终端'));
+      await tester.pumpAndSettle();
+      expect(find.text('关闭终端？'), findsOneWidget);
+      if (dismissWithBack) {
+        await tester.binding.handlePopRoute();
+      } else {
+        await tester.tap(find.text('取消'));
+      }
+      await tester.pumpAndSettle();
+      expect(manager.closedProfiles, isEmpty);
+      expect(scope.read(appControllerProvider).screen, AppScreen.terminal);
+    }
+
+    await tester.tap(find.byTooltip('关闭终端'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    expect(manager.closedProfiles, ['server']);
+    expect(scope.read(appControllerProvider).screen, AppScreen.threads);
+  });
+
+  testWidgets('confirming an old dialog does not close a replacement shell', (
+    tester,
+  ) async {
+    final manager = await _pumpTerminal(tester, 'session output');
+    await tester.tap(find.byTooltip('关闭终端'));
+    await tester.pumpAndSettle();
+    manager.changePhase(TerminalPhase.connected);
+    await tester.pump();
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    expect(manager.closedProfiles, isEmpty);
+    final scope = ProviderScope.containerOf(
+      tester.element(find.byType(TerminalScreen)),
+    );
+    expect(scope.read(appControllerProvider).screen, AppScreen.terminal);
+
+    await tester.tap(find.byTooltip('隐藏终端'));
+    await tester.pumpAndSettle();
+    expect(manager.closedProfiles, isEmpty);
+    expect(scope.read(appControllerProvider).screen, AppScreen.threads);
   });
 }
 

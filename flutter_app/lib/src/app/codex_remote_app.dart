@@ -258,8 +258,9 @@ class _AppRootState extends ConsumerState<_AppRoot>
             case AppScreen.agentWork:
               controller.backFromSubAgentThread();
             case AppScreen.fileManager:
-              controller.closeFileManager();
+              controller.browseFileManagerParent();
             case AppScreen.terminal:
+              ref.read(terminalManagerProvider).hide();
               controller.closeTerminal();
             case AppScreen.threads:
               controller.backToServers();

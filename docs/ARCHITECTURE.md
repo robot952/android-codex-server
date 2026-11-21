@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.205+337，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.206+338，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -248,8 +248,8 @@ AppScreen.fileManager -> FileManagerScreen
 AppScreen.terminal -> TerminalScreen
 ~~~
 
-AnimatedSwitcher 提供前进/返回的淡入滑入动画。Work 顶部返回按钮调用 `backToThreadList`；文件管理和
-终端分别由 `closeFileManager`/`closeTerminal` 返回会话列表。系统 Back 由根 `PopScope` 处理服务器 ->
+AnimatedSwitcher 提供前进/返回的淡入滑入动画。Work 顶部返回按钮调用 `backToThreadList`；文件管理通过
+确认关闭返回会话列表，系统返回只上行一级目录，在根目录停留；终端调用 `closeTerminal`。系统 Back 由根 `PopScope` 处理服务器 ->
 会话列表 -> Work/文件/终端的页面层级；Work 内的子 Agent 使用独立 thread、父快照栈和嵌套返回。连接、指纹
 确认和需要阻断交互的操作期间由遮罩或页面状态阻止重复操作。
 
@@ -600,16 +600,17 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
 
 ### 8.4 FileManagerScreen（远程文件）
 
-文件管理从会话列表设置菜单进入，仅使用当前已连接 SSH profile。页面显示当前路径、目录条目、权限/大小/修改
+文件管理从会话列表工具栏进入，仅使用当前已连接 SSH profile。页面显示当前路径、目录条目、权限/大小/修改
 时间，并支持上级目录、刷新、多选、新建文件夹、上传、下载、重命名、删除确认和复制/剪切/粘贴。新建文件夹
 复用文件名边界和 SFTP 连接代次校验，创建成功后刷新当前目录；上传使用系统文件 picker
 并顺序流式发送；下载使用 Android SAF 保存位置选择器和分块导出。操作期间显示进度并阻止冲突操作，切换服务器、
-断开或返回会使进行中的请求失效。
+断开或确认关闭会使进行中的页面请求失效。安卓系统返回与左上箭头使用服务器返回的父目录，在根目录不会退出；
+选择模式下左上按钮取消选择。刷新右侧的红色圆形电源按钮与服务器列表共用外观，但只关闭文件管理，不断开 SSH。
 
 ### 8.5 TerminalScreen（远程终端）
 
 会话列表的终端图标只在 SSH 已连接时启用。页面显示独立 xterm PTY，支持键盘输入、resize、输出历史、重试、
-隐藏（保留连接）和显式关闭（释放连接）；Agent JSONL 通道不受终端输入输出影响。
+隐藏（向下箭头或安卓系统返回，保留 PTY）和显式关闭（右上红色电源按钮确认后只释放当前 PTY）；SSH 服务器连接及 Agent JSONL 通道不受影响。
 长按文字后显示可拖动的选区手柄及复制、全选、取消操作；选区底色必须半透明，不能遮住 xterm 先绘制的
 文字。调整选区不会自动覆盖剪贴板，也不会向 PTY 发送输入；用户明确复制后才写入剪贴板。
 

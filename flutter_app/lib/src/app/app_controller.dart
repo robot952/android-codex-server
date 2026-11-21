@@ -2526,6 +2526,16 @@ class AppController extends StateNotifier<AppUiState> {
     if (path.isNotEmpty) browseFileManager(path);
   }
 
+  void browseFileManagerParent() {
+    final parent = state.fileManagerParentPath;
+    if (state.screen != AppScreen.fileManager ||
+        state.fileManagerLoading ||
+        parent == null) {
+      return;
+    }
+    browseFileManager(parent);
+  }
+
   void browseFileManager(String path) {
     final profile = _activeFileManagerProfile();
     if (profile == null || state.fileManagerOperation != null) return;

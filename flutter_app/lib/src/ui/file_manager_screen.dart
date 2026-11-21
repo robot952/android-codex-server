@@ -8,6 +8,7 @@ import '../app/app_controller.dart';
 import '../domain/models.dart';
 import '../platform/local_file_exporter.dart';
 import '../ssh/ssh_server_client.dart';
+import 'red_power_button.dart';
 import 'theme.dart';
 
 class FileManagerScreen extends ConsumerStatefulWidget {
@@ -46,14 +47,12 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
-          tooltip: selectedEntries.isEmpty ? '返回会话' : '取消选择',
-          onPressed: () {
-            if (selectedEntries.isEmpty) {
-              controller.closeFileManager();
-            } else {
-              setState(_selectedPaths.clear);
-            }
-          },
+          tooltip: selectedEntries.isEmpty ? '返回上级目录' : '取消选择',
+          onPressed: selectedEntries.isNotEmpty
+              ? () => setState(_selectedPaths.clear)
+              : !busy && state.fileManagerParentPath != null
+              ? controller.browseFileManagerParent
+              : null,
           icon: Icon(selectedEntries.isEmpty ? Icons.arrow_back : Icons.close),
         ),
         title: Column(
@@ -93,6 +92,7 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
                   )
                 : const Icon(Icons.refresh),
           ),
+          RedPowerButton(tooltip: '关闭文件管理', onPressed: _confirmClose),
         ],
       ),
       floatingActionButton: PopupMenuButton<_FileToolbarAction>(
@@ -208,6 +208,7 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
                 state: state,
                 busy: busy,
                 selectedPaths: _selectedPaths,
+                onParent: controller.browseFileManagerParent,
                 onBrowse: controller.browseFileManager,
                 onToggle: _toggleSelection,
                 onActions: _showEntryActions,
@@ -217,6 +218,33 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _confirmClose() async {
+    final profileId = ref.read(appControllerProvider).fileManagerProfileId;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('关闭文件管理？'),
+        content: const Text('关闭后仍会保持服务器连接。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('关闭', style: TextStyle(color: codexRed)),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    final state = ref.read(appControllerProvider);
+    if (state.screen == AppScreen.fileManager &&
+        state.fileManagerProfileId == profileId) {
+      ref.read(appControllerProvider.notifier).closeFileManager();
+    }
   }
 
   void _toggleSelection(RemoteFileEntry entry) {
@@ -500,6 +528,7 @@ class _FileList extends StatelessWidget {
     required this.state,
     required this.busy,
     required this.selectedPaths,
+    required this.onParent,
     required this.onBrowse,
     required this.onToggle,
     required this.onActions,
@@ -508,6 +537,7 @@ class _FileList extends StatelessWidget {
   final AppUiState state;
   final bool busy;
   final Set<String> selectedPaths;
+  final VoidCallback onParent;
   final ValueChanged<String> onBrowse;
   final ValueChanged<RemoteFileEntry> onToggle;
   final ValueChanged<List<RemoteFileEntry>> onActions;
@@ -534,7 +564,7 @@ class _FileList extends StatelessWidget {
             enabled: !busy,
             leading: const Icon(Icons.drive_folder_upload_outlined),
             title: const Text('上级目录'),
-            onTap: () => onBrowse(state.fileManagerParentPath!),
+            onTap: onParent,
           );
         }
         final entry = state.fileManagerEntries[index - (hasParent ? 1 : 0)];

@@ -9,7 +9,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app/app_controller.dart';
+import '../domain/models.dart' show AppScreen;
 import '../ssh/terminal_manager.dart';
+import 'red_power_button.dart';
 import 'theme.dart';
 
 /// Interactive PTY view for one server. Hiding this page keeps the shell
@@ -197,11 +199,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                 onPressed: _hideTerminal,
                 icon: const Icon(Icons.keyboard_arrow_down),
               ),
-              IconButton(
-                tooltip: '关闭终端',
-                onPressed: () => _confirmClose(context),
-                icon: const Icon(Icons.close),
-              ),
+              RedPowerButton(tooltip: '关闭终端', onPressed: _confirmClose),
             ],
           ),
           body: SafeArea(
@@ -703,28 +701,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _terminalFocus.requestFocus();
   }
 
-  Future<void> _confirmClose(BuildContext context) async {
+  Future<void> _confirmClose() async {
+    final profileId = widget.profileId;
+    final generation = _manager.stateFor(profileId)?.generation;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         icon: const Icon(Icons.terminal),
-        title: const Text('关闭 SSH 终端？'),
-        content: const Text('将断开当前命令行连接，Codex 会话不会受到影响。'),
+        title: const Text('关闭终端？'),
+        content: const Text('将结束当前终端会话。服务器连接和 AI 对话不受影响。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('取消'),
           ),
-          FilledButton(
+          TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('关闭并断开'),
+            child: const Text('关闭', style: TextStyle(color: codexRed)),
           ),
         ],
       ),
     );
     if (!mounted || confirmed != true) return;
+    final state = ref.read(appControllerProvider);
+    if (state.screen != AppScreen.terminal ||
+        state.selectedProfileId != profileId ||
+        widget.profileId != profileId ||
+        _manager.stateFor(profileId)?.generation != generation) {
+      return;
+    }
     _terminalFocus.unfocus();
-    _manager.closeProfile(widget.profileId);
+    _manager.closeProfile(profileId);
     ref.read(appControllerProvider.notifier).closeTerminal();
   }
 }

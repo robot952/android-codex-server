@@ -19,6 +19,7 @@ import '../platform/windows_local_server_client.dart';
 import '../ssh/ssh_server_client.dart';
 import 'app_update_dialog.dart';
 import 'diagnostic_log_sheet.dart';
+import 'red_power_button.dart';
 import 'server_metrics_strip.dart';
 import 'theme.dart';
 
@@ -1485,37 +1486,9 @@ class _ServerRow extends StatelessWidget {
                 width: 40,
                 height: 40,
                 child: connection.phase == ConnectionPhase.connected
-                    ? IconButton(
+                    ? RedPowerButton(
                         tooltip: '断开服务器',
                         onPressed: () => onDisconnect(profile),
-                        icon: Container(
-                          width: 34,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: codexRed.withValues(alpha: 0.2),
-                            border: Border.all(
-                              color: codexRed.withValues(alpha: 0.6),
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.45),
-                                blurRadius: 5,
-                                offset: const Offset(0, 2),
-                              ),
-                              BoxShadow(
-                                color: Colors.white.withValues(alpha: 0.08),
-                                blurRadius: 1,
-                                offset: const Offset(0, -1),
-                              ),
-                            ],
-                          ),
-                          child: const Icon(
-                            Icons.power_settings_new,
-                            size: 17,
-                            color: codexRed,
-                          ),
-                        ),
                       )
                     : null,
               ),
