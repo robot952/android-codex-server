@@ -8,7 +8,6 @@ import '../app/app_controller.dart';
 import '../domain/models.dart';
 import '../platform/local_file_exporter.dart';
 import '../ssh/ssh_server_client.dart';
-import 'red_power_button.dart';
 import 'theme.dart';
 
 class FileManagerScreen extends ConsumerStatefulWidget {
@@ -92,7 +91,11 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
                   )
                 : const Icon(Icons.refresh),
           ),
-          RedPowerButton(tooltip: '关闭文件管理', onPressed: _confirmClose),
+          IconButton(
+            tooltip: '关闭文件管理',
+            onPressed: _confirmClose,
+            icon: const Icon(Icons.close, color: Colors.white),
+          ),
         ],
       ),
       floatingActionButton: PopupMenuButton<_FileToolbarAction>(

@@ -11,7 +11,6 @@ import 'package:xterm/xterm.dart';
 import '../app/app_controller.dart';
 import '../domain/models.dart' show AppScreen;
 import '../ssh/terminal_manager.dart';
-import 'red_power_button.dart';
 import 'theme.dart';
 
 /// Interactive PTY view for one server. Hiding this page keeps the shell
@@ -199,7 +198,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                 onPressed: _hideTerminal,
                 icon: const Icon(Icons.keyboard_arrow_down),
               ),
-              RedPowerButton(tooltip: '关闭终端', onPressed: _confirmClose),
+              IconButton(
+                tooltip: '关闭终端',
+                onPressed: _confirmClose,
+                icon: const Icon(Icons.close, color: Colors.white),
+              ),
             ],
           ),
           body: SafeArea(

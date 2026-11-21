@@ -146,20 +146,20 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('only confirming the red close action leaves file manager', (
+  testWidgets('only confirming the white close action leaves file manager', (
     tester,
   ) async {
     final manager = await _openNavigationFixture(tester);
     final close = find.byTooltip('关闭文件管理');
     final closeIcon = find.descendant(
       of: close,
-      matching: find.byIcon(Icons.power_settings_new),
+      matching: find.byIcon(Icons.close),
     );
     expect(closeIcon, findsOneWidget);
     expect(
       tester.widget<Icon>(closeIcon).color ??
           IconTheme.of(tester.element(closeIcon)).color,
-      codexRed,
+      Colors.white,
     );
     expect(
       tester.getCenter(close).dx,

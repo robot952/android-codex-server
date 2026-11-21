@@ -463,11 +463,16 @@ void main() {
     expect(find.byIcon(Icons.content_copy), findsOneWidget);
     expect(find.byIcon(Icons.content_paste), findsOneWidget);
     expect(find.byIcon(Icons.keyboard_arrow_down), findsOneWidget);
-    final powerIcon = find.descendant(
+    final closeIcon = find.descendant(
       of: find.byTooltip('关闭终端'),
-      matching: find.byIcon(Icons.power_settings_new),
+      matching: find.byIcon(Icons.close),
     );
-    expect(tester.widget<Icon>(powerIcon).color, codexRed);
+    expect(closeIcon, findsOneWidget);
+    expect(
+      tester.widget<Icon>(closeIcon).color ??
+          IconTheme.of(tester.element(closeIcon)).color,
+      Colors.white,
+    );
     expect(find.text('ESC'), findsOneWidget);
     expect(find.text('TAB'), findsOneWidget);
     expect(find.text('HOME'), findsOneWidget);
@@ -553,7 +558,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('power action closes the current shell only after confirmation', (
+  testWidgets('close action ends the current shell only after confirmation', (
     tester,
   ) async {
     final manager = await _pumpTerminal(tester, 'session output');
