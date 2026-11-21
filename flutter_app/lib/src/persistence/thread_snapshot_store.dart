@@ -396,6 +396,7 @@ int _snapshotWeight(ThreadSessionSnapshot snapshot, int limit) {
         entry.output.length +
         entry.turnId.length +
         entry.turnStatus.length +
+        entry.agentMessagePhase.length +
         entry.detailsItemId.length +
         entry.subAgentPath.length +
         entry.subAgentThreadId.length +
@@ -446,7 +447,9 @@ Uint8List _randomBytes(int length) {
 // V1 previews have neither authoritative turn statuses nor moderation-aware
 // display rows. Treat them as misses, even when server timestamps match. The
 // next native history read replaces the same encrypted file using the same key.
-const _formatVersion = 2;
+// V2 omitted the assistant phase on deferred previews, making commentary
+// indistinguishable from a genuine legacy (phase-less) answer.
+const _formatVersion = 3;
 Uint8List? _encodeSnapshot(
   ThreadSessionSnapshot snapshot,
   Uint8List key,
@@ -576,6 +579,7 @@ Map<String, Object?> _snapshotJson(ThreadSessionSnapshot snapshot) => {
           'output': entry.output,
           'turnId': entry.turnId,
           'turnStatus': entry.turnStatus,
+          'agentMessagePhase': entry.agentMessagePhase,
           'detailsItemId': entry.detailsItemId,
           'subAgentPath': entry.subAgentPath,
           'subAgentThreadId': entry.subAgentThreadId,
@@ -669,6 +673,7 @@ ThreadSessionSnapshot _snapshotFromJson(Map<String, dynamic> value) {
             output: v['output'] as String,
             turnId: v['turnId'] as String,
             turnStatus: v['turnStatus'] as String? ?? '',
+            agentMessagePhase: v['agentMessagePhase'] as String? ?? '',
             detailsItemId: v['detailsItemId'] as String? ?? '',
             subAgentPath: v['subAgentPath'] as String,
             subAgentThreadId: v['subAgentThreadId'] as String,

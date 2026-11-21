@@ -939,8 +939,22 @@ class _PaginatedThreadAgent extends _SubAgentNavigationAgent
   }
 }
 
-class _ForkAgent extends _SubAgentNavigationAgent
-    implements RemoteAgentThreadForkClient {
+class _ForkAgent extends _ThreadMutationAgent
+    implements RemoteAgentThreadForkClient, RemoteAgentThreadPaginationClient {
+  _ForkAgent({
+    this.sourceTitle = 'Root thread',
+    this.firstMatches = const AgentThreadPage(threads: []),
+    this.nextMatches = const AgentThreadPage(threads: []),
+    this.failRename = false,
+  });
+  final String sourceTitle;
+  final AgentThreadPage firstMatches;
+  final AgentThreadPage nextMatches;
+  final bool failRename;
+  final searchPages = <(String?, String?)>[];
+  final renames = <(String, String)>[];
+  String? storedName;
+  Completer<AgentThreadPage>? pageGate;
   static const fork = AgentThread(id: 'independent-fork', title: '分支');
   static const anchor = TimelineEntry(
     id: 'answer',
@@ -960,6 +974,31 @@ class _ForkAgent extends _SubAgentNavigationAgent
   bool supportsForkAtTurn = true;
 
   @override
+  Future<AgentThreadPage> listThreads({String? searchTerm}) async {
+    if (searchTerm?.isNotEmpty != true) {
+      return super.listThreads(searchTerm: searchTerm);
+    }
+    searchPages.add((searchTerm, null));
+    return pageGate?.future ?? Future.value(firstMatches);
+  }
+
+  @override
+  Future<AgentThreadPage> listThreadsPage({
+    String? searchTerm,
+    String? cursor,
+  }) async {
+    searchPages.add((searchTerm, cursor));
+    return nextMatches;
+  }
+
+  @override
+  Future<void> setThreadName(String threadId, String name) async {
+    renames.add((threadId, name));
+    if (failRename) throw StateError('rename failed');
+    storedName = name;
+  }
+
+  @override
   Future<AgentThread> forkAtTurn({
     required String threadId,
     required String turnId,
@@ -976,11 +1015,16 @@ class _ForkAgent extends _SubAgentNavigationAgent
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
   }) async {
     if (threadId == fork.id) {
-      return const AgentSession(thread: fork, timeline: [anchor]);
+      return AgentSession(
+        thread: fork.copyWith(title: storedName ?? fork.title),
+        timeline: const [anchor],
+      );
     }
     if (threadId == _SubAgentNavigationAgent.rootThread.id) {
       return AgentSession(
-        thread: _SubAgentNavigationAgent.rootThread,
+        thread: _SubAgentNavigationAgent.rootThread.copyWith(
+          title: sourceTitle,
+        ),
         timeline: [
           anchor,
           for (final status in ['', 'failed', 'inProgress', 'interrupted'])
@@ -1047,6 +1091,40 @@ class _ThreadMutationAgent extends _SubAgentNavigationAgent
 
   @override
   Future<void> clearThreadGoal(String threadId) async {}
+}
+
+class _CopyDetailAgent extends _SubAgentNavigationAgent
+    implements RemoteAgentHistoryDetailsClient {
+  _CopyDetailAgent(this.timeline);
+  final List<TimelineEntry> timeline;
+  final detailRequests = <(String, String, String)>[];
+  final pending = <Completer<AgentHistoryDetails>>[];
+
+  @override
+  Future<AgentSession> resumeThread(
+    String threadId, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async {
+    if (threadId != _SubAgentNavigationAgent.rootThread.id) {
+      return super.resumeThread(threadId, approvalMode: approvalMode);
+    }
+    return AgentSession(
+      thread: _SubAgentNavigationAgent.rootThread,
+      timeline: timeline,
+    );
+  }
+
+  @override
+  Future<AgentHistoryDetails> readHistoryItem({
+    required String threadId,
+    required String turnId,
+    required String itemId,
+  }) {
+    detailRequests.add((threadId, turnId, itemId));
+    final gate = Completer<AgentHistoryDetails>();
+    pending.add(gate);
+    return gate.future;
+  }
 }
 
 class _ConnectFailingAgent extends _FailingTurnAgent {
@@ -1515,6 +1593,196 @@ Future<void> _openSubAgent(
 }
 
 void main() {
+  group('copy final reply', () {
+    const finalRow = TimelineEntry(
+      id: 'final',
+      kind: TimelineKind.agentMessage,
+      turnId: 'turn',
+      turnStatus: 'completed',
+      agentMessagePhase: 'final_answer',
+      text: '  ## Heading\n\n    firstLine();\n    secondLine();  \n',
+    );
+    final preview = finalRow.copyWith(
+      id: 'visible-preview',
+      text: 'This is only the visible preview',
+      detailsItemId: 'full-reply-id',
+    );
+    test(
+      'selects final by turn and copies exact Markdown, never trailing tools or another answer',
+      () async {
+        final legacy = finalRow.copyWith(
+          id: 'legacy',
+          turnId: 'legacy-turn',
+          agentMessagePhase: '',
+          text: '  legacy\n',
+        );
+        final agent = _CopyDetailAgent([
+          finalRow.copyWith(
+            id: 'started',
+            agentMessagePhase: 'commentary',
+            text: 'status',
+          ),
+          finalRow,
+          finalRow.copyWith(id: 'tool', kind: TimelineKind.tool, text: 'tool'),
+          finalRow.copyWith(
+            id: 'notice',
+            kind: TimelineKind.notice,
+            text: 'notice',
+          ),
+          legacy,
+          legacy.copyWith(
+            id: 'last-tool',
+            kind: TimelineKind.command,
+            text: 'after legacy',
+          ),
+          finalRow.copyWith(
+            id: 'other',
+            turnId: 'other-turn',
+            text: 'other answer',
+          ),
+        ]);
+        final harness = await _createSubAgentHarness(agent: agent);
+        final controller = harness.controller;
+        expect(controller.finalReplyForTurn('turn'), finalRow);
+        expect(await controller.textForCopyAtTurn('turn'), finalRow.text);
+        expect(await controller.textForCopyAtTurn('legacy-turn'), '  legacy\n');
+        expect(
+          await controller.textForCopyAtTurn('other-turn'),
+          'other answer',
+        );
+        expect(controller.finalReplyForTurn('unknown-turn'), isNull);
+        expect(agent.detailRequests, isEmpty);
+      },
+    );
+
+    test(
+      'does not fall back to earlier messages for restricted, absent or nonfinal answers',
+      () async {
+        final restricted = CodexPayloadParser.parseItem({
+          'id': 'unavailable',
+          'type': 'agentMessage',
+          'text': 'hidden',
+          'moderation': {
+            'display': {'version': 1, 'mode': 'hide'},
+          },
+        }, turnId: 'restricted-legacy')!.copyWith(turnStatus: 'completed');
+        final rows = [
+          for (final phase in [
+            'commentary',
+            'partial_answer',
+            'unknown',
+            'restricted-legacy',
+            'restricted-final',
+          ]) ...[
+            finalRow.copyWith(
+              id: 'prior-$phase',
+              turnId: phase,
+              agentMessagePhase: '',
+              text: 'not a fallback',
+            ),
+            if (phase.startsWith('restricted'))
+              restricted.copyWith(
+                turnId: phase,
+                agentMessagePhase: phase == 'restricted-final'
+                    ? 'final_answer'
+                    : '',
+              )
+            else
+              finalRow.copyWith(
+                id: 'nonfinal-$phase',
+                turnId: phase,
+                agentMessagePhase: phase,
+              ),
+          ],
+          finalRow.copyWith(
+            id: 'only-command',
+            turnId: 'tool-only',
+            kind: TimelineKind.command,
+          ),
+          finalRow.copyWith(
+            id: 'failed',
+            turnId: 'not-completed',
+            turnStatus: 'failed',
+          ),
+        ];
+        final agent = _CopyDetailAgent(rows);
+        final controller = (await _createSubAgentHarness(
+          agent: agent,
+        )).controller;
+        for (final id in rows.map((r) => r.turnId).toSet()) {
+          expect(controller.finalReplyForTurn(id), isNull, reason: id);
+          expect(await controller.textForCopyAtTurn(id), isNull, reason: id);
+        }
+        expect(agent.detailRequests, isEmpty);
+      },
+    );
+
+    test(
+      'reads only exact native lazy detail, never copies or expands the preview',
+      () async {
+        final agent = _CopyDetailAgent([preview]);
+        final controller = (await _createSubAgentHarness(
+          agent: agent,
+        )).controller;
+        final full = finalRow.copyWith(id: preview.detailsItemId);
+        Future<String?> read(List<TimelineEntry> response) async {
+          final pending = controller.textForCopyAtTurn('turn');
+          await _waitUntil(() => agent.pending.isNotEmpty);
+          expect(agent.detailRequests.last, (
+            _SubAgentNavigationAgent.rootThread.id,
+            'turn',
+            'full-reply-id',
+          ));
+          agent.pending.removeAt(0).complete(AgentHistoryDetails(response));
+          return pending;
+        }
+
+        expect(await read([full]), finalRow.text);
+        for (final invalid in [
+          [full.copyWith(turnId: 'other-turn')],
+          [full.copyWith(id: preview.id)],
+          [full.copyWith(kind: TimelineKind.command)],
+          [full.copyWith(agentMessagePhase: 'partial_answer')],
+          [full.copyWith(text: 'truncated$codexTextTruncationMarker')],
+          [full.copyWith(detailsItemId: 'another-preview')],
+          [full, full],
+          <TimelineEntry>[],
+        ]) {
+          expect(
+            await read(invalid),
+            isNull,
+            reason: 'reject unverified detail',
+          );
+        }
+        expect(controller.state.timeline, [preview]);
+      },
+    );
+
+    test(
+      'late detail is discarded even after reopening the same conversation',
+      () async {
+        final agent = _CopyDetailAgent([preview]);
+        final controller = (await _createSubAgentHarness(
+          agent: agent,
+        )).controller;
+        final pending = controller.textForCopyAtTurn('turn');
+        await _waitUntil(() => agent.pending.isNotEmpty);
+        controller.backToThreadList();
+        controller.openThread(_SubAgentNavigationAgent.rootThread);
+        await _waitUntil(
+          () =>
+              controller.state.activeThread?.id ==
+                  _SubAgentNavigationAgent.rootThread.id &&
+              !controller.state.loading,
+        );
+        agent.pending.single.complete(
+          AgentHistoryDetails([finalRow.copyWith(id: 'full-reply-id')]),
+        );
+        expect(await pending, isNull);
+        expect(controller.state.timeline, [preview]);
+      },
+    );
+  });
   test(
     'fork opens an independent history, keeps source timeline and draft',
     () async {
@@ -1545,6 +1813,8 @@ void main() {
             !controller.state.loading,
       );
       expect(controller.state.composerDraft, isEmpty);
+      expect(agent.renames, [(_ForkAgent.fork.id, 'Root thread (1)')]);
+      expect(controller.state.activeThread?.title, 'Root thread (1)');
       expect(controller.state.timeline, [_ForkAgent.anchor]);
       expect(
         controller.state.threads.map((t) => t.id),
@@ -1567,12 +1837,13 @@ void main() {
       final agent = _ForkAgent();
       final harness = await _createSubAgentHarness(agent: agent);
       final pending = harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
-      expect(agent.requests, hasLength(1));
+      await _waitUntil(() => agent.requests.isNotEmpty);
       harness.controller.backToThreadList();
       agent.result.complete(_ForkAgent.fork);
       await pending;
       expect(harness.controller.state.screen, AppScreen.threads);
       expect(harness.controller.state.activeThread, isNull);
+      expect(agent.renames, [(_ForkAgent.fork.id, 'Root thread (1)')]);
       expect(
         harness.controller.state.threads.map((thread) => thread.id),
         contains(_ForkAgent.fork.id),
@@ -1586,6 +1857,7 @@ void main() {
     final source = harness.controller.state.activeThread;
     final original = harness.controller.state.timeline;
     final pending = harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+    await _waitUntil(() => agent.requests.isNotEmpty);
     agent.result.completeError(StateError('服务端不支持从此轮分叉'));
     await pending;
     expect(harness.controller.state.activeThread, source);
@@ -1593,6 +1865,95 @@ void main() {
     expect(harness.controller.state.submitting, isFalse);
     expect(harness.controller.state.error, contains('分叉'));
   });
+
+  test(
+    'fork skips exact occupied numbers across metadata pages, continuing the source suffix',
+    () async {
+      const base = '安卓 Codex APP 这是没有被省略的完整标题';
+      final agent = _ForkAgent(
+        sourceTitle: '$base (4)',
+        firstMatches: AgentThreadPage(
+          threads: [
+            for (var i = 0; i < 9; i++)
+              AgentThread(
+                id: 'noise-$i',
+                title: 'other-$i',
+                preview: '$base (7)',
+              ),
+            const AgentThread(id: 'five', title: '$base (5)'),
+          ],
+          nextCursor: 'p2',
+        ),
+        nextMatches: const AgentThreadPage(
+          threads: [
+            AgentThread(id: 'six', title: '$base (6)'),
+            AgentThread(id: 'eight', title: '$base (8)'),
+            AgentThread(id: 'similar', title: '$base (7) notes'),
+          ],
+        ),
+      );
+      final harness = await _createSubAgentHarness(agent: agent);
+      agent.result.complete(_ForkAgent.fork);
+      await harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _ForkAgent.fork.id &&
+            !harness.controller.state.loading,
+      );
+      expect(agent.searchPages, [('$base (', null), ('$base (', 'p2')]);
+      expect(agent.renames, [(_ForkAgent.fork.id, '$base (7)')]);
+      expect(harness.controller.state.activeThread?.title, '$base (7)');
+    },
+  );
+
+  test('fork rejects nonadvancing cursors before creating anything', () async {
+    const repeated = AgentThreadPage(threads: [], nextCursor: 'same');
+    final agent = _ForkAgent(firstMatches: repeated, nextMatches: repeated);
+    final harness = await _createSubAgentHarness(agent: agent);
+    await harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+    expect(agent.searchPages, hasLength(2));
+    expect(agent.requests, isEmpty);
+    expect(agent.renames, isEmpty);
+    expect(harness.controller.state.error, contains('尚未创建'));
+    expect(harness.controller.state.submitting, isFalse);
+  });
+
+  test(
+    'back while allocating a fork name cancels before remote creation',
+    () async {
+      final agent = _ForkAgent()..pageGate = Completer<AgentThreadPage>();
+      final harness = await _createSubAgentHarness(agent: agent);
+      final pending = harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+      await _waitUntil(() => agent.searchPages.isNotEmpty);
+      harness.controller.backToThreadList();
+      agent.pageGate!.complete(const AgentThreadPage(threads: []));
+      await pending;
+      expect(agent.requests, isEmpty);
+      expect(harness.controller.state.screen, AppScreen.threads);
+    },
+  );
+
+  test(
+    'rename failure opens the already created fork and explains recovery',
+    () async {
+      final agent = _ForkAgent(failRename: true);
+      final harness = await _createSubAgentHarness(agent: agent);
+      agent.result.complete(_ForkAgent.fork);
+      await harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+      await _waitUntil(
+        () =>
+            harness.controller.state.activeThread?.id == _ForkAgent.fork.id &&
+            !harness.controller.state.loading,
+      );
+      expect(agent.requests, hasLength(1));
+      expect(agent.renames, [(_ForkAgent.fork.id, 'Root thread (1)')]);
+      expect(
+        harness.controller.state.activeThread?.title,
+        _ForkAgent.fork.title,
+      );
+      expect(harness.controller.state.error, contains('无需再次分叉'));
+    },
+  );
 
   test(
     'server ordering preserves live sessions and local runtime slots',

@@ -415,6 +415,33 @@ async function main() {
     });
     assert.notEqual(branch.thread.id, threadId);
     assert.equal(branch.thread.forkedFromId, threadId);
+    // Neither explicit name occurs in the original user prompt. Search also
+    // matches preview text, so a hit is NOT proof the title is occupied.
+    const sourceName = "List fixture initial";
+    const branchName = sourceName + " (2)";
+    await activeClient.rpc("thread/name/set", { threadId: branch.thread.id, name: branchName });
+    async function checkBranchNames(stage) {
+      for (const [id, expected] of [[threadId, sourceName], [branch.thread.id, branchName]]) {
+        const { thread } = await activeClient.rpc("thread/read", { threadId: id, includeTurns: false });
+        assert.equal(thread.name, expected, stage + ": native read must preserve the independent name");
+      }
+      for (const dbOnly of [true, false]) {
+        const list = async term => (await activeClient.rpc("thread/list", { ...listParams,
+          useStateDbOnly: dbOnly, ...(term ? { searchTerm: term } : {}),
+        })).data;
+        const all = await list(null);
+        assert.equal(all.find(row => row.id === branch.thread.id)?.name, branchName, stage + ": list branch name");
+        assert.equal(all.find(row => row.id === threadId)?.name, sourceName, stage + ": list original name");
+        const nameMatch = await list(branchName);
+        assert(!all.find(row => row.id === branch.thread.id).preview.includes(branchName));
+        assert.deepEqual(nameMatch.map(row => row.id), [branch.thread.id],
+          stage + ": searchTerm must find an explicit numbered name independent of preview");
+        const previewMatch = await list("Synthetic HTTP 400 recovery request.");
+        assert(previewMatch.some(row => row.id === threadId && row.name === sourceName),
+          stage + ": preview-only matches must not be counted as occupied names");
+      }
+    }
+    await checkBranchNames("immediate");
     const ids = turns => turns.map(turn => turn.id);
     assert.deepEqual(ids(await turnSnapshot(branch.thread.id)), ids(sourceTurns.slice(0, anchorIndex + 1)));
     assert.equal(requests.length, modelRequests);
@@ -455,6 +482,14 @@ async function main() {
     assert.equal(fixtureErrors.length, 0);
     console.log("Native default compatibility: provider catalogue, fork paging, interrupted completion and stale-interrupt isolation passed.");
     assert.equal(upgrades, 0, "Compatibility route must use the supported Responses transport");
+    await activeClient.stop();
+    activeClient = client(process.execPath, ["-e", `${source}\nrunRelay(process.argv[1]).catch(() => { process.exitCode = 1; });`, command], environment);
+    await activeClient.initialize();
+    assert.equal((await activeClient.rpc("thread/resume", {
+      threadId: branch.thread.id, excludeTurns: true,
+    })).thread.name, branchName, "A fresh native process must resume the persisted branch name");
+    await checkBranchNames("reopen");
+    console.log("Native numbered fork name: parent unchanged, branch searchable by its persisted name immediately and after a fresh process reopens it.");
     await activeClient.stop();
     activeClient = null;
     const persistedAfter = persistedOldItems(threadId);

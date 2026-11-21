@@ -91,6 +91,9 @@ void main() {
                 output: 'result',
                 turnId: 'turn',
                 turnStatus: 'interrupted',
+                agentMessagePhase: kind == TimelineKind.agentMessage
+                    ? 'final_answer'
+                    : '',
                 detailsItemId: 'native-item-${kind.name}',
                 subAgentPath: '/root/child',
                 subAgentThreadId: 'nested',
@@ -193,7 +196,7 @@ void main() {
         savedAtEpochMillis: now,
       );
       await cache.write('scope', fresh);
-      expect((await oldFile.readAsBytes()).first, 2);
+      expect((await oldFile.readAsBytes()).first, 3);
       expect((await store().read('scope', 'thread'))!.timeline, fresh.timeline);
     },
   );

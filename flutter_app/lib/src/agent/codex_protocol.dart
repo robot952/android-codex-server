@@ -36,6 +36,18 @@ const String codexDiffTruncationMarker = '\n\n[差异内容过长，后续已截
 // A local presentation marker, not a turn status. Keep the identity in the
 // timeline so a cached preview or late stream fragment cannot restore text.
 const _restrictedAnswerStatus = 'codex.remote.displayRestricted';
+String normalizeCodexAgentMessagePhase(Object? value) {
+  if (value == null) return '';
+  if (value is! String || value.length > 64) return 'unknown';
+  return switch (value.trim()) {
+    '' => '',
+    'final_answer' || 'finalAnswer' => 'final_answer',
+    'partial_answer' || 'partialAnswer' => 'partial_answer',
+    'commentary' => 'commentary',
+    _ => 'unknown',
+  };
+}
+
 bool isCodexRestrictedAnswer(TimelineEntry? entry) =>
     entry?.kind == TimelineKind.agentMessage &&
     entry?.status == _restrictedAnswerStatus;
@@ -68,7 +80,12 @@ bool isCodexRestrictedAnswerItem(Map<String, Object?> item) {
     final safe = restrictions[(row.turnId, row.id)];
     return safe == null || identical(safe, row)
         ? row
-        : safe.copyWith(turnStatus: row.turnStatus);
+        : safe.copyWith(
+            turnStatus: row.turnStatus,
+            agentMessagePhase: safe.agentMessagePhase.isEmpty
+                ? row.agentMessagePhase
+                : safe.agentMessagePhase,
+          );
   }
 
   List<TimelineEntry> protect(List<TimelineEntry> entries) =>
@@ -1575,6 +1592,7 @@ abstract final class CodexPayloadParser {
         id: id,
         turnId: boundedTurnId,
         kind: TimelineKind.agentMessage,
+        agentMessagePhase: normalizeCodexAgentMessagePhase(item['phase']),
         status: _restrictedAnswerStatus,
         text: '此回复已按服务端要求隐藏。',
       );
@@ -1588,6 +1606,9 @@ abstract final class CodexPayloadParser {
           _ => TimelineKind.tool,
         },
         title: _firstString(item, const ['title']),
+        agentMessagePhase: item['previewKind'] == 'agentMessage'
+            ? normalizeCodexAgentMessagePhase(item['phase'])
+            : '',
         text: _firstString(item, const ['text']),
         status: _firstString(item, const ['status']),
         turnId: boundedTurnId,
@@ -1611,6 +1632,7 @@ abstract final class CodexPayloadParser {
           ], maxChars: codexMaxTimelineTextChars),
         ),
         status: _firstString(item, const <String>['phase', 'status']),
+        agentMessagePhase: normalizeCodexAgentMessagePhase(item['phase']),
         questions: _parseAsyncQuestions(item, id),
         turnId: boundedTurnId,
       ),

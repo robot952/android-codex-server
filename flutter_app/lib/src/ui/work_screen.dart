@@ -49,6 +49,7 @@ const _workPopupShape = RoundedRectangleBorder(
 const _workGreen = Color(0xFF68C77B);
 const _workLink = Color(0xFF64B5F6);
 const _workAmber = Color(0xFFE5B567);
+const double _turnActionGap = 4;
 const double imageAttachmentMaxDimension = 2048;
 const int imageAttachmentQuality = 82;
 
@@ -82,6 +83,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   bool _refreshing = false;
   bool _preparingAttachments = false;
   int _attachmentSelectionGeneration = 0;
+  int _copyIntent = 0;
   String? _imageLoadingPath;
   int _imageReceivedBytes = 0;
   int? _imageTotalBytes;
@@ -138,7 +140,10 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
         ),
       ),
       (previous, current) {
-        if (previous != current) _attachmentSelectionGeneration += 1;
+        if (previous != current) {
+          _attachmentSelectionGeneration += 1;
+          _copyIntent += 1;
+        }
       },
     );
     final isAgentWork = state.screen == AppScreen.agentWork;
@@ -305,9 +310,15 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   entries: _displayTimeline,
                   rows: _displayTimelineRows,
                   turnEnds: _turnEnds,
-                  showForkAtTurn: controller.supportsActiveThreadFork
+                  showTurnActions:
+                      state.activeAgent == AgentKind.codex &&
+                          state.screen == AppScreen.work
                       ? controller.isCompletedTurn
                       : null,
+                  showFork: controller.supportsActiveThreadFork,
+                  canCopyAtTurn: (turnId) =>
+                      controller.finalReplyForTurn(turnId) != null,
+                  onCopyAtTurn: (turnId) => _copyTurnReply(controller, turnId),
                   canForkAtTurn: controller.canForkAtTurn,
                   onForkAtTurn: (turnId) => _confirmFork(controller, turnId),
                   controller: _scrollController,
@@ -560,6 +571,38 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       confirmLabel: '继续撤销',
     );
     if (confirmed) await controller.rollbackActiveThread();
+  }
+
+  Future<void> _copyTurnReply(AppController controller, String turnId) async {
+    final source = ref.read(appControllerProvider);
+    final reply = controller.finalReplyForTurn(turnId);
+    if (reply == null) return;
+    final intent = ++_copyIntent;
+    bool onSource() {
+      if (!mounted || intent != _copyIntent) return false;
+      final current = ref.read(appControllerProvider);
+      return current.screen == AppScreen.work &&
+          current.selectedProfileId == source.selectedProfileId &&
+          current.activeAgent == source.activeAgent &&
+          current.activeThread?.id == source.activeThread?.id;
+    }
+
+    try {
+      final text = await controller.textForCopyAtTurn(turnId);
+      if (!mounted || !onSource()) return;
+      // A refreshed history can hide or replace the selected item while its
+      // full text is loading, even without leaving the conversation.
+      if (controller.finalReplyForTurn(turnId)?.id != reply.id) return;
+      if (text == null || text.isEmpty) {
+        _showNotice(context, '未取得本轮完整回复，未复制');
+        return;
+      }
+      // Keep Markdown, indentation and leading/trailing whitespace intact.
+      await Clipboard.setData(ClipboardData(text: text));
+      if (mounted && onSource()) _showNotice(context, '已复制本轮回复');
+    } catch (_) {
+      if (mounted && onSource()) _showNotice(context, '复制本轮回复失败，请重试');
+    }
   }
 
   Future<void> _confirmFork(AppController controller, String turnId) async {
@@ -2538,7 +2581,10 @@ class _Transcript extends StatelessWidget {
     required this.entries,
     required this.rows,
     required this.turnEnds,
-    required this.showForkAtTurn,
+    required this.showTurnActions,
+    required this.showFork,
+    required this.canCopyAtTurn,
+    required this.onCopyAtTurn,
     required this.canForkAtTurn,
     required this.onForkAtTurn,
     required this.controller,
@@ -2565,7 +2611,10 @@ class _Transcript extends StatelessWidget {
   final List<TimelineEntry> entries;
   final List<TimelineRenderRow> rows;
   final Map<int, String> turnEnds;
-  final bool Function(String)? showForkAtTurn;
+  final bool Function(String)? showTurnActions;
+  final bool showFork;
+  final bool Function(String) canCopyAtTurn;
+  final ValueChanged<String> onCopyAtTurn;
   final bool Function(String) canForkAtTurn;
   final ValueChanged<String> onForkAtTurn;
   final ScrollController controller;
@@ -2604,6 +2653,7 @@ class _Transcript extends StatelessWidget {
     Widget buildRow(TimelineRenderRow row) => switch (row) {
       TimelineEntryRenderRow(:final entry) => _TimelineCard(
         entry: entry,
+        reserveBothActions: showTurnActions != null && showFork,
         onOpenImage: onOpenImage,
         imageLoadingPath: imageLoadingPath,
         onOpenRemoteFile: onOpenRemoteFile,
@@ -2732,17 +2782,32 @@ class _Transcript extends StatelessWidget {
                         children: [
                           buildRow(rows[sourceIndex]),
                           if (turnEnds[sourceIndex] case final turnId?
-                              when showForkAtTurn?.call(turnId) == true)
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: IconButton(
-                                key: ValueKey('fork-turn-$turnId'),
-                                tooltip: '从此处分叉',
-                                onPressed: canForkAtTurn(turnId)
-                                    ? () => onForkAtTurn(turnId)
-                                    : null,
-                                icon: const _TurnForkIcon(),
-                              ),
+                              when showTurnActions?.call(turnId) == true)
+                            Row(
+                              children: [
+                                IconButton(
+                                  key: ValueKey('copy-turn-$turnId'),
+                                  tooltip: '复制本轮回复',
+                                  onPressed: canCopyAtTurn(turnId)
+                                      ? () => onCopyAtTurn(turnId)
+                                      : null,
+                                  icon: const Icon(
+                                    Icons.copy_outlined,
+                                    size: 18,
+                                  ),
+                                ),
+                                if (showFork) ...[
+                                  const SizedBox(width: _turnActionGap),
+                                  IconButton(
+                                    key: ValueKey('fork-turn-$turnId'),
+                                    tooltip: '从此处分叉',
+                                    onPressed: canForkAtTurn(turnId)
+                                        ? () => onForkAtTurn(turnId)
+                                        : null,
+                                    icon: const _TurnForkIcon(),
+                                  ),
+                                ],
+                              ],
                             ),
                         ],
                       )
@@ -3389,6 +3454,7 @@ class _TurnForkGlyph extends CustomPainter {
 class _TimelineCard extends StatelessWidget {
   const _TimelineCard({
     required this.entry,
+    required this.reserveBothActions,
     required this.onOpenImage,
     required this.imageLoadingPath,
     required this.onOpenRemoteFile,
@@ -3401,6 +3467,7 @@ class _TimelineCard extends StatelessWidget {
   });
 
   final TimelineEntry entry;
+  final bool reserveBothActions;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
   final Future<void> Function(String path) onOpenRemoteFile;
@@ -3426,6 +3493,7 @@ class _TimelineCard extends StatelessWidget {
     if (entry.kind == TimelineKind.userMessage) {
       return _UserMessageTimelineCard(
         entry: entry,
+        reserveBothActions: reserveBothActions,
         onOpenImage: onOpenImage,
         imageLoadingPath: imageLoadingPath,
         onTextSelectionChanged: onTextSelectionChanged,
@@ -3512,12 +3580,14 @@ class _TimelineCard extends StatelessWidget {
 class _UserMessageTimelineCard extends StatelessWidget {
   const _UserMessageTimelineCard({
     required this.entry,
+    required this.reserveBothActions,
     required this.onOpenImage,
     required this.imageLoadingPath,
     required this.onTextSelectionChanged,
   });
 
   final TimelineEntry entry;
+  final bool reserveBothActions;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
   final VoidCallback onTextSelectionChanged;
@@ -3527,7 +3597,14 @@ class _UserMessageTimelineCard extends StatelessWidget {
     final maxWidth = MediaQuery.sizeOf(context).width * 0.80;
     return Container(
       alignment: Alignment.centerRight,
-      padding: const EdgeInsets.only(left: kMinInteractiveDimension + 8),
+      padding: EdgeInsets.only(
+        left:
+            kMinInteractiveDimension +
+            8 +
+            (reserveBothActions
+                ? kMinInteractiveDimension + _turnActionGap
+                : 0),
+      ),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: Material(

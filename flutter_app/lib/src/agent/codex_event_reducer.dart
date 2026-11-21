@@ -174,8 +174,8 @@ AppUiState reduceCodexNotification(
             completedId.isEmpty) {
           return current;
         }
-        // The terminal snapshot may carry a display instruction even if its
-        // item/completed notification was lost during reconnection.
+        // The terminal snapshot can contain the final text/phase or a display
+        // restriction even if item/completed was lost during reconnection.
         final items = turn?['items'];
         if (items is List) {
           final originalTimeline = current.timeline;
@@ -183,11 +183,12 @@ AppUiState reduceCodexNotification(
           for (final value in items) {
             if (value is! Map ||
                 value['type'] != 'agentMessage' ||
-                value['moderation'] == null) {
+                (value['moderation'] == null && value['phase'] == null)) {
               continue;
             }
             final item = _map(value);
-            if (item != null && isCodexRestrictedAnswerItem(item)) {
+            if (item != null &&
+                (isCodexRestrictedAnswerItem(item) || item['phase'] != null)) {
               final row = CodexPayloadParser.parseItem(
                 item,
                 turnId: completedId,
@@ -314,7 +315,7 @@ AppUiState reduceCodexNotification(
 
     case 'thread/name/updated':
       if (!appliesToActive || state.activeThread == null) return state;
-      final name = _string(params, const ['name', 'title']);
+      final name = _string(params, const ['threadName', 'name', 'title']);
       if (name.isEmpty) return state;
       final active = state.activeThread!.copyWith(title: name);
       final nextThreads = _replaceThread(
@@ -865,6 +866,14 @@ TimelineEntry mergeCodexTimelineEntry(
       previous.turnId.isEmpty ||
       incoming.turnId.isEmpty ||
       previous.turnId == incoming.turnId;
+  final phase =
+      incoming.agentMessagePhase.isEmpty &&
+          sameTurn &&
+          previous.id == incoming.id &&
+          previous.kind == TimelineKind.agentMessage &&
+          incoming.kind == TimelineKind.agentMessage
+      ? previous.agentMessagePhase
+      : incoming.agentMessagePhase;
   if (sameTurn &&
       previous.id == incoming.id &&
       previous.kind == TimelineKind.agentMessage &&
@@ -875,6 +884,9 @@ TimelineEntry mergeCodexTimelineEntry(
     // and detail links); neither optimistic previews nor replay can undo it.
     final restricted = isCodexRestrictedAnswer(incoming) ? incoming : previous;
     return restricted.copyWith(
+      agentMessagePhase: restricted.agentMessagePhase.isNotEmpty
+          ? restricted.agentMessagePhase
+          : phase,
       turnStatus: incoming.turnStatus.isNotEmpty
           ? incoming.turnStatus
           : previous.turnStatus,
@@ -903,6 +915,7 @@ TimelineEntry mergeCodexTimelineEntry(
       ? previous.status
       : incoming.status;
   return incoming.copyWith(
+    agentMessagePhase: phase,
     title: incoming.title.isEmpty ? previous.title : incoming.title,
     text: incoming.text.isEmpty ? previous.text : incoming.text,
     status: mergedStatus,

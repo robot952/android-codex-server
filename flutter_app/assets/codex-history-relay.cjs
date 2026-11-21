@@ -88,13 +88,18 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       return value;
     } catch (_) { throw historyError("Invalid mobile history cursor"); }
   }
+  function projectedPhase(item) {
+    if (item.type !== "agentMessage" || item.phase == null) return {};
+    // Distinguish unavailable legacy metadata from a future non-final phase.
+    return { phase: typeof item.phase === "string" && item.phase.length <= 64 ? item.phase : "unknown" };
+  }
   function restrictedAnswer(item) {
     const display = item?.moderation?.display;
     if (item?.type !== "agentMessage" || display?.version !== 1 ||
         (display.mode !== "hide" && display.mode !== "block")) return null;
     // Preserve the presentation decision but not the answer or auxiliaries
     // (questions, detail links, etc.) on either mobile history endpoint.
-    return { id: item.id, type: item.type, text: "",
+    return { id: item.id, type: item.type, text: "", ...projectedPhase(item),
       moderation: { moderated: true, display: { version: 1, mode: display.mode } } };
   }
   function projectItem(item) {
@@ -119,6 +124,7 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       type: "codexRemoteDeferred", id: item.id, status: String(item.status || "").slice(0, 64),
       title: titles[item.type] || "工具详情", codexRemoteDetailsItemId: item.id,
       previewKind: item.type === "agentMessage" || item.type === "userMessage" ? item.type : "tool",
+      ...projectedPhase(item),
       text: typeof item.text === "string" ? item.text.slice(0, 500) : "",
     };
   }

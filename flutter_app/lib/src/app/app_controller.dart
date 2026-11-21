@@ -26,6 +26,7 @@ import '../domain/model_catalog.dart';
 import '../domain/models.dart';
 import '../domain/thread_ordering.dart';
 import '../domain/async_question_reply.dart';
+import 'fork_thread_title.dart';
 import 'older_timeline_merge.dart';
 import 'profile_scoped_back_stack.dart';
 import 'request_usage_controller.dart';
@@ -236,6 +237,7 @@ class AppController extends StateNotifier<AppUiState> {
     if (_forkStatusTimeline != null && _forkStatusTimeline != value.timeline) {
       _forkStatusTimeline = null;
       _completedForkTurns = const {};
+      _lastReplies = const {};
     }
     final profileId = value.selectedProfileId;
     final threadId = value.activeThread?.id;
@@ -274,6 +276,7 @@ class AppController extends StateNotifier<AppUiState> {
   final Set<AgentConnectionKey> _threadMutationLanes = {};
   List<TimelineEntry>? _forkStatusTimeline;
   Set<String> _completedForkTurns = const {};
+  Map<String, TimelineEntry> _lastReplies = const {};
   final Map<String, ThreadGoal> _threadGoals = {};
   int _localHeartbeatSequence = 0;
 
@@ -3107,15 +3110,104 @@ class AppController extends StateNotifier<AppUiState> {
       _forkStatusTimeline = timeline;
       final completed = <String>{};
       final otherStatuses = <String>{};
+      final finalAnswers = <String, TimelineEntry>{};
+      final lastMessages = <String, TimelineEntry>{};
       for (final entry in timeline) {
-        if (entry.turnId.isEmpty || entry.turnStatus.isEmpty) continue;
-        (entry.turnStatus == 'completed' ? completed : otherStatuses).add(
-          entry.turnId,
-        );
+        final id = entry.turnId;
+        if (id.isEmpty) continue;
+        if (entry.turnStatus.isNotEmpty) {
+          (entry.turnStatus == 'completed' ? completed : otherStatuses).add(id);
+        }
+        if (entry.kind != TimelineKind.agentMessage) continue;
+        lastMessages[id] = entry;
+        if (entry.agentMessagePhase == 'final_answer') {
+          finalAnswers[id] = entry;
+        } else if (isCodexRestrictedAnswer(entry) &&
+            entry.agentMessagePhase.isEmpty) {
+          // A restricted legacy item could be the final answer. Don't fall
+          // back to a different, earlier answer on its behalf.
+          finalAnswers.remove(id);
+        }
       }
       _completedForkTurns = completed..removeAll(otherStatuses);
+      _lastReplies = {
+        for (final id in _completedForkTurns)
+          if ((finalAnswers[id] ?? lastMessages[id]) case final reply?
+              when _isCopyableAnswer(reply))
+            id: reply,
+      };
     }
     return _completedForkTurns.contains(turnId);
+  }
+
+  static bool _isCopyableAnswer(TimelineEntry row) =>
+      row.kind == TimelineKind.agentMessage &&
+      !isCodexRestrictedAnswer(row) &&
+      (row.agentMessagePhase == 'final_answer' ||
+          row.agentMessagePhase.isEmpty) &&
+      (row.detailsItemId.isNotEmpty || row.text.trim().isNotEmpty);
+
+  TimelineEntry? finalReplyForTurn(String turnId) {
+    if (state.screen != AppScreen.work ||
+        state.activeAgent != AgentKind.codex ||
+        state.activeThread == null ||
+        !isCompletedTurn(turnId)) {
+      return null;
+    }
+    return _lastReplies[turnId];
+  }
+
+  Future<String?> textForCopyAtTurn(String turnId) async {
+    final reply = finalReplyForTurn(turnId);
+    if (reply == null) return null;
+    String? fullText(TimelineEntry row) =>
+        row.detailsItemId.isEmpty &&
+            _isCopyableAnswer(row) &&
+            !row.text.endsWith(codexTextTruncationMarker)
+        ? row.text
+        : null;
+    if (reply.detailsItemId.isEmpty) return fullText(reply);
+
+    final profileId = state.selectedProfileId;
+    if (profileId == null) return null;
+    final threadId = state.activeThread!.id;
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: state.activeAgent,
+    );
+    final navigation = _sessionNavigationGenerations[key] ?? 0;
+    final generation = _agents.generation(key);
+    final remote = _agents.remoteGeneration(key);
+    // A long historical reply is normally just a preview. Fetch that exact
+    // item on demand, without expanding the visible row or moving the scroll.
+    final details = await _agents.readHistoryItem(
+      key,
+      threadId: threadId,
+      turnId: turnId,
+      itemId: reply.detailsItemId,
+    );
+    if (!_isCurrentSessionNavigation(key, navigation, threadId) ||
+        _agents.generation(key) != generation ||
+        _agents.remoteGeneration(key) != remote) {
+      return null;
+    }
+    final current = finalReplyForTurn(turnId);
+    if (current == null || current.id != reply.id) return null;
+    if (current.detailsItemId.isEmpty) return fullText(current);
+    // Never copy a stale detail if the native item changed during the read.
+    if (details.notifications.isNotEmpty ||
+        current.detailsItemId != reply.detailsItemId) {
+      return null;
+    }
+    final row = details.timeline
+        .where(
+          (e) =>
+              e.id == reply.detailsItemId &&
+              e.turnId == turnId &&
+              e.kind == TimelineKind.agentMessage,
+        )
+        .singleOrNull;
+    return row == null ? null : fullText(row);
   }
 
   bool get _forkSourceIdle =>
@@ -3148,22 +3240,41 @@ class AppController extends StateNotifier<AppUiState> {
     bool onSource() =>
         _isCurrentSessionNavigation(key, navigation, thread.id) &&
         state.screen == AppScreen.work;
+    bool sameConnection() =>
+        mounted &&
+        _agents.isCurrentGeneration(key, generation) &&
+        _agents.remoteGeneration(key) == remoteGeneration;
+    bool mayCreate() =>
+        onSource() &&
+        sameConnection() &&
+        _forkSourceIdle &&
+        supportsActiveThreadFork &&
+        isCompletedTurn(turnId);
     if (!_beginThreadMutation(key, thread.id)) return;
     try {
-      final fork = await _agents.forkAtTurn(
+      final name = await _nextForkTitle(key, thread, mayCreate);
+      if (name == null || !mayCreate()) return;
+      var fork = await _agents.forkAtTurn(
         key,
         threadId: thread.id,
         turnId: turnId,
         approvalMode: state.approvalMode,
         sandbox: state.sandbox,
       );
-      if (!mounted ||
-          !_agents.isCurrentGeneration(key, generation) ||
-          _agents.remoteGeneration(key) != remoteGeneration) {
-        return;
-      }
+      if (!sameConnection()) return;
       if (fork.id.trim().isEmpty || fork.id == thread.id) {
         throw StateError('Codex 未返回独立的分支会话');
+      }
+      // Creation succeeded. Never retry the fork in response to a rename
+      // failure; the native branch is already independent and usable.
+      String? renameWarning;
+      try {
+        await _agents.setThreadName(key, threadId: fork.id, name: name);
+        if (!sameConnection()) return;
+        fork = fork.copyWith(title: name);
+      } catch (_) {
+        if (!sameConnection()) return;
+        renameWarning = '分支已创建，但自动命名未确认。可在新对话菜单中重命名，无需再次分叉。';
       }
       _threadTotals.remove(key);
       _lastReturnRefresh.remove(key);
@@ -3171,15 +3282,25 @@ class AppController extends StateNotifier<AppUiState> {
         final lists = _replaceLaneThread(state.agentThreadLists, key, fork);
         state = state.copyWith(agentThreadLists: lists, threads: lists[key]!);
       }
-      if (!onSource()) return;
+      if (!onSource()) {
+        if (renameWarning != null &&
+            _isActiveKey(key) &&
+            state.screen == AppScreen.threads) {
+          state = state.copyWith(error: renameWarning);
+        }
+        return;
+      }
       if (!_forkSourceIdle || state.isThreadReadOnly) {
-        state = state.copyWith(diagnostic: '分支已创建，可从会话列表打开');
+        state = state.copyWith(
+          diagnostic: '分支已创建，可从会话列表打开',
+          error: renameWarning,
+        );
         return;
       }
       _cacheActiveThreadSession(key, expectedThreadId: thread.id);
       // Use the normal opener: it flushes the source's draft, clears child
       // navigation and loads the branch under its own (profile, agent, id).
-      openThread(fork);
+      _startOpenThread(fork, warning: renameWarning);
     } catch (error) {
       if (onSource()) {
         _setThreadMutationError(key, thread.id, error, '从此处分叉失败');
@@ -3193,7 +3314,61 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
-  void openThread(AgentThread thread) {
+  Future<String?> _nextForkTitle(
+    AgentConnectionKey key,
+    AgentThread source,
+    bool Function() mayCreate,
+  ) async {
+    if (source.title.length == codexMaxThreadFieldChars &&
+        source.title.endsWith(codexTextTruncationMarker)) {
+      throw StateError('原对话标题超长，未能读取完整标题。请先缩短标题再分叉');
+    }
+    final numbering = ForkThreadTitle.fromThread(source);
+    for (final thread in state.agentThreadLists[key] ?? const <AgentThread>[]) {
+      numbering.observe(thread.title);
+    }
+    // Native search is a substring filter, not an exact count, and may also
+    // match inherited previews. Walk only this family's metadata pages,
+    // independent of the visible UI search and pagination cursor.
+    String? cursor;
+    final seen = <String>{};
+    final elapsed = Stopwatch()..start();
+    const budget = Duration(seconds: 30);
+    for (var i = 0; i < 100; i++) {
+      if (!mayCreate()) return null;
+      final remaining = budget - elapsed.elapsed;
+      if (remaining <= Duration.zero) break;
+      final request = cursor == null
+          ? _agents.listThreads(key, searchTerm: numbering.searchTerm)
+          : _agents.listMoreThreads(
+              key,
+              cursor: cursor,
+              searchTerm: numbering.searchTerm,
+            );
+      final page = await request.timeout(
+        remaining,
+        onTimeout: () => throw StateError('查询分支编号超时，尚未创建分支，请稍后重试'),
+      );
+      if (!mayCreate()) return null;
+      for (final thread in page.threads) {
+        numbering.observe(thread.title);
+      }
+      cursor = page.nextCursor;
+      if (cursor == null || cursor.trim().isEmpty) {
+        final title = numbering.next;
+        if (title.length > codexMaxThreadFieldChars) {
+          throw StateError('编号后的标题过长，尚未创建分支。请先缩短标题再分叉');
+        }
+        return title;
+      }
+      if (!seen.add(cursor)) break;
+    }
+    throw StateError('未能完整核对已有分支编号，尚未创建分支');
+  }
+
+  void openThread(AgentThread thread) => _startOpenThread(thread);
+
+  void _startOpenThread(AgentThread thread, {String? warning}) {
     final profileId = state.selectedProfileId;
     if (profileId == null) return;
     final key = AgentConnectionKey(
@@ -3226,7 +3401,12 @@ class AppController extends StateNotifier<AppUiState> {
     );
     _startingThreadOpen = intent;
     unawaited(
-      _openThread(thread, key, intent.generation).whenComplete(() {
+      _openThread(
+        thread,
+        key,
+        intent.generation,
+        warning: warning,
+      ).whenComplete(() {
         if (_startingThreadOpen == intent) _startingThreadOpen = null;
       }),
     );
@@ -3659,8 +3839,9 @@ class AppController extends StateNotifier<AppUiState> {
   Future<void> _openThread(
     AgentThread thread,
     AgentConnectionKey key,
-    int generation,
-  ) async {
+    int generation, {
+    String? warning,
+  }) async {
     await _ensureInitialized();
     if (!_isActiveKey(key) ||
         _sessionNavigationGenerations[key] != generation) {
@@ -3675,6 +3856,9 @@ class AppController extends StateNotifier<AppUiState> {
       navigationGeneration: generation,
       requestKey: requestKey,
       expectedKey: key,
+      onResumed: warning == null
+          ? null
+          : () => state = state.copyWith(error: warning),
     );
     if (!accepted &&
         mounted &&

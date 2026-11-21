@@ -158,6 +158,9 @@ test("v0.171 moderation suppresses every byte of hidden/blocked answers in both 
             assert(!projected.codexRemoteDetailsItemId);
           }
         }
+        for (const projected of [preview, expanded]) {
+          assert.equal(projected.phase, "final_answer", "A display projection must preserve the terminal phase");
+        }
         assert.equal(JSON.stringify(item), original);
       } finally { f.bridge.close(); }
     }

@@ -86,6 +86,10 @@ client offers the action only for turns known to have completed successfully;
 item completion alone does not establish the turn's status. Unverified old
 runtimes do not get a "fork latest" fallback.
 
+The app assigns the new branch a numbered name (for example, `Story (1)`).
+It persists the name via `thread/name/set` on the returned branch ID, never on
+the source. It does not rename existing conversations retroactively.
+
 The native loopback test forks a turn outside the initial mobile page, checks
 the branch's parent and exact history prefix, continues the branch, and
 checks that the original thread's turns did not change.

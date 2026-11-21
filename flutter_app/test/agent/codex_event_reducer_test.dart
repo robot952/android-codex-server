@@ -29,6 +29,86 @@ AppUiState _state() => AppUiState(
 
 void main() {
   test(
+    'native threadName and legacy notification aliases rename only their thread',
+    () {
+      for (final key in ['threadName', 'name', 'title']) {
+        final value = reduceCodexNotification(
+          _state(),
+          _notification('thread/name/updated', {
+            'threadId': 'thread-1',
+            key: 'Numbered (2)',
+          }),
+        );
+        expect(value.activeThread!.title, 'Numbered (2)');
+        expect(value.threads.first.title, 'Numbered (2)');
+        expect(value.threads.last.title, '后台任务');
+      }
+    },
+  );
+
+  test(
+    'agent phase survives stream and replay and can arrive on terminal turn snapshot',
+    () {
+      final state = _state().copyWith(running: true, activeTurnId: 'turn-1');
+      final scope = {'threadId': 'thread-1', 'turnId': 'turn-1'};
+      var updated = reduceCodexNotification(
+        state,
+        _notification('item/started', {
+          ...scope,
+          'item': {
+            'id': 'progress',
+            'type': 'agentMessage',
+            'phase': 'commentary',
+            'text': '',
+          },
+        }),
+      );
+      updated = reduceCodexNotification(
+        updated,
+        _notification('item/agentMessage/delta', {
+          ...scope,
+          'itemId': 'progress',
+          'delta': 'still working',
+        }),
+      );
+      updated = reduceCodexNotification(
+        updated,
+        _notification('item/completed', {
+          ...scope,
+          'item': {
+            'id': 'progress',
+            'type': 'agentMessage',
+            'text': 'still working',
+          },
+        }),
+      );
+      expect(updated.timeline.single.agentMessagePhase, 'commentary');
+      updated = reduceCodexNotification(
+        updated,
+        _notification('turn/completed', {
+          'threadId': 'thread-1',
+          'turn': {
+            'id': 'turn-1',
+            'status': 'completed',
+            'items': [
+              {
+                'id': 'answer',
+                'type': 'agentMessage',
+                'phase': 'final_answer',
+                'text': 'done',
+              },
+            ],
+          },
+        }),
+      );
+      expect(updated.timeline.map((row) => row.agentMessagePhase), [
+        'commentary',
+        'final_answer',
+      ]);
+      expect(updated.timeline.last.text, 'done');
+    },
+  );
+  test(
     'restricted snapshot supersedes previews, questions and stale replay',
     () {
       const old = TimelineEntry(

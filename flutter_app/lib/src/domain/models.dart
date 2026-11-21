@@ -525,6 +525,8 @@ abstract class TimelineEntry with _$TimelineEntry {
     // Authoritative enclosing turn status, independent of this item's status.
     // Empty for older snapshots and for live items not yet settled by Codex.
     @Default('') String turnStatus,
+    // Explicit Codex assistant item phase. Empty only for legacy/unspecified.
+    @Default('') String agentMessagePhase,
     // Native item identity for a server-projected, lazily loaded history row.
     @Default('') String detailsItemId,
     @Default('') String subAgentPath,

@@ -6,6 +6,32 @@ import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'full and deferred answers retain phase independently of lifecycle status',
+    () {
+      for (final pair in [
+        (null, ''),
+        ('final_answer', 'final_answer'),
+        ('finalAnswer', 'final_answer'),
+        ('partial_answer', 'partial_answer'),
+        ('commentary', 'commentary'),
+        ('futurePhase', 'unknown'),
+      ]) {
+        for (final deferred in [true, false]) {
+          final row = CodexPayloadParser.parseItem({
+            'type': deferred ? 'codexRemoteDeferred' : 'agentMessage',
+            'id': 'answer',
+            if (deferred) 'previewKind': 'agentMessage',
+            'text': 'body',
+            'status': 'completed',
+            'phase': pair.$1,
+          }, turnId: 'turn')!;
+          expect(row.agentMessagePhase, pair.$2);
+        }
+      }
+    },
+  );
+
   test('v0.171 recovered answers respect the explicit v1 display mode', () {
     for (final (display, restricted) in [
       ({'version': 1, 'mode': 'show', 'trustedContacts': 'skip'}, false),
