@@ -565,6 +565,36 @@ class AgentConnectionManager {
     return session;
   }
 
+  bool supportsForkAtTurn(AgentConnectionKey key) {
+    final client = _entries[key]?.client;
+    return key.agent == AgentKind.codex &&
+        client is RemoteAgentThreadForkClient &&
+        (client as RemoteAgentThreadForkClient).supportsForkAtTurn;
+  }
+
+  Future<AgentThread> forkAtTurn(
+    AgentConnectionKey key, {
+    required String threadId,
+    required String turnId,
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+    SandboxChoice? sandbox,
+  }) async {
+    final entry = _requireConnected(key);
+    final generation = entry.generation;
+    if (!supportsForkAtTurn(key)) {
+      throw UnsupportedError('当前 Agent 不支持从指定回合分支');
+    }
+    final result = await (entry.client as RemoteAgentThreadForkClient)
+        .forkAtTurn(
+          threadId: threadId,
+          turnId: turnId,
+          approvalMode: approvalMode,
+          sandbox: sandbox,
+        );
+    _requireCurrentRequest(key, entry, generation, 'Agent 分支请求已失效');
+    return result;
+  }
+
   Future<void> interruptTurn(
     AgentConnectionKey key, {
     required String threadId,

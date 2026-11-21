@@ -19,6 +19,7 @@ const root = path.resolve(__dirname, "..");
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-history-relay-live-"));
 const prefix = "c2a-msg-v1:";
 const oldText = "Synthetic historical sub-agent result: compatibility fixture 中文正文.";
+const branchPrompt = "Continue only the early synthetic branch.";
 const oldEncoded = prefix + Buffer.from(oldText).toString("base64url");
 const opaqueContent = "c2c:v1:synthetic-opaque-control";
 const plainText = "Synthetic ordinary history content, preserved verbatim.";
@@ -83,9 +84,14 @@ const api = http.createServer(async (request, response) => {
       { type: "encrypted_content", encrypted_content: opaqueContent },
       { type: "input_text", text: mislabelledText },
     ], "Only the malformed historical content should be normalized upstream");
+    const userTexts = body.input.filter(item => item?.role === "user").flatMap(item =>
+      Array.isArray(item.content) ? item.content.map(part => part.text) : [item.content]);
+    const branchRequest = userTexts.includes(branchPrompt);
+    if (branchRequest) assert(!userTexts.some(text => text?.startsWith("Synthetic large history input")),
+      "Later source messages must never be sent by the early branch");
     const liveMessages = body.input.filter(item => item?.type === "agent_message" && item.author === liveItem.author);
-    assert.equal(liveMessages.length, liveItemInjected ? 1 : 0, "New child replies must remain in subsequent requests");
-    if (liveItemInjected) {
+    assert.equal(liveMessages.length, liveItemInjected && !branchRequest ? 1 : 0, "Include child replies only on their own history path");
+    if (liveMessages.length) {
       assert.equal(liveMessages[0].recipient, liveItem.recipient);
       assert.deepEqual(liveMessages[0].content, [{ type: "input_text", text: liveItem.content[0].encrypted_content }]);
     }
@@ -392,6 +398,34 @@ async function main() {
     assert.deepEqual(forkIds, forkNative.data.map(record => record.item.id));
     assert.equal(new Set(forkIds).size, forkIds.length);
     assert(forkIds.length > 20, "Fork fixture must span multiple mobile pages");
+
+    // Pick a completed turn *outside* the initial 20-item mobile page. The
+    // native inclusive anchor must copy exactly this prefix, with no changes
+    // to the source thread or requests to the model during the fork.
+    const turnSnapshot = async id => (await activeClient.rpc("thread/turns/list", {
+      threadId: id, limit: 100, sortDirection: "asc", itemsView: "notLoaded",
+    })).data;
+    const sourceTurns = await turnSnapshot(threadId);
+    const anchorIndex = sourceTurns.findIndex(turn => turn.status === "completed" &&
+      !opened.initialTurnsPage.data.some(visible => visible.id === turn.id));
+    assert(anchorIndex >= 0 && anchorIndex < sourceTurns.length - 1);
+    const modelRequests = requests.length;
+    const branch = await activeClient.rpc("thread/fork", {
+      threadId, lastTurnId: sourceTurns[anchorIndex].id, excludeTurns: true,
+    });
+    assert.notEqual(branch.thread.id, threadId);
+    assert.equal(branch.thread.forkedFromId, threadId);
+    const ids = turns => turns.map(turn => turn.id);
+    assert.deepEqual(ids(await turnSnapshot(branch.thread.id)), ids(sourceTurns.slice(0, anchorIndex + 1)));
+    assert.equal(requests.length, modelRequests);
+    const reply = await activeClient.rpc("turn/start", {
+      threadId: branch.thread.id, input: [{ type: "text", text: branchPrompt }],
+    });
+    assert.equal((await activeClient.completed(branch.thread.id, reply.turn.id)).status, "completed");
+    assert.equal(requests.length, modelRequests + 1);
+    assert.equal((await turnSnapshot(branch.thread.id)).at(-1).id, reply.turn.id);
+    assert.deepEqual(ids(await turnSnapshot(threadId)), ids(sourceTurns));
+    console.log("Native inclusive fork: historical anchor outside the first page, exact branch prefix, original unchanged.");
 
     async function startHeldTurn(text) {
       const before = heldResponses.length;

@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.207+339，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.208+340，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -499,6 +499,9 @@ Codex、OpenCode、Claude Code 均可从版本弹窗刷新稳定版本列表并�
 ### 8.3 WorkScreen（Agent 对话）
 
 Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `AgentCapabilities` 控制：
+
+- 支持定位分叉的 Codex 主会话，在每个确认成功完成的回合左下方提供双箭头；用户气泡靠右，最多占视口宽度的 80%，给左侧留出点击空间。失败、中断及状态不明的回合不提供分叉。
+  确认后使用 `thread/fork(threadId, lastTurnId, excludeTurns: true)`，以原生回合 ID 为界（含本轮），新对话独立、文件仍共用。旧运行时不退回到复制整个会话。分页时按回合 ID 对齐原生状态，不以工具退出或条目数量推断。
 
 - 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、

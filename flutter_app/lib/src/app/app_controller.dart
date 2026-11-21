@@ -233,6 +233,10 @@ class AppController extends StateNotifier<AppUiState> {
 
   @override
   set state(AppUiState value) {
+    if (_forkStatusTimeline != null && _forkStatusTimeline != value.timeline) {
+      _forkStatusTimeline = null;
+      _completedForkTurns = const {};
+    }
     final profileId = value.selectedProfileId;
     final threadId = value.activeThread?.id;
     final queue = profileId == null || threadId == null
@@ -268,6 +272,8 @@ class AppController extends StateNotifier<AppUiState> {
   final Map<AgentConnectionKey, int> _sessionNavigationGenerations = {};
   final Set<AgentConnectionKey> _subAgentOpenStarting = {};
   final Set<AgentConnectionKey> _threadMutationLanes = {};
+  List<TimelineEntry>? _forkStatusTimeline;
+  Set<String> _completedForkTurns = const {};
   final Map<String, ThreadGoal> _threadGoals = {};
   int _localHeartbeatSequence = 0;
 
@@ -3076,6 +3082,117 @@ class AppController extends StateNotifier<AppUiState> {
     }
   }
 
+  bool get supportsActiveThreadFork {
+    final profileId = state.selectedProfileId;
+    if (state.screen != AppScreen.work ||
+        state.activeAgent != AgentKind.codex ||
+        state.activeThread == null ||
+        state.isThreadReadOnly ||
+        profileId == null) {
+      return false;
+    }
+    final key = AgentConnectionKey(
+      profileId: profileId,
+      agent: AgentKind.codex,
+    );
+    return _isHostAndAgentConnected(key) && _agents.supportsForkAtTurn(key);
+  }
+
+  bool isCompletedTurn(String turnId) {
+    if (turnId.isEmpty) return false;
+    // Freezed's list view compares the identity of its underlying list. Scan
+    // once per timeline change, not once per visible footer on every frame.
+    final timeline = state.timeline;
+    if (_forkStatusTimeline != timeline) {
+      _forkStatusTimeline = timeline;
+      final completed = <String>{};
+      final otherStatuses = <String>{};
+      for (final entry in timeline) {
+        if (entry.turnId.isEmpty || entry.turnStatus.isEmpty) continue;
+        (entry.turnStatus == 'completed' ? completed : otherStatuses).add(
+          entry.turnId,
+        );
+      }
+      _completedForkTurns = completed..removeAll(otherStatuses);
+    }
+    return _completedForkTurns.contains(turnId);
+  }
+
+  bool get _forkSourceIdle =>
+      !state.loading &&
+      !state.running &&
+      state.activeTurnId == null &&
+      !state.messageSending &&
+      state.queuedMessages.isEmpty &&
+      state.approvalQueue.isEmpty &&
+      state.approval == null &&
+      !state.attachmentUploading &&
+      state.attachments.isEmpty;
+
+  bool canForkAtTurn(String turnId) =>
+      supportsActiveThreadFork &&
+      !state.submitting &&
+      _forkSourceIdle &&
+      isCompletedTurn(turnId);
+
+  Future<void> forkAtTurn(String turnId) async {
+    if (!canForkAtTurn(turnId)) return;
+    final thread = state.activeThread!;
+    final key = AgentConnectionKey(
+      profileId: state.selectedProfileId!,
+      agent: AgentKind.codex,
+    );
+    final navigation = _sessionNavigationGenerations[key] ?? 0;
+    final generation = _agents.generation(key);
+    final remoteGeneration = _agents.remoteGeneration(key);
+    bool onSource() =>
+        _isCurrentSessionNavigation(key, navigation, thread.id) &&
+        state.screen == AppScreen.work;
+    if (!_beginThreadMutation(key, thread.id)) return;
+    try {
+      final fork = await _agents.forkAtTurn(
+        key,
+        threadId: thread.id,
+        turnId: turnId,
+        approvalMode: state.approvalMode,
+        sandbox: state.sandbox,
+      );
+      if (!mounted ||
+          !_agents.isCurrentGeneration(key, generation) ||
+          _agents.remoteGeneration(key) != remoteGeneration) {
+        return;
+      }
+      if (fork.id.trim().isEmpty || fork.id == thread.id) {
+        throw StateError('Codex 未返回独立的分支会话');
+      }
+      _threadTotals.remove(key);
+      _lastReturnRefresh.remove(key);
+      if (_isActiveKey(key) && state.threadSearch.trim().isEmpty) {
+        final lists = _replaceLaneThread(state.agentThreadLists, key, fork);
+        state = state.copyWith(agentThreadLists: lists, threads: lists[key]!);
+      }
+      if (!onSource()) return;
+      if (!_forkSourceIdle || state.isThreadReadOnly) {
+        state = state.copyWith(diagnostic: '分支已创建，可从会话列表打开');
+        return;
+      }
+      _cacheActiveThreadSession(key, expectedThreadId: thread.id);
+      // Use the normal opener: it flushes the source's draft, clears child
+      // navigation and loads the branch under its own (profile, agent, id).
+      openThread(fork);
+    } catch (error) {
+      if (onSource()) {
+        _setThreadMutationError(key, thread.id, error, '从此处分叉失败');
+      }
+    } finally {
+      if (onSource()) {
+        _finishThreadMutation(key, thread.id);
+      } else {
+        _threadMutationLanes.remove(key);
+      }
+    }
+  }
+
   void openThread(AgentThread thread) {
     final profileId = state.selectedProfileId;
     if (profileId == null) return;
@@ -3676,7 +3793,8 @@ class AppController extends StateNotifier<AppUiState> {
     state = state.copyWith(
       timeline: List.unmodifiable([
         ...state.timeline.take(index),
-        ...details.timeline,
+        for (final detail in details.timeline)
+          detail.copyWith(turnStatus: state.timeline[index].turnStatus),
         ...state.timeline.skip(index + 1),
       ]),
     );
@@ -9059,12 +9177,33 @@ ResumedTimelineMerge reconcileResumedTimeline({
   // connection is recovered while the previous snapshot is still being
   // replayed. Normalize both sides before matching; otherwise every formal
   // item id is treated as a new bubble and the cached copies accumulate.
-  final normalizedCachedTimeline = cachedTimeline == null
-      ? null
-      : _normalizeResumedTimeline(cachedTimeline);
-  final normalizedRefreshedTimeline = _normalizeResumedTimeline(
+  final (safeCache, safeRefresh) = protectCodexAnswerOverlaps(
+    cachedTimeline ?? const [],
     refreshedTimeline,
   );
+  final normalizedCachedTimeline = cachedTimeline == null
+      ? null
+      : _normalizeResumedTimeline(safeCache);
+  final normalizedRefreshedTimeline = _normalizeResumedTimeline(safeRefresh);
+  // Cached prefixes and expanded tool details may predate authoritative turn
+  // completion. Refresh their *turn* metadata too, even if the item's body is
+  // kept. A missing or inconsistent server status must not enable a fork.
+  final refreshedStatuses = <String, String>{};
+  for (final row in normalizedRefreshedTimeline) {
+    if (row.turnId.isEmpty) continue;
+    refreshedStatuses.update(
+      row.turnId,
+      (old) => old == row.turnStatus ? old : '',
+      ifAbsent: () => row.turnStatus,
+    );
+  }
+  TimelineEntry currentTurnStatus(TimelineEntry row) {
+    final status = refreshedStatuses[row.turnId];
+    return status == null || status == row.turnStatus
+        ? row
+        : row.copyWith(turnStatus: status);
+  }
+
   if (refreshedItemsView == 'items') {
     // A page can begin halfway through a turn. Only an item overlap proves
     // which cached prefix is contiguous; a shared turn ID is not enough.
@@ -9102,8 +9241,8 @@ ResumedTimelineMerge reconcileResumedTimeline({
     });
     return ResumedTimelineMerge(
       timeline: List.unmodifiable([
-        if (preservePrefix) ...cached.take(overlap),
-        ...details,
+        if (preservePrefix) ...cached.take(overlap).map(currentTurnStatus),
+        ...details.map(currentTurnStatus),
       ]),
       nextCursor: preservePrefix ? cachedNextCursor : refreshedNextCursor,
     );
@@ -9188,7 +9327,7 @@ ResumedTimelineMerge reconcileResumedTimeline({
       unchangedEmptyPage;
   return ResumedTimelineMerge(
     timeline: List<TimelineEntry>.unmodifiable(
-      _normalizeResumedTimeline(timeline),
+      _normalizeResumedTimeline(timeline).map(currentTurnStatus),
     ),
     nextCursor: retainCursor ? cachedNextCursor : refreshedNextCursor,
   );

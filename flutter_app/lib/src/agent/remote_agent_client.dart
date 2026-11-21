@@ -235,6 +235,19 @@ abstract interface class RemoteAgentThreadCreateClient {
   });
 }
 
+/// Atomic, inclusive fork at a server-defined turn boundary. Adapters must not
+/// emulate this by rolling back the source or by copying the visible timeline.
+abstract interface class RemoteAgentThreadForkClient {
+  bool get supportsForkAtTurn;
+
+  Future<AgentThread> forkAtTurn({
+    required String threadId,
+    required String turnId,
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+    SandboxChoice? sandbox,
+  });
+}
+
 /// Optional capability for app-server initiated approvals and user input.
 abstract interface class RemoteAgentApprovalClient {
   Future<void> answerApproval(

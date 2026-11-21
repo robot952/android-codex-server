@@ -167,6 +167,55 @@ AppUiState reduceCodexNotification(
     case 'turn/completed':
       final turn = _map(params['turn']);
       final completedId = _string(turn, const ['id', 'turnId', 'turn_id']);
+      final turnStatus = _wireStatus(turn?['status']);
+      AppUiState recordTurnStatus(AppUiState current) {
+        if (threadId.isEmpty ||
+            threadId != activeThreadId ||
+            completedId.isEmpty) {
+          return current;
+        }
+        // The terminal snapshot may carry a display instruction even if its
+        // item/completed notification was lost during reconnection.
+        final items = turn?['items'];
+        if (items is List) {
+          final originalTimeline = current.timeline;
+          var timeline = originalTimeline;
+          for (final value in items) {
+            if (value is! Map ||
+                value['type'] != 'agentMessage' ||
+                value['moderation'] == null) {
+              continue;
+            }
+            final item = _map(value);
+            if (item != null && isCodexRestrictedAnswerItem(item)) {
+              final row = CodexPayloadParser.parseItem(
+                item,
+                turnId: completedId,
+              );
+              if (row != null) timeline = _upsertTimeline(timeline, row);
+            }
+          }
+          if (!identical(timeline, originalTimeline)) {
+            current = current.copyWith(timeline: timeline);
+          }
+        }
+        if (!current.timeline.any(
+          (row) => row.turnId == completedId && row.turnStatus != turnStatus,
+        )) {
+          return current;
+        }
+        // Item completion alone (e.g. a command exiting) isn't proof that the
+        // turn succeeded. Only mark rows belonging to this exact thread/turn.
+        return current.copyWith(
+          timeline: [
+            for (final row in current.timeline)
+              if (row.turnId == completedId && row.turnStatus != turnStatus)
+                row.copyWith(turnStatus: turnStatus)
+              else
+                row,
+          ],
+        );
+      }
       final currentTurnId = appliesToActive
           ? state.activeTurnId
           : _listedTurnId(state, threadId);
@@ -175,12 +224,11 @@ AppUiState reduceCodexNotification(
           currentTurnId != completedId) {
         // A completion from an older turn can arrive after a new turn starts.
         // Protect background threads too, including a late interrupted turn.
-        return state;
+        return recordTurnStatus(state);
       }
       final resolvedTurnId = completedId.isNotEmpty
           ? completedId
           : (state.activeTurnId ?? '');
-      final turnStatus = _wireStatus(turn?['status']);
       var next = updateRuntime(state, status: 'idle', activeTurnId: null);
       if (!appliesToActive) return next;
       final errorObject = _map(turn?['error']);
@@ -194,7 +242,9 @@ AppUiState reduceCodexNotification(
         stopped: _isStoppedStatus(turnStatus),
         nowMillis: now,
       );
-      return next.copyWith(error: error.isEmpty ? next.error : error);
+      return recordTurnStatus(
+        next.copyWith(error: error.isEmpty ? next.error : error),
+      );
 
     case 'thread/status/changed':
       if (threadId.isEmpty) return state;
@@ -293,7 +343,9 @@ AppUiState reduceCodexNotification(
       // signal the composer uses to update the background-agent panel. Keep
       // that signal after the parent's stop/completion, while still dropping
       // ordinary late command/message items from the settled turn.
-      if (isLateSettledEvent() && !_isBackgroundSubAgentLifecycleItem(item)) {
+      if (isLateSettledEvent() &&
+          !_isBackgroundSubAgentLifecycleItem(item) &&
+          !isCodexRestrictedAnswerItem(item)) {
         return state;
       }
       if (itemType == 'collabAgentToolCall') {
@@ -370,21 +422,22 @@ AppUiState reduceCodexNotification(
           id: id,
           kind: TimelineKind.agentMessage,
           turnId: turn,
-          update: (existing) =>
-              (existing ??
-                      TimelineEntry(
-                        id: id,
-                        kind: TimelineKind.agentMessage,
-                        turnId: turn,
-                      ))
-                  .copyWith(
-                    text: _appendBounded(
-                      existing?.text ?? '',
-                      delta,
-                      codexMaxTimelineTextChars,
-                      codexTextTruncationMarker,
+          update: (existing) => isCodexRestrictedAnswer(existing)
+              ? existing!
+              : (existing ??
+                        TimelineEntry(
+                          id: id,
+                          kind: TimelineKind.agentMessage,
+                          turnId: turn,
+                        ))
+                    .copyWith(
+                      text: _appendBounded(
+                        existing?.text ?? '',
+                        delta,
+                        codexMaxTimelineTextChars,
+                        codexTextTruncationMarker,
+                      ),
                     ),
-                  ),
         ),
       );
 
@@ -812,6 +865,21 @@ TimelineEntry mergeCodexTimelineEntry(
       previous.turnId.isEmpty ||
       incoming.turnId.isEmpty ||
       previous.turnId == incoming.turnId;
+  if (sameTurn &&
+      previous.id == incoming.id &&
+      previous.kind == TimelineKind.agentMessage &&
+      incoming.kind == TimelineKind.agentMessage &&
+      (isCodexRestrictedAnswer(incoming) ||
+          isCodexRestrictedAnswer(previous))) {
+    // A display restriction replaces the entire row (including questions
+    // and detail links); neither optimistic previews nor replay can undo it.
+    final restricted = isCodexRestrictedAnswer(incoming) ? incoming : previous;
+    return restricted.copyWith(
+      turnStatus: incoming.turnStatus.isNotEmpty
+          ? incoming.turnStatus
+          : previous.turnStatus,
+    );
+  }
   final sameCommand =
       previous.kind == TimelineKind.command &&
       incoming.kind == TimelineKind.command &&
@@ -846,6 +914,9 @@ TimelineEntry mergeCodexTimelineEntry(
         ? previous.attachments
         : incoming.attachments,
     turnId: incoming.turnId.isEmpty ? previous.turnId : incoming.turnId,
+    turnStatus: incoming.turnStatus.isEmpty && sameTurn
+        ? previous.turnStatus
+        : incoming.turnStatus,
     subAgentPath: incoming.subAgentPath.isEmpty
         ? previous.subAgentPath
         : incoming.subAgentPath,

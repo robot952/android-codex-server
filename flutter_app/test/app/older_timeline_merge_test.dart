@@ -1,3 +1,4 @@
+import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/app/older_timeline_merge.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +13,33 @@ TimelineEntry _entry(String turnId, {String? id, String? text}) =>
 
 void main() {
   group('mergeOlderTimelinePage', () {
+    test('overlaps protect only the same turn, item id and answer kind', () {
+      final hidden = CodexPayloadParser.parseItem({
+        'id': 'one',
+        'type': 'agentMessage',
+        'text': 'secret',
+        'moderation': {
+          'moderated': true,
+          'display': {'version': 1, 'mode': 'hide'},
+        },
+      }, turnId: 'a')!;
+      final old = _entry(
+        'a',
+        id: 'one',
+        text: 'secret',
+      ).copyWith(detailsItemId: 'one');
+      final other = _entry('b', id: 'one', text: 'visible');
+      final command = old.copyWith(kind: TimelineKind.command, text: 'tool');
+      for (final reverse in [true, false]) {
+        final merged = mergeOlderTimelinePage(
+          current: [reverse ? hidden : old, command, other],
+          older: [reverse ? old : hidden],
+        );
+        expect(merged.where(isCodexRestrictedAnswer).single, hidden);
+        expect(merged.any((r) => r.text == 'secret'), isFalse);
+        expect(merged, containsAll([other, command]));
+      }
+    });
     test('replayed middle page preserves the cached chronological order', () {
       final current = <TimelineEntry>[
         for (var index = 1; index <= 5; index += 1) _entry('turn-$index'),

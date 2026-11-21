@@ -459,6 +459,22 @@ void main() {
     for (final call in calls) {
       state = reduceCodexNotification(state, item(call));
     }
+    // A child operation finishing does not say whether the parent completed.
+    // Compare the live and replay timelines at the same point in the lifecycle.
+    expect(state.timeline.map((row) => row.turnStatus), everyElement(isEmpty));
+    state = reduceCodexNotification(
+      state,
+      const CodexRpcNotification(
+        generation: 1,
+        method: 'turn/completed',
+        params: {
+          'threadId': 'parent',
+          'turn': {'id': 'parent-turn', 'status': 'completed'},
+        },
+        raw: {},
+        isKnown: true,
+      ),
+    );
     final historical = CodexPayloadParser.parseTimeline({
       'turns': [
         {'id': 'parent-turn', 'status': 'completed', 'items': calls},

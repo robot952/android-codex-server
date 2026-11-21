@@ -5,11 +5,44 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
+    'bounded item-page resume preserves authoritative answer restrictions',
+    () {
+      final hidden = CodexPayloadParser.parseItem({
+        'id': 'one',
+        'type': 'agentMessage',
+        'text': 'secret',
+        'moderation': {
+          'moderated': true,
+          'display': {'version': 1, 'mode': 'block'},
+        },
+      }, turnId: 'a')!;
+      const old = TimelineEntry(
+        id: 'one',
+        turnId: 'a',
+        kind: TimelineKind.agentMessage,
+        text: 'secret',
+        detailsItemId: 'one',
+      );
+      for (final reverse in [true, false]) {
+        final merged = reconcileResumedTimeline(
+          cachedTimeline: [reverse ? hidden : old],
+          cachedNextCursor: null,
+          refreshedTimeline: [reverse ? old : hidden],
+          refreshedNextCursor: null,
+          refreshedItemsView: 'items',
+        );
+        expect(merged.timeline.single, hidden);
+      }
+    },
+  );
+
+  test(
     'item tail preserves same-turn prefix and detail cache but discards stale suffix',
     () {
       TimelineEntry row(String id, {bool deferred = false}) => TimelineEntry(
         id: id,
         turnId: 'long-turn',
+        turnStatus: deferred ? 'completed' : 'inProgress',
         kind: TimelineKind.command,
         status: 'completed',
         detailsItemId: deferred ? id : '',
@@ -27,6 +60,10 @@ void main() {
       expect(result.timeline.map((e) => e.id), ['a', 'b', 'c', 'd']);
       expect(result.timeline[2].output, 'body-c');
       expect(result.timeline[2].detailsItemId, isEmpty);
+      expect(
+        result.timeline.map((row) => row.turnStatus),
+        everyElement('completed'),
+      );
       expect(result.nextCursor, 'mobile-items-v1:older');
     },
   );

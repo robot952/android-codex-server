@@ -301,6 +301,7 @@ int estimateTimelineWeightChars(List<TimelineEntry> timeline) {
         entry.cwd.length +
         entry.output.length +
         entry.turnId.length +
+        entry.turnStatus.length +
         entry.subAgentPath.length +
         entry.subAgentThreadId.length +
         entry.subAgentActivity.length;

@@ -90,6 +90,7 @@ void main() {
                 cwd: '/work',
                 output: 'result',
                 turnId: 'turn',
+                turnStatus: 'interrupted',
                 detailsItemId: 'native-item-${kind.name}',
                 subAgentPath: '/root/child',
                 subAgentThreadId: 'nested',
@@ -154,6 +155,46 @@ void main() {
       expect(restored.nextTurnsCursor, original.nextTurnsCursor);
       expect(restored.savedAtEpochMillis, now);
       expect(restored.tokenUsage, original.tokenUsage);
+    },
+  );
+
+  test(
+    'a pre-upgrade v1 preview is a miss until replaced by fresh history',
+    () async {
+      // Genuine v1 gzip/AES-GCM fixture using the test key, "scope", "thread"
+      // and the time below. Its completed *item* has no enclosing turn status.
+      now = 1700000000000;
+      final oldFile = file('scope', 'thread');
+      await oldFile.writeAsBytes(
+        base64Decode(
+          'ASEhISEhISEhISEhIf1Cl89nxsK8RvYJtAfSlTI9GNQOKKYnkZ1fxAp8s0BqTRc6'
+          'y+Dsll4ILkIssoT1reZ1vKXlZOAnHsPI62Em+DrO1WOqYQ+ehhafi7slBPadIavPvi'
+          'go+oI3So9muprWnTGjxBNsnrwJFcKnAJ/o4OPzz9fL3KAPoquO5zwIqDz8Kit+7G6TA'
+          '7A3P+Vi19d6JRHyWLUFY/OKnPnmzmeJ4HiMA0d1tpZDGkI1+MOQFHh03F7+Vj6ydkug'
+          '1S9acUfd9xwcmCiTiqeXMxloFVmVLJD4LmQNeEOYlj0Ofj01MOosQB/GwmB4FcWmv2'
+          'mRR0gdQfzCfWKT4ioJY8nb5qnUvM/I2cDmrOC57iGk+NWW1RNfOpO/uGMNrP7szP6'
+          'tMoENNzYk1/16hxlQoVDmSBkZvzxNqSydXyW2sAnQNdQkLPadMA76TmzsD+pY8guj'
+          'WuwE',
+        ),
+      );
+      final cache = store();
+      expect(await cache.read('scope', 'thread'), isNull);
+      final fresh = ThreadSessionSnapshot(
+        thread: const AgentThread(id: 'thread', status: 'idle', updatedAt: 20),
+        timeline: const [
+          TimelineEntry(
+            id: 'message',
+            kind: TimelineKind.agentMessage,
+            status: 'suppressed',
+            turnId: 'turn',
+            turnStatus: 'completed',
+          ),
+        ],
+        savedAtEpochMillis: now,
+      );
+      await cache.write('scope', fresh);
+      expect((await oldFile.readAsBytes()).first, 2);
+      expect((await store().read('scope', 'thread'))!.timeline, fresh.timeline);
     },
   );
 

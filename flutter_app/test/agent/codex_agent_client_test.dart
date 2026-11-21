@@ -284,6 +284,98 @@ class _FakeSshSocket implements SSHSocket {
 
 void main() {
   test(
+    'fork pins the selected turn and safely parses only the new thread',
+    () async {
+      final session = _FakeCodexSession(
+        results: {
+          'initialize': {
+            'userAgent':
+                'codex_remote_android/0.171.0 (Linux; arm64) unknown (android; 1.0)',
+          },
+          'thread/fork': {
+            'thread': {
+              'id': 'branch',
+              'forkedFromId': 'source',
+              'cwd': '/project',
+            },
+          },
+        },
+      );
+      final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+      addTearDown(client.close);
+      await client.connect(
+        const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+        _FakeCodexHost(),
+      );
+      expect(client.supportsForkAtTurn, isTrue);
+      final branch = await client.forkAtTurn(
+        threadId: 'source',
+        turnId: 'anchor',
+      );
+      expect(branch.id, 'branch');
+      final request = session.writes
+          .map(jsonDecode)
+          .where((r) => r['method'] == 'thread/fork')
+          .single;
+      expect(request['params'], containsPair('threadId', 'source'));
+      expect(request['params'], containsPair('lastTurnId', 'anchor'));
+      expect(request['params'], containsPair('excludeTurns', true));
+      expect(
+        request['params']['sandbox'],
+        ApprovalMode.requestApproval.sandbox.wireValue,
+      );
+      expect(
+        request['params']['approvalPolicy'],
+        ApprovalMode.requestApproval.approvalPolicy,
+      );
+      expect(session.writes, isNot(contains(contains('thread/rollback'))));
+      await client.disconnect();
+      expect(client.supportsForkAtTurn, isFalse);
+    },
+  );
+
+  test(
+    'fork only accepts proven native versions and independent branch identities',
+    () async {
+      for (final ua in [
+        null,
+        'custom',
+        'codex_remote_android/0.10.1 (android/1.8.0)',
+        'codex_remote_android/0.153.2 (Linux)',
+        'codex_remote_android/0.169.0-alpha (Linux)',
+        'codex_remote_android/0.153.3 (Linux)',
+      ]) {
+        final session = _FakeCodexSession(
+          results: {
+            'initialize': {'userAgent': ua},
+            'thread/fork': {
+              'thread': {'id': 'source'},
+            },
+          },
+        );
+        final client = CodexAgentClient(sessionOpener: (_, _) async => session);
+        await client.connect(
+          const ServerProfile(id: 's', remoteCommand: 'codex app-server'),
+          _FakeCodexHost(),
+        );
+        final verified = ua?.contains('/0.153.3 ') ?? false;
+        await expectLater(
+          client.forkAtTurn(threadId: 'source', turnId: 'anchor'),
+          verified ? throwsStateError : throwsUnsupportedError,
+        );
+        expect(
+          session.writes.where(
+            (line) => line.contains('"method":"thread/fork"'),
+          ),
+          hasLength(verified ? 1 : 0),
+        );
+        await client.disconnect();
+        client.close();
+      }
+    },
+  );
+
+  test(
     'item history capability uses one projected open and metadata-only warm verification',
     () async {
       final session = _FakeCodexSession(

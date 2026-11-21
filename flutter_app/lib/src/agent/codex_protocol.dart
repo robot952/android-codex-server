@@ -33,6 +33,49 @@ const String codexTextTruncationMarker = '\n\n[内容过长，后续已截断]';
 const String codexOutputTruncationMarker = '\n\n[命令输出过长，后续已截断]';
 const String codexDiffTruncationMarker = '\n\n[差异内容过长，后续已截断]';
 
+// A local presentation marker, not a turn status. Keep the identity in the
+// timeline so a cached preview or late stream fragment cannot restore text.
+const _restrictedAnswerStatus = 'codex.remote.displayRestricted';
+bool isCodexRestrictedAnswer(TimelineEntry? entry) =>
+    entry?.kind == TimelineKind.agentMessage &&
+    entry?.status == _restrictedAnswerStatus;
+
+bool isCodexRestrictedAnswerItem(Map<String, Object?> item) {
+  if (item['type'] != 'agentMessage') return false;
+  final moderation = item['moderation'];
+  if (moderation is! Map) return false;
+  final display = moderation['display'];
+  return display is Map &&
+      display['version'] == 1 &&
+      (display['mode'] == 'hide' || display['mode'] == 'block');
+}
+
+/// Apply recovered display restrictions before a merge chooses between an
+/// expanded row, a deferred preview and the live copy of the same item.
+/// Returns both input lists untouched in the usual unrestricted case.
+(List<TimelineEntry>, List<TimelineEntry>) protectCodexAnswerOverlaps(
+  List<TimelineEntry> first,
+  List<TimelineEntry> second,
+) {
+  final restrictions = {
+    for (final entries in [first, second])
+      for (final row in entries)
+        if (isCodexRestrictedAnswer(row)) (row.turnId, row.id): row,
+  };
+  if (restrictions.isEmpty) return (first, second);
+  TimelineEntry protectRow(TimelineEntry row) {
+    if (row.kind != TimelineKind.agentMessage) return row;
+    final safe = restrictions[(row.turnId, row.id)];
+    return safe == null || identical(safe, row)
+        ? row
+        : safe.copyWith(turnStatus: row.turnStatus);
+  }
+
+  List<TimelineEntry> protect(List<TimelineEntry> entries) =>
+      entries.map(protectRow).toList(growable: false);
+  return (protect(first), protect(second));
+}
+
 /// Detects the raw object preview emitted by a web-search tool.
 ///
 /// Search results are protocol metadata, not assistant prose. Keeping this
@@ -672,6 +715,28 @@ final class CodexProtocolGeneration {
     );
   }
 
+  CodexRpcRequest threadFork({
+    required String threadId,
+    required String lastTurnId,
+    required ApprovalMode approvalMode,
+    SandboxChoice? sandbox,
+    Map<String, Object?>? config,
+  }) {
+    _requireNonEmpty(threadId, 'threadId');
+    _requireNonEmpty(lastTurnId, 'lastTurnId');
+    return request(
+      'thread/fork',
+      params: {
+        'threadId': threadId,
+        'lastTurnId': lastTurnId,
+        'excludeTurns': true,
+        'approvalPolicy': approvalMode.approvalPolicy,
+        'sandbox': (sandbox ?? approvalMode.sandbox).wireValue,
+        if (config != null && config.isNotEmpty) 'config': config,
+      },
+    );
+  }
+
   CodexRpcRequest threadResume({
     required String threadId,
     ApprovalMode approvalMode = ApprovalMode.requestApproval,
@@ -1125,7 +1190,10 @@ abstract final class CodexPayloadParser {
 
   /// Parses the newest-first page returned by `thread/resume` and restores it
   /// to chronological order before building the domain timeline.
-  static CodexThreadSnapshot? parseResumedThread(Object? result) {
+  static CodexThreadSnapshot? parseResumedThread(
+    Object? result, {
+    bool itemProjection = false,
+  }) {
     final root = _asObjectMap(result);
     if (root == null) return null;
     final rawThread = _asObjectMap(root['thread']) ?? root;
@@ -1177,7 +1245,7 @@ abstract final class CodexPayloadParser {
     );
     return CodexThreadSnapshot(
       thread: thread,
-      timeline: parseTimeline(hydratedThread),
+      timeline: parseTimeline(hydratedThread, itemProjection: itemProjection),
       nextTurnsCursor: nextTurnsCursor.isEmpty || reachedInheritedHistory
           ? null
           : nextTurnsCursor,
@@ -1197,6 +1265,7 @@ abstract final class CodexPayloadParser {
     Object? result, {
     int? subAgentCreatedAt,
     String? subAgentThreadId,
+    bool itemProjection = false,
   }) {
     final root = _asObjectMap(result) ?? const <String, Object?>{};
     final rawTurns = _payloadList(root, const <String>[
@@ -1211,7 +1280,9 @@ abstract final class CodexPayloadParser {
     );
     final reachedInheritedHistory = visibleTurns.length != rawTurns.length;
     final turns = visibleTurns.reversed.toList(growable: false);
-    final timeline = parseTimeline(<String, Object?>{'turns': turns});
+    final timeline = parseTimeline({
+      'turns': turns,
+    }, itemProjection: itemProjection);
     final nextCursor = _firstString(root, const <String>[
       'nextCursor',
       'next_cursor',
@@ -1335,7 +1406,10 @@ abstract final class CodexPayloadParser {
     );
   }
 
-  static List<TimelineEntry> parseTimeline(Map<String, Object?> thread) {
+  static List<TimelineEntry> parseTimeline(
+    Map<String, Object?> thread, {
+    bool itemProjection = false,
+  }) {
     final result = <TimelineEntry>[];
     final source = _asObjectMap(thread['source']);
     final subAgent = _asObjectMap(source?['subAgent'] ?? source?['sub_agent']);
@@ -1356,6 +1430,19 @@ abstract final class CodexPayloadParser {
       if (result.length >= _maxTimelineEntries) break;
       final turn = _asObjectMap(turnValue);
       if (turn == null) continue;
+      // Older item projections invented "completed" for every historic
+      // group. Trust only statuses explicitly sourced from Codex by the relay.
+      final rawStatus =
+          turn[itemProjection ? 'codexRemoteTurnStatus' : 'status'];
+      final turnStatus =
+          const {
+            'completed',
+            'failed',
+            'interrupted',
+            'inProgress',
+          }.contains(rawStatus)
+          ? rawStatus as String
+          : '';
       final turnId = _firstString(turn, const <String>[
         'id',
         'turnId',
@@ -1388,6 +1475,11 @@ abstract final class CodexPayloadParser {
                         subAgentActivity: 'sendMessageToParent',
                       )
                     : entry,
+              )
+              .map(
+                (entry) => turnStatus.isEmpty
+                    ? entry
+                    : entry.copyWith(turnStatus: turnStatus),
               )
               .take(_maxTimelineEntries - result.length),
         );
@@ -1478,6 +1570,15 @@ abstract final class CodexPayloadParser {
     final parsedId = _firstString(item, const <String>['id'], marker: '');
     final id = parsedId.isNotEmpty ? parsedId : 'item-${item.hashCode}';
     final boundedTurnId = _bounded(turnId, codexMaxThreadFieldChars, '');
+    if (isCodexRestrictedAnswerItem(item)) {
+      return TimelineEntry(
+        id: id,
+        turnId: boundedTurnId,
+        kind: TimelineKind.agentMessage,
+        status: _restrictedAnswerStatus,
+        text: '此回复已按服务端要求隐藏。',
+      );
+    }
     if (type == 'codexRemoteDeferred') {
       return TimelineEntry(
         id: id,

@@ -7,7 +7,7 @@ The client performs the following JSON-RPC flow over newline-delimited JSON:
 
 1. `initialize`, followed by the `initialized` notification.
 2. `model/list` and `thread/list` for the task screen.
-3. `thread/read`, `thread/resume`, `thread/start`, and `thread/archive` for thread lifecycle.
+3. `thread/read`, `thread/resume`, `thread/start`, `thread/fork`, and `thread/archive` for thread lifecycle.
 4. `turn/start`, `turn/steer`, and `turn/interrupt` for work.
 5. `review/start` for uncommitted-change review.
 6. Server notifications for turn, item, command, file change, plan, and diff updates.
@@ -73,3 +73,22 @@ The native loopback fixture `scripts/test-codex-history-relay-live.cjs` validate
 provider catalogue, fork pagination, active-turn resume, interruption followed by a new turn,
 and delayed interruption of the previous turn, alongside malformed child-message compatibility
 and HTTP 400 recovery. It uses isolated synthetic sessions without credentials or paid model calls.
+
+## Point-in-history forks (verified on 0.169.0 and 0.171.0)
+
+The mobile client sends `thread/fork` with the source `threadId`, the selected
+`lastTurnId` (inclusive) and `excludeTurns: true`. The branch is opened by its
+returned ID through the normal bounded history reader. Forking does not replay
+user input, roll back the original thread, or copy its working directory. The
+client offers the action only for turns known to have completed successfully;
+item completion alone does not establish the turn's status. Unverified old
+runtimes do not get a "fork latest" fallback.
+
+The native loopback test forks a turn outside the initial mobile page, checks
+the branch's parent and exact history prefix, continues the branch, and
+checks that the original thread's turns did not change.
+
+Codex 0.171.0 also adds a versioned display instruction to recovered
+`agentMessage` items. For v1 `hide` or `block`, the mobile presentation
+retains the row identity without exposing the answer in a preview, an expanded
+item or a later stream fragment. This does not rewrite native session files.

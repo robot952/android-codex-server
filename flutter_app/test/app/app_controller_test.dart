@@ -939,6 +939,71 @@ class _PaginatedThreadAgent extends _SubAgentNavigationAgent
   }
 }
 
+class _ForkAgent extends _SubAgentNavigationAgent
+    implements RemoteAgentThreadForkClient {
+  static const fork = AgentThread(id: 'independent-fork', title: '分支');
+  static const anchor = TimelineEntry(
+    id: 'answer',
+    kind: TimelineKind.agentMessage,
+    turnId: 'stable-turn',
+    turnStatus: 'completed',
+  );
+  static const later = TimelineEntry(
+    id: 'later',
+    kind: TimelineKind.agentMessage,
+    turnId: 'subsequent-turn',
+    turnStatus: 'completed',
+  );
+  final requests = <(String, String)>[];
+  final result = Completer<AgentThread>();
+  @override
+  bool supportsForkAtTurn = true;
+
+  @override
+  Future<AgentThread> forkAtTurn({
+    required String threadId,
+    required String turnId,
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+    SandboxChoice? sandbox,
+  }) async {
+    requests.add((threadId, turnId));
+    return result.future;
+  }
+
+  @override
+  Future<AgentSession> resumeThread(
+    String threadId, {
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+  }) async {
+    if (threadId == fork.id) {
+      return const AgentSession(thread: fork, timeline: [anchor]);
+    }
+    if (threadId == _SubAgentNavigationAgent.rootThread.id) {
+      return AgentSession(
+        thread: _SubAgentNavigationAgent.rootThread,
+        timeline: [
+          anchor,
+          for (final status in ['', 'failed', 'inProgress', 'interrupted'])
+            anchor.copyWith(
+              id: 'settled-tool-$status',
+              status: 'completed',
+              turnId: 'turn-$status',
+              turnStatus: status,
+            ),
+          later,
+          anchor.copyWith(id: 'mixed-completed', turnId: 'mixed'),
+          anchor.copyWith(
+            id: 'mixed-failed',
+            turnId: 'mixed',
+            turnStatus: 'failed',
+          ),
+        ],
+      );
+    }
+    return super.resumeThread(threadId, approvalMode: approvalMode);
+  }
+}
+
 class _ThreadMutationAgent extends _SubAgentNavigationAgent
     implements RemoteAgentThreadMutationClient {
   String? compactedThreadId;
@@ -1450,6 +1515,85 @@ Future<void> _openSubAgent(
 }
 
 void main() {
+  test(
+    'fork opens an independent history, keeps source timeline and draft',
+    () async {
+      final agent = _ForkAgent();
+      final harness = await _createSubAgentHarness(agent: agent);
+      final controller = harness.controller;
+      final source = controller.state.activeThread!;
+      final original = controller.state.timeline;
+      final turn = _ForkAgent.anchor.turnId;
+      for (final status in ['', 'failed', 'inProgress', 'interrupted']) {
+        expect(controller.canForkAtTurn('turn-$status'), isFalse);
+      }
+      expect(controller.canForkAtTurn('invented'), isFalse);
+      expect(controller.canForkAtTurn('mixed'), isFalse);
+      agent.supportsForkAtTurn = false;
+      expect(controller.canForkAtTurn(turn), isFalse);
+      agent.supportsForkAtTurn = true;
+      expect(controller.canForkAtTurn(turn), isTrue);
+      controller.setComposerDraft('source-only draft');
+      final pending = controller.forkAtTurn(turn);
+      await controller.forkAtTurn(turn);
+      expect(agent.requests, [(source.id, turn)]);
+      agent.result.complete(_ForkAgent.fork);
+      await pending;
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id == _ForkAgent.fork.id &&
+            !controller.state.loading,
+      );
+      expect(controller.state.composerDraft, isEmpty);
+      expect(controller.state.timeline, [_ForkAgent.anchor]);
+      expect(
+        controller.state.threads.map((t) => t.id),
+        containsAll([source.id, _ForkAgent.fork.id]),
+      );
+      controller.openThread(source);
+      await _waitUntil(
+        () =>
+            controller.state.activeThread?.id == source.id &&
+            !controller.state.loading,
+      );
+      expect(controller.state.composerDraft, 'source-only draft');
+      expect(controller.state.timeline, original);
+    },
+  );
+
+  test(
+    'a late fork after back does not navigate or reuse source state',
+    () async {
+      final agent = _ForkAgent();
+      final harness = await _createSubAgentHarness(agent: agent);
+      final pending = harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+      expect(agent.requests, hasLength(1));
+      harness.controller.backToThreadList();
+      agent.result.complete(_ForkAgent.fork);
+      await pending;
+      expect(harness.controller.state.screen, AppScreen.threads);
+      expect(harness.controller.state.activeThread, isNull);
+      expect(
+        harness.controller.state.threads.map((thread) => thread.id),
+        contains(_ForkAgent.fork.id),
+      );
+    },
+  );
+
+  test('fork errors leave source intact and clear in-flight status', () async {
+    final agent = _ForkAgent();
+    final harness = await _createSubAgentHarness(agent: agent);
+    final source = harness.controller.state.activeThread;
+    final original = harness.controller.state.timeline;
+    final pending = harness.controller.forkAtTurn(_ForkAgent.anchor.turnId);
+    agent.result.completeError(StateError('服务端不支持从此轮分叉'));
+    await pending;
+    expect(harness.controller.state.activeThread, source);
+    expect(harness.controller.state.timeline, original);
+    expect(harness.controller.state.submitting, isFalse);
+    expect(harness.controller.state.error, contains('分叉'));
+  });
+
   test(
     'server ordering preserves live sessions and local runtime slots',
     () async {

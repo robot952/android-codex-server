@@ -391,6 +391,7 @@ class CodexAgentClient
         RemoteAgentTurnClient,
         RemoteAgentSteerClient,
         RemoteAgentThreadCreateClient,
+        RemoteAgentThreadForkClient,
         RemoteAgentApprovalClient,
         RemoteAgentThreadMutationClient,
         RemoteAgentTitleClient,
@@ -475,6 +476,7 @@ class CodexAgentClient
   final Map<String, ApprovalMode> _reusableThreads = {};
   bool? _itemHistorySupported;
   bool _indexedThreadListSupported = false;
+  bool _nativeForkAtTurn = false;
   final Set<String> _unsupportedItemHistoryThreads = {};
 
   Future<AgentSession?> _openItemHistory(
@@ -603,6 +605,27 @@ class CodexAgentClient
 
   @override
   AgentCapabilities get capabilities => AgentCapabilities.codex;
+
+  @override
+  bool get supportsForkAtTurn =>
+      kind == AgentKind.codex && isConnected && _nativeForkAtTurn;
+
+  // Unknown fields may be silently ignored by older app servers. Gate the
+  // mutation on the actual initialize handshake, not the configured install
+  // target or the version of the client in the trailing parentheses.
+  static bool _supportsPointFork(Object? userAgent) {
+    if (userAgent is! String) return false;
+    final parts = RegExp(
+      r'^[^/\s]+/(\d+)\.(\d+)\.(\d+)(?:\s|$)',
+    ).firstMatch(userAgent);
+    if (parts == null) return false;
+    final major = int.tryParse(parts[1]!) ?? -1;
+    final minor = int.tryParse(parts[2]!) ?? -1;
+    final patch = int.tryParse(parts[3]!) ?? -1;
+    // 0.153.3 is the oldest locally verified stable schema with lastTurnId.
+    return major > 0 ||
+        major == 0 && (minor > 153 || minor == 153 && patch >= 3);
+  }
 
   @override
   bool get isConnected => _connected && _session != null;
@@ -822,6 +845,10 @@ class CodexAgentClient
           timeout: requestTimeout,
         );
         final initialized = initialize.resultOrThrow();
+        _nativeForkAtTurn =
+            kind == AgentKind.codex &&
+            initialized is Map &&
+            _supportsPointFork(initialized['userAgent']);
         _indexedThreadListSupported =
             kind == AgentKind.codex &&
             initialized is Map &&
@@ -1271,6 +1298,7 @@ class CodexAgentClient
     }
     final snapshot = CodexPayloadParser.parseResumedThread(
       payload ?? resolvedResponse.resultOrThrow(),
+      itemProjection: itemsView == 'items',
     );
     if (snapshot == null) throw StateError('${kind.label} 返回的会话内容无效');
     if (snapshot.thread.source == 'subAgent') {
@@ -1313,6 +1341,7 @@ class CodexAgentClient
       if (!scope.isCurrent) throw StateError('历史请求已失效');
       final page = CodexPayloadParser.parseTurnsPage(
         response.resultOrThrow(),
+        itemProjection: true,
         subAgentCreatedAt:
             subAgentCreatedAt ?? _subAgentCreatedAtByThread[threadId],
         subAgentThreadId:
@@ -1371,6 +1400,39 @@ class CodexAgentClient
       turnIds: page.turnIds,
       itemsView: itemsView,
     );
+  }
+
+  @override
+  Future<AgentThread> forkAtTurn({
+    required String threadId,
+    required String turnId,
+    ApprovalMode approvalMode = ApprovalMode.requestApproval,
+    SandboxChoice? sandbox,
+  }) async {
+    if (!supportsForkAtTurn) {
+      throw UnsupportedError('无法确认当前 Codex 支持从指定回合分支，请升级运行时后重试');
+    }
+    final scope = _requireScope();
+    final response = await _request(
+      scope.threadFork(
+        threadId: threadId,
+        lastTurnId: turnId,
+        approvalMode: approvalMode,
+        sandbox: sandbox,
+        config: _questionConfig,
+      ),
+      timeout: threadRequestTimeout,
+    );
+    if (!scope.isCurrent) throw StateError('Codex 分支请求已失效');
+    final result = response.resultOrThrow();
+    final thread = result is Map ? result['thread'] : null;
+    final fork = thread is Map<String, Object?>
+        ? CodexPayloadParser.parseThread(thread)
+        : null;
+    if (fork == null || fork.id == threadId) {
+      throw StateError('Codex 没有返回独立的分支会话');
+    }
+    return fork;
   }
 
   @override
@@ -1667,6 +1729,7 @@ class CodexAgentClient
     _subAgentCreatedAtByThread.clear();
     _itemHistorySupported = null;
     _indexedThreadListSupported = false;
+    _nativeForkAtTurn = false;
     _unsupportedItemHistoryThreads.clear();
     _protocol.invalidateGeneration();
     _connected = false;

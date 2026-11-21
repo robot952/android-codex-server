@@ -6,6 +6,75 @@ import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('v0.171 recovered answers respect the explicit v1 display mode', () {
+    for (final (display, restricted) in [
+      ({'version': 1, 'mode': 'show', 'trustedContacts': 'skip'}, false),
+      (
+        {
+          'version': 1,
+          'mode': 'hide',
+          'replacement': {'kind': 'wellbeingPromptHelpline'},
+        },
+        true,
+      ),
+      (
+        {
+          'version': 1,
+          'mode': 'block',
+          'reason': {'kind': 'cyber'},
+        },
+        true,
+      ),
+      ({'action': 'unknown'}, false),
+      ({'version': 1, 'mode': 'unknown'}, false),
+    ]) {
+      final item = {
+        'type': 'agentMessage',
+        'id': 'answer',
+        'phase': 'final_answer',
+        'text': 'SENSITIVE_FIXTURE',
+        'moderation': {'moderated': true, 'display': display},
+      };
+      final row = CodexPayloadParser.parseTurnsPage({
+        'data': [
+          {
+            'id': 'turn',
+            'status': 'completed',
+            'items': [item],
+          },
+        ],
+      }).timeline.single;
+      expect(row.id, 'answer');
+      expect(row.turnStatus, 'completed');
+      expect(row.text, isNotEmpty);
+      expect(row.text.contains('SENSITIVE_FIXTURE'), !restricted);
+      expect(isCodexRestrictedAnswer(row), restricted);
+      expect(row.detailsItemId, isEmpty);
+    }
+  });
+
+  test('fork turn status uses the native parent, not item completion', () {
+    final turn = <String, Object?>{
+      'id': 'selected',
+      'status': 'interrupted',
+      'items': [
+        {'id': 'item', 'type': 'agentMessage', 'text': 'partial'},
+      ],
+    };
+    TimelineEntry parse({bool projected = false}) =>
+        CodexPayloadParser.parseTurnsPage({
+          'data': [turn],
+        }, itemProjection: projected).timeline.single;
+    expect(parse().turnStatus, 'interrupted');
+    // Legacy relays labelled every projected turn completed; ignore that value.
+    turn['status'] = 'completed';
+    expect(parse(projected: true).turnStatus, '');
+    turn['codexRemoteTurnStatus'] = 'failed';
+    expect(parse(projected: true).turnStatus, 'failed');
+    turn['codexRemoteTurnStatus'] = 'completed';
+    expect(parse(projected: true).turnStatus, 'completed');
+  });
+
   test('recognizes only a matching Codex writer collision', () {
     CodexRpcException rpcError(String message, {int code = -32600}) =>
         CodexRpcException(

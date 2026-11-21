@@ -28,6 +28,123 @@ AppUiState _state() => AppUiState(
 );
 
 void main() {
+  test(
+    'restricted snapshot supersedes previews, questions and stale replay',
+    () {
+      const old = TimelineEntry(
+        id: 'answer',
+        turnId: 'turn-1',
+        kind: TimelineKind.agentMessage,
+        text: 'SENSITIVE_FIXTURE',
+        detailsItemId: 'answer',
+        questions: [
+          InputQuestion(
+            id: 'secret',
+            header: '',
+            question: 'SENSITIVE_FIXTURE',
+          ),
+        ],
+      );
+      final item = {
+        'type': 'agentMessage',
+        'id': 'answer',
+        'text': 'SENSITIVE_FIXTURE',
+        'moderation': {
+          'moderated': true,
+          'display': {
+            'version': 1,
+            'mode': 'block',
+            'reason': {'kind': 'protection', 'protectionType': 'fixture'},
+          },
+        },
+      };
+      final base = _state().copyWith(
+        timeline: [old],
+        activeTurnId: 'turn-1',
+        running: true,
+      );
+      final live = reduceCodexNotification(
+        base,
+        _notification('item/completed', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'item': item,
+        }),
+      );
+      final settled = reduceCodexNotification(
+        base,
+        _notification('turn/completed', {
+          'threadId': 'thread-1',
+          'turn': {
+            'id': 'turn-1',
+            'status': 'completed',
+            'items': [item],
+          },
+        }),
+      );
+      final replay = reduceCodexNotification(
+        live,
+        _notification('item/agentMessage/delta', {
+          'threadId': 'thread-1',
+          'turnId': 'turn-1',
+          'itemId': 'answer',
+          'delta': 'SENSITIVE_FIXTURE',
+        }),
+      );
+      for (final row in [
+        live.timeline.single,
+        settled.timeline.single,
+        replay.timeline.single,
+        mergeCodexTimelineEntry(replay.timeline.single, old),
+      ]) {
+        expect(isCodexRestrictedAnswer(row), isTrue);
+        expect(row.text, isNot(contains('SENSITIVE_FIXTURE')));
+        expect(row.questions, isEmpty);
+        expect(row.detailsItemId, isEmpty);
+      }
+    },
+  );
+
+  test('fork status comes from the enclosing turn, not finished tools', () {
+    const item = TimelineEntry(
+      id: 'cmd',
+      kind: TimelineKind.command,
+      status: 'completed',
+      turnId: 'turn-1',
+    );
+    final base = _state().copyWith(
+      timeline: [
+        item,
+        item.copyWith(id: 'other', turnId: 'turn-2'),
+      ],
+      activeTurnId: 'turn-1',
+      running: true,
+    );
+    expect(base.timeline.first.turnStatus, isEmpty);
+    final unscoped = reduceCodexNotification(
+      base,
+      _notification('turn/completed', {
+        'turn': {'id': 'turn-1', 'status': 'completed'},
+      }),
+    );
+    expect(unscoped.timeline.first.turnStatus, isEmpty);
+    for (final status in ['completed', 'failed', 'interrupted', '']) {
+      final updated = reduceCodexNotification(
+        base,
+        _notification('turn/completed', {
+          'threadId': 'thread-1',
+          'turn': {'id': 'turn-1', 'status': status},
+        }),
+      );
+      expect(updated.timeline.first.turnStatus, status);
+      expect(updated.timeline.last.turnStatus, isEmpty);
+      expect(
+        mergeCodexTimelineEntry(updated.timeline.first, item).turnStatus,
+        status,
+      );
+    }
+  });
+
   test('provider fallback is diagnostic-only without settling the turn', () {
     var state = _state().copyWith(running: true, activeTurnId: 'turn-1');
     const message =
@@ -848,6 +965,18 @@ void main() {
     final state = _state().copyWith(
       running: true,
       activeTurnId: 'turn-new',
+      timeline: const [
+        TimelineEntry(
+          id: 'old',
+          kind: TimelineKind.command,
+          turnId: 'turn-old',
+        ),
+        TimelineEntry(
+          id: 'new',
+          kind: TimelineKind.command,
+          turnId: 'turn-new',
+        ),
+      ],
       activeThread: const AgentThread(
         id: 'thread-1',
         title: '任务',
@@ -873,6 +1002,8 @@ void main() {
     expect(next.running, isTrue);
     expect(next.activeTurnId, 'turn-new');
     expect(next.threads.single.status, 'active');
+    expect(next.timeline.first.turnStatus, 'completed');
+    expect(next.timeline.last.turnStatus, isEmpty);
   });
 
   for (final status in ['completed', 'interrupted', 'failed']) {

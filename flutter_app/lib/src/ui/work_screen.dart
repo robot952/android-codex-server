@@ -93,6 +93,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
   List<TimelineEntry>? _displayTimelineSource;
   List<TimelineEntry> _displayTimeline = const [];
   List<TimelineRenderRow> _displayTimelineRows = const [];
+  Map<int, String> _turnEnds = const {};
   double _lastBottomInset = 0;
   String? _viewportThreadId;
   bool _initialBottomPending = true;
@@ -303,6 +304,12 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
                   state: state,
                   entries: _displayTimeline,
                   rows: _displayTimelineRows,
+                  turnEnds: _turnEnds,
+                  showForkAtTurn: controller.supportsActiveThreadFork
+                      ? controller.isCompletedTurn
+                      : null,
+                  canForkAtTurn: controller.canForkAtTurn,
+                  onForkAtTurn: (turnId) => _confirmFork(controller, turnId),
                   controller: _scrollController,
                   onOpenImage: (path, {fileName}) =>
                       _openRemoteImage(path, fileName: fileName),
@@ -553,6 +560,25 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       confirmLabel: '继续撤销',
     );
     if (confirmed) await controller.rollbackActiveThread();
+  }
+
+  Future<void> _confirmFork(AppController controller, String turnId) async {
+    if (!controller.canForkAtTurn(turnId)) return;
+    final source = ref.read(appControllerProvider);
+    final confirmed = await _confirm(
+      title: '从此处分叉？',
+      message: '新对话会保留到本轮结束的历史。原对话不变，工作目录和文件仍然共用。',
+      confirmLabel: '创建分支',
+    );
+    if (!mounted || !confirmed) return;
+    final current = ref.read(appControllerProvider);
+    if (current.selectedProfileId != source.selectedProfileId ||
+        current.activeAgent != source.activeAgent ||
+        current.activeThread?.id != source.activeThread?.id ||
+        !controller.canForkAtTurn(turnId)) {
+      return;
+    }
+    await controller.forkAtTurn(turnId);
   }
 
   Future<void> _confirmStop(AppController controller) async {
@@ -1093,6 +1119,19 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
     _displayTimelineSource = timeline;
     _displayTimeline = normalizeTimelineEntriesForDisplay(timeline);
     _displayTimelineRows = _displayTimeline.toTimelineRenderRows();
+    // Pagination can reveal more *items of the same turn*. Anchor its single
+    // action to the last visible render row by protocol ID, never page index.
+    final lastRowByTurn = <String, int>{};
+    for (var i = 0; i < _displayTimelineRows.length; i++) {
+      final turnId = switch (_displayTimelineRows[i]) {
+        TimelineEntryRenderRow(:final entry) => entry.turnId,
+        SubAgentTimelineRenderRow(:final entries) => entries.last.turnId,
+      };
+      if (turnId.isNotEmpty) lastRowByTurn[turnId] = i;
+    }
+    _turnEnds = {
+      for (final item in lastRowByTurn.entries) item.value: item.key,
+    };
   }
 
   void _syncViewport(AppUiState state, double bottomInset) {
@@ -2498,6 +2537,10 @@ class _Transcript extends StatelessWidget {
     required this.state,
     required this.entries,
     required this.rows,
+    required this.turnEnds,
+    required this.showForkAtTurn,
+    required this.canForkAtTurn,
+    required this.onForkAtTurn,
     required this.controller,
     required this.onOpenImage,
     required this.imageLoadingPath,
@@ -2521,6 +2564,10 @@ class _Transcript extends StatelessWidget {
   final AppUiState state;
   final List<TimelineEntry> entries;
   final List<TimelineRenderRow> rows;
+  final Map<int, String> turnEnds;
+  final bool Function(String)? showForkAtTurn;
+  final bool Function(String) canForkAtTurn;
+  final ValueChanged<String> onForkAtTurn;
   final ScrollController controller;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
@@ -2680,7 +2727,25 @@ class _Transcript extends StatelessWidget {
                       : 10,
                 ),
                 child: sourceIndex < rows.length
-                    ? buildRow(rows[sourceIndex])
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          buildRow(rows[sourceIndex]),
+                          if (turnEnds[sourceIndex] case final turnId?
+                              when showForkAtTurn?.call(turnId) == true)
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: IconButton(
+                                key: ValueKey('fork-turn-$turnId'),
+                                tooltip: '从此处分叉',
+                                onPressed: canForkAtTurn(turnId)
+                                    ? () => onForkAtTurn(turnId)
+                                    : null,
+                                icon: const _TurnForkIcon(),
+                              ),
+                            ),
+                        ],
+                      )
                     : trailingItems[sourceIndex - rows.length],
               );
             },
@@ -3274,6 +3339,53 @@ class _OlderHistoryIndicator extends StatelessWidget {
   }
 }
 
+/// One incoming stroke splitting into two outward arrows, as in native Codex.
+class _TurnForkIcon extends StatelessWidget {
+  const _TurnForkIcon();
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+    size: const Size.square(18),
+    painter: _TurnForkGlyph(IconTheme.of(context).color ?? codexMuted),
+  );
+}
+
+class _TurnForkGlyph extends CustomPainter {
+  const _TurnForkGlyph(this.color);
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.65
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.save();
+    canvas.scale(size.width / 20, size.height / 20);
+    final path = Path()
+      ..moveTo(2, 10)
+      ..lineTo(5, 10)
+      ..quadraticBezierTo(8, 10, 10, 8)
+      ..lineTo(17, 2.5)
+      ..moveTo(12.5, 2.5)
+      ..lineTo(17, 2.5)
+      ..lineTo(17, 7)
+      ..moveTo(6.5, 10)
+      ..quadraticBezierTo(8, 10, 10, 12)
+      ..lineTo(17, 17.5)
+      ..moveTo(12.5, 17.5)
+      ..lineTo(17, 17.5)
+      ..lineTo(17, 13);
+    canvas.drawPath(path, stroke);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_TurnForkGlyph oldDelegate) => oldDelegate.color != color;
+}
+
 class _TimelineCard extends StatelessWidget {
   const _TimelineCard({
     required this.entry,
@@ -3302,8 +3414,7 @@ class _TimelineCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entry.detailsItemId.isNotEmpty &&
-        (entry.kind == TimelineKind.agentMessage ||
-            entry.kind == TimelineKind.userMessage)) {
+        entry.kind == TimelineKind.agentMessage) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -3413,9 +3524,10 @@ class _UserMessageTimelineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.88;
-    return Align(
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.80;
+    return Container(
       alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(left: kMinInteractiveDimension + 8),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: Material(
@@ -3436,6 +3548,8 @@ class _UserMessageTimelineCard extends StatelessWidget {
                     entry.text,
                     onSelectionChanged: onTextSelectionChanged,
                   ),
+                if (entry.detailsItemId.isNotEmpty)
+                  _HistoryDetailsLoader(entry: entry, automatic: false),
                 if (entry.attachments.isNotEmpty) ...[
                   if (entry.text.isNotEmpty) const SizedBox(height: 8),
                   Wrap(

@@ -1,3 +1,4 @@
+import '../agent/codex_protocol.dart';
 import '../domain/models.dart';
 
 /// Inserts an older page without moving turns already visible in the cache.
@@ -5,13 +6,19 @@ List<TimelineEntry> mergeOlderTimelinePage({
   required List<TimelineEntry> older,
   required List<TimelineEntry> current,
 }) {
-  final currentRows = _uniqueRows(current);
+  final (safeCurrent, safeOlder) = protectCodexAnswerOverlaps(current, older);
+  final currentRows = _uniqueRows(safeCurrent);
   final currentItems = {
     for (final row in currentRows) (row.turnId, row.id): row,
   };
   final olderRows = _uniqueRows(
-    older.map((entry) {
+    safeOlder.map((entry) {
       final current = currentItems[(entry.turnId, entry.id)];
+      // A deferred tool can have the same ID. Never substitute a different
+      // item's body for a restricted answer, or the answer for that tool.
+      if (isCodexRestrictedAnswer(entry) || isCodexRestrictedAnswer(current)) {
+        return entry;
+      }
       return current != null &&
               (entry.detailsItemId.isNotEmpty ||
                   current.detailsItemId.isNotEmpty)

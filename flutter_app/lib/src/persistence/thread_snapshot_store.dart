@@ -395,6 +395,7 @@ int _snapshotWeight(ThreadSessionSnapshot snapshot, int limit) {
         entry.cwd.length +
         entry.output.length +
         entry.turnId.length +
+        entry.turnStatus.length +
         entry.detailsItemId.length +
         entry.subAgentPath.length +
         entry.subAgentThreadId.length +
@@ -442,7 +443,10 @@ Uint8List _randomBytes(int length) {
   return Uint8List.fromList(List.generate(length, (_) => random.nextInt(256)));
 }
 
-const _formatVersion = 1;
+// V1 previews have neither authoritative turn statuses nor moderation-aware
+// display rows. Treat them as misses, even when server timestamps match. The
+// next native history read replaces the same encrypted file using the same key.
+const _formatVersion = 2;
 Uint8List? _encodeSnapshot(
   ThreadSessionSnapshot snapshot,
   Uint8List key,
@@ -571,6 +575,7 @@ Map<String, Object?> _snapshotJson(ThreadSessionSnapshot snapshot) => {
           'cwd': entry.cwd,
           'output': entry.output,
           'turnId': entry.turnId,
+          'turnStatus': entry.turnStatus,
           'detailsItemId': entry.detailsItemId,
           'subAgentPath': entry.subAgentPath,
           'subAgentThreadId': entry.subAgentThreadId,
@@ -663,6 +668,7 @@ ThreadSessionSnapshot _snapshotFromJson(Map<String, dynamic> value) {
             cwd: v['cwd'] as String,
             output: v['output'] as String,
             turnId: v['turnId'] as String,
+            turnStatus: v['turnStatus'] as String? ?? '',
             detailsItemId: v['detailsItemId'] as String? ?? '',
             subAgentPath: v['subAgentPath'] as String,
             subAgentThreadId: v['subAgentThreadId'] as String,

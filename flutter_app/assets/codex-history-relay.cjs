@@ -74,6 +74,7 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
   const cursorPrefix = "mobile-items-v1:";
   const itemLimit = 20;
   const itemBytes = 4096;
+  const turnHeaderLimit = 32;
   function historyError(message, code = -32602) {
     return Object.assign(new Error(message), { rpcError: { code, message } });
   }
@@ -82,14 +83,26 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     try {
       if (typeof cursor !== "string" || !cursor.startsWith(cursorPrefix) || cursor.length > 32768) throw 0;
       const value = JSON.parse(Buffer.from(cursor.slice(cursorPrefix.length), "base64url"));
-      if (value.threadId !== threadId || typeof value.cursor !== "string") throw 0;
-      return value.cursor;
+      if (value.threadId !== threadId || typeof value.cursor !== "string" ||
+          (value.turnCursor != null && typeof value.turnCursor !== "string")) throw 0;
+      return value;
     } catch (_) { throw historyError("Invalid mobile history cursor"); }
+  }
+  function restrictedAnswer(item) {
+    const display = item?.moderation?.display;
+    if (item?.type !== "agentMessage" || display?.version !== 1 ||
+        (display.mode !== "hide" && display.mode !== "block")) return null;
+    // Preserve the presentation decision but not the answer or auxiliaries
+    // (questions, detail links, etc.) on either mobile history endpoint.
+    return { id: item.id, type: item.type, text: "",
+      moderation: { moderated: true, display: { version: 1, mode: display.mode } } };
   }
   function projectItem(item) {
     if (!item || typeof item.id !== "string" || item.id.length > 256) {
       throw historyError("Invalid history item identity");
     }
+    const restricted = restrictedAnswer(item);
+    if (restricted) return restricted;
     // Commands are folded on first paint. Other small items retain their
     // original shape, including all collaboration status/identity fields.
     if (item.type !== "commandExecution" && Buffer.byteLength(JSON.stringify(item)) <= itemBytes) return item;
@@ -109,13 +122,15 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       text: typeof item.text === "string" ? item.text.slice(0, 500) : "",
     };
   }
-  async function itemPage(threadId, cursor, latestTurn) {
+  async function itemPage(threadId, cursor, initialTurnHeaders) {
+    const continuation = decodeCursor(cursor, threadId);
+    const latestTurn = initialTurnHeaders?.data?.[0];
     let page;
     for (const limit of [itemLimit, 4, 1]) {
       try {
         page = await internalRequest("thread/items/list", {
           threadId, limit, sortDirection: "desc",
-          ...(cursor == null ? {} : { cursor: decodeCursor(cursor, threadId) }),
+          ...(continuation ? { cursor: continuation.cursor } : {}),
         }, { history: true });
         break;
       } catch (error) {
@@ -127,16 +142,45 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     for (const record of page.data) {
       if (typeof record.turnId !== "string" || record.turnId.length > 256) throw historyError("Invalid history turn identity");
       if (!turns.has(record.turnId)) turns.set(record.turnId, {
-        ...(latestTurn?.id === record.turnId ? latestTurn : { id: record.turnId, status: "completed" }), items: [],
+        ...(latestTurn?.id === record.turnId ? latestTurn : { id: record.turnId }), items: [],
       });
       turns.get(record.turnId).items.unshift(projectItem(record.item));
     }
     // An active turn can have no items yet. Keep its status without counting it
     // as a visible history record or changing the item continuation cursor.
     if (latestTurn && !turns.has(latestTurn.id)) turns.set(latestTurn.id, { ...latestTurn, items: [] });
+    // An item's own completion does not establish its parent turn's status.
+    // Join bounded metadata-only pages by exact turn ID. Persist only an opaque
+    // cursor, never caller-supplied statuses; a long turn may span many pages.
+    const unresolved = new Set(turns.keys());
+    let turnCursor = continuation?.turnCursor;
+    let headers = initialTurnHeaders;
+    for (let lookup = 0; lookup < 3 && unresolved.size; lookup++) {
+      if (!headers) {
+        try {
+          headers = await internalRequest("thread/turns/list", {
+            threadId, limit: turnHeaderLimit, sortDirection: "desc", itemsView: "notLoaded",
+            ...(turnCursor ? { cursor: turnCursor } : {}),
+          }, { history: true });
+        } catch (_) { break; } // Unknown status hides the action, not the history.
+      }
+      if (!Array.isArray(headers?.data)) break;
+      for (const header of headers.data) {
+        if (!unresolved.delete(header?.id)) continue;
+        if (!["completed", "inProgress", "interrupted", "failed"].includes(header.status)) continue;
+        const turn = turns.get(header.id);
+        turn.status = header.status;
+        turn.codexRemoteTurnStatus = header.status;
+      }
+      if (!unresolved.size || !headers.nextCursor || headers.nextCursor === turnCursor) break;
+      turnCursor = headers.nextCursor;
+      headers = null;
+    }
     const data = [...turns.values()];
     if (latestTurn && data.at(-1)?.id === latestTurn.id && data.length > 1) data.unshift(data.pop());
-    const nextCursor = page.nextCursor == null ? null : cursorPrefix + Buffer.from(JSON.stringify({ threadId, cursor: page.nextCursor })).toString("base64url");
+    const nextCursor = page.nextCursor == null ? null : cursorPrefix + Buffer.from(JSON.stringify({
+      threadId, cursor: page.nextCursor, ...(turnCursor ? { turnCursor } : {}),
+    })).toString("base64url");
     const result = { data, nextCursor };
     if (Buffer.byteLength(JSON.stringify(result)) > 96 * 1024) throw historyError("History page exceeds mobile budget");
     return result;
@@ -164,7 +208,7 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       // Match the existing mobile command-output display limit on the server,
       // before a single large command can exceed the phone's RPC line limit.
       // This is a read projection only; native persisted output is untouched.
-      let item = record.item;
+      let item = restrictedAnswer(record.item) || record.item;
       if (item.type === "commandExecution") {
         item = { ...item };
         const marker = "\n[输出过长，仅显示前 512 KiB 字符；完整输出仍保存在服务器]";
@@ -181,12 +225,11 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       return result;
     }
     let metadata;
-    let latestTurn;
+    let headers;
     if (params.readOnly === true) {
       metadata = await internalRequest("thread/read", { threadId, includeTurns: false }, { history: true });
       try {
-        const turns = await internalRequest("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }, { history: true });
-        latestTurn = turns.data?.[0];
+        headers = await internalRequest("thread/turns/list", { threadId, limit: turnHeaderLimit, sortDirection: "desc", itemsView: "notLoaded" }, { history: true });
       } catch (error) {
         if (error.rpcError?.code === -32600 && error.rpcError.message.includes("is unavailable before first user message")) {
           return { thread: metadata.thread, initialTurnsPage: { data: [], nextCursor: null } };
@@ -197,12 +240,12 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       metadata = await internalRequest("thread/resume", {
         threadId, excludeTurns: true, approvalPolicy: params.approvalPolicy,
         ...(params.config ? { config: params.config } : {}),
-        initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "notLoaded" },
+        initialTurnsPage: { limit: turnHeaderLimit, sortDirection: "desc", itemsView: "notLoaded" },
       }, { configured: true, history: true });
-      latestTurn = metadata.initialTurnsPage?.data?.[0];
+      headers = metadata.initialTurnsPage;
     }
     if (!metadata.thread || metadata.thread.id !== threadId) throw historyError("Invalid thread metadata");
-    const initialTurnsPage = await itemPage(threadId, null, latestTurn);
+    const initialTurnsPage = await itemPage(threadId, null, headers);
     const result = { ...metadata, thread: { ...metadata.thread, turns: [],
       // Only these turn IDs can affect the inherited-child filter for this page.
       turnIds: metadata.thread.turnIds?.filter(id => initialTurnsPage.data.some(turn => turn.id === id)),
@@ -336,14 +379,14 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
       readConfig().catch(() => {});
       return;
     }
-    if (!["thread/start", "thread/resume"].includes(message.method)) {
+    if (!["thread/start", "thread/resume", "thread/fork"].includes(message.method)) {
       send(line);
       return;
     }
     try {
       const params = message.params || {};
       let cwd = params.cwd;
-      if (!cwd && message.method === "thread/resume" && params.threadId) {
+      if (!cwd && ["thread/resume", "thread/fork"].includes(message.method) && params.threadId) {
         const metadata = await internalRequest("thread/read", {
           threadId: params.threadId, includeTurns: false,
         });

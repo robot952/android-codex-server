@@ -25,7 +25,12 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
       requests.push(request);
       let result;
       if (request.method === "thread/read") result = { thread: { id: "fixture", status: { type: "idle" } } };
-      if (request.method === "thread/turns/list") result = { data: [{ id: "one-long-turn", status: "completed", items: [] }] };
+      if (request.method === "thread/turns/list") {
+        assert.equal(request.params.itemsView, "notLoaded");
+        result = request.params.cursor === "headers-next"
+          ? { data: [{ id: "older-turn", status: "interrupted", items: [] }] }
+          : { data: [{ id: "one-long-turn", status: "completed", items: [] }], nextCursor: "headers-next" };
+      }
       if (request.method === "thread/items/list") {
         const p = request.params;
         const rows = records.filter(row => !p.turnId || row.turnId === p.turnId);
@@ -61,7 +66,11 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
     const ids = [];
     let page = first.initialTurnsPage;
     do {
-      for (const turn of page.data) ids.push(...turn.items.toReversed().map(item => item.id));
+      for (const turn of page.data) {
+        ids.push(...turn.items.toReversed().map(item => item.id));
+        assert.equal(turn.codexRemoteTurnStatus, turn.id === "older-turn" ? "interrupted" : "completed");
+        assert.equal(turn.status, turn.codexRemoteTurnStatus);
+      }
       if (!page.nextCursor) break;
       page = await rpc("codexRemote/history/page", { threadId: "fixture", cursor: page.nextCursor });
       assert(Buffer.byteLength(JSON.stringify(page)) < 96 * 1024);
@@ -114,6 +123,47 @@ async function responseFor(f, id) {
   throw new Error("Fixture response missing");
 }
 
+test("v0.171 moderation suppresses every byte of hidden/blocked answers in both mobile history projections", async () => {
+  for (const mode of ["hide", "block", "show"]) {
+    for (const size of [1, 700]) {
+      const display = { version: 1, mode, ...(mode === "hide" ? { replacement: { kind: "wellbeingPromptHelpline" } }
+        : mode === "block" ? { reason: { kind: "cyber", trustedAccess: null } } : { trustedContacts: "skip" }) };
+      const item = { type: "agentMessage", id: "answer", text: "SENSITIVE_FIXTURE".repeat(size),
+        moderation: { moderated: true, display }, phase: "final_answer" };
+      const original = JSON.stringify(item);
+      const f = fixture({ respond: ({ method, params }) => {
+        if (method === "thread/read") return { thread: { id: "t" } };
+        if (method === "thread/turns/list") return { data: [{ id: "u", status: "completed", items: [] }] };
+        if (method === "thread/items/list") return { data: params.cursor ? [] : [{ turnId: "u", item }] };
+      } });
+      try {
+        const request = async (id, method, params) => {
+          f.bridge.writeInput(JSON.stringify({ id, method, params }) + "\n");
+          const message = await responseFor(f, id);
+          assert(!message.error, JSON.stringify(message.error));
+          return message.result;
+        };
+        const opened = await request(601, "codexRemote/history/open", { threadId: "t", readOnly: true });
+        const details = await request(602, "codexRemote/history/item", { threadId: "t", turnId: "u", itemId: "answer" });
+        const preview = opened.initialTurnsPage.data[0].items[0];
+        const expanded = details.data[0].items[0];
+        if (mode === "show") {
+          assert(preview.text.includes("SENSITIVE_FIXTURE"));
+          assert.deepEqual(expanded, item);
+        } else {
+          assert(!Buffer.concat(f.visible).toString().includes("SENSITIVE_FIXTURE"));
+          for (const projected of [preview, expanded]) {
+            assert.equal(projected.id, "answer");
+            assert.equal(projected.moderation.display.mode, mode);
+            assert(!projected.codexRemoteDetailsItemId);
+          }
+        }
+        assert.equal(JSON.stringify(item), original);
+      } finally { f.bridge.close(); }
+    }
+  }
+});
+
 test("thread count stays server-side, deduplicates pages, and never blocks ordinary RPCs", async () => {
   const f = fixture({ respond: () => undefined });
   try {
@@ -157,7 +207,7 @@ for (const invalid of ["repeated-cursor", "invalid-data"]) {
   });
 }
 
-test("resume uses project provider settings without exposing private internal RPCs", async () => {
+for (const method of ["thread/resume", "thread/fork"]) test(`${method} uses project provider settings without exposing private internal RPCs`, async () => {
   const f = fixture({ config: {
     model_provider: "vendor.name", secret: "PRIVATE_CONFIG_FIXTURE",
     model_providers: { "vendor.name": {
@@ -166,12 +216,18 @@ test("resume uses project provider settings without exposing private internal RP
     } },
   } });
   f.bridge.writeInput('{"method":"initialized"}\n');
-  const request = JSON.stringify({ id: 5, method: "thread/resume", params: {
+  const request = JSON.stringify({ id: 5, method, params: {
+    ...(method === "thread/fork" ? { lastTurnId: "chosen", excludeTurns: true } : {}),
     threadId: "synthetic-thread", config: { model: "fixture-model", approval_policy: "never" },
   } }) + "\n";
   for (const byte of Buffer.from(request)) f.bridge.writeInput(Buffer.from([byte]));
   await f.bridge.endInput();
   const resumed = f.sent.find((m) => m.id === 5);
+  if (method === "thread/fork") {
+    assert.equal(resumed.params.threadId, "synthetic-thread");
+    assert.equal(resumed.params.lastTurnId, "chosen");
+    assert.equal(resumed.params.excludeTurns, true);
+  }
   assert.equal(resumed.params.config.model, "fixture-model");
   assert.equal(resumed.params.config.approval_policy, "never");
   const provider = resumed.params.config.model_providers["vendor.name"];
