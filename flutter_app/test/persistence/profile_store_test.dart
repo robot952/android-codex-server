@@ -100,8 +100,8 @@ void main() {
   });
 
   test('new Codex default fills missing versions without replacing pins', () {
-    expect(ServerProfile.create().codexVersion, '0.169.0');
-    expect(ServerProfile.fromJson({'id': 'legacy'}).codexVersion, '0.169.0');
+    expect(ServerProfile.create().codexVersion, '0.171.0');
+    expect(ServerProfile.fromJson({'id': 'legacy'}).codexVersion, '0.171.0');
     for (final version in ['0.153.3', '0.162.1', '0.169.0']) {
       final profile = ServerProfile.fromJson({
         'id': 'pinned',

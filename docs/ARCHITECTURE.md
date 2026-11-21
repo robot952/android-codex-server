@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.208+340，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.209+341，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -937,7 +937,7 @@ Claude bridge 使用真实 assistant message ID 聚合 start/delta/final usage�
 
 Codex 运行时已经形成完整链路：`RemoteBootstrap.probeScript` 在已认证 SSH 主机通道中探测 Linux、
 架构、libc、HOME、managed/system Codex 版本和路径，以及 sh、tar、sha256sum、flock、`setsid --wait`
-和 curl/wget。精确匹配服务器 Profile 当前选择的 `codex-cli` 版本（默认 `0.169.0`）时优先复用 managed 路径，其次复用系统 Codex；Profile
+和 curl/wget。精确匹配服务器 Profile 当前选择的 `codex-cli` 版本（默认 `0.171.0`）时优先复用 managed 路径，其次复用系统 Codex；Profile
 使用自定义 `remoteCommand` 时尊重用户配置并跳过托管探测。
 
 缺少兼容版本时，安装 `Node 22.17.0 + Codex` 当前选择版本到当前 SSH 用户的
@@ -2485,8 +2485,8 @@ request，不能只把全局 timeout 调到很大而留下 pending 请求。
 - Windows Host 支持用户工作区目录、附件暂存、图片读取、文件导出、`%USERPROFILE%\.codex` 全局配置和
   本机网络 API 测试/模型列表。模型 HTTP 响应与 SSH curl 复用同一个结构化解析器，配置写入使用同目录
   临时文件替换。
-- 运行时优先复用已有 Codex；未安装时先用系统 npm 安装服务器 Profile 选择的版本（默认 `0.169.0`），下载先尝试 npmmirror，失败自动
-  回退 npm 官方源；没有 npm 时调用 OpenAI 官方 Windows 独立安装脚本。OpenCode 则自包含下载并校验固定
+- Windows 本机优先复用已有 Codex；未安装时先用系统 npm 安装 App 默认版本（`0.171.0`），下载先尝试 npmmirror，失败自动
+  回退 npm 官方源；没有 npm 时调用 OpenAI 官方 Windows 独立安装脚本，不指定版本。OpenCode 则自包含下载并校验固定
   Node，安装固定 OpenCode 平台包和 bridge，并复用同一 JSONL 连接层。当前不提供 Windows 本地终端和
   完整文件管理，SSH 服务器能力不受影响。
 - 当前 Linux 门禁已覆盖共享 Agent/Host 逻辑、全量 Flutter 测试和 Android 构建；Windows x64 编译由现有

@@ -1,6 +1,6 @@
 # Pinned Codex app-server contract
 
-The Android client targets `codex-cli 0.169.0` by default and the pinned app-server API. Each server profile
+The Android client targets `codex-cli 0.171.0` by default and the pinned app-server API. Each server profile
 can select another official stable Codex CLI release. Its optional remote
 bootstrap also pins the private Node.js runtime in `node-version.txt`.
 The client performs the following JSON-RPC flow over newline-delimited JSON:
@@ -45,12 +45,14 @@ different CLI version is reported in the connection status and must be validated
 Turn timestamps such as `startedAt` are Unix seconds and must be normalized to milliseconds before
 Android uses them for elapsed-time calculations.
 
-## Codex 0.169.0 compatibility
+## Runtime version selection
 
 The default is shared by Flutter profiles, runtime setup and `protocol/codex-version.txt`.
 New profiles and stored profiles with no version field receive it; explicitly stored versions and
 custom commands remain unchanged. Changing an existing server's selected version uses the normal
 managed installation flow, without replacing system Codex or rewriting its sessions/configuration.
+
+## Compatibility since Codex 0.169.0
 
 `model/list` uses the native process's effective default provider, `includeHidden: true`, and opaque
 continuation cursors. Global-file provider settings must not override workspace/launch configuration.
