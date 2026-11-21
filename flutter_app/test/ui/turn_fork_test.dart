@@ -134,10 +134,30 @@ void runTurnForkTests({bool onDevice = false}) {
       tester.getTopLeft(copy).dx,
       closeTo(tester.getRect(find.byType(CustomScrollView)).left + 9, 1),
     );
-    expect(tester.getTopRight(copy).dx, lessThan(tester.getTopLeft(action).dx));
+    expect(
+      tester.getTopRight(copy).dx,
+      closeTo(tester.getTopLeft(action).dx, 0.1),
+    );
     expect(tester.getCenter(copy).dy, tester.getCenter(action).dy);
     expect(tester.getSize(copy).shortestSide, greaterThanOrEqualTo(48));
     expect(tester.getSize(action).shortestSide, greaterThanOrEqualTo(48));
+    Rect iconRect(Finder button) => tester.getRect(
+      find.descendant(
+        of: button,
+        matching: find.byWidget(tester.widget<IconButton>(button).icon),
+      ),
+    );
+    final copyIcon = iconRect(copy);
+    final forkIcon = iconRect(action);
+    expect(copyIcon.top, closeTo(forkIcon.top, 0.1));
+    expect(
+      copyIcon.top - tester.getBottomLeft(find.text('第一轮结尾')).dy,
+      closeTo(11, 0.1),
+    );
+    expect(
+      tester.getTopLeft(find.text('第二轮结尾')).dy - tester.getBottomLeft(copy).dy,
+      closeTo(2, 0.1),
+    );
 
     await tester.tap(action);
     await tester.pumpAndSettle();
@@ -207,7 +227,7 @@ void runTurnForkTests({bool onDevice = false}) {
       final copy = tester.getRect(find.byKey(const ValueKey('copy-turn-t1')));
       final viewport = tester.getRect(find.byType(CustomScrollView));
       expect(rect.right, closeTo(viewport.right - 9, 1));
-      expect(copy.right, lessThan(action.left));
+      expect(copy.right, closeTo(action.left, 0.1));
       expect(rect.left, greaterThanOrEqualTo(action.right + 6));
       expect(find.text('读取完整内容'), findsOneWidget);
       expect(tester.takeException(), isNull);

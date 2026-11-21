@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.210+342，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.211+343，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -504,6 +504,7 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
   确认后使用 `thread/fork(threadId, lastTurnId, excludeTurns: true)`，以原生回合 ID 为界（含本轮），新对话独立、文件仍共用。旧运行时不退回到复制整个会话。分页时按回合 ID 对齐原生状态，不以工具退出或条目数量推断。
   新分支用「原标题 (1)」这样的编号名。已有编号则继续递增，并跳过服务器列表里已占用的名字。名称写入新分支，不修改原对话或此前已存在的同名对话。
   分叉左侧的复制按钮只取所点回合最终一条 AI 回复，按原始 Markdown 写入剪贴板；不包含命令、思考过程或告警。只有预览时点击才按条目读取详情，未取得完整正文、内容受限或已经切换对话时不写入剪贴板。
+  两个按钮的 48 dp 点击区相邻、不重叠；图标贴近回复正文，操作行后留 2 dp，不加宽普通消息间距。
 
 - 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行，命令是带终端图标、

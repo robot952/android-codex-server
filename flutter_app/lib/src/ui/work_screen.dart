@@ -49,7 +49,12 @@ const _workPopupShape = RoundedRectangleBorder(
 const _workGreen = Color(0xFF68C77B);
 const _workLink = Color(0xFF64B5F6);
 const _workAmber = Color(0xFFE5B567);
-const double _turnActionGap = 4;
+const double _turnActionIconSize = 22;
+const _turnActionStyle = ButtonStyle(
+  fixedSize: WidgetStatePropertyAll(Size.square(kMinInteractiveDimension)),
+  visualDensity: VisualDensity.standard,
+  padding: WidgetStatePropertyAll(EdgeInsets.only(bottom: 4)),
+);
 const double imageAttachmentMaxDimension = 2048;
 const int imageAttachmentQuality = 82;
 
@@ -2767,11 +2772,16 @@ class _Transcript extends StatelessWidget {
               // message card. Avoid stacking normal message gaps around it.
               final beforeProcessing = state.running && index == 2;
               final isProcessing = state.running && index == 1;
+              final turnId = turnEnds[sourceIndex];
+              final hasTurnActions =
+                  turnId != null && showTurnActions?.call(turnId) == true;
               return Padding(
                 key: itemKeys[sourceIndex],
                 padding: EdgeInsets.only(
                   bottom: index == 0 || isProcessing
                       ? 0
+                      : hasTurnActions
+                      ? 2
                       : beforeProcessing
                       ? 4
                       : 10,
@@ -2781,32 +2791,31 @@ class _Transcript extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           buildRow(rows[sourceIndex]),
-                          if (turnEnds[sourceIndex] case final turnId?
-                              when showTurnActions?.call(turnId) == true)
+                          if (hasTurnActions)
                             Row(
                               children: [
                                 IconButton(
                                   key: ValueKey('copy-turn-$turnId'),
                                   tooltip: '复制本轮回复',
+                                  style: _turnActionStyle,
                                   onPressed: canCopyAtTurn(turnId)
                                       ? () => onCopyAtTurn(turnId)
                                       : null,
                                   icon: const Icon(
                                     Icons.copy_outlined,
-                                    size: 18,
+                                    size: _turnActionIconSize,
                                   ),
                                 ),
-                                if (showFork) ...[
-                                  const SizedBox(width: _turnActionGap),
+                                if (showFork)
                                   IconButton(
                                     key: ValueKey('fork-turn-$turnId'),
                                     tooltip: '从此处分叉',
+                                    style: _turnActionStyle,
                                     onPressed: canForkAtTurn(turnId)
                                         ? () => onForkAtTurn(turnId)
                                         : null,
                                     icon: const _TurnForkIcon(),
                                   ),
-                                ],
                               ],
                             ),
                         ],
@@ -3410,7 +3419,7 @@ class _TurnForkIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => CustomPaint(
-    size: const Size.square(18),
+    size: const Size.square(_turnActionIconSize),
     painter: _TurnForkGlyph(IconTheme.of(context).color ?? codexMuted),
   );
 }
@@ -3598,12 +3607,7 @@ class _UserMessageTimelineCard extends StatelessWidget {
     return Container(
       alignment: Alignment.centerRight,
       padding: EdgeInsets.only(
-        left:
-            kMinInteractiveDimension +
-            8 +
-            (reserveBothActions
-                ? kMinInteractiveDimension + _turnActionGap
-                : 0),
+        left: kMinInteractiveDimension * (reserveBothActions ? 2 : 1) + 8,
       ),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
