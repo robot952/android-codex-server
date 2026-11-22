@@ -139,8 +139,8 @@ void runTurnForkTests({bool onDevice = false}) {
       closeTo(tester.getTopLeft(action).dx, 0.1),
     );
     expect(tester.getCenter(copy).dy, tester.getCenter(action).dy);
-    expect(tester.getSize(copy).shortestSide, greaterThanOrEqualTo(48));
-    expect(tester.getSize(action).shortestSide, greaterThanOrEqualTo(48));
+    expect(tester.getSize(copy), const Size.square(28));
+    expect(tester.getSize(action), const Size.square(28));
     Rect iconRect(Finder button) => tester.getRect(
       find.descendant(
         of: button,
@@ -149,10 +149,12 @@ void runTurnForkTests({bool onDevice = false}) {
     );
     final copyIcon = iconRect(copy);
     final forkIcon = iconRect(action);
+    expect(copyIcon.size, const Size.square(14));
+    expect(forkIcon.size, const Size.square(14));
     expect(copyIcon.top, closeTo(forkIcon.top, 0.1));
     expect(
       copyIcon.top - tester.getBottomLeft(find.text('第一轮结尾')).dy,
-      closeTo(11, 0.1),
+      inInclusiveRange(0, 7),
     );
     expect(
       tester.getTopLeft(find.text('第二轮结尾')).dy - tester.getBottomLeft(copy).dy,
@@ -196,7 +198,7 @@ void runTurnForkTests({bool onDevice = false}) {
   );
 
   testWidgets(
-    'long outgoing previews leave a clear fork gutter on narrow screens',
+    'long outgoing previews share the previous turn action row on narrow screens',
     (tester) async {
       if (!onDevice) {
         tester.view.devicePixelRatio = 1;
@@ -209,11 +211,11 @@ void runTurnForkTests({bool onDevice = false}) {
         tester,
         _source.copyWith(
           timeline: [
+            _source.timeline[1],
             TimelineEntry(
               id: 'long',
               kind: TimelineKind.userMessage,
-              turnId: 't1',
-              turnStatus: 'completed',
+              turnId: 't2',
               detailsItemId: 'deferred',
               text: '较长的用户消息会换行。' * 6,
             ),
@@ -227,10 +229,80 @@ void runTurnForkTests({bool onDevice = false}) {
       final copy = tester.getRect(find.byKey(const ValueKey('copy-turn-t1')));
       final viewport = tester.getRect(find.byType(CustomScrollView));
       expect(rect.right, closeTo(viewport.right - 9, 1));
+      expect(rect.top, closeTo(action.top, 0.1));
       expect(copy.right, closeTo(action.left, 0.1));
-      expect(rect.left, greaterThanOrEqualTo(action.right + 6));
+      expect(rect.left, greaterThan(action.right));
+      if (!onDevice) expect(rect.width, greaterThan(viewport.width * 0.70));
       expect(find.text('读取完整内容'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'actions move alongside the next prompt but never past a notice',
+    (tester) async {
+      _stubClipboardUnlessOnDevice(tester, onDevice);
+      final previous = _source.timeline[1];
+      const prompt = TimelineEntry(
+        id: 'follow-up',
+        kind: TimelineKind.userMessage,
+        turnId: 't2',
+        text: '你截图看一下',
+      );
+      final copy = find.byKey(const ValueKey('copy-turn-t1'));
+      final fork = find.byKey(const ValueKey('fork-turn-t1'));
+      final bubble = find.byKey(const Key('user-message-card-follow-up'));
+      final controller = await _pump(
+        tester,
+        _source.copyWith(timeline: [previous]),
+      );
+      expect(copy, findsOneWidget);
+      controller.show(
+        _source.copyWith(timeline: [previous, prompt, _source.timeline[2]]),
+      );
+      await tester.pumpAndSettle();
+      expect(copy, findsOneWidget);
+      expect(fork, findsOneWidget);
+      expect(
+        tester.getTopLeft(bubble).dy,
+        closeTo(tester.getTopLeft(copy).dy, 0.1),
+      );
+      expect(
+        tester.getTopRight(fork).dx,
+        lessThan(tester.getTopLeft(bubble).dx),
+      );
+      await tester.tap(copy);
+      await tester.pumpAndSettle();
+      expect(
+        (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+        previous.text,
+      );
+      await tester.tap(fork);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('创建分支'));
+      await tester.pumpAndSettle();
+      expect(controller.forked, ['t1']);
+
+      const notice = TimelineEntry(
+        id: 'notice',
+        kind: TimelineKind.notice,
+        text: '状态提示',
+      );
+      controller.show(
+        _source.copyWith(
+          timeline: [previous, notice, prompt, _source.timeline[2]],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(copy, findsOneWidget);
+      expect(
+        tester.getBottomLeft(fork).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.text('状态提示')).dy),
+      );
+      expect(
+        tester.getBottomLeft(find.text('状态提示')).dy,
+        lessThan(tester.getTopLeft(bubble).dy),
+      );
     },
   );
 

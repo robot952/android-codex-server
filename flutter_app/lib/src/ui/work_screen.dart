@@ -49,11 +49,14 @@ const _workPopupShape = RoundedRectangleBorder(
 const _workGreen = Color(0xFF68C77B);
 const _workLink = Color(0xFF64B5F6);
 const _workAmber = Color(0xFFE5B567);
-const double _turnActionIconSize = 22;
+const double _turnActionIconSize = 14;
+const _turnActionSize = Size.square(28);
 const _turnActionStyle = ButtonStyle(
-  fixedSize: WidgetStatePropertyAll(Size.square(kMinInteractiveDimension)),
+  fixedSize: WidgetStatePropertyAll(_turnActionSize),
+  minimumSize: WidgetStatePropertyAll(_turnActionSize),
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
   visualDensity: VisualDensity.standard,
-  padding: WidgetStatePropertyAll(EdgeInsets.only(bottom: 4)),
+  padding: WidgetStatePropertyAll(EdgeInsets.zero),
 );
 const double imageAttachmentMaxDimension = 2048;
 const int imageAttachmentQuality = 82;
@@ -2655,40 +2658,75 @@ class _Transcript extends StatelessWidget {
         break;
       }
     }
-    Widget buildRow(TimelineRenderRow row) => switch (row) {
-      TimelineEntryRenderRow(:final entry) => _TimelineCard(
-        entry: entry,
-        reserveBothActions: showTurnActions != null && showFork,
-        onOpenImage: onOpenImage,
-        imageLoadingPath: imageLoadingPath,
-        onOpenRemoteFile: onOpenRemoteFile,
-        onOpenDiff: onOpenDiff,
-        canReview:
-            !state.isThreadReadOnly &&
-            entry.kind == TimelineKind.fileChange &&
-            entry.changes.isNotEmpty &&
-            state.activeAgentCapabilities.reviewChanges &&
-            !state.loading &&
-            !state.submitting &&
-            !state.running,
-        canRollback:
-            !state.isThreadReadOnly &&
-            entry.id == latestFileChangeId &&
-            entry.changes.isNotEmpty &&
-            state.activeAgentCapabilities.rollbackThread &&
-            !state.loading &&
-            !state.submitting &&
-            !state.running,
-        onReview: onReview,
-        onRollback: onRollback,
-        onTextSelectionChanged: onTextSelectionChanged,
-      ),
-      SubAgentTimelineRenderRow(:final entries) => _SubAgentActivityGroupBlock(
-        entries: entries,
-        enabled: canOpenSubAgents,
-        onOpenSubAgent: onOpenSubAgent,
-      ),
-    };
+    Widget buildRow(TimelineRenderRow row, {Widget? leadingActions}) =>
+        switch (row) {
+          TimelineEntryRenderRow(:final entry) => _TimelineCard(
+            entry: entry,
+            leadingActions: leadingActions,
+            onOpenImage: onOpenImage,
+            imageLoadingPath: imageLoadingPath,
+            onOpenRemoteFile: onOpenRemoteFile,
+            onOpenDiff: onOpenDiff,
+            canReview:
+                !state.isThreadReadOnly &&
+                entry.kind == TimelineKind.fileChange &&
+                entry.changes.isNotEmpty &&
+                state.activeAgentCapabilities.reviewChanges &&
+                !state.loading &&
+                !state.submitting &&
+                !state.running,
+            canRollback:
+                !state.isThreadReadOnly &&
+                entry.id == latestFileChangeId &&
+                entry.changes.isNotEmpty &&
+                state.activeAgentCapabilities.rollbackThread &&
+                !state.loading &&
+                !state.submitting &&
+                !state.running,
+            onReview: onReview,
+            onRollback: onRollback,
+            onTextSelectionChanged: onTextSelectionChanged,
+          ),
+          SubAgentTimelineRenderRow(:final entries) =>
+            _SubAgentActivityGroupBlock(
+              entries: entries,
+              enabled: canOpenSubAgents,
+              onOpenSubAgent: onOpenSubAgent,
+            ),
+        };
+
+    String? actionsAt(int index) {
+      final id = turnEnds[index];
+      return id != null && showTurnActions?.call(id) == true ? id : null;
+    }
+
+    bool isOutgoing(int index) {
+      if (index < 0 || index >= rows.length) return false;
+      final row = rows[index];
+      return row is TimelineEntryRenderRow &&
+          row.entry.kind == TimelineKind.userMessage;
+    }
+
+    Widget buildActions(String id) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          key: ValueKey('copy-turn-$id'),
+          tooltip: '复制本轮回复',
+          style: _turnActionStyle,
+          onPressed: canCopyAtTurn(id) ? () => onCopyAtTurn(id) : null,
+          icon: const Icon(Icons.copy_outlined, size: _turnActionIconSize),
+        ),
+        if (showFork)
+          IconButton(
+            key: ValueKey('fork-turn-$id'),
+            tooltip: '从此处分叉',
+            style: _turnActionStyle,
+            onPressed: canForkAtTurn(id) ? () => onForkAtTurn(id) : null,
+            icon: const _TurnForkIcon(),
+          ),
+      ],
+    );
 
     final rowKeys = <Key>[];
     final rowKeyCounts = <String, int>{};
@@ -2772,15 +2810,18 @@ class _Transcript extends StatelessWidget {
               // message card. Avoid stacking normal message gaps around it.
               final beforeProcessing = state.running && index == 2;
               final isProcessing = state.running && index == 1;
-              final turnId = turnEnds[sourceIndex];
-              final hasTurnActions =
-                  turnId != null && showTurnActions?.call(turnId) == true;
+              final turnId = actionsAt(sourceIndex);
+              // An adjacent outgoing bubble hosts the previous turn's actions.
+              // Keep each message in its own keyed sliver item for scroll anchoring.
+              final leadingId = isOutgoing(sourceIndex)
+                  ? actionsAt(sourceIndex - 1)
+                  : null;
               return Padding(
                 key: itemKeys[sourceIndex],
                 padding: EdgeInsets.only(
                   bottom: index == 0 || isProcessing
                       ? 0
-                      : hasTurnActions
+                      : turnId != null
                       ? 2
                       : beforeProcessing
                       ? 4
@@ -2790,33 +2831,16 @@ class _Transcript extends StatelessWidget {
                     ? Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          buildRow(rows[sourceIndex]),
-                          if (hasTurnActions)
-                            Row(
-                              children: [
-                                IconButton(
-                                  key: ValueKey('copy-turn-$turnId'),
-                                  tooltip: '复制本轮回复',
-                                  style: _turnActionStyle,
-                                  onPressed: canCopyAtTurn(turnId)
-                                      ? () => onCopyAtTurn(turnId)
-                                      : null,
-                                  icon: const Icon(
-                                    Icons.copy_outlined,
-                                    size: _turnActionIconSize,
-                                  ),
-                                ),
-                                if (showFork)
-                                  IconButton(
-                                    key: ValueKey('fork-turn-$turnId'),
-                                    tooltip: '从此处分叉',
-                                    style: _turnActionStyle,
-                                    onPressed: canForkAtTurn(turnId)
-                                        ? () => onForkAtTurn(turnId)
-                                        : null,
-                                    icon: const _TurnForkIcon(),
-                                  ),
-                              ],
+                          buildRow(
+                            rows[sourceIndex],
+                            leadingActions: leadingId == null
+                                ? null
+                                : buildActions(leadingId),
+                          ),
+                          if (turnId != null && !isOutgoing(sourceIndex + 1))
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: buildActions(turnId),
                             ),
                         ],
                       )
@@ -3463,7 +3487,7 @@ class _TurnForkGlyph extends CustomPainter {
 class _TimelineCard extends StatelessWidget {
   const _TimelineCard({
     required this.entry,
-    required this.reserveBothActions,
+    required this.leadingActions,
     required this.onOpenImage,
     required this.imageLoadingPath,
     required this.onOpenRemoteFile,
@@ -3476,7 +3500,7 @@ class _TimelineCard extends StatelessWidget {
   });
 
   final TimelineEntry entry;
-  final bool reserveBothActions;
+  final Widget? leadingActions;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
   final Future<void> Function(String path) onOpenRemoteFile;
@@ -3502,7 +3526,7 @@ class _TimelineCard extends StatelessWidget {
     if (entry.kind == TimelineKind.userMessage) {
       return _UserMessageTimelineCard(
         entry: entry,
-        reserveBothActions: reserveBothActions,
+        leadingActions: leadingActions,
         onOpenImage: onOpenImage,
         imageLoadingPath: imageLoadingPath,
         onTextSelectionChanged: onTextSelectionChanged,
@@ -3589,68 +3613,80 @@ class _TimelineCard extends StatelessWidget {
 class _UserMessageTimelineCard extends StatelessWidget {
   const _UserMessageTimelineCard({
     required this.entry,
-    required this.reserveBothActions,
+    required this.leadingActions,
     required this.onOpenImage,
     required this.imageLoadingPath,
     required this.onTextSelectionChanged,
   });
 
   final TimelineEntry entry;
-  final bool reserveBothActions;
+  final Widget? leadingActions;
   final _OpenRemoteImage onOpenImage;
   final String? imageLoadingPath;
   final VoidCallback onTextSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.80;
-    return Container(
-      alignment: Alignment.centerRight,
-      padding: EdgeInsets.only(
-        left: kMinInteractiveDimension * (reserveBothActions ? 2 : 1) + 8,
+    final bubble = Material(
+      key: Key('user-message-card-${entry.id}'),
+      color: const Color(0xFF2B3730),
+      shape: RoundedRectangleBorder(
+        side: const BorderSide(color: Color(0xFF53735D)),
+        borderRadius: BorderRadius.circular(6),
       ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: maxWidth),
-        child: Material(
-          key: Key('user-message-card-${entry.id}'),
-          color: const Color(0xFF2B3730),
-          shape: RoundedRectangleBorder(
-            side: const BorderSide(color: Color(0xFF53735D)),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (entry.text.isNotEmpty)
-                  _SelectablePlainText(
-                    entry.text,
-                    onSelectionChanged: onTextSelectionChanged,
-                  ),
-                if (entry.detailsItemId.isNotEmpty)
-                  _HistoryDetailsLoader(entry: entry, automatic: false),
-                if (entry.attachments.isNotEmpty) ...[
-                  if (entry.text.isNotEmpty) const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      for (final attachment in entry.attachments)
-                        _AttachmentChip(
-                          attachment: attachment,
-                          loading: imageLoadingPath == attachment.remotePath,
-                          onOpenImage: onOpenImage,
-                        ),
-                    ],
-                  ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (entry.text.isNotEmpty)
+              _SelectablePlainText(
+                entry.text,
+                onSelectionChanged: onTextSelectionChanged,
+              ),
+            if (entry.detailsItemId.isNotEmpty)
+              _HistoryDetailsLoader(entry: entry, automatic: false),
+            if (entry.attachments.isNotEmpty) ...[
+              if (entry.text.isNotEmpty) const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final attachment in entry.attachments)
+                    _AttachmentChip(
+                      attachment: attachment,
+                      loading: imageLoadingPath == attachment.remotePath,
+                      onOpenImage: onOpenImage,
+                    ),
                 ],
-              ],
-            ),
-          ),
+              ),
+            ],
+          ],
         ),
       ),
+    );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (leadingActions != null) ...[
+          leadingActions!,
+          const SizedBox(width: 6),
+        ],
+        Expanded(
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: leadingActions != null
+                ? bubble
+                : ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.sizeOf(context).width * 0.80,
+                    ),
+                    child: bubble,
+                  ),
+          ),
+        ),
+      ],
     );
   }
 }
