@@ -32,7 +32,7 @@ class _CommandTimelineGroupState extends State<_CommandTimelineGroup> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _CommandDisclosureRow(
+        _CommandGroupHeader(
           label: active == null ? '运行了命令' : _commandLabel(active, group: true),
           icon: _activityIcon(active?.commandAction),
           running: active != null,
@@ -83,7 +83,6 @@ class _CommandTimelineGroupState extends State<_CommandTimelineGroup> {
           status: status?.color == codexGreen ? null : status,
           running: _commandIsRunning(entry),
           expanded: expanded,
-          isCommand: true,
           onTap: () => setState(() {
             if (expanded) {
               _expandedCommands.remove(identity);
@@ -162,6 +161,71 @@ _CommandStatus? _terminalCommandStatus(String raw) {
   };
 }
 
+class _CommandGroupHeader extends StatelessWidget {
+  const _CommandGroupHeader({
+    required this.label,
+    required this.icon,
+    required this.running,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool running;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = Text(
+      label,
+      style: Theme.of(context).textTheme.labelLarge,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+    return Semantics(
+      button: true,
+      expanded: expanded,
+      value: running ? '运行中' : null,
+      child: Material(
+        key: const Key('command-group-card'),
+        color: codexRaised,
+        shape: RoundedRectangleBorder(
+          side: const BorderSide(color: _workBorder),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+            child: Row(
+              children: [
+                Icon(icon, size: 17),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: running ? _WorkStatusShimmer(child: title) : title,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                AnimatedRotation(
+                  turns: expanded ? 0.5 : 0,
+                  duration: _commandDisclosureDuration,
+                  curve: Curves.easeOutCubic,
+                  child: const Icon(Icons.keyboard_arrow_down, size: 18),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _CommandDisclosureRow extends StatelessWidget {
   const _CommandDisclosureRow({
     required this.label,
@@ -170,7 +234,6 @@ class _CommandDisclosureRow extends StatelessWidget {
     required this.running,
     required this.expanded,
     required this.onTap,
-    this.isCommand = false,
   });
 
   final String label;
@@ -179,22 +242,19 @@ class _CommandDisclosureRow extends StatelessWidget {
   final bool running;
   final bool expanded;
   final VoidCallback onTap;
-  final bool isCommand;
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final labelStyle = isCommand ? textTheme.bodySmall : textTheme.labelLarge;
     final title = Text(
       label,
-      style: labelStyle?.copyWith(color: codexMuted),
+      style: textTheme.bodySmall?.copyWith(color: codexMuted),
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
     );
     return Semantics(
       expanded: expanded,
       button: true,
-      value: running && !isCommand ? '运行中' : null,
       child: Material(
         type: MaterialType.transparency,
         child: InkWell(
@@ -206,7 +266,7 @@ class _CommandDisclosureRow extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
               child: Row(
                 children: [
-                  Icon(icon, size: isCommand ? 14 : 17, color: codexMuted),
+                  Icon(icon, size: 14, color: codexMuted),
                   const SizedBox(width: 6),
                   Flexible(
                     flex: 4,
@@ -214,7 +274,7 @@ class _CommandDisclosureRow extends StatelessWidget {
                   ),
                   const SizedBox(width: 3),
                   AnimatedRotation(
-                    key: isCommand ? const Key('command-expand-arrow') : null,
+                    key: const Key('command-expand-arrow'),
                     turns: expanded ? 0.5 : 0,
                     duration: _commandDisclosureDuration,
                     curve: Curves.easeOutCubic,

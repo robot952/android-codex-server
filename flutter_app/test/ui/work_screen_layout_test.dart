@@ -2567,6 +2567,9 @@ void main() {
   testWidgets('expands reasoning and command details without changing rows', (
     tester,
   ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 840);
+    addTearDown(tester.view.reset);
     final manager = ServerConnectionManager();
     final controller = _LayoutController(_MemoryStore(), manager);
     addTearDown(() async {
@@ -2606,7 +2609,24 @@ void main() {
     await tester.tap(find.text('思考过程'));
     await tester.pumpAndSettle();
     expect(find.text('展开后的思考内容'), findsOneWidget);
-    await tester.tap(find.text('运行了命令'));
+    final card = find.byKey(const Key('command-group-card'));
+    final material = tester.widget<Material>(card);
+    expect(material.color, codexRaised);
+    expect(material.shape, isA<RoundedRectangleBorder>());
+    final shape = material.shape! as RoundedRectangleBorder;
+    expect(shape.side.style, BorderStyle.solid);
+    expect(shape.side.width, greaterThan(0));
+    final arrow = find.descendant(
+      of: card,
+      matching: find.byIcon(Icons.keyboard_arrow_down),
+    );
+    final cardRect = tester.getRect(card);
+    expect(
+      cardRect.right - tester.getCenter(arrow).dx,
+      inInclusiveRange(8, 32),
+    );
+    // Tap the empty space beside the arrow, away from the title and icon.
+    await tester.tapAt(cardRect.centerRight - const Offset(40, 0));
     await tester.pumpAndSettle();
     expect(find.text('echo details'), findsOneWidget);
     expect(find.text('Shell'), findsNothing);
@@ -2616,6 +2636,13 @@ void main() {
     expect(find.text('Shell'), findsOneWidget);
     expect(find.text(r'$ echo details'), findsOneWidget);
     expect(find.text('command output'), findsOneWidget);
+    await tester.ensureVisible(card);
+    await tester.pumpAndSettle();
+    await tester.tapAt(tester.getRect(card).centerRight - const Offset(40, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('运行了命令'), findsOneWidget);
+    expect(find.text('echo details'), findsNothing);
+    expect(find.text('command output'), findsNothing);
   });
 
   testWidgets('distinguishes user messages without adding an identity label', (
