@@ -26,6 +26,8 @@ import 'theme.dart';
 import 'work_content.dart';
 import 'user_input_dialog.dart';
 
+part 'command_timeline.dart';
+
 typedef _OpenRemoteImage =
     Future<void> Function(String path, {String? fileName});
 typedef RemoteImageLoader =
@@ -1177,6 +1179,7 @@ class _WorkScreenState extends ConsumerState<WorkScreen>
       final turnId = switch (_displayTimelineRows[i]) {
         TimelineEntryRenderRow(:final entry) => entry.turnId,
         SubAgentTimelineRenderRow(:final entries) => entries.last.turnId,
+        CommandTimelineRenderRow(:final entries) => entries.last.turnId,
       };
       if (turnId.isNotEmpty) lastRowByTurn[turnId] = i;
     }
@@ -2687,6 +2690,10 @@ class _Transcript extends StatelessWidget {
             onRollback: onRollback,
             onTextSelectionChanged: onTextSelectionChanged,
           ),
+          CommandTimelineRenderRow(:final entries) => _CommandTimelineGroup(
+            entries: entries,
+            onTextSelectionChanged: onTextSelectionChanged,
+          ),
           SubAgentTimelineRenderRow(:final entries) =>
             _SubAgentActivityGroupBlock(
               entries: entries,
@@ -3564,12 +3571,6 @@ class _TimelineCard extends StatelessWidget {
         onTextSelectionChanged: onTextSelectionChanged,
       );
     }
-    if (entry.kind == TimelineKind.command) {
-      return _CommandTimelineCard(
-        entry: entry,
-        onTextSelectionChanged: onTextSelectionChanged,
-      );
-    }
     final imagePath = imagePreviewPath(entry);
     if (imagePath != null) {
       return _ImageTimelineCard(
@@ -4425,114 +4426,6 @@ class _CollapsibleTimelineRowState extends State<_CollapsibleTimelineRow> {
   }
 }
 
-class _CommandTimelineCard extends StatefulWidget {
-  const _CommandTimelineCard({
-    required this.entry,
-    required this.onTextSelectionChanged,
-  });
-
-  final TimelineEntry entry;
-  final VoidCallback onTextSelectionChanged;
-
-  @override
-  State<_CommandTimelineCard> createState() => _CommandTimelineCardState();
-}
-
-class _CommandTimelineCardState extends State<_CommandTimelineCard> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final entry = widget.entry;
-    final status = _commandStatus(entry.status);
-    return Material(
-      color: codexRaised,
-      shape: RoundedRectangleBorder(
-        side: const BorderSide(color: _workBorder),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-              child: Row(
-                children: [
-                  const Icon(Icons.terminal, size: 17),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '运行了命令',
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                  ),
-                  if (status != null)
-                    Text(
-                      status.label,
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: status.color),
-                    ),
-                  const SizedBox(width: 4),
-                  AnimatedRotation(
-                    key: const Key('command-expand-arrow'),
-                    turns: _expanded ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOutCubic,
-                    child: const Icon(Icons.keyboard_arrow_down, size: 18),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedSize(
-            key: const Key('command-details-animation'),
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: _expanded
-                ? entry.detailsItemId.isNotEmpty
-                      ? _HistoryDetailsLoader(entry: entry)
-                      : Column(
-                          children: [
-                            if (entry.command.isNotEmpty)
-                              _CommandOutputBlock(
-                                entry.command,
-                                onSelectionChanged:
-                                    widget.onTextSelectionChanged,
-                              ),
-                            if (entry.output.isNotEmpty) ...[
-                              if (entry.command.isNotEmpty)
-                                const Divider(height: 1, color: _workBorder),
-                              _CommandOutputBlock(
-                                entry.output,
-                                onSelectionChanged:
-                                    widget.onTextSelectionChanged,
-                              ),
-                            ],
-                            if (entry.command.isEmpty && entry.output.isEmpty)
-                              const Padding(
-                                padding: EdgeInsets.fromLTRB(11, 8, 11, 10),
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                    '未提供命令内容',
-                                    style: TextStyle(color: codexMuted),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        )
-                : const SizedBox(width: double.infinity),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _HistoryDetailsLoader extends ConsumerStatefulWidget {
   const _HistoryDetailsLoader({required this.entry, this.automatic = true});
   final TimelineEntry entry;
@@ -4594,34 +4487,6 @@ class _HistoryDetailsLoaderState extends ConsumerState<_HistoryDetailsLoader> {
             ],
           )
         : TextButton(onPressed: _load, child: Text(_error ?? '读取完整内容')),
-  );
-}
-
-class _CommandOutputBlock extends StatelessWidget {
-  const _CommandOutputBlock(this.text, {required this.onSelectionChanged});
-
-  final String text;
-  final VoidCallback onSelectionChanged;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    constraints: const BoxConstraints(maxHeight: 340),
-    color: const Color(0xFF151515),
-    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-    child: SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: _SelectablePlainText(
-        text,
-        style: const TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 12,
-          color: codexText,
-          letterSpacing: 0,
-        ),
-        onSelectionChanged: onSelectionChanged,
-      ),
-    ),
   );
 }
 

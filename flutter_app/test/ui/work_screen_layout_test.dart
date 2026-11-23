@@ -2595,6 +2595,12 @@ void main() {
     await tester.tap(find.text('运行了命令'));
     await tester.pumpAndSettle();
     expect(find.text('echo details'), findsOneWidget);
+    expect(find.text('Shell'), findsNothing);
+    expect(find.text('command output'), findsNothing);
+    await tester.tap(find.text('echo details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Shell'), findsOneWidget);
+    expect(find.text(r'$ echo details'), findsOneWidget);
     expect(find.text('command output'), findsOneWidget);
   });
 
@@ -2680,8 +2686,11 @@ void main() {
     await tester.ensureVisible(find.text('运行了命令'));
     await tester.pump();
     await tester.tap(find.text('运行了命令'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('sleep 10'), findsOneWidget);
+    expect(find.text('still running'), findsNothing);
+    await tester.tap(find.text('sleep 10'));
+    await tester.pump();
     expect(tester.hasRunningAnimations, isTrue);
     await tester.pump(const Duration(milliseconds: 100));
     expect(tester.hasRunningAnimations, isTrue);
@@ -2706,7 +2715,7 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('keeps consecutive collapsed command cards tightly spaced', (
+  testWidgets('groups only adjacent commands from the same turn', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -2729,24 +2738,134 @@ void main() {
           for (var index = 0; index < 4; index += 1)
             TimelineEntry(
               id: 'command-spacing-$index',
+              turnId: 'turn-1',
               kind: TimelineKind.command,
               status: 'completed',
               command: 'echo $index',
             ),
+          const TimelineEntry(
+            id: 'command-new-turn',
+            turnId: 'turn-2',
+            kind: TimelineKind.command,
+            status: 'completed',
+            command: 'echo new turn',
+          ),
+          const TimelineEntry(
+            id: 'status-update',
+            turnId: 'turn-2',
+            kind: TimelineKind.agentMessage,
+            text: '中间回复',
+          ),
+          const TimelineEntry(
+            id: 'command-after-update',
+            turnId: 'turn-2',
+            kind: TimelineKind.command,
+            status: 'completed',
+            command: 'echo after update',
+          ),
         ],
       ),
     );
     await tester.pumpAndSettle();
 
-    final cards = find.text('运行了命令');
-    expect(cards, findsNWidgets(4));
+    final groups = find.text('运行了命令');
+    expect(groups, findsNWidgets(3));
+    expect(find.textContaining('echo'), findsNothing);
+    expect(find.text('中间回复'), findsOneWidget);
+    // The transcript's sliver builds from the bottom; use visual order here.
+    final topGroup = [for (var index = 0; index < 3; index++) groups.at(index)]
+      ..sort(
+        (left, right) =>
+            tester.getTopLeft(left).dy.compareTo(tester.getTopLeft(right).dy),
+      );
+    await tester.tap(topGroup.first);
+    await tester.pumpAndSettle();
     final rects = [
       for (var index = 0; index < 4; index += 1)
-        tester.getRect(cards.at(index)),
-    ]..sort((left, right) => left.top.compareTo(right.top));
+        tester.getRect(find.text('echo $index')),
+    ];
     for (var index = 1; index < rects.length; index += 1) {
-      expect(rects[index].top - rects[index - 1].top, lessThanOrEqualTo(110));
+      final gap = rects[index].top - rects[index - 1].top;
+      expect(gap, greaterThan(0));
+      expect(gap, lessThanOrEqualTo(44));
     }
+    expect(find.text('echo new turn'), findsNothing);
+    expect(find.text('echo after update'), findsNothing);
+    expect(find.text('Shell'), findsNothing);
+  });
+
+  testWidgets('keeps live command details open across updates on a narrow view', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 840);
+    addTearDown(tester.view.reset);
+    final manager = ServerConnectionManager();
+    final controller = _LayoutController(_MemoryStore(), manager);
+    addTearDown(() async => manager.close());
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: MaterialApp(theme: buildCodexTheme(), home: const WorkScreen()),
+      ),
+    );
+    const command =
+        'echo a-very-long-unbroken-command-argument-that-does-not-fit-on-a-mobile-display';
+    const first = TimelineEntry(
+      id: 'live-command-1',
+      turnId: 'live-turn',
+      kind: TimelineKind.command,
+      status: 'running',
+      command: command,
+      output: 'First output chunk',
+    );
+    const second = TimelineEntry(
+      id: 'live-command-2',
+      turnId: 'live-turn',
+      kind: TimelineKind.command,
+      status: 'completed',
+      command: 'echo next',
+      output: 'Next command output',
+    );
+    const initial = AppUiState(
+      screen: AppScreen.work,
+      activeThread: AgentThread(id: 'live-command-thread'),
+      timeline: [first],
+    );
+    controller.showState(initial);
+    await tester.pumpAndSettle();
+
+    final group = find.text('运行了命令');
+    await tester.tap(group);
+    await tester.pumpAndSettle();
+    final preview = find.text(command);
+    expect(tester.widget<Text>(preview).maxLines, 1);
+    expect(tester.widget<Text>(preview).overflow, TextOverflow.ellipsis);
+    await tester.tap(preview);
+    await tester.pumpAndSettle();
+    expect(find.text('First output chunk'), findsOneWidget);
+
+    controller.showState(initial.copyWith(timeline: [first, second]));
+    await tester.pumpAndSettle();
+    expect(group, findsOneWidget);
+    expect(find.text('echo next'), findsOneWidget);
+    expect(find.text('Next command output'), findsNothing);
+    expect(find.text('First output chunk'), findsOneWidget);
+
+    controller.showState(
+      initial.copyWith(
+        timeline: [
+          first.copyWith(status: 'completed', output: 'Final command output'),
+          second,
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(group, findsOneWidget);
+    expect(find.text('运行中'), findsNothing);
+    expect(find.text('Final command output'), findsOneWidget);
+    expect(find.text('Shell'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('renders original file-change cards and opens the full diff', (

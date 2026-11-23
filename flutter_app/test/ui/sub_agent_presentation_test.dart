@@ -107,6 +107,58 @@ void main() {
     expect((rows[3] as SubAgentTimelineRenderRow).entries, hasLength(1));
   });
 
+  test('groups only uninterrupted commands from the same turn in order', () {
+    final rows = <TimelineEntry>[
+      _command('first', 'turn-1'),
+      _command('second', 'turn-1'),
+      _entry('answer', TimelineKind.agentMessage, turnId: 'turn-1'),
+      _command('third', 'turn-1'),
+      _command('fourth', 'turn-2'),
+      _agent('agent', 'child', 'turn-2', 'completed'),
+      _command('fifth', 'turn-2'),
+    ].toTimelineRenderRows();
+
+    expect(rows, hasLength(6));
+    expect(
+      (rows[0] as CommandTimelineRenderRow).entries.map((entry) => entry.id),
+      ['first', 'second'],
+    );
+    expect((rows[1] as TimelineEntryRenderRow).entry.id, 'answer');
+    expect((rows[2] as CommandTimelineRenderRow).entries.single.id, 'third');
+    expect((rows[3] as CommandTimelineRenderRow).entries.single.id, 'fourth');
+    expect((rows[4] as SubAgentTimelineRenderRow).entries.single.id, 'agent');
+    expect((rows[5] as CommandTimelineRenderRow).entries.single.id, 'fifth');
+  });
+
+  test('legacy commands never group with commands from a known turn', () {
+    final rows = <TimelineEntry>[
+      _command('first', ''),
+      _command('second', ''),
+      _command('third', 'turn'),
+      _command('fourth', ''),
+    ].toTimelineRenderRows();
+
+    expect(rows, hasLength(3));
+    expect(
+      (rows.first as CommandTimelineRenderRow).entries.map((entry) => entry.id),
+      ['first', 'second'],
+    );
+    expect((rows[1] as CommandTimelineRenderRow).entries.single.id, 'third');
+    expect((rows[2] as CommandTimelineRenderRow).entries.single.id, 'fourth');
+  });
+
+  test('appending and completing commands preserves the group identity', () {
+    final first = _command('first', 'turn').copyWith(status: 'running');
+    final before = [first].toTimelineRenderRows().single;
+    final after = [
+      first.copyWith(status: 'completed'),
+      _command('second', 'turn'),
+    ].toTimelineRenderRows().single;
+
+    expect(after.stableKey, before.stableKey);
+    expect(after.stableKey, isNot(TimelineEntryRenderRow(first).stableKey));
+  });
+
   test('uses the path leaf as its name and requires a thread id to open', () {
     final agent = <TimelineEntry>[
       _agent('agent', '', 'turn', 'started', path: 'team/review-agent'),
@@ -386,6 +438,9 @@ void main() {
 TimelineEntry _entry(String id, TimelineKind kind, {String turnId = ''}) {
   return TimelineEntry(id: id, kind: kind, turnId: turnId);
 }
+
+TimelineEntry _command(String id, String turnId) =>
+    _entry(id, TimelineKind.command, turnId: turnId);
 
 TimelineEntry _agent(
   String id,

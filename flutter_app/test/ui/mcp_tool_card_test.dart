@@ -103,7 +103,7 @@ Future<_ToolCardController> _mount(
 
 void main() {
   testWidgets(
-    'projected command fetches details only on expansion and reuses them',
+    'projected command fetches details only on its own expansion and reuses them',
     (tester) async {
       final controller = await _mount(
         tester,
@@ -118,15 +118,27 @@ void main() {
         ],
       );
       expect(controller.detailReads, 0);
+      expect(find.text('命令详情'), findsNothing);
       await tester.tap(find.text('运行了命令'));
+      await tester.pumpAndSettle();
+      expect(controller.detailReads, 0);
+      expect(find.text('Full command result'), findsNothing);
+      await tester.tap(find.text('命令详情'));
       await tester.pumpAndSettle();
       expect(controller.detailReads, 1);
       expect(find.text('Full command result'), findsOneWidget);
+      await tester.tap(find.text('命令详情'));
+      await tester.pumpAndSettle();
+      expect(find.text('Full command result'), findsNothing);
       await tester.tap(find.text('运行了命令'));
       await tester.pumpAndSettle();
+      expect(find.text('命令详情'), findsNothing);
       await tester.tap(find.text('运行了命令'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('命令详情'));
       await tester.pumpAndSettle();
       expect(controller.detailReads, 1);
+      expect(find.text('Full command result'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

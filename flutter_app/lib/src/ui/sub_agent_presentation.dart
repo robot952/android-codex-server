@@ -142,13 +142,24 @@ final class SubAgentTimelineRenderRow extends TimelineRenderRow {
       'agents:${entries.map((entry) => '${entry.turnId}:${entry.id}').join(':')}';
 }
 
+final class CommandTimelineRenderRow extends TimelineRenderRow {
+  CommandTimelineRenderRow(this.entries) : assert(entries.isNotEmpty);
+
+  final List<TimelineEntry> entries;
+
+  @override
+  String get stableKey =>
+      'commands:${entries.first.turnId}:${entries.first.id}';
+}
+
 extension SubAgentTimelinePresentation on List<TimelineEntry> {
-  /// Groups adjacent sub-agent activities from the same turn into one render row.
+  /// Groups adjacent sub-agent activities or commands from the same turn.
   List<TimelineRenderRow> toTimelineRenderRows() {
     if (isEmpty) return const <TimelineRenderRow>[];
 
     final rows = <TimelineRenderRow>[];
     final pendingAgents = <TimelineEntry>[];
+    final pendingCommands = <TimelineEntry>[];
     final knownPaths = <String, String>{
       for (final entry in this)
         if (entry.kind == TimelineKind.subAgent &&
@@ -163,8 +174,24 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
       pendingAgents.clear();
     }
 
+    void flushCommands() {
+      if (pendingCommands.isEmpty) return;
+      rows.add(CommandTimelineRenderRow(List.unmodifiable(pendingCommands)));
+      pendingCommands.clear();
+    }
+
     for (final entry in this) {
-      if (entry.kind == TimelineKind.subAgent) {
+      if (entry.kind == TimelineKind.command) {
+        flushAgents();
+        // Adjacent legacy commands with no turn ID may group with each other,
+        // but never with commands from a known turn.
+        if (pendingCommands.isNotEmpty &&
+            pendingCommands.last.turnId != entry.turnId) {
+          flushCommands();
+        }
+        pendingCommands.add(entry);
+      } else if (entry.kind == TimelineKind.subAgent) {
+        flushCommands();
         final previousTurn = pendingAgents.isEmpty
             ? null
             : pendingAgents.last.turnId;
@@ -184,10 +211,12 @@ extension SubAgentTimelinePresentation on List<TimelineEntry> {
         );
       } else {
         flushAgents();
+        flushCommands();
         rows.add(TimelineEntryRenderRow(entry));
       }
     }
     flushAgents();
+    flushCommands();
     return List.unmodifiable(rows);
   }
 

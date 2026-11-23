@@ -74,6 +74,7 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
   const cursorPrefix = "mobile-items-v1:";
   const itemLimit = 20;
   const itemBytes = 4096;
+  const commandPreviewLimit = 160;
   const turnHeaderLimit = 32;
   function historyError(message, code = -32602) {
     return Object.assign(new Error(message), { rpcError: { code, message } });
@@ -93,6 +94,17 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     // Distinguish unavailable legacy metadata from a future non-final phase.
     return { phase: typeof item.phase === "string" && item.phase.length <= 64 ? item.phase : "unknown" };
   }
+  function commandPreview(command) {
+    if (typeof command !== "string") return undefined;
+    const body = command.trim();
+    if (!body) return undefined;
+    const lineBreak = body.slice(0, commandPreviewLimit).search(/[\r\n\u2028\u2029]/u);
+    if (lineBreak < 0 && body.length <= commandPreviewLimit) return body;
+    let end = Math.min(lineBreak < 0 ? commandPreviewLimit : lineBreak, commandPreviewLimit - 1);
+    const last = body.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end--;
+    return body.slice(0, end).trimEnd() + "…";
+  }
   function restrictedAnswer(item) {
     const display = item?.moderation?.display;
     if (item?.type !== "agentMessage" || display?.version !== 1 ||
@@ -108,11 +120,11 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     }
     const restricted = restrictedAnswer(item);
     if (restricted) return restricted;
-    // Commands are folded on first paint. Other small items retain their
+    // Folded commands carry only a short preview. Other small items retain their
     // original shape, including all collaboration status/identity fields.
     if (item.type !== "commandExecution" && Buffer.byteLength(JSON.stringify(item)) <= itemBytes) return item;
     if (item.type === "commandExecution") return {
-      type: item.type, id: item.id, status: item.status,
+      type: item.type, id: item.id, status: item.status, command: commandPreview(item.command),
       codexRemoteDetailsItemId: item.id,
     };
     const titles = {

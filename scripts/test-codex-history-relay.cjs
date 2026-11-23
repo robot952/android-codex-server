@@ -13,6 +13,16 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
       command: `echo ${index}`, aggregatedOutput: "large output 中文\n".repeat(10000) },
   }));
   records.at(-1).item.aggregatedOutput = "x".repeat(9 * 1024 * 1024);
+  records[52].item.command = " \r\n\t ";
+  records[53].item.command = "x".repeat(158) + "\u{1F600}";
+  records[54].item.command = "x".repeat(158) + "\u{1F600} more";
+  records[55].item.command = "\r\n \t echo first  \r\n echo second";
+  const specialPreviews = new Map([
+    ["cmd-52", undefined],
+    ["cmd-53", records[53].item.command],
+    ["cmd-54", "x".repeat(158) + "\u2026"],
+    ["cmd-55", "echo first\u2026"],
+  ]);
   const original = JSON.stringify(records);
   const visible = [];
   const requests = [];
@@ -70,13 +80,22 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
         ids.push(...turn.items.toReversed().map(item => item.id));
         assert.equal(turn.codexRemoteTurnStatus, turn.id === "older-turn" ? "interrupted" : "completed");
         assert.equal(turn.status, turn.codexRemoteTurnStatus);
+        for (const item of turn.items) {
+          const expected = specialPreviews.has(item.id)
+            ? specialPreviews.get(item.id) : "echo " + item.id.slice(4);
+          assert.deepEqual(item, {
+            type: "commandExecution", id: item.id, status: "completed",
+            ...(expected === undefined ? {} : { command: expected }),
+            codexRemoteDetailsItemId: item.id,
+          });
+        }
       }
       if (!page.nextCursor) break;
       page = await rpc("codexRemote/history/page", { threadId: "fixture", cursor: page.nextCursor });
       assert(Buffer.byteLength(JSON.stringify(page)) < 96 * 1024);
     } while (true);
     assert.deepEqual(ids, records.toReversed().map(row => row.item.id));
-    for (const index of [0, 3, 24, 56]) {
+    for (const index of [0, 3, 24, 52, 53, 54, 55, 56]) {
       const row = records[index];
       const detail = await rpc("codexRemote/history/item", { threadId: "fixture", turnId: row.turnId, itemId: row.item.id });
       if (index === 56) {
