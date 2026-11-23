@@ -87,6 +87,13 @@ void main() {
                 text: 'text 中文',
                 status: 'completed',
                 command: 'pwd',
+                commandAction: kind == TimelineKind.command
+                    ? const CommandAction(
+                        kind: CommandActionKind.search,
+                        target: 'src',
+                        query: 'marker',
+                      )
+                    : null,
                 cwd: '/work',
                 output: 'result',
                 turnId: 'turn',

@@ -3720,6 +3720,26 @@ class _FileChangeTimelineCardState extends State<_FileChangeTimelineCard> {
   @override
   Widget build(BuildContext context) {
     final entry = widget.entry;
+    final editStatus = _terminalCommandStatus(entry.status);
+    final turnStatus = _terminalCommandStatus(entry.turnStatus);
+    final editing =
+        editStatus?.label == '运行中' &&
+        (turnStatus == null || turnStatus.label == '运行中');
+    final fileCount = entry.changes.length;
+    final deferred = entry.detailsItemId.isNotEmpty;
+    final summary = editing
+        ? '正在编辑文件'
+        : editStatus?.color == codexRed
+        ? '编辑文件 · ${editStatus!.label}'
+        : deferred
+        ? (entry.title.isNotEmpty ? entry.title : '已编辑文件')
+        : '已编辑 $fileCount 个文件';
+    final title = Text(
+      summary,
+      style: Theme.of(
+        context,
+      ).textTheme.labelLarge?.copyWith(color: codexMuted),
+    );
     final additions = entry.changes.fold<int>(
       0,
       (total, change) => total + change.additions,
@@ -3743,47 +3763,33 @@ class _FileChangeTimelineCardState extends State<_FileChangeTimelineCard> {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
             child: Row(
               children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: _workRaised,
-                    borderRadius: BorderRadius.circular(7),
-                  ),
-                  alignment: Alignment.center,
-                  child: const Icon(Icons.description_outlined, size: 20),
-                ),
-                const SizedBox(width: 10),
+                const Icon(Icons.edit_outlined, size: 17, color: codexMuted),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        '已编辑 ${entry.changes.length} 个文件',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          fontWeight: FontWeight.w500,
+                      editing ? _WorkStatusShimmer(child: title) : title,
+                      if (entry.changes.isNotEmpty)
+                        Row(
+                          children: [
+                            Text(
+                              '+$additions',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: _workGreen),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '-$deletions',
+                              style: Theme.of(
+                                context,
+                              ).textTheme.bodySmall?.copyWith(color: codexRed),
+                            ),
+                          ],
                         ),
-                      ),
-                      Row(
-                        children: [
-                          Text(
-                            '+$additions',
-                            style: Theme.of(
-                              context,
-                            ).textTheme.bodySmall?.copyWith(color: _workGreen),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            '-$deletions',
-                            style: Theme.of(
-                              context,
-                            ).textTheme.bodySmall?.copyWith(color: codexRed),
-                          ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
@@ -3821,6 +3827,7 @@ class _FileChangeTimelineCardState extends State<_FileChangeTimelineCard> {
               ],
             ),
           ),
+          if (deferred) _HistoryDetailsLoader(entry: entry, automatic: false),
           for (final change in visibleChanges) ...[
             const Divider(height: 1, color: _workBorder),
             InkWell(
@@ -3832,6 +3839,12 @@ class _FileChangeTimelineCardState extends State<_FileChangeTimelineCard> {
                 ),
                 child: Row(
                   children: [
+                    const Icon(
+                      Icons.edit_outlined,
+                      size: 14,
+                      color: codexMuted,
+                    ),
+                    const SizedBox(width: 6),
                     Expanded(
                       child: Text(
                         change.path,
@@ -4261,21 +4274,54 @@ class _TurnTimingFooterState extends State<_TurnTimingFooter> {
   }
 }
 
-class _ProcessingStatusText extends StatefulWidget {
+class _ProcessingStatusText extends StatelessWidget {
   const _ProcessingStatusText({required this.elapsed});
 
   final String? elapsed;
 
   @override
-  State<_ProcessingStatusText> createState() => _ProcessingStatusTextState();
+  Widget build(BuildContext context) {
+    final textStyle = Theme.of(context).textTheme.bodySmall;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _WorkStatusShimmer(child: Text('正在处理', style: textStyle)),
+        if (elapsed case final value?) ...[
+          const SizedBox(width: 6),
+          Text(value, style: textStyle?.copyWith(color: _workShimmerBase)),
+        ],
+      ],
+    );
+  }
 }
 
-class _ProcessingStatusTextState extends State<_ProcessingStatusText>
+final _workShimmerBase = codexMuted.withValues(alpha: 0.64);
+
+class _WorkStatusShimmer extends StatefulWidget {
+  const _WorkStatusShimmer({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_WorkStatusShimmer> createState() => _WorkStatusShimmerState();
+}
+
+class _WorkStatusShimmerState extends State<_WorkStatusShimmer>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 2),
-  )..repeat();
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.stop();
+    } else if (!_controller.isAnimating) {
+      _controller.repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -4285,40 +4331,26 @@ class _ProcessingStatusTextState extends State<_ProcessingStatusText>
 
   @override
   Widget build(BuildContext context) {
-    final baseColor = codexMuted.withValues(alpha: 0.64);
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AnimatedBuilder(
-          animation: _controller,
-          builder: (context, child) => ShaderMask(
-            blendMode: BlendMode.srcIn,
-            shaderCallback: (bounds) => LinearGradient(
-              colors: [
-                baseColor,
-                Colors.white.withValues(alpha: 0.68),
-                Colors.white.withValues(alpha: 0.92),
-                Colors.white.withValues(alpha: 0.68),
-                baseColor,
-              ],
-              stops: const [0, 0.34, 0.5, 0.66, 1],
-              begin: Alignment(-3 + _controller.value * 6, 0),
-              end: Alignment(-1 + _controller.value * 6, 0),
-            ).createShader(bounds),
-            child: child,
-          ),
-          child: Text('正在处理', style: Theme.of(context).textTheme.bodySmall),
-        ),
-        if (widget.elapsed != null) ...[
-          const SizedBox(width: 6),
-          Text(
-            widget.elapsed!,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: baseColor),
-          ),
-        ],
-      ],
+    if (MediaQuery.disableAnimationsOf(context)) return widget.child;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) => ShaderMask(
+        blendMode: BlendMode.srcIn,
+        shaderCallback: (bounds) => LinearGradient(
+          colors: [
+            _workShimmerBase,
+            Colors.white.withValues(alpha: 0.68),
+            Colors.white.withValues(alpha: 0.92),
+            Colors.white.withValues(alpha: 0.68),
+            _workShimmerBase,
+          ],
+          stops: const [0, 0.34, 0.5, 0.66, 1],
+          begin: Alignment(-3 + _controller.value * 6, 0),
+          end: Alignment(-1 + _controller.value * 6, 0),
+        ).createShader(bounds),
+        child: child,
+      ),
+      child: widget.child,
     );
   }
 }

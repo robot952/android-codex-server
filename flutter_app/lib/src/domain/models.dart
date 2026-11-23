@@ -508,6 +508,17 @@ abstract class MessageAttachment with _$MessageAttachment {
   }) = _MessageAttachment;
 }
 
+enum CommandActionKind { read, listFiles, search }
+
+@freezed
+abstract class CommandAction with _$CommandAction {
+  const factory CommandAction({
+    required CommandActionKind kind,
+    @Default('') String target,
+    @Default('') String query,
+  }) = _CommandAction;
+}
+
 @freezed
 abstract class TimelineEntry with _$TimelineEntry {
   const factory TimelineEntry({
@@ -517,6 +528,7 @@ abstract class TimelineEntry with _$TimelineEntry {
     @Default('') String text,
     @Default('') String status,
     @Default('') String command,
+    CommandAction? commandAction,
     @Default('') String cwd,
     @Default('') String output,
     @Default(<FileChange>[]) List<FileChange> changes,

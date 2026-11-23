@@ -392,6 +392,8 @@ int _snapshotWeight(ThreadSessionSnapshot snapshot, int limit) {
         entry.text.length +
         entry.status.length +
         entry.command.length +
+        (entry.commandAction?.target.length ?? 0) +
+        (entry.commandAction?.query.length ?? 0) +
         entry.cwd.length +
         entry.output.length +
         entry.turnId.length +
@@ -575,6 +577,12 @@ Map<String, Object?> _snapshotJson(ThreadSessionSnapshot snapshot) => {
           'text': entry.text,
           'status': entry.status,
           'command': entry.command,
+          if (entry.commandAction case final action?)
+            'commandAction': {
+              'kind': action.kind.name,
+              'target': action.target,
+              'query': action.query,
+            },
           'cwd': entry.cwd,
           'output': entry.output,
           'turnId': entry.turnId,
@@ -626,6 +634,17 @@ Map<String, Object?> _snapshotJson(ThreadSessionSnapshot snapshot) => {
         },
 };
 
+CommandAction? _commandActionFromSnapshot(Object? value) {
+  if (value is! Map) return null;
+  final kind = CommandActionKind.values.asNameMap()[value['kind']];
+  if (kind == null) return null;
+  return CommandAction(
+    kind: kind,
+    target: value['target'] as String? ?? '',
+    query: value['query'] as String? ?? '',
+  );
+}
+
 Map<String, int> _breakdownJson(TokenUsageBreakdown usage) => {
   'cachedInput': usage.cachedInputTokens,
   'input': usage.inputTokens,
@@ -669,6 +688,7 @@ ThreadSessionSnapshot _snapshotFromJson(Map<String, dynamic> value) {
             text: v['text'] as String,
             status: v['status'] as String,
             command: v['command'] as String,
+            commandAction: _commandActionFromSnapshot(v['commandAction']),
             cwd: v['cwd'] as String,
             output: v['output'] as String,
             turnId: v['turnId'] as String,

@@ -5124,9 +5124,272 @@ as String,
 }
 
 /// @nodoc
+mixin _$CommandAction {
+
+ CommandActionKind get kind; String get target; String get query;
+/// Create a copy of CommandAction
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$CommandActionCopyWith<CommandAction> get copyWith => _$CommandActionCopyWithImpl<CommandAction>(this as CommandAction, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is CommandAction&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.target, target) || other.target == target)&&(identical(other.query, query) || other.query == query));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,kind,target,query);
+
+@override
+String toString() {
+  return 'CommandAction(kind: $kind, target: $target, query: $query)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $CommandActionCopyWith<$Res>  {
+  factory $CommandActionCopyWith(CommandAction value, $Res Function(CommandAction) _then) = _$CommandActionCopyWithImpl;
+@useResult
+$Res call({
+ CommandActionKind kind, String target, String query
+});
+
+
+
+
+}
+/// @nodoc
+class _$CommandActionCopyWithImpl<$Res>
+    implements $CommandActionCopyWith<$Res> {
+  _$CommandActionCopyWithImpl(this._self, this._then);
+
+  final CommandAction _self;
+  final $Res Function(CommandAction) _then;
+
+/// Create a copy of CommandAction
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? kind = null,Object? target = null,Object? query = null,}) {
+  return _then(_self.copyWith(
+kind: null == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
+as CommandActionKind,target: null == target ? _self.target : target // ignore: cast_nullable_to_non_nullable
+as String,query: null == query ? _self.query : query // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [CommandAction].
+extension CommandActionPatterns on CommandAction {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _CommandAction value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _CommandAction() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _CommandAction value)  $default,){
+final _that = this;
+switch (_that) {
+case _CommandAction():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _CommandAction value)?  $default,){
+final _that = this;
+switch (_that) {
+case _CommandAction() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( CommandActionKind kind,  String target,  String query)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _CommandAction() when $default != null:
+return $default(_that.kind,_that.target,_that.query);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( CommandActionKind kind,  String target,  String query)  $default,) {final _that = this;
+switch (_that) {
+case _CommandAction():
+return $default(_that.kind,_that.target,_that.query);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( CommandActionKind kind,  String target,  String query)?  $default,) {final _that = this;
+switch (_that) {
+case _CommandAction() when $default != null:
+return $default(_that.kind,_that.target,_that.query);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _CommandAction implements CommandAction {
+  const _CommandAction({required this.kind, this.target = '', this.query = ''});
+
+
+@override final  CommandActionKind kind;
+@override@JsonKey() final  String target;
+@override@JsonKey() final  String query;
+
+/// Create a copy of CommandAction
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$CommandActionCopyWith<_CommandAction> get copyWith => __$CommandActionCopyWithImpl<_CommandAction>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _CommandAction&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.target, target) || other.target == target)&&(identical(other.query, query) || other.query == query));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,kind,target,query);
+
+@override
+String toString() {
+  return 'CommandAction(kind: $kind, target: $target, query: $query)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$CommandActionCopyWith<$Res> implements $CommandActionCopyWith<$Res> {
+  factory _$CommandActionCopyWith(_CommandAction value, $Res Function(_CommandAction) _then) = __$CommandActionCopyWithImpl;
+@override @useResult
+$Res call({
+ CommandActionKind kind, String target, String query
+});
+
+
+
+
+}
+/// @nodoc
+class __$CommandActionCopyWithImpl<$Res>
+    implements _$CommandActionCopyWith<$Res> {
+  __$CommandActionCopyWithImpl(this._self, this._then);
+
+  final _CommandAction _self;
+  final $Res Function(_CommandAction) _then;
+
+/// Create a copy of CommandAction
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? kind = null,Object? target = null,Object? query = null,}) {
+  return _then(_CommandAction(
+kind: null == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
+as CommandActionKind,target: null == target ? _self.target : target // ignore: cast_nullable_to_non_nullable
+as String,query: null == query ? _self.query : query // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$TimelineEntry {
 
- String get id; TimelineKind get kind; String get title; String get text; String get status; String get command; String get cwd; String get output; List<FileChange> get changes; List<MessageAttachment> get attachments; String get turnId;// Authoritative enclosing turn status, independent of this item's status.
+ String get id; TimelineKind get kind; String get title; String get text; String get status; String get command; CommandAction? get commandAction; String get cwd; String get output; List<FileChange> get changes; List<MessageAttachment> get attachments; String get turnId;// Authoritative enclosing turn status, independent of this item's status.
 // Empty for older snapshots and for live items not yet settled by Codex.
  String get turnStatus;// Explicit Codex assistant item phase. Empty only for legacy/unspecified.
  String get agentMessagePhase;// Native item identity for a server-projected, lazily loaded history row.
@@ -5141,16 +5404,16 @@ $TimelineEntryCopyWith<TimelineEntry> get copyWith => _$TimelineEntryCopyWithImp
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TimelineEntry&&(identical(other.id, id) || other.id == id)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.title, title) || other.title == title)&&(identical(other.text, text) || other.text == text)&&(identical(other.status, status) || other.status == status)&&(identical(other.command, command) || other.command == command)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.output, output) || other.output == output)&&const DeepCollectionEquality().equals(other.changes, changes)&&const DeepCollectionEquality().equals(other.attachments, attachments)&&(identical(other.turnId, turnId) || other.turnId == turnId)&&(identical(other.turnStatus, turnStatus) || other.turnStatus == turnStatus)&&(identical(other.agentMessagePhase, agentMessagePhase) || other.agentMessagePhase == agentMessagePhase)&&(identical(other.detailsItemId, detailsItemId) || other.detailsItemId == detailsItemId)&&(identical(other.subAgentPath, subAgentPath) || other.subAgentPath == subAgentPath)&&(identical(other.subAgentThreadId, subAgentThreadId) || other.subAgentThreadId == subAgentThreadId)&&(identical(other.subAgentActivity, subAgentActivity) || other.subAgentActivity == subAgentActivity)&&const DeepCollectionEquality().equals(other.reasoningSummary, reasoningSummary)&&const DeepCollectionEquality().equals(other.reasoningContent, reasoningContent)&&const DeepCollectionEquality().equals(other.questions, questions));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is TimelineEntry&&(identical(other.id, id) || other.id == id)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.title, title) || other.title == title)&&(identical(other.text, text) || other.text == text)&&(identical(other.status, status) || other.status == status)&&(identical(other.command, command) || other.command == command)&&(identical(other.commandAction, commandAction) || other.commandAction == commandAction)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.output, output) || other.output == output)&&const DeepCollectionEquality().equals(other.changes, changes)&&const DeepCollectionEquality().equals(other.attachments, attachments)&&(identical(other.turnId, turnId) || other.turnId == turnId)&&(identical(other.turnStatus, turnStatus) || other.turnStatus == turnStatus)&&(identical(other.agentMessagePhase, agentMessagePhase) || other.agentMessagePhase == agentMessagePhase)&&(identical(other.detailsItemId, detailsItemId) || other.detailsItemId == detailsItemId)&&(identical(other.subAgentPath, subAgentPath) || other.subAgentPath == subAgentPath)&&(identical(other.subAgentThreadId, subAgentThreadId) || other.subAgentThreadId == subAgentThreadId)&&(identical(other.subAgentActivity, subAgentActivity) || other.subAgentActivity == subAgentActivity)&&const DeepCollectionEquality().equals(other.reasoningSummary, reasoningSummary)&&const DeepCollectionEquality().equals(other.reasoningContent, reasoningContent)&&const DeepCollectionEquality().equals(other.questions, questions));
 }
 
 
 @override
-int get hashCode => Object.hashAll([runtimeType,id,kind,title,text,status,command,cwd,output,const DeepCollectionEquality().hash(changes),const DeepCollectionEquality().hash(attachments),turnId,turnStatus,agentMessagePhase,detailsItemId,subAgentPath,subAgentThreadId,subAgentActivity,const DeepCollectionEquality().hash(reasoningSummary),const DeepCollectionEquality().hash(reasoningContent),const DeepCollectionEquality().hash(questions)]);
+int get hashCode => Object.hashAll([runtimeType,id,kind,title,text,status,command,commandAction,cwd,output,const DeepCollectionEquality().hash(changes),const DeepCollectionEquality().hash(attachments),turnId,turnStatus,agentMessagePhase,detailsItemId,subAgentPath,subAgentThreadId,subAgentActivity,const DeepCollectionEquality().hash(reasoningSummary),const DeepCollectionEquality().hash(reasoningContent),const DeepCollectionEquality().hash(questions)]);
 
 @override
 String toString() {
-  return 'TimelineEntry(id: $id, kind: $kind, title: $title, text: $text, status: $status, command: $command, cwd: $cwd, output: $output, changes: $changes, attachments: $attachments, turnId: $turnId, turnStatus: $turnStatus, agentMessagePhase: $agentMessagePhase, detailsItemId: $detailsItemId, subAgentPath: $subAgentPath, subAgentThreadId: $subAgentThreadId, subAgentActivity: $subAgentActivity, reasoningSummary: $reasoningSummary, reasoningContent: $reasoningContent, questions: $questions)';
+  return 'TimelineEntry(id: $id, kind: $kind, title: $title, text: $text, status: $status, command: $command, commandAction: $commandAction, cwd: $cwd, output: $output, changes: $changes, attachments: $attachments, turnId: $turnId, turnStatus: $turnStatus, agentMessagePhase: $agentMessagePhase, detailsItemId: $detailsItemId, subAgentPath: $subAgentPath, subAgentThreadId: $subAgentThreadId, subAgentActivity: $subAgentActivity, reasoningSummary: $reasoningSummary, reasoningContent: $reasoningContent, questions: $questions)';
 }
 
 
@@ -5161,11 +5424,11 @@ abstract mixin class $TimelineEntryCopyWith<$Res>  {
   factory $TimelineEntryCopyWith(TimelineEntry value, $Res Function(TimelineEntry) _then) = _$TimelineEntryCopyWithImpl;
 @useResult
 $Res call({
- String id, TimelineKind kind, String title, String text, String status, String command, String cwd, String output, List<FileChange> changes, List<MessageAttachment> attachments, String turnId, String turnStatus, String agentMessagePhase, String detailsItemId, String subAgentPath, String subAgentThreadId, String subAgentActivity, List<String> reasoningSummary, List<String> reasoningContent, List<InputQuestion> questions
+ String id, TimelineKind kind, String title, String text, String status, String command, CommandAction? commandAction, String cwd, String output, List<FileChange> changes, List<MessageAttachment> attachments, String turnId, String turnStatus, String agentMessagePhase, String detailsItemId, String subAgentPath, String subAgentThreadId, String subAgentActivity, List<String> reasoningSummary, List<String> reasoningContent, List<InputQuestion> questions
 });
 
 
-
+$CommandActionCopyWith<$Res>? get commandAction;
 
 }
 /// @nodoc
@@ -5178,7 +5441,7 @@ class _$TimelineEntryCopyWithImpl<$Res>
 
 /// Create a copy of TimelineEntry
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? kind = null,Object? title = null,Object? text = null,Object? status = null,Object? command = null,Object? cwd = null,Object? output = null,Object? changes = null,Object? attachments = null,Object? turnId = null,Object? turnStatus = null,Object? agentMessagePhase = null,Object? detailsItemId = null,Object? subAgentPath = null,Object? subAgentThreadId = null,Object? subAgentActivity = null,Object? reasoningSummary = null,Object? reasoningContent = null,Object? questions = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? kind = null,Object? title = null,Object? text = null,Object? status = null,Object? command = null,Object? commandAction = freezed,Object? cwd = null,Object? output = null,Object? changes = null,Object? attachments = null,Object? turnId = null,Object? turnStatus = null,Object? agentMessagePhase = null,Object? detailsItemId = null,Object? subAgentPath = null,Object? subAgentThreadId = null,Object? subAgentActivity = null,Object? reasoningSummary = null,Object? reasoningContent = null,Object? questions = null,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,kind: null == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
@@ -5186,7 +5449,8 @@ as TimelineKind,title: null == title ? _self.title : title // ignore: cast_nulla
 as String,text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
 as String,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as String,command: null == command ? _self.command : command // ignore: cast_nullable_to_non_nullable
-as String,cwd: null == cwd ? _self.cwd : cwd // ignore: cast_nullable_to_non_nullable
+as String,commandAction: freezed == commandAction ? _self.commandAction : commandAction // ignore: cast_nullable_to_non_nullable
+as CommandAction?,cwd: null == cwd ? _self.cwd : cwd // ignore: cast_nullable_to_non_nullable
 as String,output: null == output ? _self.output : output // ignore: cast_nullable_to_non_nullable
 as String,changes: null == changes ? _self.changes : changes // ignore: cast_nullable_to_non_nullable
 as List<FileChange>,attachments: null == attachments ? _self.attachments : attachments // ignore: cast_nullable_to_non_nullable
@@ -5203,7 +5467,19 @@ as List<String>,questions: null == questions ? _self.questions : questions // ig
 as List<InputQuestion>,
   ));
 }
+/// Create a copy of TimelineEntry
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$CommandActionCopyWith<$Res>? get commandAction {
+    if (_self.commandAction == null) {
+    return null;
+  }
 
+  return $CommandActionCopyWith<$Res>(_self.commandAction!, (value) {
+    return _then(_self.copyWith(commandAction: value));
+  });
+}
 }
 
 
@@ -5285,10 +5561,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  TimelineKind kind,  String title,  String text,  String status,  String command,  String cwd,  String output,  List<FileChange> changes,  List<MessageAttachment> attachments,  String turnId,  String turnStatus,  String agentMessagePhase,  String detailsItemId,  String subAgentPath,  String subAgentThreadId,  String subAgentActivity,  List<String> reasoningSummary,  List<String> reasoningContent,  List<InputQuestion> questions)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  TimelineKind kind,  String title,  String text,  String status,  String command,  CommandAction? commandAction,  String cwd,  String output,  List<FileChange> changes,  List<MessageAttachment> attachments,  String turnId,  String turnStatus,  String agentMessagePhase,  String detailsItemId,  String subAgentPath,  String subAgentThreadId,  String subAgentActivity,  List<String> reasoningSummary,  List<String> reasoningContent,  List<InputQuestion> questions)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _TimelineEntry() when $default != null:
-return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.command,_that.cwd,_that.output,_that.changes,_that.attachments,_that.turnId,_that.turnStatus,_that.agentMessagePhase,_that.detailsItemId,_that.subAgentPath,_that.subAgentThreadId,_that.subAgentActivity,_that.reasoningSummary,_that.reasoningContent,_that.questions);case _:
+return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.command,_that.commandAction,_that.cwd,_that.output,_that.changes,_that.attachments,_that.turnId,_that.turnStatus,_that.agentMessagePhase,_that.detailsItemId,_that.subAgentPath,_that.subAgentThreadId,_that.subAgentActivity,_that.reasoningSummary,_that.reasoningContent,_that.questions);case _:
   return orElse();
 
 }
@@ -5306,10 +5582,10 @@ return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.co
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  TimelineKind kind,  String title,  String text,  String status,  String command,  String cwd,  String output,  List<FileChange> changes,  List<MessageAttachment> attachments,  String turnId,  String turnStatus,  String agentMessagePhase,  String detailsItemId,  String subAgentPath,  String subAgentThreadId,  String subAgentActivity,  List<String> reasoningSummary,  List<String> reasoningContent,  List<InputQuestion> questions)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  TimelineKind kind,  String title,  String text,  String status,  String command,  CommandAction? commandAction,  String cwd,  String output,  List<FileChange> changes,  List<MessageAttachment> attachments,  String turnId,  String turnStatus,  String agentMessagePhase,  String detailsItemId,  String subAgentPath,  String subAgentThreadId,  String subAgentActivity,  List<String> reasoningSummary,  List<String> reasoningContent,  List<InputQuestion> questions)  $default,) {final _that = this;
 switch (_that) {
 case _TimelineEntry():
-return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.command,_that.cwd,_that.output,_that.changes,_that.attachments,_that.turnId,_that.turnStatus,_that.agentMessagePhase,_that.detailsItemId,_that.subAgentPath,_that.subAgentThreadId,_that.subAgentActivity,_that.reasoningSummary,_that.reasoningContent,_that.questions);case _:
+return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.command,_that.commandAction,_that.cwd,_that.output,_that.changes,_that.attachments,_that.turnId,_that.turnStatus,_that.agentMessagePhase,_that.detailsItemId,_that.subAgentPath,_that.subAgentThreadId,_that.subAgentActivity,_that.reasoningSummary,_that.reasoningContent,_that.questions);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -5326,10 +5602,10 @@ return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.co
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  TimelineKind kind,  String title,  String text,  String status,  String command,  String cwd,  String output,  List<FileChange> changes,  List<MessageAttachment> attachments,  String turnId,  String turnStatus,  String agentMessagePhase,  String detailsItemId,  String subAgentPath,  String subAgentThreadId,  String subAgentActivity,  List<String> reasoningSummary,  List<String> reasoningContent,  List<InputQuestion> questions)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  TimelineKind kind,  String title,  String text,  String status,  String command,  CommandAction? commandAction,  String cwd,  String output,  List<FileChange> changes,  List<MessageAttachment> attachments,  String turnId,  String turnStatus,  String agentMessagePhase,  String detailsItemId,  String subAgentPath,  String subAgentThreadId,  String subAgentActivity,  List<String> reasoningSummary,  List<String> reasoningContent,  List<InputQuestion> questions)?  $default,) {final _that = this;
 switch (_that) {
 case _TimelineEntry() when $default != null:
-return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.command,_that.cwd,_that.output,_that.changes,_that.attachments,_that.turnId,_that.turnStatus,_that.agentMessagePhase,_that.detailsItemId,_that.subAgentPath,_that.subAgentThreadId,_that.subAgentActivity,_that.reasoningSummary,_that.reasoningContent,_that.questions);case _:
+return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.command,_that.commandAction,_that.cwd,_that.output,_that.changes,_that.attachments,_that.turnId,_that.turnStatus,_that.agentMessagePhase,_that.detailsItemId,_that.subAgentPath,_that.subAgentThreadId,_that.subAgentActivity,_that.reasoningSummary,_that.reasoningContent,_that.questions);case _:
   return null;
 
 }
@@ -5341,7 +5617,7 @@ return $default(_that.id,_that.kind,_that.title,_that.text,_that.status,_that.co
 
 
 class _TimelineEntry implements TimelineEntry {
-  const _TimelineEntry({required this.id, required this.kind, this.title = '', this.text = '', this.status = '', this.command = '', this.cwd = '', this.output = '', final  List<FileChange> changes = const <FileChange>[], final  List<MessageAttachment> attachments = const <MessageAttachment>[], this.turnId = '', this.turnStatus = '', this.agentMessagePhase = '', this.detailsItemId = '', this.subAgentPath = '', this.subAgentThreadId = '', this.subAgentActivity = '', final  List<String> reasoningSummary = const <String>[], final  List<String> reasoningContent = const <String>[], final  List<InputQuestion> questions = const <InputQuestion>[]}): _changes = changes,_attachments = attachments,_reasoningSummary = reasoningSummary,_reasoningContent = reasoningContent,_questions = questions;
+  const _TimelineEntry({required this.id, required this.kind, this.title = '', this.text = '', this.status = '', this.command = '', this.commandAction, this.cwd = '', this.output = '', final  List<FileChange> changes = const <FileChange>[], final  List<MessageAttachment> attachments = const <MessageAttachment>[], this.turnId = '', this.turnStatus = '', this.agentMessagePhase = '', this.detailsItemId = '', this.subAgentPath = '', this.subAgentThreadId = '', this.subAgentActivity = '', final  List<String> reasoningSummary = const <String>[], final  List<String> reasoningContent = const <String>[], final  List<InputQuestion> questions = const <InputQuestion>[]}): _changes = changes,_attachments = attachments,_reasoningSummary = reasoningSummary,_reasoningContent = reasoningContent,_questions = questions;
   
 
 @override final  String id;
@@ -5350,6 +5626,7 @@ class _TimelineEntry implements TimelineEntry {
 @override@JsonKey() final  String text;
 @override@JsonKey() final  String status;
 @override@JsonKey() final  String command;
+@override final  CommandAction? commandAction;
 @override@JsonKey() final  String cwd;
 @override@JsonKey() final  String output;
  final  List<FileChange> _changes;
@@ -5409,16 +5686,16 @@ _$TimelineEntryCopyWith<_TimelineEntry> get copyWith => __$TimelineEntryCopyWith
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _TimelineEntry&&(identical(other.id, id) || other.id == id)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.title, title) || other.title == title)&&(identical(other.text, text) || other.text == text)&&(identical(other.status, status) || other.status == status)&&(identical(other.command, command) || other.command == command)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.output, output) || other.output == output)&&const DeepCollectionEquality().equals(other._changes, _changes)&&const DeepCollectionEquality().equals(other._attachments, _attachments)&&(identical(other.turnId, turnId) || other.turnId == turnId)&&(identical(other.turnStatus, turnStatus) || other.turnStatus == turnStatus)&&(identical(other.agentMessagePhase, agentMessagePhase) || other.agentMessagePhase == agentMessagePhase)&&(identical(other.detailsItemId, detailsItemId) || other.detailsItemId == detailsItemId)&&(identical(other.subAgentPath, subAgentPath) || other.subAgentPath == subAgentPath)&&(identical(other.subAgentThreadId, subAgentThreadId) || other.subAgentThreadId == subAgentThreadId)&&(identical(other.subAgentActivity, subAgentActivity) || other.subAgentActivity == subAgentActivity)&&const DeepCollectionEquality().equals(other._reasoningSummary, _reasoningSummary)&&const DeepCollectionEquality().equals(other._reasoningContent, _reasoningContent)&&const DeepCollectionEquality().equals(other._questions, _questions));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _TimelineEntry&&(identical(other.id, id) || other.id == id)&&(identical(other.kind, kind) || other.kind == kind)&&(identical(other.title, title) || other.title == title)&&(identical(other.text, text) || other.text == text)&&(identical(other.status, status) || other.status == status)&&(identical(other.command, command) || other.command == command)&&(identical(other.commandAction, commandAction) || other.commandAction == commandAction)&&(identical(other.cwd, cwd) || other.cwd == cwd)&&(identical(other.output, output) || other.output == output)&&const DeepCollectionEquality().equals(other._changes, _changes)&&const DeepCollectionEquality().equals(other._attachments, _attachments)&&(identical(other.turnId, turnId) || other.turnId == turnId)&&(identical(other.turnStatus, turnStatus) || other.turnStatus == turnStatus)&&(identical(other.agentMessagePhase, agentMessagePhase) || other.agentMessagePhase == agentMessagePhase)&&(identical(other.detailsItemId, detailsItemId) || other.detailsItemId == detailsItemId)&&(identical(other.subAgentPath, subAgentPath) || other.subAgentPath == subAgentPath)&&(identical(other.subAgentThreadId, subAgentThreadId) || other.subAgentThreadId == subAgentThreadId)&&(identical(other.subAgentActivity, subAgentActivity) || other.subAgentActivity == subAgentActivity)&&const DeepCollectionEquality().equals(other._reasoningSummary, _reasoningSummary)&&const DeepCollectionEquality().equals(other._reasoningContent, _reasoningContent)&&const DeepCollectionEquality().equals(other._questions, _questions));
 }
 
 
 @override
-int get hashCode => Object.hashAll([runtimeType,id,kind,title,text,status,command,cwd,output,const DeepCollectionEquality().hash(_changes),const DeepCollectionEquality().hash(_attachments),turnId,turnStatus,agentMessagePhase,detailsItemId,subAgentPath,subAgentThreadId,subAgentActivity,const DeepCollectionEquality().hash(_reasoningSummary),const DeepCollectionEquality().hash(_reasoningContent),const DeepCollectionEquality().hash(_questions)]);
+int get hashCode => Object.hashAll([runtimeType,id,kind,title,text,status,command,commandAction,cwd,output,const DeepCollectionEquality().hash(_changes),const DeepCollectionEquality().hash(_attachments),turnId,turnStatus,agentMessagePhase,detailsItemId,subAgentPath,subAgentThreadId,subAgentActivity,const DeepCollectionEquality().hash(_reasoningSummary),const DeepCollectionEquality().hash(_reasoningContent),const DeepCollectionEquality().hash(_questions)]);
 
 @override
 String toString() {
-  return 'TimelineEntry(id: $id, kind: $kind, title: $title, text: $text, status: $status, command: $command, cwd: $cwd, output: $output, changes: $changes, attachments: $attachments, turnId: $turnId, turnStatus: $turnStatus, agentMessagePhase: $agentMessagePhase, detailsItemId: $detailsItemId, subAgentPath: $subAgentPath, subAgentThreadId: $subAgentThreadId, subAgentActivity: $subAgentActivity, reasoningSummary: $reasoningSummary, reasoningContent: $reasoningContent, questions: $questions)';
+  return 'TimelineEntry(id: $id, kind: $kind, title: $title, text: $text, status: $status, command: $command, commandAction: $commandAction, cwd: $cwd, output: $output, changes: $changes, attachments: $attachments, turnId: $turnId, turnStatus: $turnStatus, agentMessagePhase: $agentMessagePhase, detailsItemId: $detailsItemId, subAgentPath: $subAgentPath, subAgentThreadId: $subAgentThreadId, subAgentActivity: $subAgentActivity, reasoningSummary: $reasoningSummary, reasoningContent: $reasoningContent, questions: $questions)';
 }
 
 
@@ -5429,11 +5706,11 @@ abstract mixin class _$TimelineEntryCopyWith<$Res> implements $TimelineEntryCopy
   factory _$TimelineEntryCopyWith(_TimelineEntry value, $Res Function(_TimelineEntry) _then) = __$TimelineEntryCopyWithImpl;
 @override @useResult
 $Res call({
- String id, TimelineKind kind, String title, String text, String status, String command, String cwd, String output, List<FileChange> changes, List<MessageAttachment> attachments, String turnId, String turnStatus, String agentMessagePhase, String detailsItemId, String subAgentPath, String subAgentThreadId, String subAgentActivity, List<String> reasoningSummary, List<String> reasoningContent, List<InputQuestion> questions
+ String id, TimelineKind kind, String title, String text, String status, String command, CommandAction? commandAction, String cwd, String output, List<FileChange> changes, List<MessageAttachment> attachments, String turnId, String turnStatus, String agentMessagePhase, String detailsItemId, String subAgentPath, String subAgentThreadId, String subAgentActivity, List<String> reasoningSummary, List<String> reasoningContent, List<InputQuestion> questions
 });
 
 
-
+@override $CommandActionCopyWith<$Res>? get commandAction;
 
 }
 /// @nodoc
@@ -5446,7 +5723,7 @@ class __$TimelineEntryCopyWithImpl<$Res>
 
 /// Create a copy of TimelineEntry
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? kind = null,Object? title = null,Object? text = null,Object? status = null,Object? command = null,Object? cwd = null,Object? output = null,Object? changes = null,Object? attachments = null,Object? turnId = null,Object? turnStatus = null,Object? agentMessagePhase = null,Object? detailsItemId = null,Object? subAgentPath = null,Object? subAgentThreadId = null,Object? subAgentActivity = null,Object? reasoningSummary = null,Object? reasoningContent = null,Object? questions = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? kind = null,Object? title = null,Object? text = null,Object? status = null,Object? command = null,Object? commandAction = freezed,Object? cwd = null,Object? output = null,Object? changes = null,Object? attachments = null,Object? turnId = null,Object? turnStatus = null,Object? agentMessagePhase = null,Object? detailsItemId = null,Object? subAgentPath = null,Object? subAgentThreadId = null,Object? subAgentActivity = null,Object? reasoningSummary = null,Object? reasoningContent = null,Object? questions = null,}) {
   return _then(_TimelineEntry(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,kind: null == kind ? _self.kind : kind // ignore: cast_nullable_to_non_nullable
@@ -5454,7 +5731,8 @@ as TimelineKind,title: null == title ? _self.title : title // ignore: cast_nulla
 as String,text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
 as String,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as String,command: null == command ? _self.command : command // ignore: cast_nullable_to_non_nullable
-as String,cwd: null == cwd ? _self.cwd : cwd // ignore: cast_nullable_to_non_nullable
+as String,commandAction: freezed == commandAction ? _self.commandAction : commandAction // ignore: cast_nullable_to_non_nullable
+as CommandAction?,cwd: null == cwd ? _self.cwd : cwd // ignore: cast_nullable_to_non_nullable
 as String,output: null == output ? _self.output : output // ignore: cast_nullable_to_non_nullable
 as String,changes: null == changes ? _self._changes : changes // ignore: cast_nullable_to_non_nullable
 as List<FileChange>,attachments: null == attachments ? _self._attachments : attachments // ignore: cast_nullable_to_non_nullable
@@ -5472,7 +5750,19 @@ as List<InputQuestion>,
   ));
 }
 
+/// Create a copy of TimelineEntry
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$CommandActionCopyWith<$Res>? get commandAction {
+    if (_self.commandAction == null) {
+    return null;
+  }
 
+  return $CommandActionCopyWith<$Res>(_self.commandAction!, (value) {
+    return _then(_self.copyWith(commandAction: value));
+  });
+}
 }
 
 /// @nodoc

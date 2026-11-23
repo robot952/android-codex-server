@@ -28,6 +28,32 @@ AppUiState _state() => AppUiState(
 );
 
 void main() {
+  test('a partial command update retains actions only for the same row', () {
+    const action = CommandAction(kind: CommandActionKind.search, query: 'abc');
+    const first = TimelineEntry(
+      id: 'cmd',
+      turnId: 'turn',
+      kind: TimelineKind.command,
+      commandAction: action,
+    );
+    final update = first.copyWith(commandAction: null, status: 'completed');
+    expect(mergeCodexTimelineEntry(first, update).commandAction, action);
+    expect(
+      mergeCodexTimelineEntry(
+        first,
+        update.copyWith(turnId: 'other'),
+      ).commandAction,
+      isNull,
+    );
+    expect(
+      mergeCodexTimelineEntry(
+        first,
+        update.copyWith(id: 'other'),
+      ).commandAction,
+      isNull,
+    );
+  });
+
   test(
     'native threadName and legacy notification aliases rename only their thread',
     () {

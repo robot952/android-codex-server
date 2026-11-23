@@ -105,6 +105,26 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     if (last >= 0xd800 && last <= 0xdbff) end--;
     return body.slice(0, end).trimEnd() + "…";
   }
+  function boundedActionField(value, limit) {
+    if (typeof value !== "string") return null;
+    let end = Math.min(value.length, limit);
+    if (end < value.length && /[\uD800-\uDBFF]/u.test(value[end - 1])) end--;
+    return value.slice(0, end).replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+  }
+  function projectedCommandActions(actions) {
+    if (!Array.isArray(actions)) return undefined;
+    for (const action of actions) {
+      switch (action?.type) {
+        case "search":
+          return [{ type: "search", query: boundedActionField(action.query, 160), path: boundedActionField(action.path, 240) }];
+        case "read":
+          return [{ type: "read", name: boundedActionField(action.name, 160), path: boundedActionField(action.path, 240) }];
+        case "listFiles":
+          return [{ type: "listFiles", path: boundedActionField(action.path, 240) }];
+      }
+    }
+    return undefined;
+  }
   function restrictedAnswer(item) {
     const display = item?.moderation?.display;
     if (item?.type !== "agentMessage" || display?.version !== 1 ||
@@ -120,11 +140,12 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     }
     const restricted = restrictedAnswer(item);
     if (restricted) return restricted;
-    // Folded commands carry only a short preview. Other small items retain their
+    // Folded commands carry only a short preview and bounded action metadata. Other small items retain their
     // original shape, including all collaboration status/identity fields.
     if (item.type !== "commandExecution" && Buffer.byteLength(JSON.stringify(item)) <= itemBytes) return item;
     if (item.type === "commandExecution") return {
       type: item.type, id: item.id, status: item.status, command: commandPreview(item.command),
+      commandActions: projectedCommandActions(item.commandActions),
       codexRemoteDetailsItemId: item.id,
     };
     const titles = {
@@ -135,7 +156,7 @@ function createHistoryRpcBridge({ send, output, proxy, timeoutMs = 3000 }) {
     return {
       type: "codexRemoteDeferred", id: item.id, status: String(item.status || "").slice(0, 64),
       title: titles[item.type] || "工具详情", codexRemoteDetailsItemId: item.id,
-      previewKind: item.type === "agentMessage" || item.type === "userMessage" ? item.type : "tool",
+      previewKind: ["agentMessage", "userMessage", "fileChange"].includes(item.type) ? item.type : "tool",
       ...projectedPhase(item),
       text: typeof item.text === "string" ? item.text.slice(0, 500) : "",
     };

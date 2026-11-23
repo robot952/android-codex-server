@@ -17,11 +17,28 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
   records[53].item.command = "x".repeat(158) + "\u{1F600}";
   records[54].item.command = "x".repeat(158) + "\u{1F600} more";
   records[55].item.command = "\r\n \t echo first  \r\n echo second";
+  const rawActionNoise = { command: "raw action command".repeat(4000), output: "raw action output" };
+  records[48].item.commandActions = [null, { type: "unknown", ...rawActionNoise }];
+  records[49].item.commandActions = { type: "search", query: "invalid list" };
+  records[50].item.commandActions = [{ type: "search", query: 123, path: { path: "invalid" } }];
+  records[51].item.commandActions = [{ type: "listFiles", path: "src", ...rawActionNoise }];
+  records[52].item.commandActions = [{ type: "read", name: "README.md", path: "docs/README.md", ...rawActionNoise }];
+  records[54].item.commandActions = [
+    { type: "unknown", ...rawActionNoise },
+    { type: "search", query: "q".repeat(159) + "\u{1F600}", path: "p".repeat(238) + "\u{1F600}/rest", ...rawActionNoise },
+    { type: "read", name: "second action should not appear", path: "src/ignored" },
+  ];
   const specialPreviews = new Map([
     ["cmd-52", undefined],
     ["cmd-53", records[53].item.command],
     ["cmd-54", "x".repeat(158) + "\u2026"],
     ["cmd-55", "echo first\u2026"],
+  ]);
+  const specialActions = new Map([
+    ["cmd-50", [{ type: "search", query: null, path: null }]],
+    ["cmd-51", [{ type: "listFiles", path: "src" }]],
+    ["cmd-52", [{ type: "read", name: "README.md", path: "docs/README.md" }]],
+    ["cmd-54", [{ type: "search", query: "q".repeat(159), path: "p".repeat(238) + "\u{1F600}" }]],
   ]);
   const original = JSON.stringify(records);
   const visible = [];
@@ -83,11 +100,14 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
         for (const item of turn.items) {
           const expected = specialPreviews.has(item.id)
             ? specialPreviews.get(item.id) : "echo " + item.id.slice(4);
+          const expectedActions = specialActions.get(item.id);
           assert.deepEqual(item, {
             type: "commandExecution", id: item.id, status: "completed",
             ...(expected === undefined ? {} : { command: expected }),
+            ...(expectedActions === undefined ? {} : { commandActions: expectedActions }),
             codexRemoteDetailsItemId: item.id,
           });
+          assert(Buffer.byteLength(JSON.stringify(item)) <= 4096);
         }
       }
       if (!page.nextCursor) break;
@@ -95,7 +115,7 @@ test("mobile item pages bound a single huge turn, retain every cursor, and hydra
       assert(Buffer.byteLength(JSON.stringify(page)) < 96 * 1024);
     } while (true);
     assert.deepEqual(ids, records.toReversed().map(row => row.item.id));
-    for (const index of [0, 3, 24, 52, 53, 54, 55, 56]) {
+    for (const index of [0, 3, 24, 50, 51, 52, 53, 54, 55, 56]) {
       const row = records[index];
       const detail = await rpc("codexRemote/history/item", { threadId: "fixture", turnId: row.turnId, itemId: row.item.id });
       if (index === 56) {
@@ -141,6 +161,27 @@ async function responseFor(f, id) {
   }
   throw new Error("Fixture response missing");
 }
+
+test("large file edits keep their kind and count in the bounded preview", async () => {
+  const item = { type: "fileChange", id: "edit", status: "completed",
+    changes: [{ path: "sample.txt", diff: "example".repeat(1024) }] };
+  const f = fixture({ respond: ({ method, params }) => {
+    if (method === "thread/read") return { thread: { id: "t" } };
+    if (method === "thread/turns/list") return { data: [{ id: "u", status: "completed", items: [] }] };
+    if (method === "thread/items/list") return { data: params.cursor ? [] : [{ turnId: "u", item }] };
+  } });
+  try {
+    f.bridge.writeInput(JSON.stringify({ id: 600, method: "codexRemote/history/open",
+      params: { threadId: "t", readOnly: true } }) + "\n");
+    const message = await responseFor(f, 600);
+    const [preview] = message.result.initialTurnsPage.data[0].items;
+    assert.equal(preview.previewKind, "fileChange");
+    assert.equal(preview.title, "已编辑 1 个文件");
+    assert.equal(preview.codexRemoteDetailsItemId, item.id);
+    assert(!preview.changes);
+    assert(!JSON.stringify(preview).includes("example"));
+  } finally { f.bridge.close(); }
+});
 
 test("v0.171 moderation suppresses every byte of hidden/blocked answers in both mobile history projections", async () => {
   for (const mode of ["hide", "block", "show"]) {

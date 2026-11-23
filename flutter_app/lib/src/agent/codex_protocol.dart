@@ -1603,6 +1603,7 @@ abstract final class CodexPayloadParser {
         kind: switch (item['previewKind']) {
           'agentMessage' => TimelineKind.agentMessage,
           'userMessage' => TimelineKind.userMessage,
+          'fileChange' => TimelineKind.fileChange,
           _ => TimelineKind.tool,
         },
         title: _firstString(item, const ['title']),
@@ -1660,6 +1661,7 @@ abstract final class CodexPayloadParser {
         command: _firstString(item, const <String>[
           'command',
         ], maxChars: codexMaxTimelineTextChars),
+        commandAction: _parseCommandAction(item['commandActions']),
         cwd: _firstString(item, const <String>['cwd']),
         output: _firstString(
           item,
@@ -1742,6 +1744,45 @@ abstract final class CodexPayloadParser {
                 turnId: boundedTurnId,
               ),
     };
+  }
+
+  static CommandAction? _parseCommandAction(Object? actions) {
+    if (actions is! List) return null;
+    for (final raw in actions) {
+      final action = _asObjectMap(raw);
+      if (action == null) continue;
+      final kind = switch (action['type']) {
+        'read' => CommandActionKind.read,
+        'listFiles' => CommandActionKind.listFiles,
+        'search' => CommandActionKind.search,
+        _ => null,
+      };
+      if (kind == null) continue;
+      final name = kind == CommandActionKind.read
+          ? _commandActionField(action['name'], 160)
+          : '';
+      return CommandAction(
+        kind: kind,
+        target: name.isNotEmpty
+            ? name
+            : _commandActionField(action['path'], 240),
+        query: kind == CommandActionKind.search
+            ? _commandActionField(action['query'], 160)
+            : '',
+      );
+    }
+    return null;
+  }
+
+  static String _commandActionField(Object? value, int limit) {
+    if (value is! String || value.isEmpty) return '';
+    final field = StringBuffer();
+    for (final rune in value.runes) {
+      final width = rune > 0xffff ? 2 : 1;
+      if (field.length + width > limit) break;
+      field.writeCharCode(rune >= 0xd800 && rune <= 0xdfff ? 0xfffd : rune);
+    }
+    return field.toString();
   }
 
   static List<InputQuestion> _parseAsyncQuestions(

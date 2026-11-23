@@ -6,6 +6,66 @@ import 'package:codex_remote/src/domain/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native and projected commands use the first recognized action', () {
+    TimelineEntry parse(Object? actions) => CodexPayloadParser.parseItem({
+      'type': 'commandExecution',
+      'id': 'cmd',
+      'command': 'command line',
+      'commandActions': actions,
+    }, turnId: 'turn')!;
+    expect(parse(null).commandAction, isNull);
+    expect(
+      parse([
+        null,
+        false,
+        {'type': 'unknown'},
+      ]).commandAction,
+      isNull,
+    );
+    expect(
+      parse([
+        {'type': 'unknown', 'command': 'ignored'},
+        {'type': 'read', 'name': 'readme', 'path': 'src/readme'},
+        {'type': 'search', 'query': 'other'},
+      ]).commandAction,
+      const CommandAction(kind: CommandActionKind.read, target: 'readme'),
+    );
+    expect(
+      parse([
+        {'type': 'read', 'path': 'src/readme'},
+      ]).commandAction?.target,
+      'src/readme',
+    );
+    expect(
+      parse([
+        {'type': 'listFiles', 'path': 'src'},
+      ]).commandAction,
+      const CommandAction(kind: CommandActionKind.listFiles, target: 'src'),
+    );
+    expect(
+      parse([
+        {'type': 'search', 'query': 'pattern', 'path': 'src'},
+      ]).commandAction,
+      const CommandAction(
+        kind: CommandActionKind.search,
+        query: 'pattern',
+        target: 'src',
+      ),
+    );
+    expect(
+      parse([
+        {'type': 'search', 'query': null, 'path': false},
+      ]).commandAction,
+      const CommandAction(kind: CommandActionKind.search),
+    );
+    final prefix = 'a' * 159;
+    final longQuery = parse([
+      {'type': 'search', 'query': '$prefix😀more'},
+    ]);
+    expect(longQuery.commandAction?.query, prefix);
+    expect(longQuery.command, 'command line');
+  });
+
   test(
     'full and deferred answers retain phase independently of lifecycle status',
     () {

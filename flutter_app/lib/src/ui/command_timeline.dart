@@ -28,13 +28,14 @@ class _CommandTimelineGroupState extends State<_CommandTimelineGroup> {
 
   @override
   Widget build(BuildContext context) {
-    final summary = _commandGroupStatus(widget.entries);
+    final active = widget.entries.reversed.where(_commandIsRunning).firstOrNull;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _CommandDisclosureRow(
-          label: '运行了命令',
-          status: summary,
+          label: active == null ? '运行了命令' : _commandLabel(active, group: true),
+          icon: _activityIcon(active?.commandAction),
+          running: active != null,
           expanded: _expanded,
           onTap: () => setState(() => _expanded = !_expanded),
         ),
@@ -71,17 +72,16 @@ class _CommandTimelineGroupState extends State<_CommandTimelineGroup> {
 
   Widget _buildCommand(TimelineEntry entry, (String, int) identity) {
     final expanded = _expandedCommands.contains(identity);
-    final command = entry.command.trimLeft();
-    final lineBreak = command.indexOf(_commandLineBreak);
-    final preview = lineBreak < 0 ? command : command.substring(0, lineBreak);
     final status = _terminalCommandStatus(entry.status);
     return Column(
       key: ValueKey(identity),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _CommandDisclosureRow(
-          label: preview.isEmpty ? '命令详情' : preview,
+          label: _commandLabel(entry),
+          icon: _activityIcon(entry.commandAction),
           status: status?.color == codexGreen ? null : status,
+          running: _commandIsRunning(entry),
           expanded: expanded,
           isCommand: true,
           onTap: () => setState(() {
@@ -110,6 +110,49 @@ class _CommandTimelineGroupState extends State<_CommandTimelineGroup> {
   }
 }
 
+bool _commandIsRunning(TimelineEntry entry) =>
+    _terminalCommandStatus(entry.status)?.color == codexAmber &&
+    _terminalCommandStatus(entry.turnStatus)?.color != codexGreen &&
+    _terminalCommandStatus(entry.turnStatus)?.color != codexRed;
+
+IconData _activityIcon(CommandAction? action) => switch (action?.kind) {
+  CommandActionKind.read => Icons.menu_book_outlined,
+  CommandActionKind.listFiles => Icons.folder_outlined,
+  CommandActionKind.search => Icons.search,
+  null => Icons.terminal,
+};
+
+String _commandLabel(TimelineEntry entry, {bool group = false}) {
+  final action = entry.commandAction;
+  if (action == null) {
+    final command = entry.command.trimLeft();
+    final lineBreak = command.indexOf(_commandLineBreak);
+    final preview = lineBreak < 0 ? command : command.substring(0, lineBreak);
+    if (group) return preview.isEmpty ? '正在运行命令' : '正在运行 $preview';
+    return preview.isEmpty ? '命令详情' : preview;
+  }
+  final running = _commandIsRunning(entry);
+  final completed = _terminalCommandStatus(entry.status)?.color == codexGreen;
+  final tense = running
+      ? '正在'
+      : completed
+      ? '已'
+      : '';
+  final target = action.target;
+  switch (action.kind) {
+    case CommandActionKind.read:
+      return '$tense读取 ${target.isEmpty ? '文件' : target}';
+    case CommandActionKind.listFiles:
+      return '$tense列出${target.isEmpty ? '文件' : ' $target 中的文件'}';
+    case CommandActionKind.search:
+      final query = action.query.isEmpty ? '' : '“${action.query}”';
+      if (running) {
+        return '正在搜索${query.isEmpty ? '' : ' $query'}${target.isEmpty ? '' : '（$target）'}';
+      }
+      return '$tense${target.isEmpty ? '' : '在 $target 中'}搜索$query';
+  }
+}
+
 _CommandStatus? _terminalCommandStatus(String raw) {
   return switch (raw.trim().toLowerCase()) {
     'interrupted' ||
@@ -119,30 +162,21 @@ _CommandStatus? _terminalCommandStatus(String raw) {
   };
 }
 
-_CommandStatus? _commandGroupStatus(List<TimelineEntry> entries) {
-  _CommandStatus? latest;
-  _CommandStatus? failure;
-  for (final entry in entries.reversed) {
-    final status = _terminalCommandStatus(entry.status);
-    if (status == null) continue;
-    if (status.color == codexAmber) return status;
-    if (status.color == codexRed) failure ??= status;
-    latest ??= status;
-  }
-  return failure ?? latest;
-}
-
 class _CommandDisclosureRow extends StatelessWidget {
   const _CommandDisclosureRow({
     required this.label,
-    required this.status,
+    required this.icon,
+    this.status,
+    required this.running,
     required this.expanded,
     required this.onTap,
     this.isCommand = false,
   });
 
   final String label;
+  final IconData icon;
   final _CommandStatus? status;
+  final bool running;
   final bool expanded;
   final VoidCallback onTap;
   final bool isCommand;
@@ -151,9 +185,16 @@ class _CommandDisclosureRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
     final labelStyle = isCommand ? textTheme.bodySmall : textTheme.labelLarge;
+    final title = Text(
+      label,
+      style: labelStyle?.copyWith(color: codexMuted),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
     return Semantics(
       expanded: expanded,
       button: true,
+      value: running && !isCommand ? '运行中' : null,
       child: Material(
         type: MaterialType.transparency,
         child: InkWell(
@@ -165,20 +206,11 @@ class _CommandDisclosureRow extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.terminal,
-                    size: isCommand ? 14 : 17,
-                    color: codexMuted,
-                  ),
+                  Icon(icon, size: isCommand ? 14 : 17, color: codexMuted),
                   const SizedBox(width: 6),
                   Flexible(
                     flex: 4,
-                    child: Text(
-                      label,
-                      style: labelStyle?.copyWith(color: codexMuted),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    child: running ? _WorkStatusShimmer(child: title) : title,
                   ),
                   const SizedBox(width: 3),
                   AnimatedRotation(

@@ -1,4 +1,5 @@
 import 'package:codex_remote/src/app/app_controller.dart';
+import 'package:codex_remote/src/agent/codex_protocol.dart';
 import 'package:codex_remote/src/domain/models.dart';
 import 'package:codex_remote/src/persistence/profile_store.dart';
 import 'package:codex_remote/src/ssh/server_connection_manager.dart';
@@ -45,6 +46,15 @@ class _ToolCardController extends AppController {
           if (row.id == entry.id)
             row.copyWith(
               detailsItemId: '',
+              changes: row.kind == TimelineKind.fileChange
+                  ? const [
+                      FileChange(
+                        path: 'sample.dart',
+                        kind: 'update',
+                        diff: '+fixture',
+                      ),
+                    ]
+                  : row.changes,
               output: 'Full command result',
               text: 'Full tool result',
             )
@@ -102,6 +112,30 @@ Future<_ToolCardController> _mount(
 }
 
 void main() {
+  testWidgets('deferred edit shows pencil and count before manual diff load', (
+    tester,
+  ) async {
+    final preview = CodexPayloadParser.parseItem({
+      'type': 'codexRemoteDeferred',
+      'previewKind': 'fileChange',
+      'id': 'edit',
+      'title': '已编辑 1 个文件',
+      'status': 'completed',
+      'codexRemoteDetailsItemId': 'edit',
+    }, turnId: 'turn')!;
+    final controller = await _mount(tester, entries: [preview]);
+    expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+    expect(find.text('已编辑 1 个文件'), findsOneWidget);
+    expect(controller.detailReads, 0);
+    await tester.tap(find.text('读取完整内容'));
+    await tester.pumpAndSettle();
+    expect(controller.detailReads, 1);
+    expect(find.text('sample.dart'), findsOneWidget);
+    expect(find.text('读取完整内容'), findsNothing);
+    expect(find.byIcon(Icons.edit_outlined), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'projected command fetches details only on its own expansion and reuses them',
     (tester) async {

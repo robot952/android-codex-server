@@ -185,6 +185,20 @@ Future<void> _jumpToTranscriptStart(
   throw TestFailure('Transcript did not settle at its minimum scroll extent');
 }
 
+// Initial scroll anchoring may consume several frames. A live shimmer never
+// settles, so wait for the actual header to accept a tap instead.
+Future<void> _tapLiveHeader(WidgetTester tester, Finder header) async {
+  for (
+    var frame = 0;
+    frame < 20 && header.hitTestable().evaluate().isEmpty;
+    frame++
+  ) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  expect(header.hitTestable(), findsOneWidget);
+  await tester.tap(header.hitTestable());
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -1652,7 +1666,7 @@ void main() {
     expect(find.text('查看了图片'), findsOneWidget);
     expect(find.text('/home/yan/ygy/example.png'), findsOneWidget);
     expect(find.text('运行了命令'), findsOneWidget);
-    expect(find.text('完成'), findsOneWidget);
+    expect(find.text('完成'), findsNothing);
     expect(find.text('已停止  2s'), findsOneWidget);
     expect(find.text('描述任务'), findsOneWidget);
     expect(find.text('权限'), findsOneWidget);
@@ -2649,9 +2663,7 @@ void main() {
     expect(find.text('你'), findsNothing);
   });
 
-  testWidgets('shows command status and animates expanded details', (
-    tester,
-  ) async {
+  testWidgets('animates expanded command details', (tester) async {
     final manager = ServerConnectionManager();
     final controller = _LayoutController(_MemoryStore(), manager);
     addTearDown(() async => manager.close());
@@ -2672,23 +2684,21 @@ void main() {
           const TimelineEntry(
             id: 'command-animation-1',
             kind: TimelineKind.command,
-            status: 'running',
+            status: 'completed',
             command: 'sleep 10',
-            output: 'still running',
+            output: 'done sleeping',
           ),
         ],
       ),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('运行中'), findsOneWidget);
-    expect(find.textContaining('秒'), findsNothing);
     await tester.ensureVisible(find.text('运行了命令'));
     await tester.pump();
     await tester.tap(find.text('运行了命令'));
     await tester.pumpAndSettle();
     expect(find.text('sleep 10'), findsOneWidget);
-    expect(find.text('still running'), findsNothing);
+    expect(find.text('done sleeping'), findsNothing);
     await tester.tap(find.text('sleep 10'));
     await tester.pump();
     expect(tester.hasRunningAnimations, isTrue);
@@ -2714,6 +2724,185 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });
+
+  testWidgets(
+    'shimmers only while commands run and never shows group result labels',
+    (tester) async {
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager);
+      addTearDown(() async => manager.close());
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      const completed = TimelineEntry(
+        id: 'settled-command',
+        turnId: 'test-turn',
+        kind: TimelineKind.command,
+        command: 'echo done',
+        status: 'completed',
+      );
+      const running = TimelineEntry(
+        id: 'shimmer-command',
+        turnId: 'test-turn',
+        kind: TimelineKind.command,
+        command: 'echo active',
+        status: 'running',
+      );
+      const initial = AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'shimmer-test-thread'),
+        timeline: [completed, running],
+      );
+      Finder shimmerFor(String text) =>
+          find.ancestor(of: find.text(text), matching: find.byType(ShaderMask));
+
+      controller.showState(initial);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final activeGroup = find.text('正在运行 echo active');
+      expect(shimmerFor('正在运行 echo active'), findsOneWidget);
+      expect(find.text('运行中'), findsNothing);
+      expect(find.text('echo active'), findsNothing);
+
+      await _tapLiveHeader(tester, activeGroup);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(shimmerFor('正在运行 echo active'), findsOneWidget);
+      expect(shimmerFor('echo active'), findsOneWidget);
+      expect(shimmerFor('echo done'), findsNothing);
+      expect(tester.hasRunningAnimations, isTrue);
+
+      controller.showState(
+        initial.copyWith(
+          timeline: [
+            completed,
+            running.copyWith(status: 'failed'),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(shimmerFor('运行了命令'), findsNothing);
+      expect(shimmerFor('echo active'), findsNothing);
+      expect(find.text('失败'), findsOneWidget);
+
+      final group = find.text('运行了命令');
+      await tester.ensureVisible(group);
+      await tester.pumpAndSettle();
+      await _tapLiveHeader(tester, group);
+      await tester.pumpAndSettle();
+      expect(group, findsOneWidget);
+      expect(find.text('失败'), findsNothing);
+      expect(find.text('完成'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'shows native file actions and reveals their original shell output',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(420, 840);
+      addTearDown(tester.view.reset);
+      final manager = ServerConnectionManager();
+      final controller = _LayoutController(_MemoryStore(), manager);
+      addTearDown(() async => manager.close());
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const WorkScreen(),
+          ),
+        ),
+      );
+      const search = TimelineEntry(
+        id: 'search',
+        turnId: 'turn',
+        kind: TimelineKind.command,
+        status: 'inProgress',
+        command: 'rg needle src',
+        commandAction: CommandAction(
+          kind: CommandActionKind.search,
+          target: 'src',
+          query: 'needle',
+        ),
+      );
+      const state = AppUiState(
+        screen: AppScreen.work,
+        activeThread: AgentThread(id: 'actions-thread'),
+        timeline: [
+          TimelineEntry(
+            id: 'read',
+            turnId: 'turn',
+            kind: TimelineKind.command,
+            status: 'completed',
+            command: 'cat main.dart',
+            commandAction: CommandAction(
+              kind: CommandActionKind.read,
+              target: 'main.dart',
+            ),
+          ),
+          TimelineEntry(
+            id: 'list',
+            turnId: 'turn',
+            kind: TimelineKind.command,
+            status: 'completed',
+            command: 'ls lib',
+            commandAction: CommandAction(
+              kind: CommandActionKind.listFiles,
+              target: 'lib',
+            ),
+          ),
+          search,
+        ],
+      );
+      controller.showState(state);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      const activeLabel = '正在搜索 “needle”（src）';
+      final active = find.text(activeLabel);
+      expect(active, findsOneWidget);
+      await _tapLiveHeader(tester, active);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.ancestor(of: active, matching: find.byType(ShaderMask)),
+        findsNWidgets(2),
+      );
+      Finder rowIcon(String label, IconData icon) => find.descendant(
+        of: find.ancestor(of: find.text(label), matching: find.byType(InkWell)),
+        matching: find.byIcon(icon),
+      );
+      expect(
+        rowIcon('已读取 main.dart', Icons.menu_book_outlined),
+        findsOneWidget,
+      );
+      expect(rowIcon('已列出 lib 中的文件', Icons.folder_outlined), findsOneWidget);
+      controller.showState(
+        state.copyWith(
+          timeline: [
+            ...state.timeline.take(2),
+            search.copyWith(status: 'completed', output: 'src/foo:needle'),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      const resultLabel = '已在 src 中搜索“needle”';
+      expect(rowIcon(resultLabel, Icons.search), findsOneWidget);
+      expect(find.text('运行了命令'), findsOneWidget);
+      expect(find.text('Shell'), findsNothing);
+      await tester.tap(find.text(resultLabel));
+      await tester.pumpAndSettle();
+      expect(find.text('Shell'), findsOneWidget);
+      expect(find.text(r'$ rg needle src'), findsOneWidget);
+      expect(find.text('src/foo:needle'), findsOneWidget);
+    },
+  );
 
   testWidgets('groups only adjacent commands from the same turn', (
     tester,
@@ -2833,21 +3022,25 @@ void main() {
       timeline: [first],
     );
     controller.showState(initial);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
-    final group = find.text('运行了命令');
-    await tester.tap(group);
-    await tester.pumpAndSettle();
+    final runningGroup = find.text('正在运行 $command');
+    await _tapLiveHeader(tester, runningGroup);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     final preview = find.text(command);
     expect(tester.widget<Text>(preview).maxLines, 1);
     expect(tester.widget<Text>(preview).overflow, TextOverflow.ellipsis);
     await tester.tap(preview);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('First output chunk'), findsOneWidget);
 
     controller.showState(initial.copyWith(timeline: [first, second]));
-    await tester.pumpAndSettle();
-    expect(group, findsOneWidget);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(runningGroup, findsOneWidget);
     expect(find.text('echo next'), findsOneWidget);
     expect(find.text('Next command output'), findsNothing);
     expect(find.text('First output chunk'), findsOneWidget);
@@ -2861,7 +3054,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(group, findsOneWidget);
+    expect(find.text('运行了命令'), findsOneWidget);
     expect(find.text('运行中'), findsNothing);
     expect(find.text('Final command output'), findsOneWidget);
     expect(find.text('Shell'), findsOneWidget);
@@ -2887,38 +3080,55 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 100));
-    controller.showState(
-      const AppUiState(
-        screen: AppScreen.work,
-        activeThread: AgentThread(
-          id: 'thread-files',
-          title: '文件修改',
-          cwd: '/home/yan/ygy',
-        ),
-        aggregateDiff: '@@ -1 +1 @@\n-old\n+new',
-        timeline: [
-          TimelineEntry(
-            id: 'files-1',
-            kind: TimelineKind.fileChange,
-            changes: [
-              FileChange(
-                path: '/tmp/a.dart',
-                diff:
-                    'diff --git a/tmp/a.dart b/tmp/a.dart\n'
-                    '--- a/tmp/a.dart\n'
-                    '+++ b/tmp/a.dart\n'
-                    '@@ -1 +1 @@\n'
-                    '-old\n'
-                    '+new',
-              ),
-              FileChange(path: '/tmp/b.dart', diff: '+line'),
-              FileChange(path: '/tmp/c.dart', diff: '-line'),
-              FileChange(path: '/tmp/d.dart', diff: '+line'),
-            ],
-          ),
-        ],
+    const settled = AppUiState(
+      screen: AppScreen.work,
+      activeThread: AgentThread(
+        id: 'thread-files',
+        title: '文件修改',
+        cwd: '/home/yan/ygy',
       ),
+      aggregateDiff: '@@ -1 +1 @@\n-old\n+new',
+      timeline: [
+        TimelineEntry(
+          id: 'files-1',
+          kind: TimelineKind.fileChange,
+          status: 'completed',
+          changes: [
+            FileChange(
+              path: '/tmp/a.dart',
+              diff:
+                  'diff --git a/tmp/a.dart b/tmp/a.dart\n'
+                  '--- a/tmp/a.dart\n'
+                  '+++ b/tmp/a.dart\n'
+                  '@@ -1 +1 @@\n'
+                  '-old\n'
+                  '+new',
+            ),
+            FileChange(path: '/tmp/b.dart', diff: '+line'),
+            FileChange(path: '/tmp/c.dart', diff: '-line'),
+            FileChange(path: '/tmp/d.dart', diff: '+line'),
+          ],
+        ),
+      ],
     );
+    final fileItem = settled.timeline.single;
+    controller.showState(
+      settled.copyWith(timeline: [fileItem.copyWith(status: 'inProgress')]),
+    );
+    await tester.pump();
+    expect(find.text('正在编辑文件'), findsOneWidget);
+    expect(
+      find.ancestor(of: find.text('正在编辑文件'), matching: find.byType(ShaderMask)),
+      findsOneWidget,
+    );
+    expect(find.byIcon(Icons.edit_outlined), findsNWidgets(4));
+    controller.showState(
+      settled.copyWith(timeline: [fileItem.copyWith(status: 'failed')]),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('编辑文件 · 失败'), findsOneWidget);
+    expect(find.text('正在编辑文件'), findsNothing);
+    controller.showState(settled);
     await tester.pumpAndSettle();
 
     expect(find.text('已编辑 4 个文件'), findsOneWidget);

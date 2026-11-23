@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.213+345，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.214+346，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -509,7 +509,10 @@ Work 页面由 Codex、OpenCode 和 Claude Code 共用，具体操作由当前 `
 
 - 当前 Flutter 展示以旧 Compose `WorkScreen.kt` 的实际工作布局为视觉基线：顶部为返回、会话标题、工作目录副标题和更多菜单；
   助手 Markdown 直接铺在背景上，用户输入使用克制的表面容器；普通思考/计划是带搜索图标和折叠箭头的单行。
-  同一回合的连续命令默认只显示一条带终端图标、状态和箭头的 `运行了命令`；展开是单行命令预览列表，
+  同一回合的连续命令折叠成一行。一级标题跟随组内最近一条正在执行的操作，结束后显示 `运行了命令`。
+  一级标题和展开列表里正在执行的命令共用「正在处理」从左到右的流光。单条命令展示执行结果。
+  Codex 原生标记的读取、搜索、列目录分别显示书本、放大镜和文件夹，编辑文件使用铅笔图标。
+  展开的命令列表显示有界的操作摘要，
   再点单条才展开或读取可滚动、可复制的 Shell 详情。命令组不跨其他条目或回合，流式追加及状态变化保持展开选择。
   图片工具统一使用双眼睛图标、`查看了图片` 和单行远程路径。不要把所有时间线条目重新套成同一种消息卡片。
 - MCP 等普通工具默认折叠为名称、状态和箭头，点击标题展开或收起；流式输出和完成状态更新不改变用户

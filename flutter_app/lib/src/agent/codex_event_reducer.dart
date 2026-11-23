@@ -920,6 +920,11 @@ TimelineEntry mergeCodexTimelineEntry(
     text: incoming.text.isEmpty ? previous.text : incoming.text,
     status: mergedStatus,
     command: incoming.command.isEmpty ? previous.command : incoming.command,
+    commandAction:
+        incoming.commandAction ??
+        (sameCommand && previous.turnId == incoming.turnId
+            ? previous.commandAction
+            : null),
     cwd: incoming.cwd.isEmpty ? previous.cwd : incoming.cwd,
     output: incoming.output.isEmpty ? previous.output : incoming.output,
     changes: incoming.changes.isEmpty ? previous.changes : incoming.changes,
