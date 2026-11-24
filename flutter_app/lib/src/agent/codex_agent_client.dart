@@ -16,6 +16,7 @@ import 'codex_protocol.dart';
 import 'provider_transport_notice.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
+import 'remote_install_error.dart';
 import 'resume_notification_buffer.dart';
 
 /// The small part of an SSH exec session used by the JSONL adapter.
@@ -692,6 +693,7 @@ class CodexAgentClient
         proxyUrl: profile.proxyUrl,
       ),
       command: remoteInstallCommand,
+      formatExitError: remoteInstallErrorFormatter(profile.proxyUrl),
       timeout: const Duration(minutes: 30),
       maxOutputBytes: 8 * 1024 * 1024,
       onStdoutLine: (line) {

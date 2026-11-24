@@ -121,6 +121,7 @@ class _FakeScriptHost
     int maxOutputBytes = 8 * 1024 * 1024,
     void Function(String line)? onStdoutLine,
     void Function(String line)? onStderrLine,
+    RemoteExitErrorFormatter? formatExitError,
   }) async {
     streamingCalls.add(_StreamingCall(script, command));
     final index = streamingCalls.length - 1;

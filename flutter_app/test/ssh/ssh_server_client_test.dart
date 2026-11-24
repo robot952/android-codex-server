@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:codex_remote/src/agent/remote_bootstrap.dart';
+import 'package:codex_remote/src/agent/remote_install_error.dart';
 import 'package:codex_remote/src/ssh/ssh_server_client.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -230,6 +231,49 @@ void main() {
       ),
     );
   });
+
+  test(
+    'installer failures keep stderr separate from partial progress frames',
+    () async {
+      const message = '另一个 Agent 安装任务正在运行';
+      // stdout can still be an incomplete frame when the process exits.
+      final session = _FakeSshSession(
+        stdoutText: '::progress::5||准备远程安装环境|检查安装锁',
+        stderrText: message,
+        exitCode: 1,
+      );
+      final client = _ConnectedTestClient(_FakeSshClient(session));
+      final lines = <String>[];
+      await expectLater(
+        client.runStreamingShellScript(
+          'exit 1',
+          onStdoutLine: lines.add,
+          formatExitError: remoteInstallErrorFormatter(''),
+        ),
+        throwsA(isA<StateError>().having((e) => e.message, 'message', message)),
+      );
+      expect(lines.single, startsWith('::progress::5'));
+    },
+  );
+
+  test(
+    'installer errors ignore trailing progress and redact credentials before bounding',
+    () {
+      const proxy =
+          'https://demo:mock-pass@proxy.invalid:7890/path?token=mock-token';
+      final format = remoteInstallErrorFormatter(proxy);
+      final frames = List.filled(20, '::progress::99||安装依赖|正在安装').join('\r\n');
+      final output =
+          '下载失败 $proxy\nProxy-Authorization: Basic mock-credentials\n$frames';
+      final detail = format(output, '', 23);
+      expect(detail, contains('下载失败'));
+      for (final fragment in ['mock-', 'demo:', '::progress::']) {
+        expect(detail, isNot(contains(fragment)));
+      }
+      expect(format(frames, '', 23), '远程安装失败（退出码 23），请重试。');
+      expect(format('a' * 2048, '', 23).length, 1024);
+    },
+  );
 
   test('closes a shell session whose output exceeds the bound', () async {
     final session = _FakeSshSession(stdoutText: '12345');

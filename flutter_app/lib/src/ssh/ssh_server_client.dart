@@ -144,8 +144,12 @@ abstract interface class RemoteServerStreamingScriptClient {
     int maxOutputBytes,
     void Function(String line)? onStdoutLine,
     void Function(String line)? onStderrLine,
+    RemoteExitErrorFormatter? formatExitError,
   });
 }
+
+typedef RemoteExitErrorFormatter =
+    String Function(String stdout, String stderr, int exitCode);
 
 /// Optional capability for opening an interactive pseudo-terminal on the
 /// already-authenticated host connection.
@@ -389,6 +393,7 @@ class DartSshServerClient
     int maxOutputBytes = 8 * 1024 * 1024,
     void Function(String line)? onStdoutLine,
     void Function(String line)? onStderrLine,
+    RemoteExitErrorFormatter? formatExitError,
   }) => _runCommand(
     command,
     standardInput: script,
@@ -396,6 +401,7 @@ class DartSshServerClient
     maxOutputBytes: maxOutputBytes,
     onStdoutLine: onStdoutLine,
     onStderrLine: onStderrLine,
+    formatExitError: formatExitError,
   );
 
   @override
@@ -418,6 +424,7 @@ class DartSshServerClient
     required int maxOutputBytes,
     void Function(String line)? onStdoutLine,
     void Function(String line)? onStderrLine,
+    RemoteExitErrorFormatter? formatExitError,
   }) async {
     if (maxOutputBytes < 1) {
       throw ArgumentError.value(maxOutputBytes, 'maxOutputBytes');
@@ -428,6 +435,14 @@ class DartSshServerClient
     StreamSubscription<dynamic>? stdoutSubscription;
     StreamSubscription<dynamic>? stderrSubscription;
     final output = BytesBuilder(copy: false);
+    // Keep references to the same bounded chunks for callers that need to
+    // distinguish stderr from a machine-readable stdout on failure.
+    final stdoutBytes = formatExitError == null
+        ? null
+        : BytesBuilder(copy: false);
+    final stderrBytes = formatExitError == null
+        ? null
+        : BytesBuilder(copy: false);
     var outputLength = 0;
     var streamsRemaining = 2;
     final streamsDone = Completer<void>();
@@ -448,7 +463,7 @@ class DartSshServerClient
       session?.close();
     }
 
-    void addOutput(Uint8List bytes) {
+    void addOutput(Uint8List bytes, BytesBuilder? streamOutput) {
       if (streamsDone.isCompleted) return;
       outputLength += bytes.length;
       if (outputLength > maxOutputBytes) {
@@ -459,6 +474,7 @@ class DartSshServerClient
         return;
       }
       output.add(bytes);
+      streamOutput?.add(bytes);
     }
 
     void consumeLines(
@@ -503,7 +519,7 @@ class DartSshServerClient
       stdoutSubscription = utf8.decoder
           .bind(
             session.stdout.map((bytes) {
-              addOutput(bytes);
+              addOutput(bytes, stdoutBytes);
               return bytes;
             }),
           )
@@ -519,7 +535,7 @@ class DartSshServerClient
       stderrSubscription = utf8.decoder
           .bind(
             session.stderr.map((bytes) {
-              addOutput(bytes);
+              addOutput(bytes, stderrBytes);
               return bytes;
             }),
           )
@@ -553,14 +569,23 @@ class DartSshServerClient
       await stderrSubscription?.cancel();
     }
 
-    final bytes = output.takeBytes();
-    if ((session.exitCode ?? 0) != 0) {
+    final exitCode = session.exitCode ?? 0;
+    if (exitCode != 0) {
+      if (formatExitError != null) {
+        throw StateError(
+          formatExitError(
+            utf8.decode(stdoutBytes!.takeBytes(), allowMalformed: true),
+            utf8.decode(stderrBytes!.takeBytes(), allowMalformed: true),
+            exitCode,
+          ),
+        );
+      }
       final detail = _boundedRemoteCommandError(
-        utf8.decode(bytes, allowMalformed: true),
+        utf8.decode(output.takeBytes(), allowMalformed: true),
       );
       throw StateError(detail.isEmpty ? '远程命令执行失败' : detail);
     }
-    return utf8.decode(bytes, allowMalformed: true);
+    return utf8.decode(output.takeBytes(), allowMalformed: true);
   }
 
   @override

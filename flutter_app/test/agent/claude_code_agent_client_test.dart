@@ -926,6 +926,7 @@ class _Host
     int maxOutputBytes = 8 * 1024 * 1024,
     void Function(String)? onStdoutLine,
     void Function(String)? onStderrLine,
+    RemoteExitErrorFormatter? formatExitError,
   }) async {
     scripts.add(script);
     onStdoutLine?.call('diagnostic, not completion');

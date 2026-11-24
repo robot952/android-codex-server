@@ -81,7 +81,6 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
 
     final inProgress = widget.state.setupInProgress;
     final failed = _setupFailed(widget.state);
-    final viewInsets = MediaQuery.viewInsetsOf(context);
     final display = _RemoteSetupDisplay.fromPrompt(setup);
     final isClaude = setup.agent == AgentKind.claudeCode;
     final title = isClaude ? '安装/切换 Claude Code' : setup.title;
@@ -100,137 +99,116 @@ class _RemoteSetupDialogState extends State<RemoteSetupDialog> {
               onDismiss: inProgress ? widget.onMinimize : widget.onCancel,
               color: Colors.black.withValues(alpha: 0.62),
             ),
-            AnimatedPadding(
-              key: const ValueKey('remote-setup-keyboard-padding'),
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + viewInsets.bottom),
-              child: Center(
-                child: SafeArea(
-                  minimum: EdgeInsets.zero,
-                  child: Dialog(
-                    key: const ValueKey('remote-setup-dialog'),
-                    insetPadding: EdgeInsets.zero,
-                    clipBehavior: Clip.antiAlias,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        maxWidth: 520,
-                        maxHeight: 720,
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          _DialogHeading(title: title),
-                          const Divider(height: 1),
-                          Flexible(
-                            child: Scrollbar(
-                              controller: _scrollController,
-                              child: SingleChildScrollView(
-                                key: const ValueKey('remote-setup-scroll'),
-                                controller: _scrollController,
-                                keyboardDismissBehavior:
-                                    ScrollViewKeyboardDismissBehavior.onDrag,
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  15,
-                                  18,
-                                  16,
-                                ),
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    AnimatedSize(
-                                      duration: const Duration(
-                                        milliseconds: 180,
-                                      ),
-                                      curve: Curves.easeOutCubic,
-                                      alignment: Alignment.topCenter,
-                                      child: _proxyFocused
-                                          ? const SizedBox.shrink()
-                                          : Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.stretch,
-                                              children: [
-                                                Text(
-                                                  isClaude
-                                                      ? '将升级或降级当前 SSH 用户已有的 Claude Code，保留现有登录和配置。安装完成后自动连接。'
-                                                      : setup.agent ==
-                                                            AgentKind.codex
-                                                      ? '将在此服务器安装 Codex ${_codexTargetVersion(setup)}，完成后自动连接。'
-                                                      : setup.detail,
-                                                  key: const ValueKey(
-                                                    'remote-setup-detail',
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 12),
-                                                _RuntimeInformation(
-                                                  setup: setup,
-                                                  display: display,
-                                                ),
-                                                const SizedBox(height: 12),
-                                              ],
+            SafeArea(
+              child: Dialog(
+                key: const ValueKey('remote-setup-dialog'),
+                // Dialog already adds the IME insets to this outer margin.
+                insetPadding: const EdgeInsets.all(16),
+                clipBehavior: Clip.antiAlias,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 520,
+                    maxHeight: 720,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _DialogHeading(title: title),
+                      const Divider(height: 1),
+                      Flexible(
+                        child: Scrollbar(
+                          controller: _scrollController,
+                          child: SingleChildScrollView(
+                            key: const ValueKey('remote-setup-scroll'),
+                            controller: _scrollController,
+                            keyboardDismissBehavior:
+                                ScrollViewKeyboardDismissBehavior.onDrag,
+                            padding: const EdgeInsets.fromLTRB(18, 15, 18, 16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                AnimatedSize(
+                                  duration: const Duration(milliseconds: 180),
+                                  curve: Curves.easeOutCubic,
+                                  alignment: Alignment.topCenter,
+                                  child: _proxyFocused
+                                      ? const SizedBox.shrink()
+                                      : Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
+                                          children: [
+                                            Text(
+                                              isClaude
+                                                  ? '将升级或降级当前 SSH 用户已有的 Claude Code，保留现有登录和配置。安装完成后自动连接。'
+                                                  : setup.agent ==
+                                                        AgentKind.codex
+                                                  ? '将在此服务器安装 Codex ${_codexTargetVersion(setup)}，完成后自动连接。'
+                                                  : setup.detail,
+                                              key: const ValueKey(
+                                                'remote-setup-detail',
+                                              ),
                                             ),
-                                    ),
-                                    if (!inProgress)
-                                      TextField(
-                                        key: const ValueKey(
-                                          'remote-setup-proxy',
+                                            const SizedBox(height: 12),
+                                            _RuntimeInformation(
+                                              setup: setup,
+                                              display: display,
+                                            ),
+                                            const SizedBox(height: 12),
+                                          ],
                                         ),
-                                        controller: _proxyController,
-                                        focusNode: _proxyFocusNode,
-                                        enabled: !inProgress,
-                                        autocorrect: false,
-                                        enableSuggestions: false,
-                                        keyboardType: TextInputType.url,
-                                        textInputAction: TextInputAction.done,
-                                        scrollPadding: EdgeInsets.only(
-                                          bottom: viewInsets.bottom + 96,
-                                        ),
-                                        onChanged: widget.onProxyChanged,
-                                        onSubmitted: (_) =>
-                                            _proxyFocusNode.unfocus(),
-                                        decoration: InputDecoration(
-                                          labelText: '下载代理（可选）',
-                                          hintText: 'http://127.0.0.1:7890',
-                                          helperText: display.proxyDescription,
-                                          helperMaxLines: 3,
-                                          prefixIcon: const Icon(
-                                            Icons.route_outlined,
-                                            size: 20,
-                                          ),
-                                        ),
-                                      ),
-                                    if (inProgress) ...[
-                                      _InstallProgress(state: widget.state),
-                                      const SizedBox(height: 10),
-                                      Text(
-                                        '安装在服务器上继续，可最小化查看其他页面。',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                    ] else if (failed) ...[
-                                      const SizedBox(height: 14),
-                                      _InstallFailure(state: widget.state),
-                                    ],
-                                  ],
                                 ),
-                              ),
+                                if (!inProgress)
+                                  TextField(
+                                    key: const ValueKey('remote-setup-proxy'),
+                                    controller: _proxyController,
+                                    focusNode: _proxyFocusNode,
+                                    enabled: !inProgress,
+                                    autocorrect: false,
+                                    enableSuggestions: false,
+                                    keyboardType: TextInputType.url,
+                                    textInputAction: TextInputAction.done,
+                                    onChanged: widget.onProxyChanged,
+                                    onSubmitted: (_) =>
+                                        _proxyFocusNode.unfocus(),
+                                    decoration: InputDecoration(
+                                      labelText: '下载代理（可选）',
+                                      hintText: 'http://127.0.0.1:7890',
+                                      helperText: display.proxyDescription,
+                                      helperMaxLines: 3,
+                                      prefixIcon: const Icon(
+                                        Icons.route_outlined,
+                                        size: 20,
+                                      ),
+                                    ),
+                                  ),
+                                if (inProgress) ...[
+                                  _InstallProgress(state: widget.state),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    '安装在服务器上继续，可最小化查看其他页面。',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ] else if (failed) ...[
+                                  const SizedBox(height: 14),
+                                  _InstallFailure(state: widget.state),
+                                ],
+                              ],
                             ),
                           ),
-                          const Divider(height: 1),
-                          _DialogActions(
-                            inProgress: inProgress,
-                            failed: failed,
-                            onInstall: widget.onInstall,
-                            onCancel: widget.onCancel,
-                            onMinimize: widget.onMinimize,
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
+                      const Divider(height: 1),
+                      _DialogActions(
+                        inProgress: inProgress,
+                        failed: failed,
+                        onInstall: widget.onInstall,
+                        onCancel: widget.onCancel,
+                        onMinimize: widget.onMinimize,
+                      ),
+                    ],
                   ),
                 ),
               ),

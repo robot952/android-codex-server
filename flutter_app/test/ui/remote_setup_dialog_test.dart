@@ -288,16 +288,18 @@ void main() {
     expect(retries, 1);
   });
 
-  testWidgets('moves the compact dialog above the keyboard inset', (
+  testWidgets('keeps the proxy editable above a tall keyboard during retry', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(390, 800);
+    tester.view.physicalSize = const Size(360, 700);
     addTearDown(tester.view.reset);
+    var draft = '';
+    String? submitted;
 
     await tester.pumpWidget(
-      const _DialogHarness(
-        state: AppUiState(
+      _DialogHarness(
+        state: const AppUiState(
           remoteSetup: RemoteSetupPrompt(
             title: '安装远程 Codex',
             detail: '服务器上没有兼容的运行时。',
@@ -305,7 +307,10 @@ void main() {
             architecture: 'x86_64',
             home: '/root',
           ),
+          error: '下载连接已中断',
         ),
+        onProxyChanged: (value) => draft = value,
+        onInstall: () => submitted = draft,
       ),
     );
     await tester.pumpAndSettle();
@@ -327,31 +332,30 @@ void main() {
       findsNothing,
     );
 
-    await tester.pumpWidget(
-      const _DialogHarness(
-        bottomInset: 260,
-        state: AppUiState(
-          remoteSetup: RemoteSetupPrompt(
-            title: '安装远程 Codex',
-            detail: '服务器上没有兼容的运行时。',
-            os: 'Linux',
-            architecture: 'x86_64',
-            home: '/root',
-          ),
-        ),
-      ),
-    );
+    const keyboardHeight = 350.0;
+    tester.view.viewInsets = const FakeViewPadding(bottom: keyboardHeight);
+    await tester.pump();
     await tester.pumpAndSettle();
-    final padding = tester.widget<AnimatedPadding>(
-      find.byKey(const ValueKey('remote-setup-keyboard-padding')),
-    );
-    expect((padding.padding as EdgeInsets).bottom, 276);
+    final input = find.byType(EditableText);
+    final keyboardTop = tester.view.physicalSize.height - keyboardHeight;
+    final actions = find.byKey(const ValueKey('remote-setup-install'));
+    expect(tester.takeException(), isNull);
     expect(proxy.hitTestable(), findsOneWidget);
-    expect(tester.getRect(proxy).bottom, lessThanOrEqualTo(540));
+    expect(input.hitTestable(), findsOneWidget);
+    expect(actions.hitTestable(), findsOneWidget);
     expect(
-      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
-      isTrue,
+      tester.getRect(input).top,
+      greaterThan(tester.getRect(find.text('安装远程 Codex')).bottom),
     );
+    expect(tester.getRect(input).bottom, lessThan(tester.getRect(actions).top));
+    expect(tester.getRect(actions).bottom, lessThan(keyboardTop));
+    expect(tester.widget<EditableText>(input).focusNode.hasFocus, isTrue);
+    const proxyUrl = 'http://proxy.example:7890';
+    tester.testTextInput.enterText(proxyUrl);
+    await tester.pump();
+    expect(_fieldText(tester, 'remote-setup-proxy'), proxyUrl);
+    await tester.tap(actions);
+    expect(submitted, proxyUrl);
     expect(tester.takeException(), isNull);
   });
 
@@ -466,7 +470,6 @@ class _DialogHarness extends StatelessWidget {
   const _DialogHarness({
     required this.state,
     this.proxyUrl = '',
-    this.bottomInset = 0,
     this.textScale = 1,
     this.onProxyChanged = _noopProxy,
     this.onInstall = _noop,
@@ -476,7 +479,6 @@ class _DialogHarness extends StatelessWidget {
 
   final AppUiState state;
   final String proxyUrl;
-  final double bottomInset;
   final double textScale;
   final ValueChanged<String> onProxyChanged;
   final VoidCallback onInstall;
@@ -488,10 +490,9 @@ class _DialogHarness extends StatelessWidget {
     return MaterialApp(
       theme: buildCodexTheme(),
       builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(
-          viewInsets: EdgeInsets.only(bottom: bottomInset),
-          textScaler: TextScaler.linear(textScale),
-        ),
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(textScale)),
         child: child!,
       ),
       home: Scaffold(

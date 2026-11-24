@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.215+347，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.216+348，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -951,7 +951,9 @@ Codex 运行时已经形成完整链路：`RemoteBootstrap.probeScript` 在已�
 使用自定义 `remoteCommand` 时尊重用户配置并跳过托管探测。
 
 缺少兼容版本时，安装 `Node 22.17.0 + Codex` 当前选择版本到当前 SSH 用户的
-`~/.local/share/codex-remote`，启动器为 `~/.local/bin/codex-remote`。脚本使用非阻塞 flock、300 MB
+`~/.local/share/codex-remote`，启动器为 `~/.local/bin/codex-remote`。安装脚本优先尝试立即持有 flock，
+锁忙时显示等待进度并最多等两分钟。取得锁后，若上一任务已装好请求的托管版本且 app-server 可用，
+直接报告成功。下载子进程不继承安装锁。脚本保留 300 MB
 空间检查、Node SHA-256、临时 release、失败清理和原子 wrapper 替换；不使用 sudo，不修改系统
 Node/Codex、VS Code、`~/.codex` 账户/配置或工作区。命令固定为
 `CODEX_REMOTE_SSH_PID=$PPID setsid --wait sh -s`，脚本经 stdin 发送，超时 30 分钟，SSH 消失时远端
@@ -967,6 +969,7 @@ watchdog 终止安装进程组。
 同服务器的版本修改串行保存，保存后再次核对请求代次及最新目标，防止慢保存恢复后重新加载旧版本，
 或两个 Agent 同时修改版本时覆盖对方配置；网络探测不持有保存锁。
 开始或重试安装会清除上次字节、速度和耗时，安装中收起代理输入并移除其键盘焦点。
+编辑下载代理时由 Dialog 统一避让系统键盘，让输入区和重试按钮留在可见范围内。
 
 OpenCode 使用独立的 `OpenCodeBootstrap` 探测与安装链路，默认 `opencode-ai 1.18.11`，版本列表来自 npm
 稳定版本元数据，Profile 可选择其他稳定版本；每个版本都在当前 SSH 用户托管目录中隔离保存。安装复用固定

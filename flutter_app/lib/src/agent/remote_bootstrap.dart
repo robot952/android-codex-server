@@ -246,7 +246,8 @@ fi
     if (markerIndex < 0) throw StateError('Codex 安装脚本结构已变化');
     return '${full.substring(0, markerIndex)}\n'
         "INSTALL_COMMITTED=1\n"
-        "progress 100 '' '共享 Node.js 运行时已就绪' '仅准备 Agent 公共运行环境，未安装 Codex CLI'";
+        "progress 100 '' '共享 Node.js 运行时已就绪' '仅准备 Agent 公共运行环境，未安装 Codex CLI'\n"
+        "} 9>&-";
   }
 
   static String validateProxyUrl(String value) {
@@ -552,17 +553,18 @@ if [ -n "$DOWNLOAD_PROXY" ]; then
 fi
 progress 5 '' '准备远程安装环境' '检查空间、下载器和安装锁'
 mkdir -p "$ROOT" "$BIN_DIR" "$ROOT/runtime" "$ROOT/releases"
-ssh_parent_alive() {
-  kill -0 "$SSH_PARENT" 2>/dev/null || return 1
-  [ -r "/proc/$SSH_PARENT/stat" ] || return 0
-  PARENT_STATE=
-  read -r _ _ PARENT_STATE _ < "/proc/$SSH_PARENT/stat" || return 0
-  [ "$PARENT_STATE" != Z ]
+process_alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  [ -r "/proc/$1/stat" ] || return 0
+  IFS= read -r PROCESS_STAT < "/proc/$1/stat" || return 1
+  case "${PROCESS_STAT##*) }" in Z\ *|X\ *) return 1 ;; esac
 }
 watch_ssh_parent() {
   trap 'exit 0' USR1
   trap '' HUP INT TERM
-  while ssh_parent_alive; do sleep 1; done
+  # POSIX subshells preserve $$ (the installer). Also release the download
+  # children if the installer itself dies while the SSH parent is still alive.
+  while process_alive "$SSH_PARENT" && process_alive "$$"; do sleep 1; done
   kill -TERM 0 2>/dev/null || true
   sleep 1
   rm -rf "$WORK"
@@ -584,12 +586,25 @@ trap cleanup EXIT
 trap on_signal HUP INT TERM
 watch_ssh_parent &
 WATCHDOG_PID="$!"
-exec 9>"$LOCK_FILE"
+exec 9>>"$LOCK_FILE"
+WAITED_FOR_INSTALL=0
 if ! flock -n 9; then
-  printf '另一个 Agent 安装任务正在运行\n' >&2
+  WAITED_FOR_INSTALL=1
+  progress 5 '' '等待上一次安装结束' '服务器释放安装锁后会自动继续，最多等待 2 分钟'
+  if ! flock -w 120 9; then
+    printf '服务器上的安装任务仍在运行，已等待 2 分钟，请稍后重试。\n' >&2
+    exit 75
+  fi
+fi
+# A concurrent uninstall may remove the original inode while we are waiting.
+if ! [ "$LOCK_FILE" -ef "/proc/$$/fd/9" ]; then
+  printf '服务器上的安装目录已变更，请重试。\n' >&2
   exit 75
 fi
-printf '%s\n' "$$" >&9
+printf '%s\n' "$$" > "$LOCK_FILE"
+# Keep the open lock on the installer shell, outside the install body.
+# Child programs (including npm's background helpers) must not inherit it.
+{
 mkdir -p "$WORK"
 AVAILABLE_KB="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
 if [ "${AVAILABLE_KB:-0}" -lt 307200 ]; then
@@ -639,6 +654,13 @@ else
   progress 52 '' '复用现有 Node.js 运行时' '已检测到匹配的独立运行时'
 fi
 progress 55 '' '准备 Codex CLI 安装目录' '创建隔离发布目录'
+if [ "$WAITED_FOR_INSTALL" = 1 ] && [ -x "$BIN_DIR/codex-remote" ] &&
+   [ "$("$BIN_DIR/codex-remote" --version 2>/dev/null || true)" = "codex-cli __CODEX_VERSION__" ] &&
+   "$BIN_DIR/codex-remote" app-server --help >/dev/null 2>&1; then
+  INSTALL_COMMITTED=1
+  progress 100 '' '安装完成' '上一次安装已完成，复用已就绪的 Codex'
+  exit 0
+fi
 RELEASE_SLOT="__CODEX_VERSION__-$$"
 while [ -e "$ROOT/releases/$RELEASE_SLOT" ]; do
   RELEASE_SLOT="$RELEASE_SLOT-next"
@@ -723,4 +745,5 @@ INSTALL_COMMITTED=1
 mv -f "$WRAPPER" "$BIN_DIR/codex-remote"
 "$BIN_DIR/codex-remote" --version
 progress 100 '' '安装完成' 'Codex app-server 已就绪'
+} 9>&-
 ''';

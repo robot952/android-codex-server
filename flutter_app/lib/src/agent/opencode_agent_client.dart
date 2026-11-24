@@ -10,6 +10,7 @@ import 'open_code_bootstrap.dart';
 import 'open_code_bridge_asset.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
+import 'remote_install_error.dart';
 
 typedef OpenCodeBridgeLoader = Future<String> Function();
 
@@ -99,6 +100,7 @@ class OpenCodeAgentClient extends CodexAgentClient
     await scriptHost.runStreamingShellScript(
       OpenCodeBootstrap.installNodeRuntimeScript(proxyUrl: profile.proxyUrl),
       command: remoteInstallCommand,
+      formatExitError: remoteInstallErrorFormatter(profile.proxyUrl),
       timeout: _openCodeInstallTimeout,
       maxOutputBytes: 8 * 1024 * 1024,
       onStdoutLine: (line) {
@@ -129,6 +131,7 @@ class OpenCodeAgentClient extends CodexAgentClient
       ),
       command: remoteInstallCommand,
       timeout: _openCodeInstallTimeout,
+      formatExitError: remoteInstallErrorFormatter(profile.proxyUrl),
       maxOutputBytes: 8 * 1024 * 1024,
       onStdoutLine: (line) {
         final progress = parseRemoteInstallProgressLine(line);

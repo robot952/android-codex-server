@@ -443,6 +443,9 @@ UI 验收推荐使用约 1.5K 画布：
 每次做响应式或键盘回归至少覆盖一次推荐竖屏和软键盘弹出场景，并核对截图实际 PNG 尺寸；
 不要把推荐尺寸误写成“必须精确 1220x2712”。
 
+`integration_test/remote_setup_proxy_test.dart` 在 Android 的真实软键盘下检查代理输入区的位置、
+可点击性和重试提交的地址，使用内存回调模拟远程安装。
+
 提问弹窗的设备回归：在 SDK/Gradle 缓存环境已设置后执行
 `./scripts/flutter-tool.sh --no-version-check test integration_test/user_input_dialog_test.dart -d emulator-5554`。
 非阻塞提问另由 `test/ui/async_question_dialog_test.dart` 覆盖折叠入口、首次弹出、关闭/跳过、历史恢复、

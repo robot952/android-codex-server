@@ -521,6 +521,165 @@ $npmPhase
   });
 
   group('managed install boundaries', () {
+    Future<void> prepareTestRuntime(Directory sandbox) async {
+      final arch = (await Process.run('uname', [
+        '-m',
+      ])).stdout.toString().trim();
+      final nodeArch = arch == 'aarch64' || arch == 'arm64' ? 'arm64' : 'x64';
+      final root = '${sandbox.path}/.local/share/codex-remote';
+      final bin = '$root/runtime/node-v$pinnedNodeVersion-linux-$nodeArch/bin';
+      await _writeFile('$bin/node', '''#!/bin/sh
+for fd in /proc/\$\$/fd/*; do
+  if [ "\$fd" -ef "\$HOME/.local/share/codex-remote/.install.lock" ]; then
+    printf 'child inherited installer lock\\n' >&2
+    exit 1
+  fi
+done
+printf 'v$pinnedNodeVersion\\n'
+''');
+      await _writeFile('$bin/npm', r'''#!/bin/sh
+if [ -f "$HOME/block-npm" ]; then
+  echo $$ > "$HOME/npm.pid"
+  exec sleep 20
+fi
+echo 10.0.0
+''');
+      final permissions = await Process.run('chmod', [
+        '700',
+        '$bin/node',
+        '$bin/npm',
+      ]);
+      expect(permissions.exitCode, 0);
+    }
+
+    test(
+      'a stale PID file does not block a shared Node retry',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'codex-stale-lock-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        await prepareTestRuntime(sandbox);
+        await _writeFile(
+          '${sandbox.path}/.local/share/codex-remote/.install.lock',
+          '999999\n',
+        );
+        final result = await _runShell(
+          RemoteBootstrap.installNodeRuntimeScript(),
+          home: sandbox.path,
+        );
+        expect(result.exitCode, 0, reason: result.stderr);
+        expect(result.stdout, isNot(contains('等待上一次安装结束')));
+        expect(_progressRecords(result.stdout).last.percent, 100);
+        expect(
+          File('${sandbox.path}/.local/bin/codex-remote').existsSync(),
+          isFalse,
+        );
+      },
+      skip: !Platform.isLinux,
+    );
+
+    test(
+      'a retry waits for the live owner and reuses its completed Codex',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'codex-busy-lock-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        await prepareTestRuntime(sandbox);
+        await _writeFile(
+          '${sandbox.path}/retry.sh',
+          RemoteBootstrap.installScript(),
+        );
+        // Hold an old-style flock, as a still-running install from an older app
+        // would. Publish the fake managed CLI only once the retry is waiting.
+        final result = await _runShell('''
+set -eu
+cd "\$HOME"
+lock=.local/share/codex-remote/.install.lock
+exec 8>"\$lock"
+flock -n 8
+printf 'original-owner\\n' >&8
+setsid --wait sh retry.sh 8>&- >retry.out 2>retry.err &
+retry=\$!
+for n in \$(seq 1 100); do
+  grep -q '等待上一次安装结束' retry.out 2>/dev/null && break
+  sleep 0.05
+done
+grep -q '等待上一次安装结束' retry.out
+[ "\$(cat "\$lock")" = original-owner ]
+mkdir -p .local/bin
+cat >.local/bin/codex-remote <<'SCRIPT'
+#!/bin/sh
+case "\$*" in
+  --version) echo "codex-cli $pinnedCodexVersion" ;;
+  "app-server --help") exit 0 ;;
+  *) exit 1 ;;
+esac
+SCRIPT
+chmod 700 .local/bin/codex-remote
+exec 8>&-
+status=0
+wait "\$retry" || status=\$?
+cat retry.out
+cat retry.err >&2
+exit "\$status"
+''', home: sandbox.path);
+        expect(result.exitCode, 0, reason: result.stderr);
+        final records = _progressRecords(result.stdout);
+        expect(records.last.percent, 100);
+        expect(records.last.detail, contains('复用'));
+        expect(result.stdout, isNot(contains('下载并安装 Codex CLI')));
+      },
+      skip: !Platform.isLinux,
+    );
+
+    test(
+      'an interrupted installer releases the lock and stops its child',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'codex-owner-exit-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        await prepareTestRuntime(sandbox);
+        await _writeFile(
+          '${sandbox.path}/install.sh',
+          RemoteBootstrap.installNodeRuntimeScript(),
+        );
+        final result = await _runShell(r'''
+set -eu
+cd "$HOME"
+touch block-npm
+setsid --wait sh install.sh >first.out 2>first.err &
+first=$!
+for n in $(seq 1 100); do
+  [ -s npm.pid ] && break
+  sleep 0.05
+done
+child=$(cat npm.pid)
+lock=.local/share/codex-remote/.install.lock
+owner=$(cat "$lock")
+kill -KILL "$owner"
+wait "$first" 2>/dev/null || true
+exec 8>>"$lock"
+flock -w 3 8
+exec 8>&-
+rm block-npm
+setsid --wait sh install.sh
+for n in $(seq 1 100); do
+  [ -r "/proc/$child/stat" ] || exit 0
+  [ "$(awk '{print $3}' "/proc/$child/stat" 2>/dev/null)" = Z ] && exit 0
+  sleep 0.05
+done
+echo 'interrupted installer child is still running' >&2
+exit 1
+''', home: sandbox.path);
+        expect(result.exitCode, 0, reason: result.stderr);
+        expect(_progressRecords(result.stdout).last.percent, 100);
+      },
+      skip: !Platform.isLinux,
+    );
+
     test('installer is pinned and confined to the current SSH user', () async {
       final script = RemoteBootstrap.installScript();
 

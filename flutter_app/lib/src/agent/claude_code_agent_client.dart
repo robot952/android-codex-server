@@ -7,6 +7,7 @@ import 'claude_code_bridge_asset.dart';
 import 'codex_agent_client.dart';
 import 'remote_agent_client.dart';
 import 'remote_bootstrap.dart';
+import 'remote_install_error.dart';
 import 'thread_title.dart';
 
 typedef ClaudeCodeBridgeLoader = Future<String> Function();
@@ -79,6 +80,7 @@ class ClaudeCodeAgentClient extends CodexAgentClient
         proxyUrl: profile.proxyUrl,
       ),
       command: remoteInstallCommand,
+      formatExitError: remoteInstallErrorFormatter(profile.proxyUrl),
       timeout: const Duration(minutes: 15),
       maxOutputBytes: 2 * 1024 * 1024,
       onStdoutLine: (line) {
