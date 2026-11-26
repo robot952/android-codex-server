@@ -47,6 +47,7 @@ class _ThreadListController extends AppController {
   AgentKind? selectedAgent;
   int resumedSetupCount = 0;
   bool fileManagerOpened = false;
+  bool workspaceOpened = false;
   final List<AgentKind> versionRefreshes = [];
   (String, AgentKind, String)? versionChange;
 
@@ -88,6 +89,11 @@ class _ThreadListController extends AppController {
   @override
   void showFileManager() {
     fileManagerOpened = true;
+  }
+
+  @override
+  Future<void> showWorkspacePicker() async {
+    workspaceOpened = true;
   }
 
   @override
@@ -162,6 +168,50 @@ Future<_ThreadListController> _pumpPagedThreadList(
 }
 
 void main() {
+  for (final cached in [false, true]) {
+    testWidgets('shows the failing connection and retry with cache=$cached', (
+      tester,
+    ) async {
+      const key = AgentConnectionKey(
+        profileId: 'server',
+        agent: AgentKind.codex,
+      );
+      const agentReason = '工作目录 /missing 不存在';
+      const hostReason = 'Connection refused (errno = 111)';
+      final initial =
+          _pagedThreadListState(
+            cached
+                ? const [AgentThread(id: 'recent', title: '缓存会话')]
+                : const [],
+          ).copyWith(
+            agentConnectionStates: {
+              key: const domain.ConnectionState(
+                phase: ConnectionPhase.failed,
+                message: agentReason,
+              ),
+            },
+          );
+      final controller = await _pumpPagedThreadList(tester, initial);
+      expect(find.text(agentReason), findsOneWidget);
+      expect(find.byTooltip('重新连接 Codex'), findsOneWidget);
+      controller.showState(
+        initial.copyWith(
+          connectionStates: const {
+            'server': domain.ConnectionState(
+              phase: ConnectionPhase.failed,
+              message: hostReason,
+            ),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(hostReason), findsOneWidget);
+      expect(find.text(agentReason), findsNothing);
+      expect(find.byTooltip('重新连接服务器'), findsOneWidget);
+      if (cached) expect(find.text('缓存会话'), findsOneWidget);
+    });
+  }
+
   testWidgets('recent updates stay above older cached and refreshed rows', (
     tester,
   ) async {
@@ -853,65 +903,72 @@ void main() {
     expect(icon.color, codexGreen);
   });
 
-  testWidgets('places file management beside settings on the thread list', (
-    tester,
-  ) async {
-    final manager = ServerConnectionManager();
-    final controller = _ThreadListController(_MemoryStore(), manager);
-    addTearDown(manager.close);
-    const profile = ServerProfile(
-      id: 'server',
-      name: '测试服务器',
-      host: 'example.test',
-      username: 'root',
-      authMode: AuthMode.password,
-    );
-    const key = AgentConnectionKey(profileId: 'server', agent: AgentKind.codex);
+  testWidgets(
+    'file manager and workspace selection remain available after Codex fails',
+    (tester) async {
+      final manager = ServerConnectionManager();
+      final controller = _ThreadListController(_MemoryStore(), manager);
+      addTearDown(manager.close);
+      const profile = ServerProfile(
+        id: 'server',
+        name: '测试服务器',
+        host: 'example.test',
+        username: 'root',
+        authMode: AuthMode.password,
+      );
+      const key = AgentConnectionKey(
+        profileId: 'server',
+        agent: AgentKind.codex,
+      );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [appControllerProvider.overrideWith((ref) => controller)],
-        child: MaterialApp(
-          theme: buildCodexTheme(),
-          home: const ThreadListScreen(),
-        ),
-      ),
-    );
-    controller.showState(
-      AppUiState(
-        profiles: const [profile],
-        selectedProfileId: profile.id,
-        connectionStates: {
-          profile.id: const domain.ConnectionState(
-            phase: ConnectionPhase.connected,
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: MaterialApp(
+            theme: buildCodexTheme(),
+            home: const ThreadListScreen(),
           ),
-        },
-        agentConnectionStates: {
-          key: const domain.ConnectionState(phase: ConnectionPhase.connected),
-        },
-      ),
-    );
-    await tester.pump();
+        ),
+      );
+      controller.showState(
+        AppUiState(
+          profiles: const [profile],
+          selectedProfileId: profile.id,
+          connectionStates: {
+            profile.id: const domain.ConnectionState(
+              phase: ConnectionPhase.connected,
+            ),
+          },
+          agentConnectionStates: {
+            key: const domain.ConnectionState(phase: ConnectionPhase.failed),
+          },
+        ),
+      );
+      await tester.pump();
 
-    final settingsButton = find.byTooltip('设置');
-    final fileManagerButton = find.byKey(
-      const ValueKey('thread-list-file-manager'),
-    );
-    expect(settingsButton, findsOneWidget);
-    expect(fileManagerButton, findsOneWidget);
-    expect(
-      tester.getTopLeft(fileManagerButton).dx,
-      greaterThan(tester.getTopLeft(settingsButton).dx),
-    );
+      final settingsButton = find.byTooltip('设置');
+      final fileManagerButton = find.byKey(
+        const ValueKey('thread-list-file-manager'),
+      );
+      expect(settingsButton, findsOneWidget);
+      expect(fileManagerButton, findsOneWidget);
+      expect(
+        tester.getTopLeft(fileManagerButton).dx,
+        greaterThan(tester.getTopLeft(settingsButton).dx),
+      );
 
-    await tester.tap(fileManagerButton);
-    expect(controller.fileManagerOpened, isTrue);
+      await tester.tap(fileManagerButton);
+      expect(controller.fileManagerOpened, isTrue);
 
-    await tester.tap(settingsButton);
-    await tester.pumpAndSettle();
-    expect(find.text('文件管理'), findsNothing);
-    expect(find.text('Codex 版本'), findsOneWidget);
-  });
+      await tester.tap(settingsButton);
+      await tester.pumpAndSettle();
+      expect(find.text('文件管理'), findsNothing);
+      expect(find.text('Codex 版本'), findsOneWidget);
+      await tester.tap(find.text('选择工作目录'));
+      await tester.pumpAndSettle();
+      expect(controller.workspaceOpened, isTrue);
+    },
+  );
 
   for (final agent in [AgentKind.openCode, AgentKind.claudeCode]) {
     testWidgets('${agent.label} version menu applies only its own catalog', (

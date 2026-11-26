@@ -2318,36 +2318,48 @@ class AppController extends StateNotifier<AppUiState> {
   Future<void> showWorkspacePicker() async {
     await _ensureInitialized();
     if (state.agentSettingsVisible) return;
-    final profile = _activeWorkspaceProfile();
+    final profile = _activeHostProfile();
     if (profile == null) return;
     final cachedPath = _workspaceStateProfileId == profile.id
         ? state.workspaceCurrentPath.trim()
         : '';
     final path = profile.workspace.trim().isNotEmpty
         ? profile.workspace.trim()
-        : cachedPath.isNotEmpty
-        ? cachedPath
-        : '/';
-    await _browseWorkspace(profile, state.activeAgent, path);
+        : cachedPath;
+    await _browseWorkspace(
+      profile,
+      state.activeAgent,
+      path.isEmpty ? null : path,
+      initial: true,
+    );
   }
 
   Future<void> browseWorkspace(String? path) async {
     await _ensureInitialized();
-    final profile = _activeWorkspaceProfile();
+    final profile = _activeHostProfile();
     if (profile == null) return;
     await _browseWorkspace(profile, state.activeAgent, path);
   }
 
   Future<void> confirmWorkspace() async {
     await _ensureInitialized();
-    final profile = _activeWorkspaceProfile();
+    final profile = _activeHostProfile();
     final path = state.workspaceCurrentPath.trim();
     if (profile == null ||
+        !state.workspacePickerVisible ||
         state.workspaceLoading ||
+        state.workspaceError != null ||
         _workspaceStateProfileId != profile.id ||
         path.isEmpty) {
       return;
     }
+    final key = AgentConnectionKey(
+      profileId: profile.id,
+      agent: state.activeAgent,
+    );
+    final retryFailedAgent =
+        profile.workspace.trim() != path &&
+        _agents.states[key]?.phase == ConnectionPhase.failed;
     _workspaceRequestId++;
     state = state.copyWith(
       workspacePickerVisible: false,
@@ -2357,6 +2369,13 @@ class AppController extends StateNotifier<AppUiState> {
     await saveProfile(
       profile.copyWith(workspace: path, workspacePromptShown: true),
     );
+    if (retryFailedAgent &&
+        mounted &&
+        _isActiveKey(key) &&
+        state.screen == AppScreen.threads &&
+        _activeHostProfile()?.workspace == path) {
+      await ensureActiveAgent();
+    }
   }
 
   void dismissWorkspacePicker() {
@@ -2368,27 +2387,12 @@ class AppController extends StateNotifier<AppUiState> {
     );
   }
 
-  ServerProfile? _activeWorkspaceProfile() {
-    final profileId = state.selectedProfileId;
-    if (profileId == null ||
-        _connections.states[profileId]?.phase != ConnectionPhase.connected) {
-      return null;
-    }
-    final key = AgentConnectionKey(
-      profileId: profileId,
-      agent: state.activeAgent,
-    );
-    if (_agents.states[key]?.phase != ConnectionPhase.connected) return null;
-    return state.profiles.firstWhereOrNull(
-      (candidate) => candidate.id == profileId,
-    );
-  }
-
   Future<void> _browseWorkspace(
     ServerProfile profile,
     AgentKind agent,
-    String? path,
-  ) async {
+    String? path, {
+    bool initial = false,
+  }) async {
     final requestId = ++_workspaceRequestId;
     _workspaceStateProfileId = profile.id;
     state = state.copyWith(
@@ -2397,7 +2401,12 @@ class AppController extends StateNotifier<AppUiState> {
       workspaceError: null,
     );
     try {
-      final listing = await _connections.listDirectories(profile, path);
+      final listing = await _listWithInitialHomeFallback(
+        path,
+        list: (path) => _connections.listDirectories(profile, path),
+        fallbackToHome: initial,
+        isCurrent: () => _isWorkspaceRequestCurrent(requestId, profile, agent),
+      );
       if (!_isWorkspaceRequestCurrent(requestId, profile, agent)) return;
       _workspaceStateProfileId = profile.id;
       state = state.copyWith(
@@ -2431,11 +2440,9 @@ class AppController extends StateNotifier<AppUiState> {
     final current = state.profiles.firstWhereOrNull(
       (candidate) => candidate.id == profile.id,
     );
-    final key = AgentConnectionKey(profileId: profile.id, agent: agent);
     return current != null &&
         current.hasSameConnectionIdentity(profile) &&
-        _connections.states[profile.id]?.phase == ConnectionPhase.connected &&
-        _agents.states[key]?.phase == ConnectionPhase.connected;
+        _connections.states[profile.id]?.phase == ConnectionPhase.connected;
   }
 
   void _showInitialWorkspacePickerIfNeeded(
@@ -2470,7 +2477,9 @@ class AppController extends StateNotifier<AppUiState> {
         ),
       ),
     );
-    if (updated.workspace.trim().isNotEmpty) return;
+    if (updated.workspace.trim().isNotEmpty || state.workspacePickerVisible) {
+      return;
+    }
 
     _workspaceStateProfileId = updated.id;
     state = state.copyWith(
@@ -2515,7 +2524,7 @@ class AppController extends StateNotifier<AppUiState> {
       fileManagerOperation: null,
       fileManagerError: null,
     );
-    await _browseFileManager(profile, initialPath);
+    await _browseFileManager(profile, initialPath, initial: true);
   }
 
   void closeFileManager() {
@@ -2551,11 +2560,40 @@ class AppController extends StateNotifier<AppUiState> {
     unawaited(_browseFileManager(profile, path));
   }
 
-  Future<void> _browseFileManager(ServerProfile profile, String path) async {
+  Future<T> _listWithInitialHomeFallback<T>(
+    String? path, {
+    required Future<T> Function(String?) list,
+    required bool fallbackToHome,
+    required bool Function() isCurrent,
+  }) async {
+    try {
+      return await list(path);
+    } catch (error) {
+      if (fallbackToHome &&
+          path != null &&
+          path != '.' &&
+          isMissingRemoteDirectory(error) &&
+          isCurrent()) {
+        return list(null);
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _browseFileManager(
+    ServerProfile profile,
+    String path, {
+    bool initial = false,
+  }) async {
     final requestId = ++_fileManagerListRequestId;
     state = state.copyWith(fileManagerLoading: true, fileManagerError: null);
     try {
-      final listing = await _connections.listRemoteFiles(profile, path);
+      final listing = await _listWithInitialHomeFallback(
+        path,
+        list: (path) => _connections.listRemoteFiles(profile, path),
+        fallbackToHome: initial,
+        isCurrent: () => _isFileManagerRequestCurrent(requestId, profile),
+      );
       if (!_isFileManagerRequestCurrent(requestId, profile)) return;
       state = state.copyWith(
         fileManagerLoading: false,
@@ -7812,16 +7850,11 @@ class AppController extends StateNotifier<AppUiState> {
         clearVisibleApprovals = true;
       }
     }
-    final workspaceDisconnected =
-        state.workspacePickerVisible &&
-        activeKey != null &&
-        connections[activeKey]?.phase != ConnectionPhase.connected;
     final settingsDisconnected =
         state.agentSettingsVisible &&
         activeKey != null &&
         connections[activeKey]?.phase != ConnectionPhase.connected;
     if (settingsDisconnected) _closeAgentSettings();
-    if (workspaceDisconnected) _workspaceRequestId++;
     state = state.copyWith(
       agentConnectionStates: connections,
       activeAgentCapabilities:
@@ -7833,11 +7866,6 @@ class AppController extends StateNotifier<AppUiState> {
           ? const <ApprovalPrompt>[]
           : state.approvalQueue,
       approval: clearVisibleApprovals ? null : state.approval,
-      workspacePickerVisible: workspaceDisconnected
-          ? false
-          : state.workspacePickerVisible,
-      workspaceLoading: workspaceDisconnected ? false : state.workspaceLoading,
-      workspaceError: workspaceDisconnected ? null : state.workspaceError,
     );
     for (final profileId in recoverProfiles) {
       _scheduleConnectionRecovery(profileId, source: 'agent_state');

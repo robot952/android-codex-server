@@ -123,6 +123,14 @@ abstract interface class RemoteServerDirectoryClient {
   Future<RemoteDirectoryListing> listDirectories(String? path);
 }
 
+class RemoteDirectoryUnavailable extends StateError {
+  RemoteDirectoryUnavailable(super.message);
+}
+
+bool isMissingRemoteDirectory(Object error) =>
+    error is RemoteDirectoryUnavailable ||
+    (error is SftpStatusError && error.code == SftpStatusCode.noSuchFile);
+
 /// Optional capability for running a shell program whose source is supplied
 /// through stdin instead of being exposed in the SSH exec command.
 abstract interface class RemoteServerScriptClient {
@@ -607,7 +615,7 @@ class DartSshServerClient
         await sftp.absolute(requestedPath),
       );
       final attributes = await sftp.stat(currentPath);
-      if (!attributes.isDirectory) throw StateError('不是可浏览的目录');
+      if (!attributes.isDirectory) throw RemoteDirectoryUnavailable('不是可浏览的目录');
 
       final directories = <RemoteDirectory>[];
       var listedEntries = 0;
@@ -651,7 +659,7 @@ class DartSshServerClient
         await sftp.absolute(requestedPath),
       );
       final attributes = await sftp.stat(currentPath);
-      if (!attributes.isDirectory) throw StateError('不是可浏览的目录');
+      if (!attributes.isDirectory) throw RemoteDirectoryUnavailable('不是可浏览的目录');
 
       final entries = <RemoteFileEntry>[];
       var listedEntries = 0;

@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 
 import '../domain/models.dart';
+import '../platform/diagnostic_logger.dart' show sanitizeDiagnosticText;
 import '../platform/diagnostic_timing.dart';
 import '../ssh/ssh_server_client.dart';
 import 'codex_global_settings.dart';
@@ -831,10 +832,7 @@ class CodexAgentClient
     _stderrBuffer = '';
     _discardStdoutLine = false;
     _discardStderrLine = false;
-    if (dedicatedHost != null) {
-      _watchDedicatedHost(dedicatedHost, scope);
-    }
-    _listen(session, scope);
+    _listen(session, scope, profile.workspace.trim(), dedicatedHost);
 
     try {
       await _startTiming(
@@ -1814,6 +1812,7 @@ class CodexAgentClient
   void _watchDedicatedHost(
     RemoteServerClient host,
     CodexProtocolGeneration scope,
+    void Function(String message) onFailure,
   ) {
     unawaited(() async {
       try {
@@ -1826,9 +1825,11 @@ class CodexAgentClient
         }
       } catch (error) {
         if (identical(_dedicatedHost, host) && scope.isCurrent) {
+          final detail = _short(_safeConnectionDetail(error.toString()));
+          onFailure(detail);
           _emitDiagnostic(
             '${kind.label} SSH transport_error generation=${scope.value} '
-            'detail=${_short(error)}',
+            'detail=$detail',
             isTransport: true,
           );
         }
@@ -2083,17 +2084,56 @@ class CodexAgentClient
     return next;
   }
 
-  void _listen(CodexSession session, CodexProtocolGeneration scope) {
+  void _listen(
+    CodexSession session,
+    CodexProtocolGeneration scope,
+    String workspace,
+    RemoteServerClient? dedicatedHost,
+  ) {
     final decodedStdout = utf8.decoder.bind(session.stdout);
-    final decodedStderr = utf8.decoder.bind(session.stderr);
+    final decodedStderr = const Utf8Decoder(
+      allowMalformed: true,
+    ).bind(session.stderr);
+    final stderrDone = Completer<void>();
+    String? startupCause;
+    String? stdoutReadFailure;
+    String? hostFailure;
+    if (dedicatedHost != null) {
+      _watchDedicatedHost(
+        dedicatedHost,
+        scope,
+        (message) => hostFailure = message,
+      );
+    }
+    bool current() => identical(_session, session) && scope.isCurrent;
+    void recordStderrLine(String line) {
+      _emitDiagnostic(line, isStderr: true);
+      if (!_connected) {
+        startupCause = _startupStderrCause(line, workspace) ?? startupCause;
+      }
+    }
+
     _stdoutSubscription = decodedStdout.listen(
       (chunk) => _consumeStdout(chunk, scope),
       onError: (Object error, StackTrace stack) {
-        _emitDiagnostic('${kind.label} 标准输出读取失败：${_short(error)}');
+        if (!current()) return;
+        stdoutReadFailure = _short(_safeConnectionDetail(error.toString()));
+        _emitDiagnostic('${kind.label} 标准输出读取失败：$stdoutReadFailure');
       },
     );
     _stderrSubscription = decodedStderr.listen(
-      _consumeStderr,
+      (chunk) {
+        if (current()) _consumeStderr(chunk, recordStderrLine);
+      },
+      onDone: () {
+        if (current() &&
+            !_discardStderrLine &&
+            _stderrBuffer.trim().isNotEmpty) {
+          recordStderrLine(_stderrBuffer.trim());
+          _stderrBuffer = '';
+        }
+        stderrDone.complete();
+      },
       onError: (Object error, StackTrace stack) {
         _emitDiagnostic(
           '${kind.label} 诊断流读取失败：${_short(error)}',
@@ -2101,26 +2141,92 @@ class CodexAgentClient
         );
       },
     );
-    unawaited(
-      session.done
-          .then((_) {
-            if (identical(_session, session) && scope.isCurrent) {
-              _connected = false;
-              _failPending(StateError('${kind.label} 服务已退出'));
-              _emitDiagnostic('${kind.label} 服务已退出');
-              _emitConnectionLost('${kind.label} 服务已退出');
-            }
-          })
-          .catchError((Object error, StackTrace stack) {
-            if (identical(_session, session) && scope.isCurrent) {
-              _connected = false;
-              _failPending(error);
-              _emitDiagnostic('${kind.label} 通道已关闭：${_short(error)}');
-              _emitConnectionLost('${kind.label} 通道已关闭');
-            }
-          }),
-    );
+    unawaited(() async {
+      String? transportFailure;
+      try {
+        await session.done;
+      } catch (error) {
+        transportFailure = _short(_safeConnectionDetail(error.toString()));
+      }
+      if (!current()) return;
+      final starting = !_connected;
+      if (starting && transportFailure == null) {
+        // SSH channel completion and the last decoded stderr chunk are
+        // delivered independently. Bound the wait for transports without EOF.
+        await stderrDone.future.timeout(
+          const Duration(milliseconds: 150),
+          onTimeout: () {},
+        );
+        if (!current()) return;
+        if (!_discardStderrLine && _stderrBuffer.trim().isNotEmpty) {
+          startupCause =
+              _startupStderrCause(_stderrBuffer, workspace) ?? startupCause;
+        }
+      }
+      final cause =
+          hostFailure ??
+          transportFailure ??
+          stdoutReadFailure ??
+          (starting ? startupCause : null);
+      final exitCode = session is _SshCodexSession
+          ? session._session.exitCode
+          : null;
+      final message = cause != null
+          ? '${kind.label} ${starting ? '启动失败' : '连接已断开'}：$cause'
+          : '${kind.label} 服务已退出${exitCode == null ? '' : '（退出码 $exitCode）'}';
+      _connected = false;
+      _failPending(StateError(message));
+      _emitDiagnostic(message);
+      _emitConnectionLost(message);
+    }());
   }
+
+  String? _startupStderrCause(String line, String workspace) {
+    final safe = _safeConnectionDetail(line);
+    if (workspace.isNotEmpty &&
+        line.contains('cd:') &&
+        line.contains(workspace)) {
+      final path = _short(_safeConnectionDetail(workspace));
+      if (line.contains('No such file or directory')) {
+        return '工作目录「$path」不存在，请在设置中选择有效的工作目录。';
+      }
+      if (line.contains('Permission denied')) {
+        return '没有权限进入工作目录「$path」，请检查目录权限或选择其他目录。';
+      }
+      if (line.contains("can't cd to") || line.contains('Not a directory')) {
+        return '无法进入工作目录「$path」，请在设置中选择有效的工作目录。';
+      }
+    }
+    // Known advisory messages are emitted even by healthy Codex servers.
+    if (safe.contains('unrecognized configuration setting') ||
+        safe.contains('could not find bubblewrap on PATH') ||
+        safe.endsWith(' is ignored.')) {
+      return null;
+    }
+    if (!_startupFailurePattern.hasMatch(safe)) return null;
+    return _short(safe);
+  }
+
+  static final _startupFailurePattern = RegExp(
+    r'(?:\berror\b|\bfatal\b|\bpanic(?:ked)?\b|failed|denied|not found|'
+    r'no such file|not a directory|cannot |could not |refused|timed out|错误|失败|不存在|无权限)',
+    caseSensitive: false,
+  );
+
+  String _safeConnectionDetail(String value) => sanitizeDiagnosticText(
+    sanitizeAgentDiagnostic(value)
+        .replaceAll(
+          RegExp(r'(?:wss?|https?)://\S+', caseSensitive: false),
+          '[远程地址]',
+        )
+        .replaceAllMapped(
+          RegExp(
+            r'''\b([a-z0-9_]*(?:API_KEY|TOKEN|PASSWORD|SECRET))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)''',
+            caseSensitive: false,
+          ),
+          (m) => '${m[1]}=[REDACTED]',
+        ),
+  );
 
   void _consumeStdout(String chunk, CodexProtocolGeneration scope) {
     if (!scope.isCurrent) return;
@@ -2218,7 +2324,7 @@ class CodexAgentClient
     }
   }
 
-  void _consumeStderr(String chunk) {
+  void _consumeStderr(String chunk, void Function(String) onLine) {
     _stderrBuffer += chunk;
     while (true) {
       final newline = _stderrBuffer.indexOf('\n');
@@ -2235,7 +2341,7 @@ class CodexAgentClient
         _discardStderrLine = false;
         _emitDiagnostic('${kind.label} 诊断信息过长，已截断', isStderr: true);
       } else if (line.trim().isNotEmpty) {
-        _emitDiagnostic(line.trim(), isStderr: true);
+        onLine(line.trim());
       }
     }
   }
@@ -2361,7 +2467,9 @@ class CodexAgentClient
     bool isStderr = false,
     bool isTransport = false,
   }) {
-    final sanitized = sanitizeAgentDiagnostic(message);
+    final sanitized = isStderr || isTransport
+        ? _safeConnectionDetail(message)
+        : sanitizeAgentDiagnostic(message);
     if (sanitized.isEmpty) return;
     _emit(
       RemoteAgentDiagnostic(

@@ -150,7 +150,7 @@ class DiagnosticLogger {
   static final DiagnosticLogger instance = DiagnosticLogger();
 
   /// Limit the original UTF-8 bytes, independently of the compression ratio.
-  static const maxSegmentBytes = 100 * 1024;
+  static const maxSegmentBytes = 1024 * 1024;
   static const maxSegments = 5;
   static const maxArchiveBytes = maxSegmentBytes + 1024;
   static const maxTotalBytes = maxSegments * maxArchiveBytes;

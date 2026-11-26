@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicLong
  * so native crash/ANR entries appear in the regular log picker on next launch.
  */
 object DiagnosticLogBridge {
-    private const val MAX_FILE_BYTES = 100 * 1024L
+    private const val MAX_FILE_BYTES = 1024 * 1024L
     private const val MAX_FILES = 5
     private const val MAX_TOTAL_BYTES = MAX_FILES * (MAX_FILE_BYTES + 1024)
     private const val MAX_STACK_CHARS = 24_000

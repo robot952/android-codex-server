@@ -1134,6 +1134,14 @@ class _ConnectFailingAgent extends _FailingTurnAgent {
   }
 }
 
+class _RequiresValidWorkspaceAgent extends _FailingTurnAgent {
+  @override
+  Future<void> connect(ServerProfile profile, RemoteServerClient host) async {
+    if (profile.workspace != '/users/fixture') throw StateError('目录不存在');
+    await super.connect(profile, host);
+  }
+}
+
 class _BlockingThreadListAgent extends _FailingTurnAgent {
   final Completer<AgentThreadPage> firstThreadList =
       Completer<AgentThreadPage>();
@@ -4188,6 +4196,57 @@ void main() {
   });
 
   test(
+    'failed agent can recover by selecting the SSH home workspace',
+    () async {
+      final profile = _firstProfile.copyWith(
+        workspace: '/removed',
+        workspacePromptShown: true,
+      );
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _WorkspaceHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final agents = AgentConnectionManager(
+        connections,
+        clientFactory: (_) => _RequiresValidWorkspaceAgent(),
+      );
+      final key = AgentConnectionKey(
+        profileId: profile.id,
+        agent: AgentKind.codex,
+      );
+      final controller = AppController(store, connections, agents);
+      addTearDown(() async {
+        controller.dispose();
+        await agents.close();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      await controller.ensureActiveAgent();
+      expect(agents.states[key]?.phase, ConnectionPhase.failed);
+      final open = controller.showWorkspacePicker();
+      await _waitUntil(() => host.directoryRequests.isNotEmpty);
+      expect(host.directoryRequests.single.path, '/removed');
+      host.directoryRequests.single.result.completeError(
+        SftpStatusError(SftpStatusCode.noSuchFile, 'No such file'),
+      );
+      await _waitUntil(() => host.directoryRequests.length == 2);
+      expect(host.directoryRequests.last.path, isNull);
+      host.directoryRequests.last.result.complete(
+        const RemoteDirectoryListing(currentPath: '/users/fixture'),
+      );
+      await open;
+      expect(controller.state.workspaceCurrentPath, '/users/fixture');
+      expect(controller.state.workspaceError, isNull);
+      expect(store.value.profiles.single.workspace, '/removed');
+      await controller.confirmWorkspace();
+      expect(store.value.profiles.single.workspace, '/users/fixture');
+      expect(agents.states[key]?.phase, ConnectionPhase.connected);
+    },
+  );
+
+  test(
     'opens and browses the SFTP file manager for the connected profile',
     () async {
       final profile = _firstProfile.copyWith(
@@ -4232,6 +4291,61 @@ void main() {
       expect(controller.state.screen, AppScreen.threads);
       expect(controller.state.fileManagerProfileId, isNull);
       expect(controller.state.fileManagerEntries, isEmpty);
+    },
+  );
+
+  test(
+    'file manager falls back to SSH home only for a missing initial directory',
+    () async {
+      final profile = _firstProfile.copyWith(
+        workspace: '/removed',
+        workspacePromptShown: true,
+      );
+      final store = _MemoryProfileStore(
+        StoredProfiles(profiles: [profile], selectedProfileId: profile.id),
+      );
+      final host = _FileManagerHost();
+      final connections = ServerConnectionManager(clientFactory: () => host);
+      final controller = AppController(store, connections);
+      addTearDown(() async {
+        controller.dispose();
+        await connections.close();
+      });
+      await _waitUntilInitialized(controller);
+      await controller.requestConnect(profile);
+      controller.showFileManager();
+      await _waitUntil(() => host.listRequests.isNotEmpty);
+      expect(host.listRequests.single.path, '/removed');
+      host.listRequests.single.result.completeError(
+        RemoteDirectoryUnavailable('不是目录'),
+      );
+      await _waitUntil(() => host.listRequests.length == 2);
+      expect(host.listRequests.last.path, isNull);
+      host.listRequests.last.result.complete(
+        const RemoteFileListing(currentPath: '/users/fixture'),
+      );
+      await _waitUntil(() => !controller.state.fileManagerLoading);
+      expect(controller.state.fileManagerCurrentPath, '/users/fixture');
+      expect(controller.state.fileManagerError, isNull);
+      expect(store.value.profiles.single.workspace, '/removed');
+
+      controller.browseFileManager('/vanished-child');
+      await _waitUntil(() => host.listRequests.length == 3);
+      host.listRequests.last.result.completeError(
+        SftpStatusError(SftpStatusCode.noSuchFile, 'No such file'),
+      );
+      await _waitUntil(() => !controller.state.fileManagerLoading);
+      expect(controller.state.fileManagerError, contains('No such file'));
+      expect(controller.state.fileManagerCurrentPath, '/users/fixture');
+      controller.closeFileManager();
+      controller.showFileManager();
+      await _waitUntil(() => host.listRequests.length == 4);
+      host.listRequests.last.result.completeError(
+        SftpStatusError(SftpStatusCode.permissionDenied, 'Permission denied'),
+      );
+      await _waitUntil(() => !controller.state.fileManagerLoading);
+      expect(controller.state.fileManagerError, contains('Permission denied'));
+      expect(host.listRequests.length, 4);
     },
   );
 

@@ -84,7 +84,7 @@ void main() {
     expect(snapshot.preview, isNot(contains('also-hidden')));
   });
 
-  test('current snapshot reads only the active 100 KiB segment', () async {
+  test('current snapshot reads only the active segment', () async {
     await File(
       '${directory.path}/session-1800000000000-000000.log',
     ).writeAsString('2026-01-01T00:00:00Z INFO Test historical-entry\n');
@@ -105,43 +105,43 @@ void main() {
     expect(await logger.listLogs(), hasLength(2));
   });
 
-  test(
-    'rotates segments and exports through the injected share handler',
-    () async {
-      File? sharedFile;
-      final logger = createLogger(
-        enabled: true,
-        shareHandler: (file) async {
-          sharedFile = file;
-        },
-      );
-      await logger.initialize();
-      for (var index = 0; index < 200; index++) {
-        logger.info('Test', 'entry-$index ${'log payload ' * 325}');
-      }
-      await logger.share();
+  test('shares multiple sessions through the injected share handler', () async {
+    File? sharedFile;
+    final logger = createLogger(
+      enabled: true,
+      shareHandler: (file) async {
+        sharedFile = file;
+      },
+    );
+    await logger.initialize();
+    logger.info('Test', 'first-session');
+    await logger.setEnabled(false);
+    await logger.setEnabled(true);
+    logger.info('Test', 'second-session');
+    await logger.share();
 
-      final snapshot = await logger.snapshot();
-      expect(snapshot.entries, hasLength(5));
-      expect(snapshot.entries.first.isActive, isTrue);
-      expect(snapshot.bytes, lessThanOrEqualTo(500 * 1024));
-      expect(
-        snapshot.entries.every((entry) => entry.sizeBytes <= 100 * 1024),
-        isTrue,
-      );
-      expect(sharedFile, isNotNull);
-      expect(await sharedFile!.exists(), isTrue);
-      expect(
-        utf8.decode(gzip.decode(await sharedFile!.readAsBytes())),
-        contains('Agent diagnostic log'),
-      );
-      expect(
-        utf8.decode(gzip.decode(await sharedFile!.readAsBytes())),
-        isNot(contains('entry-0 ')),
-      );
-      expect(snapshot.preview, contains('entry-199 '));
-    },
-  );
+    final snapshot = await logger.snapshot();
+    expect(snapshot.entries, hasLength(2));
+    expect(snapshot.entries.first.isActive, isTrue);
+    expect(snapshot.bytes, lessThanOrEqualTo(DiagnosticLogger.maxTotalBytes));
+    expect(
+      snapshot.entries.every(
+        (entry) => entry.sizeBytes <= DiagnosticLogger.maxArchiveBytes,
+      ),
+      isTrue,
+    );
+    expect(sharedFile, isNotNull);
+    expect(await sharedFile!.exists(), isTrue);
+    expect(
+      utf8.decode(gzip.decode(await sharedFile!.readAsBytes())),
+      contains('Agent diagnostic log'),
+    );
+    expect(
+      utf8.decode(gzip.decode(await sharedFile!.readAsBytes())),
+      contains('first-session'),
+    );
+    expect(snapshot.preview, contains('second-session'));
+  });
 
   for (final enabled in [false, true]) {
     test(
@@ -171,7 +171,10 @@ void main() {
         ];
         expect(snapshot.entries, hasLength(5));
         expect(snapshot.entries.map((entry) => entry.id), expectedIds);
-        expect(snapshot.bytes, lessThanOrEqualTo(500 * 1024));
+        expect(
+          snapshot.bytes,
+          lessThanOrEqualTo(DiagnosticLogger.maxTotalBytes),
+        );
         expect(
           directory.listSync().whereType<File>().where(
             (file) => file.path.endsWith('.log.gz'),
@@ -266,7 +269,7 @@ void main() {
     () async {
       final logger = createLogger(enabled: true);
       await logger.initialize();
-      for (var i = 0; i < 400; i++) {
+      for (var i = 0; i < 680; i++) {
         logger.info('Test', 'record-$i ${'正文😀' * 800}');
       }
       expect(directory.listSync(), isEmpty);
@@ -275,11 +278,15 @@ void main() {
       final contents = <String>[];
       for (final file in directory.listSync().whereType<File>()) {
         final original = gzip.decode(file.readAsBytesSync());
-        expect(original.length, lessThanOrEqualTo(100 * 1024));
+        expect(original.length, lessThanOrEqualTo(1024 * 1024));
         contents.add(utf8.decode(original));
       }
       expect(contents.join(), isNot(contains('record-0 ')));
-      expect(contents.join(), contains('record-399 '));
+      expect(contents.join(), contains('record-679 '));
+      expect(
+        contents.any((text) => utf8.encode(text).length > 100 * 1024),
+        isTrue,
+      );
     },
   );
 
@@ -443,7 +450,7 @@ void main() {
         logger.attachmentBytes('session-1800000000000-000000.log.gz'),
         throwsA(isA<FormatException>()),
       );
-      file.writeAsBytesSync(gzip.encode(List.filled(100 * 1024 + 1, 65)));
+      file.writeAsBytesSync(gzip.encode(List.filled(1024 * 1024 + 1, 65)));
       await expectLater(
         logger.attachmentBytes('session-1800000000000-000000.log.gz'),
         throwsA(isA<FormatException>()),
@@ -451,6 +458,17 @@ void main() {
       expect(await logger.attachmentBytes('../not-a-log.gz'), isNull);
     },
   );
+
+  test('a full 1 MiB segment plus gzip framing can be attached', () async {
+    final logger = createLogger();
+    await logger.initialize();
+    const id = 'session-1800000000000-000000.log.gz';
+    final file = File('${directory.path}/$id');
+    final archive = GZipCodec(level: 0).encode(List.filled(1024 * 1024, 65));
+    expect(archive.length, greaterThan(1024 * 1024));
+    await file.writeAsBytes(archive);
+    expect(await logger.attachmentBytes(id), archive);
+  });
 
   test('rapid tap counter enables exactly on the tenth tap', () {
     final counter = DebugTapCounter();

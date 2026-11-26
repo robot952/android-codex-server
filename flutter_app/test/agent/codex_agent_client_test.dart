@@ -227,6 +227,31 @@ class _FakeLocalCodexHost extends _FakeCodexHost
   }
 }
 
+class _ExitingSession extends _FakeCodexSession {
+  _ExitingSession(this.lastStderr, {this.transportError});
+
+  final String lastStderr;
+  final Object? transportError;
+
+  @override
+  void write(Uint8List data) {
+    if (_done.isCompleted) return;
+    if (transportError == null) {
+      _done.complete();
+    } else {
+      _done.completeError(transportError!);
+    }
+    // SSH can report the channel close before delivering stderr. Also
+    // exercise shells that leave the final error without a newline.
+    Timer.run(() {
+      if (!_stderr.isClosed) {
+        _stderr.add(Uint8List.fromList(utf8.encode(lastStderr)));
+        unawaited(_stderr.close());
+      }
+    });
+  }
+}
+
 class _FakeLocalOpenCodeHost extends _FakeCodexHost
     implements LocalRemoteServerClient, RemoteServerAgentProcessClient {
   _FakeLocalOpenCodeHost(this.session);
@@ -2273,6 +2298,97 @@ void main() {
       '2026-08-10T10:45:20Z ERROR codex_app_server',
     );
   });
+
+  test(
+    'startup EOF reports the missing workspace even with a late stderr tail',
+    () async {
+      const profile = ServerProfile(id: 'host', workspace: '/missing/folder');
+      final client = CodexAgentClient(
+        sessionOpener: (_, _) async => _ExitingSession(
+          'bash: line 1: cd: /missing/folder: No such file or directory',
+        ),
+      );
+      addTearDown(client.close);
+      final lost = client.events
+          .where((e) => e is RemoteAgentConnectionLost)
+          .cast<RemoteAgentConnectionLost>()
+          .first;
+      const reason = '工作目录「/missing/folder」不存在';
+      await expectLater(
+        client.connect(profile, _FakeCodexHost()),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains(reason),
+          ),
+        ),
+      );
+      expect((await lost).message, contains(reason));
+    },
+  );
+
+  test(
+    'startup diagnostics are redacted and do not survive reconnection',
+    () async {
+      final sessions = [
+        _ExitingSession(
+          'ERROR startup failed OPENAI_API_KEY=mockValue https://fake.invalid/token\nWARN shutting down\n',
+        ),
+        _ExitingSession(
+          'ERROR Codex is ignoring 2 unrecognized configuration settings.',
+        ),
+      ];
+      final client = CodexAgentClient(
+        sessionOpener: (_, _) async => sessions.removeAt(0),
+      );
+      addTearDown(client.close);
+      const profile = ServerProfile(id: 'host');
+      await expectLater(
+        client.connect(profile, _FakeCodexHost()),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('startup failed'),
+              isNot(contains('mockValue')),
+              isNot(contains('fake.invalid')),
+            ),
+          ),
+        ),
+      );
+      await expectLater(
+        client.connect(profile, _FakeCodexHost()),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'message', 'Codex 服务已退出'),
+        ),
+      );
+    },
+  );
+
+  test(
+    'transport failures retain the network cause instead of a generic exit',
+    () async {
+      final client = CodexAgentClient(
+        sessionOpener: (_, _) async => _ExitingSession(
+          '',
+          transportError: StateError('Connection refused'),
+        ),
+      );
+      addTearDown(client.close);
+      await expectLater(
+        client.connect(const ServerProfile(id: 'host'), _FakeCodexHost()),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('Connection refused'),
+          ),
+        ),
+      );
+    },
+  );
 
   test('retains provider fallback detail without closing the Agent', () async {
     final session = _FakeCodexSession();

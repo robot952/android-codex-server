@@ -21,7 +21,7 @@ class WorkspacePickerDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final currentPath = state.workspaceCurrentPath.trim();
     final error = state.workspaceError?.trim();
-    final canConfirm = !state.workspaceLoading;
+    final canConfirm = !state.workspaceLoading && error == null;
 
     return Positioned.fill(
       key: const ValueKey('workspace-picker-overlay'),

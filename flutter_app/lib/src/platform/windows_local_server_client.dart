@@ -536,9 +536,16 @@ class WindowsLocalServerClient
 
   @override
   Future<RemoteDirectoryListing> listDirectories(String? requestedPath) async {
-    final profile = _requireConnectedProfile();
-    final current = Directory(_resolveDirectory(requestedPath, profile));
-    if (!await current.exists()) throw StateError('目录不存在：${current.path}');
+    _requireConnectedProfile();
+    final requested = requestedPath?.trim();
+    final current = Directory(
+      requested == null || requested.isEmpty ? _userHome : requested,
+    );
+    final stat = await current.stat();
+    if (stat.type == FileSystemEntityType.notFound ||
+        stat.type == FileSystemEntityType.file) {
+      throw RemoteDirectoryUnavailable('目录不存在：${current.path}');
+    }
     final directories = <RemoteDirectory>[];
     await for (final entity in current.list(followLinks: false)) {
       if (entity is! Directory) continue;
@@ -931,10 +938,6 @@ class WindowsLocalServerClient
 
   String _workspace(ServerProfile profile) =>
       profile.workspace.trim().isEmpty ? _userHome : profile.workspace.trim();
-  String _resolveDirectory(String? requested, ServerProfile profile) =>
-      requested?.trim().isNotEmpty == true
-      ? requested!.trim()
-      : _workspace(profile);
   bool _isManagedCodex(String executable) {
     final root = path.normalize(_managedRoot).toLowerCase();
     final candidate = path.normalize(executable).toLowerCase();

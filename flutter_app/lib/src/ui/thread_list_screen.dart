@@ -54,9 +54,9 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
     final profileId = profile?.id;
     final terminalManager = ref.watch(terminalManagerProvider);
     final localWindows = profile != null && isLocalWindowsProfile(profile);
-    final hostConnected =
-        profileId != null &&
-        state.connectionStates[profileId]?.phase == ConnectionPhase.connected;
+    final hostState =
+        state.connectionStates[profileId] ?? const ConnectionState();
+    final hostConnected = hostState.phase == ConnectionPhase.connected;
     final key = profileId == null
         ? null
         : AgentConnectionKey(profileId: profileId, agent: state.activeAgent);
@@ -262,7 +262,7 @@ class _ThreadListScreenState extends ConsumerState<ThreadListScreen> {
                   child: _ThreadListBody(
                     key: ValueKey(key),
                     agent: state.activeAgent,
-                    hostConnected: hostConnected,
+                    hostState: hostState,
                     connectionState: agentState,
                     loading: loading,
                     query: state.threadSearch,
@@ -394,6 +394,7 @@ void _showThreadSettings(
     context: context,
     builder: (_) => _ThreadSettingsDialog(
       agent: state.activeAgent,
+      canSelectWorkspace: profileId != null && hostConnected(state, profileId),
       agentConnected:
           state
               .agentConnectionStates[AgentConnectionKey(
@@ -478,6 +479,7 @@ void _showServerSwitcher(
 class _ThreadSettingsDialog extends StatelessWidget {
   const _ThreadSettingsDialog({
     required this.agent,
+    required this.canSelectWorkspace,
     required this.agentConnected,
     required this.canConfigureAgent,
     required this.onSelectWorkspace,
@@ -489,6 +491,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
   });
 
   final AgentKind agent;
+  final bool canSelectWorkspace;
   final bool agentConnected;
   final bool canConfigureAgent;
   final VoidCallback onSelectWorkspace;
@@ -523,7 +526,7 @@ class _ThreadSettingsDialog extends StatelessWidget {
                   icon: Icons.folder,
                   title: '选择工作目录',
                   detail: '切换新会话默认使用的目录',
-                  enabled: agentConnected,
+                  enabled: canSelectWorkspace,
                   onTap: onSelectWorkspace,
                 ),
                 _SettingsActionRow(
@@ -1333,7 +1336,7 @@ class _ThreadListBody extends StatefulWidget {
   const _ThreadListBody({
     super.key,
     required this.agent,
-    required this.hostConnected,
+    required this.hostState,
     required this.connectionState,
     required this.loading,
     required this.query,
@@ -1348,7 +1351,8 @@ class _ThreadListBody extends StatefulWidget {
   });
 
   final AgentKind agent;
-  final bool hostConnected;
+  final ConnectionState hostState;
+  bool get hostConnected => hostState.phase == ConnectionPhase.connected;
   final ConnectionState connectionState;
   final bool loading;
   final String query;
@@ -1440,13 +1444,25 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
     final onRetry = widget.onRetry;
     final onReconnect = widget.onReconnect;
     final onOpen = widget.onOpen;
+    final failedState = hostConnected ? connectionState : widget.hostState;
+    final failed = failedState.phase == ConnectionPhase.failed;
+    final failureMessage = failed && failedState.message.trim().isNotEmpty
+        ? failedState.message
+        : hostConnected
+        ? '${agent.label} 连接失败'
+        : '服务器连接失败';
+    final retry = IconButton.filledTonal(
+      tooltip: hostConnected ? '重新连接 ${agent.label}' : '重新连接服务器',
+      onPressed: hostConnected ? onRetry : onReconnect,
+      icon: const Icon(Icons.refresh),
+    );
     if (threads.isNotEmpty) {
       return NotificationListener<ScrollNotification>(
         onNotification: _handleScroll,
         child: Column(
           children: [
             if (loading) const LinearProgressIndicator(minHeight: 2),
-            if (diagnostic != null)
+            if (!failed && diagnostic != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 7, 16, 3),
                 child: Text(
@@ -1469,15 +1485,28 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
                 itemCount:
                     threads.length +
+                    (failed ? 1 : 0) +
                     (widget.hasMoreThreads || _loadingMore ? 1 : 0),
                 itemBuilder: (context, index) {
-                  if (index == threads.length) {
+                  if (failed && index == 0) {
+                    return ListTile(
+                      leading: Icon(
+                        Icons.error_outline,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                      title: Text(failureMessage),
+                      trailing: retry,
+                    );
+                  }
+                  final threadIndex = failed ? index - 1 : index;
+                  if (threadIndex == threads.length) {
                     return _buildLoadMore();
                   }
+                  final thread = threads[threadIndex];
                   return _ThreadRow(
-                    threads[index],
+                    thread,
                     now: now,
-                    onTap: () => onOpen(threads[index]),
+                    onTap: () => onOpen(thread),
                   );
                 },
               ),
@@ -1487,7 +1516,8 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
       );
     }
 
-    if (hostConnected &&
+    if (!failed &&
+        hostConnected &&
         (loading || connectionState.phase == ConnectionPhase.connecting)) {
       return Column(
         children: [
@@ -1507,10 +1537,9 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
       );
     }
 
-    final failed = connectionState.phase == ConnectionPhase.failed;
     final message = switch ((hostConnected, failed, query.trim().isNotEmpty)) {
+      (_, true, _) => failureMessage,
       (false, _, _) => 'SSH 尚未连接',
-      (_, true, _) => connectionState.message,
       (_, _, true) => '没有匹配任务',
       _ => '暂无任务',
     };
@@ -1534,18 +1563,12 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                       ),
                       const SizedBox(height: 9),
                       Text(message, textAlign: TextAlign.center),
-                      if (widget.hasMoreThreads || _loadingMore)
+                      if (!failed && (widget.hasMoreThreads || _loadingMore))
                         _buildLoadMore(),
                       if ((!hostConnected && onReconnect != null) ||
                           (failed && hostConnected)) ...[
                         const SizedBox(height: 12),
-                        IconButton.filledTonal(
-                          tooltip: hostConnected
-                              ? '重新连接 ${agent.label}'
-                              : '重新连接服务器',
-                          onPressed: hostConnected ? onRetry : onReconnect,
-                          icon: const Icon(Icons.refresh),
-                        ),
+                        retry,
                       ],
                     ],
                   ),
@@ -1557,7 +1580,12 @@ class _ThreadListBodyState extends State<_ThreadListBody> {
                   parent: AlwaysScrollableScrollPhysics(),
                 ),
                 children: [
-                  SizedBox(height: constraints.maxHeight, child: emptyState),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
+                    ),
+                    child: emptyState,
+                  ),
                 ],
               );
             },

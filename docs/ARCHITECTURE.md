@@ -13,7 +13,7 @@
 | 应用根组件 | flutter_app/lib/src/app/codex_remote_app.dart |
 | Flutter | 3.44.8 stable |
 | Dart | 3.12.2 |
-| App 版本 | 1.8.216+348，来自 flutter_app/pubspec.yaml |
+| App 版本 | 1.8.217+349，来自 flutter_app/pubspec.yaml |
 | Android | minSdk 26、targetSdk 34、compileSdk 36 |
 | Java / Gradle / AGP / Kotlin | Java 17 / Gradle 9.1.0 / AGP 9.0.1 / Kotlin 2.3.20 |
 | 当前交付目标 | Android Flutter APK、Windows x64 Flutter EXE |
@@ -438,7 +438,7 @@ SFTP stdout 混用。
 当前显示服务器标题、当前服务器的真实资源指标、Codex/OpenCode/Claude Code 三段控件、搜索、刷新和新建会话。
 SSH 已连接后页面按需启动当前 Agent；当前 Agent 完成握手后显示对应 adapter 的真实
 `thread/list` 会话，搜索（350 ms 防抖）和刷新会请求远端，运行中的会话显示固定尺寸转圈。点击会话
-进入共享 Work 页面；终端图标打开独立 SSH PTY，齿轮菜单在当前 Agent 已连接时提供“选择工作目录”和
+进入共享 Work 页面；终端图标打开独立 SSH PTY。只要主机已连接，就可以手动选择工作目录并打开远程
 文件管理，全局配置入口按 capability 显示。三种 Agent 的连接、列表、模型和错误状态按 `profileId + AgentKind` 隔离。
 顶部操作顺序与原版一致：终端、刷新、新建会话、设置、切换服务器；设置和切换服务器分别使用独立
 弹窗，服务器弹窗显示连接状态、用户名/地址、当前选中标记和“管理服务器”入口。Agent 选择器使用
@@ -456,7 +456,7 @@ Back、目录读取失败或随后断线都不会在下次自动重弹，但齿�
 不弹窗但同样消费标记。同连接身份保存旧表单时必须保留已经为 true 的标记。浏览请求按递增 request
 ID、profile、Agent、连接身份和 generation 校验；连续浏览只采用最后结果，切服务器/Agent、返回列表、
 断开、删除和身份替换都会关闭弹窗并使旧结果失效。加载时只禁用确认，目录导航、“稍后”、遮罩和
-Back 仍可操作；确认保存的是当前展示路径，不是某个目录行。
+Back 仍可操作；确认保存的是当前展示路径，不是某个目录行。首次打开目录时若配置或上次浏览的路径已不存在，使用该登录用户的主目录；浏览回退本身不改写配置。会话页的重试入口展示本次失败的主机或 Agent 原因，有缓存任务时仍可查看。
 
 会话列表消费 `agentThreadLists[profileId + AgentKind]`，并通过 Agent 中立的可选分页契约消费远端
 `nextCursor`。接近列表底部时自动加载下一页，控制器按 lane 保存游标、合并去重并丢弃刷新/搜索/断线后
@@ -1143,9 +1143,9 @@ Agent 自己断线时才重建其专用 SSH 并恢复 lane。Codex Unix listener
 分块写入并清理失败半成品。终端和文件操作不共享 Codex JSONL stdout，也不拼接 shell 路径执行文件动作。
 
 Debug 模式由 Agent 图标连续十次点击开启。`DiagnosticLogger` 和 Android `DiagnosticLogBridge` 将普通事件
-先写有界内存，不逐条压缩或写盘；每段按原始 UTF-8 限制为 100 KiB，各自最多保留 5 段内存。
+先写有界内存，不逐条压缩或写盘；每段按原始 UTF-8 限制为 1 MiB，各自最多保留 5 段内存。
 后台生命周期、退出回调、可捕获异常及所有日志读取/分享/附件/清空操作触发 gzip 原子保存，磁盘共用最近
-5 份 `.log.gz` 上限；压缩包单份允许 101 KiB（含 gzip 最坏开销），总上限 505 KiB。列表显示实际压缩大小。
+5 份 `.log.gz` 上限；压缩包单份允许 1025 KiB（含 gzip 开销），总上限 5125 KiB。列表显示实际压缩大小。
 关闭 Debug 会先保存已有日志；旧 `.log` 启动时脱敏并迁移，失败保留原件。启动清理不依赖 Debug 开关。
 FlutterError、
 PlatformDispatcher 和 Zone 未捕获异常始终以 FATAL 级别记录。`DiagnosticLogBridge` 在 Android 侧捕获
@@ -1153,7 +1153,7 @@ Java 未捕获异常、进程异常退出线索和主线程长时间卡死（ANR
 入缓冲前会移除 ANSI、私钥、URL 凭据、Bearer/API key、password/token/secret 等敏感值。预览解压时再次脱敏；
 分享单份和附件直接使用已经脱敏的压缩文件字节，多份分享合并后压缩。解压限制原始大小，拒绝损坏或超限文件。
 系统强杀/断电没有可靠退出回调，尚在内存的记录可能丢失；原生退出原因可在下次启动补记，不能声称零丢失。
-诊断日志弹窗只读取当前进程正在写入的单个活动分段，不扫描或拼接历史 100 KiB 文件；历史日志仅在分享或作为附件时按需列出。
+诊断日志弹窗只读取当前进程正在写入的单个活动分段，不扫描或拼接历史文件；历史日志仅在分享或作为附件时按需列出。
 日志 sheet 和选择器支持按文件多选、预览、复制、清空和系统分享；分享只生成临时副本，不删除原日志，清空
 同时删除本工具生成的临时分享文件。工作页菜单“添加崩溃 / Debug 日志”默认只选中列表第一份（最新日志），
 不优先选择崩溃日志；可手动改选或多选，遵守附件数量上限。确认后只加入输入框 `.log.gz` 文件附件，
@@ -1555,7 +1555,7 @@ emulator-smoke.sh 默认保留 App 数据、服务器 Profile 和 Keystore；仅
 | test/ui/model_selection_presentation_test.dart | catalog id/wire model 匹配、模型/effort 标签和容量格式 |
 | test/platform/local_file_exporter_test.dart | Android 导出会话 begin/write/complete/abort、分块上限和关闭后拒绝写入 |
 | test/platform/turn_completion_notifications_test.dart | 完成通知 payload、稳定通知 id、bounded 去重、子 Agent 过滤和点击导航解析 |
-| test/platform/diagnostic_logger_test.dart | 十次点击计数、日志开关、100 KiB 原文/5 段内存与 gzip 磁盘保留、升级迁移、脱敏、同步崩溃保存、写失败重试、合并 flush、清空不复活、压缩附件/导出、损坏及解压超限保护 |
+| test/platform/diagnostic_logger_test.dart | 十次点击计数、日志开关、1 MiB 原文/5 段内存与 gzip 磁盘保留、升级迁移、脱敏、同步崩溃保存、写失败重试、合并 flush、清空不复活、压缩附件/导出、损坏及解压超限保护 |
 | test/platform/diagnostic_timing_test.dart | 阶段开始/终态配对、并发身份、单调耗时、超时/异常保留、日志失败隔离及 Debug 开关 |
 | test/ui/diagnostic_log_sheet_test.dart | 最新日志默认选择且不优先崩溃、多选确认、附件数量上限、分享不预选及小屏滚动 |
 | test/platform/app_update_manager_test.dart | Gitee Release/资源筛选、SemVer 与 prerelease 排序、忽略提示、进度/容量辅助函数，以及下载到安装的状态机 |
@@ -1676,7 +1676,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 | 子 Agent | 紧凑图标/名称/逐个状态、同 turn 终态保护、真实 child `thread/resume`、父快照栈、最多 8 层返回、失败重试和迟到回调过滤 | 真机长时导航、真实服务器连续协作事件和大历史回归 |
 | 后台 | Flutter bridge + Android foreground Service、partial wake lock；根 Back 移到后台；Activity 销毁/重建复用连接期 FlutterEngine，进程存活时 Dart stream 和 SSH 继续 | 真机权限/厂商后台限制、进程被杀后的恢复不保证 |
 | 完成通知 | 后台回合通知、稳定 id、bounded 去重、子 Agent 过滤、点击直达 | 真机通知权限、锁屏/厂商通知策略和完整端到端回归 |
-| Debug | 十次点击开启；100 KiB 原文/5 文件、内存缓冲及边界 gzip 保存、旧日志迁移、FATAL/Java/ANR 线索、多选压缩分享、清空临时副本、附件默认最新日志且待发送 | 无回调强杀的内存丢失、真机崩溃复现及分享目标兼容 |
+| Debug | 十次点击开启；1 MiB 原文/5 文件、内存缓冲及边界 gzip 保存、旧日志迁移、FATAL/Java/ANR 线索、多选压缩分享、清空临时副本、附件默认最新日志且待发送 | 无回调强杀的内存丢失、真机崩溃复现及分享目标兼容 |
 | 应用内更新 | Gitee 稳定 Release 自动/手动检查、两种 APK 资源名兼容、忽略版本、DownloadManager 进度、后台继续、任务持久化/重绑、未知来源授权、取消后重试、包名/版本/证书校验和系统安装 | 真机弱网/断网、权限拒绝、下载失败、覆盖升级、真实安装器行为和进程重建回归 |
 | 终端/文件 | 每 profile 独立 SSH PTY；SFTP 浏览/上传/下载/重命名/删除/复制移动；SAF 分块导出 | 真机键盘、超大文件、断线和厂商文件选择器回归 |
 | 全局配置 | Codex/OpenCode 远程用户全局 Provider、认证、代理读取/保存和真实 API 测试；Codex 自定义 Provider 的 WebSocket/HTTPS 传输策略；OpenCode 自定义模型同步/tombstone、Provider 前缀和显式协议已接入 | 真实服务器 Provider 差异、权限/登录/协议和模型缓存刷新回归；不得把 API key 放入命令参数或手机持久化 |
@@ -1706,7 +1706,7 @@ SSH 或 Agent 端到端已经验收；应用内更新的 Android 系统流程仍
 10. 目标和操作菜单使用原生 app-server 能力，不依赖复杂斜杠解析（当前 Codex 已接入）。
 11. App 在后台时 turn 完成发通知，点击进入正确服务器和会话（当前已接入；通知权限、厂商策略和进程被杀后的恢复仍需真机验收）。
 12. Agent 图标连续点击 10 次开启 Debug；普通事件只写有界内存，后台/退出/异常/日志操作时 gzip 保存；
-    只保留最近 5 个压缩文件，单份原文 100 KiB，磁盘最多 505 KiB（含压缩开销）；
+    只保留最近 5 个压缩文件，单份原文 1 MiB，磁盘最多 5125 KiB（含压缩开销）；
     Flutter/Android 共用上限，Debug 关闭时启动也清理超额旧日志。工作页“添加崩溃 / Debug 日志”默认
     只勾选第一份最新日志，不优先选崩溃日志；仍可手动多选作为输入框压缩文件附件，不自动发送。
     系统分享默认不勾选，保持脱敏；Java/Native/ANR 线索尽量在下次启动恢复。
